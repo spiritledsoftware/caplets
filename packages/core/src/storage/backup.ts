@@ -63,7 +63,6 @@ export type RestoreAuthorityBackupOptions = {
   key: BackupKeyMaterial;
   fence?: MaintenanceFence;
   targetFence?: MaintenanceFence;
-  targetNamespace?: string;
   expectedSchemaVersion?: number;
   owner?: string;
 };
@@ -89,7 +88,7 @@ export async function createAuthorityBackup(
   ) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Authority export identity does not match the provider lifecycle identity",
+      "Storage export identity does not match the provider lifecycle identity",
     );
   }
   const header = makeHeader(generation, state.auxiliaryWatermark, fingerprint(key));
@@ -97,10 +96,10 @@ export async function createAuthorityBackup(
   const aad = authenticatedHeaderBytes(headerBytes);
   const body = stableJsonStringify({ export: state });
   if (typeof body !== "string")
-    throw new CapletsError("CONFIG_INVALID", "Authority export is not serializable");
+    throw new CapletsError("CONFIG_INVALID", "Storage export is not serializable");
   const bodyBytes = Buffer.from(body, "utf8");
   if (bodyBytes.byteLength > MAX_BACKUP_BYTES) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup exceeds the 64 MiB limit");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup exceeds the 64 MiB limit");
   }
   const nonce = randomBytes(NONCE_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, nonce);
@@ -126,14 +125,14 @@ export async function decodeAuthorityBackup(
   const key = normalizeBackupKey(keyMaterial);
   const bytes = input instanceof Uint8Array ? Buffer.from(input) : Buffer.from(input.bytes);
   if (bytes.byteLength < BACKUP_MAGIC.byteLength + 4 + NONCE_BYTES + TAG_BYTES) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup is truncated");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup is truncated");
   }
   if (!bytes.subarray(0, BACKUP_MAGIC.byteLength).equals(BACKUP_MAGIC)) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup magic is invalid");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup magic is invalid");
   }
   const headerLength = bytes.readUInt32BE(BACKUP_MAGIC.byteLength);
   if (headerLength < 2 || headerLength > MAX_HEADER_BYTES) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup header length is invalid");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup header length is invalid");
   }
   const headerStart = BACKUP_MAGIC.byteLength + 4;
   const headerEnd = headerStart + headerLength;
@@ -141,14 +140,14 @@ export async function decodeAuthorityBackup(
   const tagStart = nonceStart + NONCE_BYTES;
   const ciphertextStart = tagStart + TAG_BYTES;
   if (ciphertextStart > bytes.byteLength) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup is truncated");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup is truncated");
   }
   const headerBytes = bytes.subarray(headerStart, headerEnd);
   const header = parseHeader(headerBytes);
   if (header.keyFingerprint !== fingerprint(key)) {
     throw new CapletsError(
       "AUTH_FAILED",
-      "Authority backup key does not match authenticated key fingerprint",
+      "Storage backup key does not match authenticated key fingerprint",
     );
   }
   const nonce = bytes.subarray(nonceStart, tagStart);
@@ -173,7 +172,7 @@ export async function decodeAuthorityBackup(
   } catch {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Authority backup authentication or body decoding failed",
+      "Storage backup authentication or body decoding failed",
     );
   }
 }
@@ -189,61 +188,52 @@ export async function restoreAuthorityBackup(
   const lifecycleIdentity = assertAuthorityLifecycleIdentity(authority);
   const namespace = lifecycleIdentity.namespace;
   if (
-    options.targetNamespace !== undefined &&
-    options.targetNamespace !== lifecycleIdentity.namespace
-  ) {
-    throw new CapletsError(
-      "CONFIG_INVALID",
-      "Authority restore namespace override does not match the provider lifecycle identity",
-    );
-  }
-  if (
     options.expectedSchemaVersion !== undefined &&
     options.expectedSchemaVersion !== lifecycleIdentity.schemaVersion
   ) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Authority restore schema version override does not match the provider lifecycle identity",
+      "Storage restore schema version override does not match the provider lifecycle identity",
     );
   }
   if (health.authorityId !== decoded.header.authorityId) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Authority backup identity does not match restore target",
+      "Storage backup identity does not match restore target",
     );
   }
   if (health.provider !== decoded.header.provider) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Authority backup provider does not match restore target",
+      "Storage backup provider does not match restore target",
     );
   }
   if (namespace !== decoded.header.namespace) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Authority backup namespace does not match restore target",
+      "Storage backup identity does not match restore target",
     );
   }
   if (lifecycleIdentity.schemaVersion !== decoded.header.schemaVersion) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Authority backup schema version does not match restore target",
+      "Storage backup schema version does not match restore target",
     );
   }
   if (health.connectivity !== "healthy" || !health.writable) {
     throw new CapletsError(
       "SERVER_UNAVAILABLE",
-      "Restore target authority is not healthy and writable",
+      "Restore target Storage is not healthy and writable",
     );
   }
   if ((await authority.readHead()) !== null) {
-    throw new CapletsError("CONFIG_EXISTS", "Restore target authority must be empty");
+    throw new CapletsError("CONFIG_EXISTS", "Restore target Storage must be empty");
   }
   const fence = options.targetFence ?? options.fence ?? authority.maintenanceFence?.();
   if (!fence) {
     throw new CapletsError(
       "UNSUPPORTED_OPERATION",
-      "Authority restore requires a destination maintenance fence",
+      "Storage restore requires a destination maintenance fence",
     );
   }
   const owner = options.owner ?? `restore-${randomBytes(8).toString("hex")}`;
@@ -258,7 +248,7 @@ export async function restoreAuthorityBackup(
   const lease = await fence.acquire(context);
   try {
     if ((await authority.readHead()) !== null) {
-      throw new CapletsError("CONFIG_EXISTS", "Restore target authority must remain empty");
+      throw new CapletsError("CONFIG_EXISTS", "Restore target Storage must remain empty");
     }
     let restoreResult: AuthorityRestoreResult;
     try {
@@ -268,7 +258,7 @@ export async function restoreAuthorityBackup(
       if (head) {
         throw new CapletsError(
           "CONFIG_INVALID",
-          "Authority restore was interrupted after publication",
+          "Storage restore was interrupted after publication",
         );
       }
       throw error;
@@ -322,16 +312,16 @@ export function readAuthorityBackupHeader(
 ): AuthorityBackupHeader {
   const bytes = input instanceof Uint8Array ? Buffer.from(input) : Buffer.from(input.bytes);
   if (bytes.byteLength < BACKUP_MAGIC.byteLength + 4) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup is truncated");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup is truncated");
   }
   if (!bytes.subarray(0, BACKUP_MAGIC.byteLength).equals(BACKUP_MAGIC)) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup magic is invalid");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup magic is invalid");
   }
   const headerLength = bytes.readUInt32BE(BACKUP_MAGIC.byteLength);
   const start = BACKUP_MAGIC.byteLength + 4;
   const end = start + headerLength;
   if (headerLength < 2 || headerLength > MAX_HEADER_BYTES || end > bytes.byteLength) {
-    throw new CapletsError("CONFIG_INVALID", "Authority backup header length is invalid");
+    throw new CapletsError("CONFIG_INVALID", "Storage backup header length is invalid");
   }
   return parseHeader(bytes.subarray(start, end));
 }
@@ -437,7 +427,7 @@ function validateExport(state: AuthorityExport): void {
     !state.generation ||
     typeof state.auxiliaryWatermark !== "string"
   ) {
-    throw new CapletsError("CONFIG_INVALID", "Authority export is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage export is malformed");
   }
   const generation = state.generation;
   if (
@@ -456,7 +446,7 @@ function validateExport(state: AuthorityExport): void {
     typeof generation.digest !== "string" ||
     !isRecord(generation.snapshot)
   ) {
-    throw new CapletsError("CONFIG_INVALID", "Authority export is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage export is malformed");
   }
 }
 

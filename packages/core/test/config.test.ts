@@ -3610,6 +3610,26 @@ describe("config", () => {
       }),
     ).toThrow(CapletsError);
   });
+  it("accepts storage only at the raw global boundary and excludes it from effective config", () => {
+    const effective = parseConfig({
+      storage: { provider: "filesystem", path: "/tmp/caplets-storage" },
+    });
+    expect(effective).not.toHaveProperty("storage");
+    expect(effective).not.toHaveProperty("authority");
+
+    const schema = configJsonSchema() as { properties?: Record<string, unknown> };
+    expect(schema.properties).toHaveProperty("storage");
+    expect(schema.properties).not.toHaveProperty("authority");
+  });
+
+  it("strictly rejects legacy authority and removed storage fields", () => {
+    expect(() => parseConfig({ authority: { provider: "filesystem" } })).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({
+        storage: { provider: "sqlite", path: "/tmp/caplets.sqlite", databasePath: "x" },
+      }),
+    ).toThrow(CapletsError);
+  });
 });
 
 function isCaseSensitiveTempFs(): boolean {

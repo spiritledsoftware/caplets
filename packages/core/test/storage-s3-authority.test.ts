@@ -7,6 +7,7 @@ import {
 } from "../src/storage/types";
 import { authorityExportDigest } from "../src/storage/migration";
 import { createAuthorityBackup, restoreAuthorityBackup } from "../src/storage/backup";
+import { stableJsonStringify } from "../src/stable-json";
 import {
   S3Authority,
   createS3Authority,
@@ -171,6 +172,207 @@ function options(client: S3AuthorityClient, extra: Record<string, unknown> = {})
   };
 }
 
+function rewriteHeadedGeneration(
+  client: MemoryS3Client,
+  mutate: (generation: Record<string, unknown>) => void,
+): void {
+  const generationKey = [...client.objects.keys()].find((key) => key.includes("/generations/"));
+  if (!generationKey) throw new Error("missing headed generation");
+  const object = client.objects.get(generationKey);
+  if (!object) throw new Error("missing headed generation object");
+  const candidate = JSON.parse(new TextDecoder().decode(object.body)) as {
+    generation: Record<string, unknown>;
+  };
+  mutate(candidate.generation);
+  const generation = candidate.generation;
+  const payload = {
+    authorityId: generation.authorityId,
+    id: generation.id,
+    sequence: generation.sequence,
+    predecessorId: generation.predecessorId,
+    schemaVersion: generation.schemaVersion,
+    committedAt: generation.committedAt,
+    provenance: generation.provenance,
+    snapshot: generation.snapshot,
+  };
+  generation.digest = `sha256:${createHash("sha256")
+    .update(stableJsonStringify(payload))
+    .digest("hex")}`;
+  object.body = new TextEncoder().encode(JSON.stringify(candidate));
+}
+
+describe("S3 physical root ownership", () => {
+  it.each([
+    [undefined, ".caplets/"],
+    ["", ".caplets/"],
+    ["///", ".caplets/"],
+    ["/team/project/", "team/project/.caplets/"],
+  ])("canonicalizes path %s independently from lifecycle namespace", async (path, root) => {
+    const client = new MemoryS3Client();
+    const authority = await createS3Authority(options(client, { path }));
+    await authority.commit(envelope(null, { idempotencyKey: `path-${String(path)}` }));
+    expect([...client.objects.keys()].every((key) => key.startsWith(root))).toBe(true);
+    expect([...client.objects.keys()].some((key) => key.startsWith("tenant-a/"))).toBe(false);
+    await authority.close();
+  });
+
+  it.each([
+    "a//b",
+    "../b",
+    "a/../b",
+    "a/./b",
+    "a/.caplets/b",
+    "a/\u0000/b",
+    "a/\u0080/b",
+    "a/\u009f/b",
+  ])("rejects unsafe path %j before making a request", async (path) => {
+    const client = new MemoryS3Client();
+    await expect(createS3Authority(options(client, { path }))).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
+    expect(client.requests).toEqual([]);
+  });
+
+  it("fails closed on an occupied root without a valid matching head", async () => {
+    const client = new MemoryS3Client();
+    client.objects.set("team/.caplets/arbitrary.json", {
+      body: new TextEncoder().encode("{}"),
+      etag: "foreign",
+      metadata: {},
+    });
+    await expect(createS3Authority(options(client, { path: "team" }))).rejects.toMatchObject({
+      code: "CONFIG_EXISTS",
+    });
+    expect(client.objects.has("team/.caplets/arbitrary.json")).toBe(true);
+    expect(client.requests.every(({ operation }) => operation !== "PutObjectCommand")).toBe(true);
+    expect(client.requests.every(({ operation }) => operation !== "DeleteObjectCommand")).toBe(
+      true,
+    );
+  });
+
+  it("reopens a valid matching root and rejects a foreign head without mutation", async () => {
+    const client = new MemoryS3Client();
+    const first = await createS3Authority(options(client, { path: "team" }));
+    await first.commit(envelope(null, { idempotencyKey: "owned-root" }));
+    await first.close();
+
+    const reopened = await createS3Authority(options(client, { path: "/team/" }));
+    await expect(reopened.readHead()).resolves.toMatchObject({ authorityId: "authority-test" });
+    await reopened.close();
+
+    const head = client.objects.get("team/.caplets/head.json");
+    if (!head) throw new Error("missing head");
+    head.body = new TextEncoder().encode(
+      JSON.stringify({
+        authorityId: "foreign",
+        id: "foreign",
+        sequence: 1,
+        predecessorId: null,
+        digest: "sha256:foreign",
+      }),
+    );
+    const before = new Set(client.objects.keys());
+    await expect(createS3Authority(options(client, { path: "team" }))).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
+    expect(new Set(client.objects.keys())).toEqual(before);
+  });
+
+  it.each([
+    [
+      "foreign provider",
+      (generation: Record<string, unknown>) => {
+        (generation.provenance as Record<string, unknown>).provider = "filesystem";
+      },
+    ],
+    [
+      "foreign authority",
+      (generation: Record<string, unknown>) => {
+        generation.authorityId = "foreign-authority";
+      },
+    ],
+    [
+      "foreign namespace",
+      (generation: Record<string, unknown>) => {
+        (generation.provenance as Record<string, unknown>).namespace = "foreign-namespace";
+      },
+    ],
+    [
+      "missing provenance",
+      (generation: Record<string, unknown>) => {
+        delete generation.provenance;
+      },
+    ],
+    [
+      "malformed provenance",
+      (generation: Record<string, unknown>) => {
+        generation.provenance = "invalid";
+      },
+    ],
+  ])("rejects an occupied root with %s without mutation", async (_label, mutate) => {
+    const client = new MemoryS3Client();
+    const first = await createS3Authority(options(client, { path: "team" }));
+    await first.commit(envelope(null, { idempotencyKey: `owned-${_label}` }));
+    await first.close();
+    rewriteHeadedGeneration(client, mutate);
+
+    const before = [...client.objects].map(([key, object]) => ({
+      key,
+      body: [...object.body],
+      etag: object.etag,
+      metadata: { ...object.metadata },
+    }));
+    const requestStart = client.requests.length;
+    await expect(createS3Authority(options(client, { path: "team" }))).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
+
+    expect(
+      client.requests
+        .slice(requestStart)
+        .every(
+          ({ operation }) =>
+            operation !== "PutObjectCommand" && operation !== "DeleteObjectCommand",
+        ),
+    ).toBe(true);
+    expect(
+      [...client.objects].map(([key, object]) => ({
+        key,
+        body: [...object.body],
+        etag: object.etag,
+        metadata: { ...object.metadata },
+      })),
+    ).toEqual(before);
+  });
+
+  it("keeps concurrent first bootstrap conditional and non-destructive", async () => {
+    const client = new MemoryS3Client();
+    const [first, second] = await Promise.all([
+      createS3Authority(options(client, { path: "shared" })),
+      createS3Authority(options(client, { path: "/shared/" })),
+    ]);
+    const results = await Promise.all([
+      first.commit(envelope(null, { idempotencyKey: "bootstrap-first" })),
+      second.commit(envelope(null, { idempotencyKey: "bootstrap-second" })),
+    ]);
+    expect(results.filter((result) => result.kind === "committed")).toHaveLength(1);
+    expect(results.filter((result) => result.kind === "conflict")).toHaveLength(1);
+    expect(
+      client.requests.filter(
+        ({ operation, input }) =>
+          operation === "PutObjectCommand" &&
+          input.Key === "shared/.caplets/head.json" &&
+          input.IfNoneMatch === "*",
+      ),
+    ).toHaveLength(2);
+    expect([...client.objects.keys()].every((key) => key.startsWith("shared/.caplets/"))).toBe(
+      true,
+    );
+    await first.close();
+    await second.close();
+  });
+});
+
 describe("S3 authority bounded protocol", () => {
   it("uses immutable candidates and exact conditional create/replace semantics", async () => {
     const client = new MemoryS3Client();
@@ -192,9 +394,9 @@ describe("S3 authority bounded protocol", () => {
       envelope(null, { idempotencyKey: "stale", command: { snapshot: { value: 3 } } }),
     );
     expect(stale).toMatchObject({ kind: "conflict" });
-    expect(client.requests.some(({ operation }) => operation === "ListObjectsV2Command")).toBe(
-      false,
-    );
+    expect(
+      client.requests.filter(({ operation }) => operation === "ListObjectsV2Command"),
+    ).toHaveLength(1);
     await authority.close();
   });
 
@@ -425,7 +627,7 @@ describe("S3 authority bounded protocol", () => {
     });
     await authority.readHead();
     await authority.readHead();
-    expect(credentials).toHaveLength(2);
+    expect(credentials).toHaveLength(3);
     client.faults.push({
       operation: "GetObjectCommand",
       fault: { status: 500, name: "InternalError", message: "https://bucket.example/secret-token" },
@@ -455,13 +657,13 @@ describe("S3 authority bounded protocol", () => {
     const lease = await authority.maintenanceFence().acquire(context);
     if (!lease) throw new Error("expected maintenance lease");
     const started = Promise.withResolvers<void>();
-    client.blockKey = "tenant-a/head.json";
+    client.blockKey = ".caplets/head.json";
     client.blockStarted = () => started.resolve();
     const pendingRead = authority.readHead();
     await started.promise;
     client.faults.push({
       operation: "DeleteObjectCommand",
-      key: "tenant-a/maintenance/lease.json",
+      key: ".caplets/maintenance/lease.json",
       fault: { status: 500, name: "InternalError" },
     });
 
@@ -593,9 +795,9 @@ describe("S3 authority bounded protocol", () => {
       await authority.readAuxiliary({ kind: "security_events", afterWatermark: "0", limit: 10 }),
     ).toEqual([{ kind: "rejected", occurredAt: "2026-01-01T00:00:02.000Z", code: "DENIED" }]);
     expect(JSON.stringify(await authority.exportState())).not.toContain("do-not-persist");
-    expect(client.requests.some(({ operation }) => operation === "ListObjectsV2Command")).toBe(
-      false,
-    );
+    expect(
+      client.requests.filter(({ operation }) => operation === "ListObjectsV2Command"),
+    ).toHaveLength(1);
     expect(
       await authority.commit(
         envelope(first.generation, {
@@ -716,9 +918,9 @@ describe("S3 authority bounded protocol", () => {
     const { client: _injectedClient, ...base } = options(client);
     const authority = await createS3Authority({ ...base, clientFactory: () => client });
     await authority.readHead();
-    expect(client.destroy).toHaveBeenCalledOnce();
+    expect(client.destroy).toHaveBeenCalledTimes(2);
     await authority.close();
-    expect(client.destroy).toHaveBeenCalledOnce();
+    expect(client.destroy).toHaveBeenCalledTimes(2);
   });
   it("executes the provider-neutral contract against memory S3", async () => {
     const client = new MemoryS3Client();

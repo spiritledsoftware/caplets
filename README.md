@@ -233,14 +233,15 @@ ungranted Vault references quarantine only the affected Caplet and appear in `ca
 
 ## Self-hosted shared storage
 
-Self-hosted deployments choose exactly one Writable Authority—filesystem, local SQLite,
-PostgreSQL, or S3-compatible storage—while image- or mount-staged Caplets remain immutable
-read-only inputs. PostgreSQL is the networked SQL choice for replicas; SQLite is single-host.
+Self-hosted deployments select exactly one global provider-shaped `storage` configuration:
+filesystem, local SQLite, PostgreSQL, or S3-compatible storage. Image- or mount-staged Caplets
+remain immutable read-only inputs. SQLite is single-host; isolate each PostgreSQL deployment with
+a dedicated database/connection and each S3 deployment with a distinct bucket/root path.
 AWS S3 and Cloudflare R2 require credentialed live evidence before they should be called validated.
 
-See the [self-hosting storage guide](docs/product/self-hosting.md) for bootstrap examples,
-secret references, dashboard CRUD, health states, migration/backup/restore, and provider
-prerequisites. Embedding the runtime? Start with the
+See the [self-hosting storage guide](docs/product/self-hosting.md) for provider-shaped bootstrap
+examples, secret references, Storage dashboard/CLI workflows, health states,
+migration/backup/restore, and provider prerequisites. Embedding the runtime? Start with the
 [`@caplets/core` package API](packages/core/README.md).
 
 ## Anonymous Telemetry

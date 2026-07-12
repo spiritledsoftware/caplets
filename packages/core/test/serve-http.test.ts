@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { serve, type WebSocketServerLike } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
@@ -21,6 +21,7 @@ import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces"
 import {
   CAPLETS_STACK_CHAIN_HEADER,
   createHttpServeApp,
+  configuredSharedHttpAuthority,
   sanitizeRemoteEngineOptions,
 } from "../src/serve/http";
 import * as serveHttpModule from "../src/serve/http";
@@ -59,10 +60,27 @@ it("forces remote artifact paths off after caller engine options", () => {
   });
 });
 
+it("selects shared HTTP assembly for explicit filesystem storage", () => {
+  const root = tempDir("caplets-http-filesystem-selection-");
+  const configPath = join(root, "config.json");
+  const projectConfigPath = join(root, "missing-project.json");
+
+  writeFileSync(configPath, JSON.stringify({ version: 1 }));
+  expect(configuredSharedHttpAuthority({ configPath, projectConfigPath })).toBe(false);
+
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      version: 1,
+      storage: { provider: "filesystem", path: "./shared-state" },
+    }),
+  );
+  expect(configuredSharedHttpAuthority({ configPath, projectConfigPath })).toBe(true);
+});
+
 it("wires production HTTP entrypoints to shared authority auth and sessions", async () => {
   const context = testContext();
-  const root = tempDir("caplets-http-shared-authority-");
-  const databasePath = join(root, "authority.sqlite");
+  const databasePath = join(dirname(context.configPath), "authority.sqlite");
   const keyEnv = "CAPLETS_HTTP_TEST_VAULT_KEY";
   const key = Buffer.alloc(32, 31);
   const priorKey = process.env[keyEnv];
@@ -71,12 +89,10 @@ it("wires production HTTP entrypoints to shared authority auth and sessions", as
     context.configPath,
     JSON.stringify({
       version: 1,
-      authority: {
+      storage: {
         provider: "sqlite",
-        authorityId: "serve-http-shared",
-        namespace: "serve-http-test",
-        databasePath,
-        vaultKeyRef: keyEnv,
+        path: "authority.sqlite",
+        vaultKey: `env:${keyEnv}`,
       },
       options: { exposure: "direct" },
       httpApis: {},
@@ -84,16 +100,16 @@ it("wires production HTTP entrypoints to shared authority auth and sessions", as
   );
   await migrateSqliteDatabase({
     databasePath,
-    authorityId: "serve-http-shared",
-    namespace: "serve-http-test",
+    authorityId: "current-host",
+    namespace: "default",
   });
   const approvalAuthority = await createSqliteAuthority<
     Record<string, unknown>,
     Record<string, unknown>
   >({
     databasePath,
-    authorityId: "serve-http-shared",
-    namespace: "serve-http-test",
+    authorityId: "current-host",
+    namespace: "default",
     initialSnapshot: {},
     applyCommand: ({ command }) => {
       const snapshot = command.snapshot;
@@ -107,7 +123,7 @@ it("wires production HTTP entrypoints to shared authority auth and sessions", as
     },
   });
   await approvalAuthority.commit({
-    authorityId: "serve-http-shared",
+    authorityId: "current-host",
     currentHostId: "seed",
     principalId: "seed",
     expectedGeneration: null,
@@ -117,7 +133,7 @@ it("wires production HTTP entrypoints to shared authority auth and sessions", as
   });
   const approvalStore = new AuthorityRemoteServerCredentialStore({
     authority: approvalAuthority,
-    authorityId: "serve-http-shared",
+    authorityId: "current-host",
     currentHostId: "http-current-host",
     principalId: "remote-credentials",
     encryptionKey: key,

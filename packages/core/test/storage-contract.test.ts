@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadAuthorityBootstrap } from "../src/config";
+import { loadConfig, loadStorageBootstrap, loadResolvedStorageContext } from "../src/config";
+import { CapletsEngine } from "../src/engine";
 import {
   classifyGeneration,
   redactAuthorityDiagnostic,
@@ -26,10 +27,11 @@ import {
   type AuthorityProviderContext,
 } from "../src/storage/factory";
 import { FileVaultStore } from "../src/vault";
+import * as coreApi from "../src/index";
 
-describe("authority bootstrap", () => {
-  it("loads authority only from global config and keeps resolved secrets outside effective config", () => {
-    const root = mkdtempSync(join(tmpdir(), "caplets-authority-"));
+describe("storage bootstrap", () => {
+  it("loads global storage through secret-free public and resolved private projections", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-storage-"));
     const globalPath = join(root, "config.json");
     const projectPath = join(root, "project", ".caplets", "config.json");
     mkdirSync(join(root, "project", ".caplets"), { recursive: true });
@@ -37,53 +39,210 @@ describe("authority bootstrap", () => {
       globalPath,
       JSON.stringify({
         version: 1,
-        authority: {
+        storage: {
           provider: "s3",
-          authorityId: "host-a",
-          namespace: "prod",
           bucket: "bucket",
           region: "auto",
-          credentialRef: "env:AUTH",
-          vaultKeyRef: "env:VAULT",
+          path: "prod",
+          credentials: "env:AUTH",
+          vaultKey: "env:VAULT",
         },
       }),
     );
     writeFileSync(projectPath, JSON.stringify({ version: 1 }));
-    const loaded = loadAuthorityBootstrap(globalPath, { AUTH: "secret", VAULT: "key" }, undefined, {
-      projectPath,
+
+    const publicLoaded = loadStorageBootstrap(
+      globalPath,
+      { AUTH: "secret", VAULT: "key" },
+      undefined,
+      {
+        projectPath,
+      },
+    );
+    expect(publicLoaded.bootstrap).toMatchObject({
+      provider: "s3",
+      bucket: "bucket",
+      region: "auto",
+      path: "prod",
+      credentials: "env:AUTH",
+      vaultKey: "env:VAULT",
     });
-    expect(loaded.bootstrap).not.toHaveProperty("credential");
-    expect(loaded.secrets).toEqual({ credential: "secret", vaultKey: "key" });
-    expect(
-      loaded.inventory.entries.every(
-        (entry, index, all) =>
-          all.findIndex((candidate) => candidate.path === entry.path) === index,
-      ),
-    ).toBe(true);
-    expect(loaded.inventory.entries.some((entry) => entry.owner === "authority")).toBe(true);
-    expect(loaded.inventory.entries.some((entry) => entry.owner === "staged")).toBe(true);
+    expect(publicLoaded).not.toHaveProperty("secrets");
+    expect(JSON.stringify(publicLoaded)).not.toContain("secret");
+
+    const resolved = loadResolvedStorageContext(
+      globalPath,
+      { AUTH: "secret", VAULT: "key" },
+      undefined,
+      {
+        projectPath,
+      },
+    );
+    expect(resolved.secrets).toEqual({ credential: "secret", vaultKey: "key" });
+    expect(resolved.inventory.entries.some((entry) => entry.owner === "authority")).toBe(true);
+    expect(resolved.inventory.entries.some((entry) => entry.owner === "staged")).toBe(true);
   });
 
-  it("rejects project authority and duplicate source ownership", () => {
-    const root = mkdtempSync(join(tmpdir(), "caplets-authority-"));
+  it("accepts provider-shaped variants and defaults omitted storage to filesystem", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-storage-shapes-"));
+    const globalPath = join(root, "config.json");
+    for (const storage of [
+      undefined,
+      { provider: "filesystem" },
+      { provider: "filesystem", path: "./state" },
+      { provider: "sqlite", path: "./state.sqlite" },
+      { provider: "postgresql", connection: "env:PG" },
+      { provider: "s3", bucket: "bucket", region: "auto" },
+    ]) {
+      writeFileSync(globalPath, JSON.stringify({ version: 1, ...(storage ? { storage } : {}) }));
+      const loaded = loadStorageBootstrap(globalPath, { PG: "postgres://db" });
+      expect(loaded.bootstrap.provider).toBe(storage?.provider ?? "filesystem");
+    }
+  });
+
+  it("resolves explicit local storage paths absolutely against a relative declaring config path", () => {
+    const absoluteRoot = mkdtempSync(join(tmpdir(), "caplets-storage-relative-config-"));
+    const relativeRoot = relative(process.cwd(), absoluteRoot);
+    const globalPath = join(relativeRoot, "config.json");
+    try {
+      for (const storage of [
+        { provider: "filesystem", path: "./state" },
+        { provider: "sqlite", path: "./state.sqlite" },
+      ]) {
+        writeFileSync(globalPath, JSON.stringify({ version: 1, storage }));
+        const loaded = loadStorageBootstrap(globalPath);
+        expect(loaded.bootstrap).toMatchObject({
+          provider: storage.provider,
+          path: resolve(dirname(globalPath), storage.path),
+        });
+      }
+
+      writeFileSync(globalPath, JSON.stringify({ version: 1 }));
+      expect(loadStorageBootstrap(globalPath).bootstrap).not.toHaveProperty("path");
+    } finally {
+      rmSync(absoluteRoot, { recursive: true, force: true });
+    }
+  });
+  it("rejects staged ownership collisions with explicit local storage paths", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-storage-local-collision-"));
+    const globalPath = join(root, "config.json");
+    const projectPath = join(root, "missing-project.json");
+    for (const storage of [
+      { provider: "filesystem", path: "./shared-state" },
+      { provider: "sqlite", path: "./shared-state.sqlite" },
+    ]) {
+      writeFileSync(globalPath, JSON.stringify({ version: 1, storage }));
+      expect(() =>
+        loadResolvedStorageContext(globalPath, {}, undefined, {
+          projectPath,
+          stagedPaths: [resolve(root, storage.path)],
+        }),
+      ).toThrow(/duplicate ownership.*authority, staged/i);
+    }
+  });
+  it("rejects legacy authority and every removed provider field", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-storage-legacy-"));
+    const globalPath = join(root, "config.json");
+    const removed = [
+      "authorityId",
+      "namespace",
+      "connectionRef",
+      "credentialRef",
+      "vaultKeyRef",
+      "databasePath",
+    ];
+    writeFileSync(
+      globalPath,
+      JSON.stringify({ version: 1, authority: { provider: "filesystem" } }),
+    );
+    expect(() => loadStorageBootstrap(globalPath)).toThrow(/invalid/i);
+    for (const field of removed) {
+      writeFileSync(
+        globalPath,
+        JSON.stringify({ version: 1, storage: { provider: "filesystem", [field]: "legacy" } }),
+      );
+      expect(() => loadStorageBootstrap(globalPath)).toThrow(/invalid/i);
+    }
+  });
+
+  it("rejects project storage and legacy authority", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-storage-project-"));
     const globalPath = join(root, "config.json");
     const projectPath = join(root, ".caplets", "config.json");
     mkdirSync(join(root, ".caplets"), { recursive: true });
     writeFileSync(globalPath, JSON.stringify({ version: 1 }));
+    for (const forbidden of [
+      { storage: { provider: "filesystem" } },
+      { authority: { provider: "filesystem" } },
+    ]) {
+      writeFileSync(projectPath, JSON.stringify({ version: 1, ...forbidden }));
+      expect(() => loadStorageBootstrap(globalPath, {}, undefined, { projectPath })).toThrow(
+        /must not define|cannot define|invalid/,
+      );
+    }
+  });
+
+  it("fails declared missing or empty secrets while omitted S3 credentials use workload identity", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-storage-secrets-"));
+    const globalPath = join(root, "config.json");
+    const cases = [
+      { storage: { provider: "postgresql", connection: "env:MISSING" }, env: {} },
+      { storage: { provider: "postgresql", connection: "env:EMPTY" }, env: { EMPTY: "" } },
+      {
+        storage: { provider: "s3", bucket: "bucket", region: "auto", credentials: "env:EMPTY" },
+        env: { EMPTY: "" },
+      },
+      {
+        storage: { provider: "filesystem", vaultKey: "env:ZERO" },
+        env: {},
+        resolver: () => new Uint8Array(),
+      },
+    ];
+    for (const { storage, env, resolver } of cases) {
+      writeFileSync(globalPath, JSON.stringify({ version: 1, storage }));
+      expect(() => loadResolvedStorageContext(globalPath, env, resolver)).toThrow(
+        /reference|resolve|empty/i,
+      );
+    }
     writeFileSync(
-      projectPath,
-      JSON.stringify({ version: 1, authority: { provider: "filesystem", authorityId: "bad" } }),
+      globalPath,
+      JSON.stringify({ version: 1, storage: { provider: "s3", bucket: "bucket", region: "auto" } }),
     );
-    expect(() => loadAuthorityBootstrap(globalPath, {}, () => undefined, { projectPath })).toThrow(
-      /must not define/,
-    );
-    writeFileSync(projectPath, JSON.stringify({ version: 1 }));
-    expect(() =>
-      loadAuthorityBootstrap(globalPath, {}, () => undefined, {
-        projectPath,
-        stagedPaths: [globalPath],
+    expect(loadResolvedStorageContext(globalPath, {}).secrets).not.toHaveProperty("credential");
+  });
+  it("propagates invalid shared-storage secrets through synchronous runtime guards", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-storage-sync-guard-"));
+    const globalPath = join(root, "config.json");
+    const projectPath = join(root, "missing-project.json");
+    writeFileSync(
+      globalPath,
+      JSON.stringify({
+        version: 1,
+        storage: { provider: "postgresql", connection: "env:CAPLETS_TEST_MISSING_DSN" },
       }),
-    ).toThrow(/duplicate ownership/);
+    );
+
+    expect(() => loadConfig(globalPath, projectPath)).toThrow(/reference|resolve|empty/i);
+    expect(
+      () =>
+        new CapletsEngine({
+          configPath: globalPath,
+          projectConfigPath: projectPath,
+          watch: false,
+        }),
+    ).toThrow(/reference|resolve|empty/i);
+  });
+
+  it("exposes only the storage config API and explicit provider registry allowlist at package root", () => {
+    expect(coreApi).toHaveProperty("loadStorageBootstrap");
+    expect(coreApi).not.toHaveProperty("loadResolvedStorageContext");
+    expect(coreApi).not.toHaveProperty("loadAuthorityBootstrap");
+    expect(coreApi).toHaveProperty("lookupAuthorityProvider");
+    expect(coreApi).toHaveProperty("registerAuthorityProvider");
+    expect(coreApi).toHaveProperty("registeredAuthorityProviders");
+    expect(coreApi).toHaveProperty("AuthorityProviderRegistryMissError");
+    expect(coreApi).not.toHaveProperty("createAuthority");
+    expect(coreApi).not.toHaveProperty("createAuthorityWithBuiltinFallback");
   });
 });
 

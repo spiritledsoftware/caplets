@@ -8,13 +8,13 @@ import type BetterSqlite3 from "better-sqlite3";
 import type postgres from "postgres";
 
 import {
-  loadAuthorityBootstrap,
+  loadResolvedStorageContext,
   resolveConfigPath,
   resolveProjectConfigPath,
   vaultStoreForAuthDir,
-  type AuthorityBootstrap,
-  type AuthoritySecretResolver,
-  type ResolvedAuthoritySecrets,
+  type NormalizedStorageBootstrap,
+  type StorageSecretResolver,
+  type ResolvedStorageSecrets,
 } from "../config";
 import { CapletsError, toSafeError } from "../errors";
 import {
@@ -53,7 +53,6 @@ type StorageCommandOptions = {
   knownDomain?: string[];
   dryRun?: boolean;
   apply?: boolean;
-  targetNamespace?: string;
   schemaVersion?: number;
   output?: string;
   input?: string;
@@ -66,8 +65,8 @@ type StorageCommandOptions = {
 
 type AuthoritySelector = {
   configPath: string;
-  bootstrap: AuthorityBootstrap;
-  secrets: ResolvedAuthoritySecrets;
+  bootstrap: NormalizedStorageBootstrap;
+  secrets: ResolvedStorageSecrets;
 };
 
 type ResolvedBackupKey = {
@@ -104,6 +103,42 @@ export function resolveStorageAuthoritySelector(io: StorageCliIO): StorageAuthor
   return resolveConfigSelector({}, io, "authority");
 }
 
+export function resolveStorageProfileSelector(
+  profile: string,
+  io: StorageCliIO,
+): StorageAuthoritySelector {
+  return resolveConfigSelector({ profile }, io, "authority");
+}
+
+export function singleStorageProfileName(env: Environment): string | undefined {
+  const prefix = "CAPLETS_STORAGE_PROFILE_";
+  const profiles = Object.entries(env)
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, value]) => ({ name: key.slice(prefix.length), value }));
+  for (const profile of profiles) {
+    if (!/^[A-Z][A-Z0-9_]*$/u.test(profile.name)) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "Storage profile environment variable suffix must match [A-Z][A-Z0-9_]* exactly",
+      );
+    }
+    if (typeof profile.value !== "string" || profile.value.trim().length === 0) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Storage profile ${profile.name} must resolve to a non-empty config path`,
+      );
+    }
+  }
+  const names = profiles.map(({ name }) => name).sort();
+  if (names.length > 1) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Multiple Storage profiles are configured; select exactly one profile explicitly",
+    );
+  }
+  return names[0];
+}
+
 export async function openStorageAuthority(
   io: StorageCliIO,
   selector = resolveStorageAuthoritySelector(io),
@@ -123,17 +158,15 @@ const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 export function registerStorageCommands(program: Command, io: StorageCliIO): Command {
   const storage = program
     .command("storage")
-    .description(
-      "Manage server-local authority inventory, migration, backup, restore, and schema.",
-    );
+    .description("Manage server-local Storage inventory, migration, backup, restore, and schema.");
 
   const inventory = storage
     .command("inventory")
-    .description("Inventory typed authority records without exporting secrets or source paths.");
+    .description("Inventory typed Storage records without exporting secrets or source paths.");
   addConfigSelectorOptions(inventory);
   addOutputOptions(inventory).option(
     "--known-domain <domain>",
-    "additional typed authority domain",
+    "additional typed Storage domain",
     collectValues,
     [],
   );
@@ -152,7 +185,7 @@ export function registerStorageCommands(program: Command, io: StorageCliIO): Com
 
   const migrate = storage
     .command("migrate")
-    .description("Migrate one server-local authority to an empty authority with explicit intent.");
+    .description("Migrate one server-local Storage provider to an empty destination.");
   addMigrationOptions(migrate);
   migrate.action(async (options: StorageCommandOptions) => {
     await runStorageAction(io, outputFormat(options), async () => {
@@ -186,10 +219,10 @@ export function registerStorageCommands(program: Command, io: StorageCliIO): Com
 
   const backup = storage
     .command("backup")
-    .description("Create, inspect, and restore encrypted authority backups.");
+    .description("Create, inspect, and restore encrypted Storage backups.");
   const backupCreate = backup
     .command("create")
-    .description("Create an authenticated encrypted authority backup.");
+    .description("Create an authenticated encrypted Storage backup.");
   addConfigSelectorOptions(backupCreate);
   addKeyOptions(backupCreate);
   addOutputOptions(backupCreate);
@@ -236,7 +269,7 @@ export function registerStorageCommands(program: Command, io: StorageCliIO): Com
 
   const backupRestore = backup
     .command("restore")
-    .description("Restore an encrypted backup to an empty authority.");
+    .description("Restore an encrypted backup to empty Storage.");
   addConfigSelectorOptions(backupRestore, { destination: true });
   addKeyOptions(backupRestore);
   addOutputOptions(backupRestore);
@@ -317,11 +350,11 @@ function addConfigSelectorOptions(command: Command, options: { destination?: boo
   command
     .option(
       "--config <path>",
-      options.destination ? "destination authority config path" : "authority config path",
+      options.destination ? "destination Storage config path" : "Storage config path",
     )
     .option(
       options.destination ? "--destination-config <path>" : "--source-config <path>",
-      options.destination ? "destination authority config path" : "source authority config path",
+      options.destination ? "destination Storage config path" : "source Storage config path",
     )
     .option("--profile <ref>", "provider profile reference (never a credential value)")
     .option(
@@ -334,15 +367,14 @@ function addConfigSelectorOptions(command: Command, options: { destination?: boo
 
 function addMigrationSelectorOptions(command: Command): void {
   command
-    .option("--source-config <path>", "source authority config path")
-    .option("--destination-config <path>", "destination authority config path")
-    .option("--target-config <path>", "destination authority config path")
-    .option("--source-profile <ref>", "source provider profile reference")
-    .option("--destination-profile <ref>", "destination provider profile reference")
-    .option("--target-profile <ref>", "destination provider profile reference")
-    .option("--target-namespace <namespace>", "destination authority namespace")
+    .option("--source-config <path>", "source Storage config path")
+    .option("--destination-config <path>", "destination Storage config path")
+    .option("--target-config <path>", "destination Storage config path")
+    .option("--source-profile <ref>", "source Storage profile name")
+    .option("--destination-profile <ref>", "destination Storage profile name")
+    .option("--target-profile <ref>", "destination Storage profile name")
     .option("--schema-version <version>", "target schema version", parsePositiveInteger)
-    .option("--known-domain <domain>", "additional typed authority domain", collectValues, []);
+    .option("--known-domain <domain>", "additional typed Storage domain", collectValues, []);
 }
 
 function addMigrationOptions(command: Command): void {
@@ -404,9 +436,6 @@ async function executeMigration(
         source: sourceHandle!.authority,
         target: destinationHandle!.authority,
         dryRun: mode === "dry-run",
-        ...(options.targetNamespace === undefined
-          ? {}
-          : { targetNamespace: options.targetNamespace }),
         ...(options.schemaVersion === undefined
           ? {}
           : { targetSchemaVersion: options.schemaVersion }),
@@ -482,7 +511,7 @@ async function runSchemaLifecycle(
 }
 
 function schemaResult(
-  bootstrap: AuthorityBootstrap,
+  bootstrap: NormalizedStorageBootstrap,
   operation: "status" | "migrate",
   result: SchemaMigrationResult,
 ): Record<string, unknown> {
@@ -504,7 +533,7 @@ async function verifySqliteSchemaReadonly(
   assertLocalSqlitePath(databasePath);
   const resolvedPath = resolve(databasePath);
   if (!existsSync(resolvedPath)) {
-    throw new CapletsError("CONFIG_NOT_FOUND", "SQLite authority database was not found");
+    throw new CapletsError("CONFIG_NOT_FOUND", "SQLite Storage database was not found");
   }
   const BetterSqlite3 = loadBetterSqlite3();
   let db: BetterSqlite3.Database | undefined;
@@ -550,7 +579,7 @@ function resolveMigrationSelector(
   if (config === undefined && profile === undefined) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      `${role} migration authority requires an explicit config path or profile reference`,
+      `${role} migration Storage requires an explicit config path or profile name`,
     );
   }
   return resolveConfigSelector(
@@ -593,7 +622,7 @@ function resolveConfigSelector(
   if (config !== undefined && profile !== undefined) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      `${role} authority accepts either a config path or profile reference, not both`,
+      `${role} Storage accepts either a config path or profile name, not both`,
     );
   }
   const env = io.env ?? process.env;
@@ -604,26 +633,26 @@ function resolveConfigSelector(
       : resolveProfileReference(profile, env));
   const configPath = resolve(selected);
   if (!existsSync(configPath))
-    throw new CapletsError("CONFIG_NOT_FOUND", `${role} authority config was not found`);
-  const loaded = loadAuthorityBootstrap(configPath, env, authoritySecretResolver(io), {
+    throw new CapletsError("CONFIG_NOT_FOUND", `${role} Storage config was not found`);
+  const loaded = loadResolvedStorageContext(configPath, env, authoritySecretResolver(io), {
     projectPath: io.projectConfigPath ?? resolveProjectConfigPath(),
   });
   return { configPath, bootstrap: loaded.bootstrap, secrets: loaded.secrets };
 }
 
 function resolveProfileReference(profile: string, env: Environment): string {
-  const trimmed = profile.trim();
-  if (trimmed.length === 0)
-    throw new CapletsError("REQUEST_INVALID", "provider profile reference cannot be empty");
-  const envName = trimmed.startsWith("env:")
-    ? trimmed.slice(4)
-    : `CAPLETS_AUTHORITY_PROFILE_${trimmed.replace(/[^A-Za-z0-9_]/gu, "_").toUpperCase()}`;
+  if (!/^[A-Z][A-Z0-9_]*$/u.test(profile)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Storage profile name must match [A-Z][A-Z0-9_]* exactly",
+    );
+  }
+  const envName = `CAPLETS_STORAGE_PROFILE_${profile}`;
   const resolved = env[envName];
   if (typeof resolved === "string" && resolved.trim().length > 0) return resolved;
-  if (existsSync(trimmed)) return trimmed;
   throw new CapletsError(
     "CONFIG_INVALID",
-    `provider profile reference ${trimmed} did not resolve to a config path`,
+    `Storage profile ${profile} did not resolve to a config path`,
   );
 }
 
@@ -674,7 +703,7 @@ async function openAuthority(
   return await createAuthorityWithBuiltinFallback(context, selector.configPath);
 }
 
-function authoritySecretResolver(io: StorageCliIO): AuthoritySecretResolver {
+function authoritySecretResolver(io: StorageCliIO): StorageSecretResolver {
   const env = io.env ?? process.env;
   const vault = vaultStoreForAuthDir(io.authDir);
   return (reference: string) => {
@@ -849,14 +878,12 @@ function humanizeStorageResult(result: Record<string, unknown>): string {
   if (kind === "inventory") {
     const inventory = result.inventory as AuthorityInventory;
     return [
-      "Authority inventory",
+      "Storage inventory",
       "",
-      `Authority: ${inventory.identity.authorityId}`,
       `Provider: ${inventory.identity.provider}`,
-      `Namespace: ${inventory.identity.namespace}`,
+      `Storage Generation: ${inventory.generation.id}`,
       `Schema version: ${inventory.schemaVersion}`,
       `Head: ${inventory.head.id} (${inventory.head.sequence})`,
-      `Generation: ${inventory.generation.id}`,
       `Source digest: ${inventory.sourceDigest}`,
       "Domains:",
       ...inventory.domains.map(
@@ -872,7 +899,7 @@ function humanizeStorageResult(result: Record<string, unknown>): string {
     return [
       "Migration dry-run",
       "",
-      `Target: ${target.authorityId} (${target.provider}/${target.namespace})`,
+      `Destination Storage: ${target.provider}`,
       `Source digest: ${result.sourceDigest}`,
     ].join("\n");
   }
@@ -881,8 +908,7 @@ function humanizeStorageResult(result: Record<string, unknown>): string {
     return [
       "Migration applied",
       "",
-      `Cutover authority: ${cutover.authorityId}`,
-      `Generation: ${cutover.generationId}`,
+      `Storage Generation: ${cutover.generationId}`,
       `Sequence: ${cutover.sequence}`,
       `Digest: ${cutover.digest}`,
     ].join("\n");
@@ -890,7 +916,7 @@ function humanizeStorageResult(result: Record<string, unknown>): string {
   if (kind === "backup-created") {
     const key = result.key as Record<string, unknown>;
     return [
-      "Backup created",
+      "Storage backup created",
       "",
       `Output: ${result.path}`,
       `Bytes: ${result.bytes}`,
@@ -899,36 +925,44 @@ function humanizeStorageResult(result: Record<string, unknown>): string {
   }
   if (kind === "backup-header") {
     return [
-      "Backup header",
+      "Storage backup header",
       "",
-      ...formatObjectLines(result.header as Record<string, unknown>),
+      ...formatObjectLines(result.header as Record<string, unknown>, "", [
+        "authorityId",
+        "namespace",
+      ]),
     ].join("\n");
   }
   if (kind === "backup-restored") {
     const generation = result.generation as Record<string, unknown>;
     return [
-      "Backup restored",
+      "Storage backup restored",
       "",
-      `Generation: ${generation.id}`,
+      `Storage Generation: ${generation.id}`,
       `Auxiliary watermark: ${result.auxiliaryWatermark}`,
     ].join("\n");
   }
   if (kind === "schema-status" || kind === "schema-migrated") {
     return [
-      kind === "schema-status" ? "Schema status" : "Schema migrated",
+      kind === "schema-status" ? "Storage schema status" : "Storage schema migrated",
       "",
-      ...formatObjectLines(result),
+      ...formatObjectLines(result, "", ["authorityId", "namespace"]),
     ].join("\n");
   }
   return formatObjectLines(result).join("\n");
 }
 
-function formatObjectLines(value: Record<string, unknown>, prefix = ""): string[] {
+function formatObjectLines(
+  value: Record<string, unknown>,
+  prefix = "",
+  omittedKeys: readonly string[] = [],
+): string[] {
   return Object.entries(value).flatMap(([key, nested]) => {
+    if (omittedKeys.includes(key)) return [];
     if (nested !== null && typeof nested === "object" && !Array.isArray(nested)) {
       return [
         `${prefix}${key}:`,
-        ...formatObjectLines(nested as Record<string, unknown>, `${prefix}  `),
+        ...formatObjectLines(nested as Record<string, unknown>, `${prefix}  `, omittedKeys),
       ];
     }
     return [`${prefix}${key}: ${String(nested)}`];

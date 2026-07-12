@@ -1,11 +1,11 @@
 import { dirname, resolve } from "node:path";
 import { CapletsError } from "../errors";
-import type { AuthorityBootstrap, ResolvedAuthoritySecrets } from "../config";
+import type { NormalizedStorageBootstrap, ResolvedStorageSecrets } from "../config";
 import type { AuthorityProviderKind, WritableAuthority } from "./types";
 
 export type AuthorityProviderContext = {
-  bootstrap: AuthorityBootstrap;
-  secrets: ResolvedAuthoritySecrets;
+  bootstrap: NormalizedStorageBootstrap;
+  secrets: ResolvedStorageSecrets;
 };
 
 export type AuthorityProviderFactory = (
@@ -101,7 +101,7 @@ export async function createBuiltinAuthority(
     const { createFilesystemAuthority } = await import("./filesystem-authority");
     return assertAuthorityLifecycleIdentity(
       await createFilesystemAuthority({
-        root: resolve(dirname(configPath), "caplets"),
+        root: bootstrap.path ?? resolve(dirname(configPath), "caplets"),
         authorityId: bootstrap.authorityId,
         namespace: bootstrap.namespace,
       }),
@@ -120,10 +120,7 @@ export async function createBuiltinAuthority(
   }
   if (bootstrap.provider === "postgresql") {
     if (typeof secrets.credential !== "string") {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        "PostgreSQL authority requires a resolved connection credential",
-      );
+      throw new CapletsError("CONFIG_INVALID", "PostgreSQL storage requires a resolved connection");
     }
     // Provider modules are selected at runtime from the configured provider.
     const { createPostgresAuthority } = await import("./sql/authority");
@@ -142,6 +139,7 @@ export async function createBuiltinAuthority(
     await createS3Authority({
       bucket: bootstrap.bucket,
       region: bootstrap.region,
+      ...(bootstrap.path === undefined ? {} : { path: bootstrap.path }),
       ...(bootstrap.endpoint === undefined ? {} : { endpoint: bootstrap.endpoint }),
       ...(bootstrap.forcePathStyle === undefined
         ? {}

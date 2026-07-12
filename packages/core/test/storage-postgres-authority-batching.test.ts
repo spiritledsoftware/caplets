@@ -67,7 +67,7 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority batching", () => {
           expires_at: expiresAt,
         }));
         for (let start = 0; start < receiptRows.length; start += BULK_INSERT_ROWS) {
-          await tx`INSERT INTO authority_receipts ${tx(
+          await tx`INSERT INTO caplets.authority_receipts ${tx(
             receiptRows.slice(start, start + BULK_INSERT_ROWS),
             "authority_id",
             "current_host_id",
@@ -88,7 +88,7 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority batching", () => {
           revoked: index % 2,
         }));
         for (let start = 0; start < sessionRows.length; start += BULK_INSERT_ROWS) {
-          await tx`INSERT INTO authority_sessions ${tx(
+          await tx`INSERT INTO caplets.authority_sessions ${tx(
             sessionRows.slice(start, start + BULK_INSERT_ROWS),
             "authority_id",
             "session_id",
@@ -107,7 +107,7 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority batching", () => {
           event_json: eventJson,
         }));
         for (let start = 0; start < eventRows.length; start += BULK_INSERT_ROWS) {
-          await tx`INSERT INTO authority_events ${tx(
+          await tx`INSERT INTO caplets.authority_events ${tx(
             eventRows.slice(start, start + BULK_INSERT_ROWS),
             "authority_id",
             "watermark",
@@ -116,7 +116,7 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority batching", () => {
             "event_json",
           )}`;
         }
-        await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${EVENT_COUNT} WHERE authority_id = ${authorityId}`;
+        await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${EVENT_COUNT} WHERE authority_id = ${authorityId}`;
       });
 
       queries.length = 0;
@@ -126,11 +126,11 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority batching", () => {
       expect(exported.auxiliary?.securityEvents).toHaveLength(EVENT_COUNT);
       const exportQueries = [...queries];
       expect(
-        exportQueries.filter((query) => query.includes("LEFT JOIN authority_generations")).length,
+        exportQueries.filter((query) => query.includes("LEFT JOIN caplets.authority_generations")),
       ).toBe(1);
       expect(
         exportQueries.filter((query) =>
-          query.includes("FROM authority_generations WHERE authority_id"),
+          query.includes("FROM caplets.authority_generations WHERE authority_id"),
         ).length,
       ).toBe(1);
       expect(exportQueries.length).toBeLessThan(15);
@@ -138,12 +138,12 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority batching", () => {
       await source.close();
       source = undefined;
       await client.begin(async (tx) => {
-        await tx`DELETE FROM authority_receipts WHERE authority_id = ${authorityId}`;
-        await tx`DELETE FROM authority_sessions WHERE authority_id = ${authorityId}`;
-        await tx`DELETE FROM authority_events WHERE authority_id = ${authorityId}`;
-        await tx`DELETE FROM authority_generations WHERE authority_id = ${authorityId}`;
-        await tx`UPDATE authority_schema_meta SET auxiliary_watermark = 0 WHERE authority_id = ${authorityId}`;
-        await tx`UPDATE authority_heads SET generation_id = NULL, sequence = 0, predecessor_id = NULL, digest = NULL, committed_at = NULL WHERE authority_id = ${authorityId}`;
+        await tx`DELETE FROM caplets.authority_receipts WHERE authority_id = ${authorityId}`;
+        await tx`DELETE FROM caplets.authority_sessions WHERE authority_id = ${authorityId}`;
+        await tx`DELETE FROM caplets.authority_events WHERE authority_id = ${authorityId}`;
+        await tx`DELETE FROM caplets.authority_generations WHERE authority_id = ${authorityId}`;
+        await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = 0 WHERE authority_id = ${authorityId}`;
+        await tx`UPDATE caplets.authority_heads SET generation_id = NULL, sequence = 0, predecessor_id = NULL, digest = NULL, committed_at = NULL WHERE authority_id = ${authorityId}`;
       });
 
       target = await createPostgresAuthority<{ value: number }, { snapshot: { value: number } }>({
@@ -165,13 +165,13 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority batching", () => {
       });
       expect(restored.auxiliaryWatermark).toBe(exported.auxiliaryWatermark);
       expect(
-        restoreQueries.filter((query) => query.includes("INSERT INTO authority_receipts")).length,
+        restoreQueries.filter((query) => query.includes("INSERT INTO caplets.authority_receipts")),
       ).toBe(Math.ceil(RECEIPT_COUNT / BULK_INSERT_ROWS));
       expect(
-        restoreQueries.filter((query) => query.includes("INSERT INTO authority_sessions")).length,
+        restoreQueries.filter((query) => query.includes("INSERT INTO caplets.authority_sessions")),
       ).toBe(Math.ceil(SESSION_COUNT / BULK_INSERT_ROWS));
       expect(
-        restoreQueries.filter((query) => query.includes("INSERT INTO authority_events")).length,
+        restoreQueries.filter((query) => query.includes("INSERT INTO caplets.authority_events")),
       ).toBe(Math.ceil(EVENT_COUNT / BULK_INSERT_ROWS));
       expect(restoreQueries.length).toBeLessThan(60);
 

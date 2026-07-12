@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS authority_maintenance_leases (
+CREATE TABLE IF NOT EXISTS caplets.authority_maintenance_leases (
   authority_id TEXT PRIMARY KEY NOT NULL,
   namespace TEXT NOT NULL,
   owner TEXT NOT NULL,

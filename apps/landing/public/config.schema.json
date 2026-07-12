@@ -15,41 +15,36 @@
       "type": "number",
       "const": 1
     },
-    "authority": {
-      "description": "Global-only Writable Authority bootstrap configuration.",
+    "storage": {
+      "description": "Global-only storage provider configuration.",
       "oneOf": [
         {
           "type": "object",
           "properties": {
             "provider": {
               "type": "string",
-              "const": "filesystem"
+              "const": "filesystem",
+              "description": "Use local filesystem storage."
             },
-            "authorityId": {
-              "type": "string",
-              "minLength": 1
-            },
-            "namespace": {
-              "default": "default",
+            "path": {
+              "description": "Local storage root; defaults to the Caplets global data directory.",
               "type": "string",
               "minLength": 1
             },
             "pollIntervalMs": {
               "default": 2500,
+              "description": "Maximum milliseconds between checks for storage changes.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 2500
             },
-            "credentialRef": {
-              "type": "string",
-              "minLength": 1
-            },
-            "vaultKeyRef": {
+            "vaultKey": {
+              "description": "Reference to the Vault encryption key; never put key bytes inline.",
               "type": "string",
               "minLength": 1
             }
           },
-          "required": ["provider", "authorityId"],
+          "required": ["provider"],
           "additionalProperties": false
         },
         {
@@ -57,37 +52,28 @@
           "properties": {
             "provider": {
               "type": "string",
-              "const": "sqlite"
+              "const": "sqlite",
+              "description": "Use a local SQLite database."
             },
-            "authorityId": {
+            "path": {
               "type": "string",
-              "minLength": 1
-            },
-            "namespace": {
-              "default": "default",
-              "type": "string",
-              "minLength": 1
-            },
-            "databasePath": {
-              "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "Path to the local persistent SQLite database file."
             },
             "pollIntervalMs": {
               "default": 2500,
+              "description": "Maximum milliseconds between checks for storage changes.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 2500
             },
-            "credentialRef": {
-              "type": "string",
-              "minLength": 1
-            },
-            "vaultKeyRef": {
+            "vaultKey": {
+              "description": "Reference to the Vault encryption key; never put key bytes inline.",
               "type": "string",
               "minLength": 1
             }
           },
-          "required": ["provider", "authorityId", "databasePath"],
+          "required": ["provider", "path"],
           "additionalProperties": false
         },
         {
@@ -95,37 +81,28 @@
           "properties": {
             "provider": {
               "type": "string",
-              "const": "postgresql"
+              "const": "postgresql",
+              "description": "Use a dedicated PostgreSQL database."
             },
-            "authorityId": {
+            "connection": {
               "type": "string",
-              "minLength": 1
-            },
-            "namespace": {
-              "default": "default",
-              "type": "string",
-              "minLength": 1
-            },
-            "connectionRef": {
-              "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "Reference to the DSN for a dedicated deployment database."
             },
             "pollIntervalMs": {
               "default": 2500,
+              "description": "Maximum milliseconds between checks for storage changes.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 2500
             },
-            "credentialRef": {
-              "type": "string",
-              "minLength": 1
-            },
-            "vaultKeyRef": {
+            "vaultKey": {
+              "description": "Reference to the Vault encryption key; never put key bytes inline.",
               "type": "string",
               "minLength": 1
             }
           },
-          "required": ["provider", "authorityId", "connectionRef"],
+          "required": ["provider", "connection"],
           "additionalProperties": false
         },
         {
@@ -133,48 +110,51 @@
           "properties": {
             "provider": {
               "type": "string",
-              "const": "s3"
-            },
-            "authorityId": {
-              "type": "string",
-              "minLength": 1
-            },
-            "namespace": {
-              "default": "default",
-              "type": "string",
-              "minLength": 1
+              "const": "s3",
+              "description": "Use S3-compatible object storage."
             },
             "bucket": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "Dedicated S3 bucket for this deployment."
             },
             "region": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AWS region containing the S3 bucket."
+            },
+            "path": {
+              "description": "Optional physical root path within the bucket for this deployment.",
+              "type": "string"
+            },
+            "credentials": {
+              "description": "Optional credentials reference; omit to use workload identity.",
               "type": "string",
               "minLength": 1
             },
             "endpoint": {
+              "description": "Optional S3-compatible service endpoint URL.",
               "type": "string",
               "format": "uri"
             },
             "forcePathStyle": {
+              "description": "Use path-style rather than virtual-hosted-style S3 requests.",
               "type": "boolean"
             },
             "pollIntervalMs": {
               "default": 2500,
+              "description": "Maximum milliseconds between checks for storage changes.",
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 2500
             },
-            "credentialRef": {
-              "type": "string",
-              "minLength": 1
-            },
-            "vaultKeyRef": {
+            "vaultKey": {
+              "description": "Reference to the Vault encryption key; never put key bytes inline.",
               "type": "string",
               "minLength": 1
             }
           },
-          "required": ["provider", "authorityId", "bucket", "region"],
+          "required": ["provider", "bucket", "region"],
           "additionalProperties": false
         }
       ]

@@ -7,6 +7,7 @@ type JsonSchema = {
   title?: string;
   description?: string;
   type?: string | string[];
+  const?: unknown;
   required?: string[];
   properties?: Record<string, JsonSchema>;
   items?: JsonSchema;
@@ -124,6 +125,7 @@ function schemaPage({
 
   const majorSections = rows.filter(({ name }) =>
     [
+      "storage",
       "serve",
       "completion",
       "options",
@@ -174,6 +176,9 @@ function sectionDetails(name: string, schema: JsonSchema | undefined, sourcePath
   if (sourcePath === "schemas/caplet.schema.json" && name === "cliTools") {
     return cliToolsCapletFileSection(schema);
   }
+  if (sourcePath === "schemas/caplets-config.schema.json" && name === "storage") {
+    return storageConfigSection(schema);
+  }
 
   const nested =
     schema.properties ??
@@ -206,6 +211,34 @@ ${schema.description ?? "Nested fields from the canonical schema."}
 | Field | Status | Type | Description |
 | --- | --- | --- | --- |
 ${rows.join("\n")}`;
+}
+
+function storageConfigSection(schema: JsonSchema): string {
+  const variants = schema.oneOf ?? [];
+  const providerSections = variants.map((variant) => {
+    const properties = variant.properties ?? {};
+    const provider = properties.provider?.const;
+    const providerName = typeof provider === "string" ? provider : "provider";
+    const required = new Set(variant.required ?? []);
+    const rows = Object.entries(properties).map(([field, property]) => {
+      const status = required.has(field) ? "Required" : "Optional";
+      return `| \`${escapeTable(field)}\` | ${status} | ${escapeTable(schemaType(property))} | ${escapeTable(fieldDescription(field, property))} |`;
+    });
+
+    return `#### \`${providerName}\`
+
+| Field | Status | Type | Description |
+| --- | --- | --- | --- |
+${rows.join("\n")}`;
+  });
+
+  return `### \`storage\`
+
+${schema.description ?? "Global-only storage provider configuration."}
+
+Choose exactly one provider shape. Storage belongs only in the global config.
+
+${providerSections.join("\n\n")}`;
 }
 
 function cliToolsCapletFileSection(schema: JsonSchema): string {
@@ -267,6 +300,32 @@ function commonSchemaRecipes(sourcePath: string): string {
       '    "publicOrigins": ["https://caplets.example.com"]',
       "  },",
       '  "mcpServers": {}',
+      "}",
+      "```",
+      "",
+      "Storage providers (global config only):",
+      "",
+      "```json",
+      '{ "storage": { "provider": "filesystem", "path": "/var/lib/caplets" } }',
+      "```",
+      "",
+      "```json",
+      '{ "storage": { "provider": "sqlite", "path": "/var/lib/caplets/caplets.sqlite" } }',
+      "```",
+      "",
+      "```json",
+      '{ "storage": { "provider": "postgresql", "connection": "env:CAPLETS_POSTGRES_URL" } }',
+      "```",
+      "",
+      "```json",
+      "{",
+      '  "storage": {',
+      '    "provider": "s3",',
+      '    "bucket": "caplets-state",',
+      '    "region": "us-east-1",',
+      '    "path": "production/caplets",',
+      '    "credentials": "env:CAPLETS_S3_CREDENTIALS"',
+      "  }",
       "}",
       "```",
       "",

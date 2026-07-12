@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { loadConfig, type LoadedStorageBootstrap } from "../src/config";
 import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RuntimeEpochCoordinator, assembleCapletsHost } from "../src/storage/coordinator";
@@ -154,16 +154,120 @@ describe("RuntimeEpochCoordinator", () => {
     try {
       const coordinator = new RuntimeEpochCoordinator({
         bootstrap: {
-          provider: "filesystem",
-          authorityId: "factory-test",
-          namespace: "default",
-          pollIntervalMs: 1,
+          bootstrap: {
+            provider: "filesystem",
+            pollIntervalMs: 1,
+          },
+          inventory: { entries: [] },
         },
         configPath: join(tmpdir(), "missing-factory-config.json"),
         autoRefresh: false,
       });
+      expectTypeOf(coordinator.bootstrap).toMatchTypeOf<LoadedStorageBootstrap>();
+      expect(coordinator.bootstrap).toEqual({
+        bootstrap: { provider: "filesystem", pollIntervalMs: 1 },
+        inventory: { entries: [] },
+      });
+      expect(coordinator.bootstrap).not.toHaveProperty("secrets");
+      expect(coordinator.bootstrap.bootstrap).not.toHaveProperty("authorityId");
+      expect(coordinator.bootstrap.bootstrap).not.toHaveProperty("namespace");
       await expect(coordinator.start()).rejects.toBe(factoryFailure);
       expect(coordinator.current).toBeUndefined();
+    } finally {
+      unregister();
+    }
+  });
+
+  it.each([
+    {
+      name: "lifecycle namespace",
+      mutate: (authority: WritableAuthority<AuthoritySnapshot, unknown>) => {
+        Object.defineProperty(authority, "namespace", { value: "other" });
+      },
+    },
+    {
+      name: "health authority identity",
+      mutate: (authority: WritableAuthority<AuthoritySnapshot, unknown>) => {
+        authority.health = vi.fn(
+          async () =>
+            ({
+              provider: "filesystem",
+              authorityId: "other-host",
+              connectivity: "healthy",
+              writable: true,
+              activeGeneration: null,
+              refresh: "current",
+            }) satisfies AuthorityHealth,
+        );
+      },
+    },
+    {
+      name: "health provider kind",
+      mutate: (authority: WritableAuthority<AuthoritySnapshot, unknown>) => {
+        authority.health = vi.fn(
+          async () =>
+            ({
+              provider: "sqlite",
+              authorityId: "current-host",
+              connectivity: "healthy",
+              writable: true,
+              activeGeneration: null,
+              refresh: "current",
+            }) satisfies AuthorityHealth,
+        );
+      },
+    },
+    {
+      name: "head authority identity",
+      mutate: (authority: WritableAuthority<AuthoritySnapshot, unknown>) => {
+        authority.readHead = vi.fn(async () => ({
+          authorityId: "other-host",
+          id: "g1",
+          sequence: 1,
+          predecessorId: null,
+          digest: "digest-g1",
+        }));
+      },
+    },
+  ])("rejects a registered provider with mismatched $name before exposure", async ({ mutate }) => {
+    const providerGeneration = {
+      ...generation(1, "g1", null),
+      authorityId: "current-host",
+    };
+    const fake = fakeAuthority(providerGeneration);
+    fake.authority.health = vi.fn(
+      async () =>
+        ({
+          provider: "filesystem",
+          authorityId: "current-host",
+          connectivity: "healthy",
+          writable: true,
+          activeGeneration: identity(providerGeneration),
+          refresh: "current",
+        }) satisfies AuthorityHealth,
+    );
+    mutate(fake.authority);
+    const unregister = registerAuthorityProvider("filesystem", async () => fake.authority);
+    const engineFactory = vi.fn(testEngineFactory(vi.fn()));
+    try {
+      const coordinator = new RuntimeEpochCoordinator({
+        bootstrap: {
+          bootstrap: {
+            provider: "filesystem",
+            pollIntervalMs: 1,
+          },
+          inventory: { entries: [] },
+        },
+        configPath: join(tmpdir(), "missing-identity-config.json"),
+        engineFactory,
+        projectionFactory: async () => ({ generation: 1, projection }),
+        autoRefresh: false,
+      });
+
+      await expect(coordinator.start()).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      expect(coordinator.current).toBeUndefined();
+      expect(engineFactory).not.toHaveBeenCalled();
+      expect(fake.close).toHaveBeenCalledOnce();
     } finally {
       unregister();
     }
@@ -452,11 +556,9 @@ describe("synchronous authority compatibility", () => {
       configPath,
       JSON.stringify({
         version: 1,
-        authority: {
+        storage: {
           provider: "sqlite",
-          authorityId: "shared",
-          namespace: "default",
-          databasePath: join(root, "authority.sqlite"),
+          path: join(root, "authority.sqlite"),
         },
         mcpServers: {
           alpha: {

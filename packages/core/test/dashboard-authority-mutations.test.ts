@@ -7,7 +7,8 @@ import {
   trustedDevelopmentOperatorPrincipal,
 } from "../src/current-host/operations";
 import { AuthorityRemoteServerCredentialStore } from "../src/remote/server-credential-store";
-import { DashboardActivityLog } from "../src/dashboard/activity-log";
+import { AuthorityDashboardActivityLog, DashboardActivityLog } from "../src/dashboard/activity-log";
+import { AuthorityDashboardSessionStore } from "../src/dashboard/session-store";
 import { createAsyncCapletsRuntime } from "../src/runtime";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
@@ -406,12 +407,13 @@ describe("dashboard authority mutations", () => {
       replicaRuntime = await createAsyncCapletsRuntime({
         authority: replicaAuthority,
         bootstrap: {
-          provider: "sqlite",
-          authorityId: "dashboard-sqlite",
-          namespace: "dashboard",
-          databasePath: setup.databasePath,
-          pollIntervalMs: 1_000,
-          vaultKeyRef: "dashboard-test-vault-key",
+          bootstrap: {
+            provider: "sqlite",
+            path: setup.databasePath,
+            pollIntervalMs: 1_000,
+            vaultKey: "dashboard-test-vault-key",
+          },
+          inventory: { entries: [] },
         },
         secretResolver: (reference) =>
           reference === "dashboard-test-vault-key" ? TEST_VAULT_KEY : undefined,
@@ -516,12 +518,13 @@ async function sqliteDashboard(arrayBacked = false): Promise<DashboardSetup> {
   const runtime = await createAsyncCapletsRuntime({
     authority,
     bootstrap: {
-      provider: "sqlite",
-      authorityId,
-      namespace,
-      databasePath,
-      pollIntervalMs: 1_000,
-      vaultKeyRef: "dashboard-test-vault-key",
+      bootstrap: {
+        provider: "sqlite",
+        path: databasePath,
+        pollIntervalMs: 1_000,
+        vaultKey: "dashboard-test-vault-key",
+      },
+      inventory: { entries: [] },
     },
     secretResolver: (reference) =>
       reference === "dashboard-test-vault-key" ? TEST_VAULT_KEY : undefined,
@@ -564,6 +567,20 @@ async function sqliteDashboard(arrayBacked = false): Promise<DashboardSetup> {
     },
     vaultStore: unusedVaultStore(),
     remoteCredentialAuthorityStore: store,
+    dashboardAuthoritySessionStore: new AuthorityDashboardSessionStore({
+      authority,
+      authorityId,
+      currentHostId: "http-current-host",
+      principalId: "dashboard-session",
+      encryptionKey: TEST_VAULT_KEY,
+    }),
+    dashboardAuthorityActivityLog: new AuthorityDashboardActivityLog({
+      authority,
+      authorityId,
+      currentHostId: "http-current-host",
+      principalId: "dashboard-activity",
+      encryptionKey: TEST_VAULT_KEY,
+    }),
     runtime,
   });
   const started = await app.request("http://127.0.0.1:5387/dashboard/api/login/start", {

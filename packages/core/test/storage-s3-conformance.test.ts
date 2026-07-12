@@ -89,6 +89,7 @@ describe("S3 authority provider-neutral conformance", () => {
     const authority = await createS3Authority({
       authorityId: "conformance-authority",
       namespace: "conformance-prefix",
+      path: "/conformance-prefix/",
       bucket: "bucket",
       region: "us-east-1",
       client,
@@ -136,13 +137,12 @@ describe("S3 authority provider-neutral conformance", () => {
       { kind: "rejected", occurredAt: "2026-01-01T00:00:00.000Z", code: "DENIED" },
     ]);
 
-    const semanticOperations = client.operations.filter(
-      (operation) => operation === "ListObjectsV2Command",
-    );
-    expect(semanticOperations).toHaveLength(0);
-    expect([...client.objects.keys()].every((key) => key.startsWith("conformance-prefix/"))).toBe(
-      true,
-    );
+    expect(
+      client.operations.filter((operation) => operation === "ListObjectsV2Command"),
+    ).toHaveLength(1);
+    expect(
+      [...client.objects.keys()].every((key) => key.startsWith("conformance-prefix/.caplets/")),
+    ).toBe(true);
     expect((await authority.health()).connectivity).toBe("healthy");
     await authority.close();
     expect((await authority.health()).code).toBe("CLOSED");
@@ -176,6 +176,7 @@ for (const provider of ["aws", "r2", "minio"] as const) {
       const authority = await createS3Authority({
         authorityId: `live-${provider}`,
         namespace: `u4-${provider}-${process.pid}-${randomUUID()}`,
+        path: `u4-${provider}-${process.pid}-${randomUUID()}`,
         bucket: profile.bucket,
         region: profile.region,
         ...(profile.endpoint

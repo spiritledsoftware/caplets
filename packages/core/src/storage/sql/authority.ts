@@ -2811,19 +2811,19 @@ export class PostgresAuthority<
       }
       await withPostgresStatementTimeout(client, options.statementTimeoutMs, async (tx) => {
         const headRows =
-          await tx`SELECT namespace FROM authority_heads WHERE authority_id = ${options.authorityId}`;
+          await tx`SELECT namespace FROM caplets.authority_heads WHERE authority_id = ${options.authorityId}`;
         const head = headRows[0] as { namespace: string } | undefined;
         if (head && head.namespace !== options.namespace) {
           throw new CapletsError("CONFIG_INVALID", "PostgreSQL authority namespace does not match");
         }
         const metaRows =
-          await tx`SELECT namespace FROM authority_schema_meta WHERE authority_id = ${options.authorityId}`;
+          await tx`SELECT namespace FROM caplets.authority_schema_meta WHERE authority_id = ${options.authorityId}`;
         const meta = metaRows[0] as { namespace: string } | undefined;
         if (meta && meta.namespace !== options.namespace) {
           throw new CapletsError("CONFIG_INVALID", "PostgreSQL authority namespace does not match");
         }
-        await tx`INSERT INTO authority_heads (authority_id, namespace, schema_version) VALUES (${options.authorityId}, ${options.namespace}, ${configuredSchemaVersion}) ON CONFLICT (authority_id) DO NOTHING`;
-        await tx`INSERT INTO authority_schema_meta (authority_id, namespace, logical_schema_version, auxiliary_watermark) VALUES (${options.authorityId}, ${options.namespace}, ${configuredSchemaVersion}, 0) ON CONFLICT (authority_id) DO UPDATE SET logical_schema_version = EXCLUDED.logical_schema_version`;
+        await tx`INSERT INTO caplets.authority_heads (authority_id, namespace, schema_version) VALUES (${options.authorityId}, ${options.namespace}, ${configuredSchemaVersion}) ON CONFLICT (authority_id) DO NOTHING`;
+        await tx`INSERT INTO caplets.authority_schema_meta (authority_id, namespace, logical_schema_version, auxiliary_watermark) VALUES (${options.authorityId}, ${options.namespace}, ${configuredSchemaVersion}, 0) ON CONFLICT (authority_id) DO UPDATE SET logical_schema_version = EXCLUDED.logical_schema_version`;
       });
       return authority;
     } catch (error) {
@@ -2851,7 +2851,7 @@ export class PostgresAuthority<
         this.client,
         this.options.statementTimeoutMs,
         async (tx) =>
-          tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM authority_heads WHERE authority_id = ${this.authorityId}`,
+          tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM caplets.authority_heads WHERE authority_id = ${this.authorityId}`,
       );
       const row = rows[0] as PgHeadRow | undefined;
       if (!row || !row.generation_id || !row.digest || !row.committed_at || row.sequence < 1)
@@ -2875,7 +2875,7 @@ export class PostgresAuthority<
         this.client,
         this.options.statementTimeoutMs,
         async (tx) =>
-          tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${id}`,
+          tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${id}`,
       );
       const row = rows[0] as PgGenerationRow | undefined;
       if (!row)
@@ -2909,7 +2909,7 @@ export class PostgresAuthority<
             { prepare: false },
           );
           const headRows =
-            await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+            await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
           const headRow = headRows[0] as PgHeadRow | undefined;
           if (!headRow)
             throw new CapletsError("CONFIG_INVALID", "PostgreSQL authority head row is missing");
@@ -2925,7 +2925,7 @@ export class PostgresAuthority<
                 }
               : null;
           const receiptRows =
-            await tx`SELECT authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at FROM authority_receipts WHERE authority_id = ${this.authorityId} AND current_host_id = ${envelope.currentHostId} AND principal_id = ${envelope.principalId} AND idempotency_key = ${envelope.idempotencyKey} AND expires_at > ${committedAt}`;
+            await tx`SELECT authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at FROM caplets.authority_receipts WHERE authority_id = ${this.authorityId} AND current_host_id = ${envelope.currentHostId} AND principal_id = ${envelope.principalId} AND idempotency_key = ${envelope.idempotencyKey} AND expires_at > ${committedAt}`;
           const receipt = receiptRows[0] as PgReceiptRow | undefined;
           if (receipt) {
             if (receipt.request_digest !== envelope.requestDigest)
@@ -2934,7 +2934,7 @@ export class PostgresAuthority<
                 "Idempotency key was reused with a different request",
               );
             const generationRows =
-              await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${receipt.generation_id}`;
+              await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${receipt.generation_id}`;
             const generationRow = generationRows[0] as PgGenerationRow | undefined;
             if (!generationRow)
               throw new CapletsError(
@@ -2958,7 +2958,7 @@ export class PostgresAuthority<
           let current: unknown = this.options.initialSnapshot ?? null;
           if (head) {
             const currentRows =
-              await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${head.id}`;
+              await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${head.id}`;
             const currentRow = currentRows[0] as PgGenerationRow | undefined;
             if (!currentRow)
               throw new CapletsError(
@@ -2989,9 +2989,9 @@ export class PostgresAuthority<
             this.now().getTime() + (this.options.receiptTtlMs ?? 24 * 60 * 60 * 1000),
           ).toISOString();
           const resultJson = safeJson(candidate.result, "Authority receipt result");
-          await tx`INSERT INTO authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${this.authorityId}, ${id}, ${sequence}, ${predecessorId}, ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, ${digest}, ${committedAt}, ${snapshotJson})`;
-          await tx`UPDATE authority_heads SET namespace = ${this.namespace}, generation_id = ${id}, sequence = ${sequence}, predecessor_id = ${predecessorId}, schema_version = ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, digest = ${digest}, committed_at = ${committedAt} WHERE authority_id = ${this.authorityId}`;
-          await tx`INSERT INTO authority_receipts (authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at) VALUES (${this.authorityId}, ${envelope.currentHostId}, ${envelope.principalId}, ${envelope.idempotencyKey}, ${envelope.requestDigest}, ${id}, ${resultJson}, ${receiptExpiry})`;
+          await tx`INSERT INTO caplets.authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${this.authorityId}, ${id}, ${sequence}, ${predecessorId}, ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, ${digest}, ${committedAt}, ${snapshotJson})`;
+          await tx`UPDATE caplets.authority_heads SET namespace = ${this.namespace}, generation_id = ${id}, sequence = ${sequence}, predecessor_id = ${predecessorId}, schema_version = ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, digest = ${digest}, committed_at = ${committedAt} WHERE authority_id = ${this.authorityId}`;
+          await tx`INSERT INTO caplets.authority_receipts (authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at) VALUES (${this.authorityId}, ${envelope.currentHostId}, ${envelope.principalId}, ${envelope.idempotencyKey}, ${envelope.requestDigest}, ${id}, ${resultJson}, ${receiptExpiry})`;
           const generation = { authorityId: this.authorityId, id, sequence, predecessorId };
           const authorityReceipt: AuthorityReceipt<TResult> = {
             currentHostId: envelope.currentHostId,
@@ -3028,7 +3028,7 @@ export class PostgresAuthority<
         async (tx) => {
           if (request.kind === "session_touch") {
             const rows =
-              await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM authority_sessions WHERE authority_id = ${this.authorityId} AND session_id = ${request.sessionId}`;
+              await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM caplets.authority_sessions WHERE authority_id = ${this.authorityId} AND session_id = ${request.sessionId}`;
             const row = rows[0] as PgSessionRow | undefined;
             return row
               ? {
@@ -3041,9 +3041,9 @@ export class PostgresAuthority<
           }
           const after = request.afterWatermark ? Number.parseInt(request.afterWatermark, 10) : 0;
           const rows =
-            await tx`SELECT authority_id, watermark, kind, occurred_at, event_json FROM authority_events WHERE authority_id = ${this.authorityId} AND watermark > ${after} ORDER BY watermark LIMIT ${request.limit}`;
+            await tx`SELECT authority_id, watermark, kind, occurred_at, event_json FROM caplets.authority_events WHERE authority_id = ${this.authorityId} AND watermark > ${after} ORDER BY watermark LIMIT ${request.limit}`;
           const metaRows =
-            await tx`SELECT auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${this.authorityId}`;
+            await tx`SELECT auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${this.authorityId}`;
           const meta = metaRows[0] as { auxiliary_watermark: number } | undefined;
           const eventRows = rows as unknown as PgEventRow[];
           return {
@@ -3066,7 +3066,7 @@ export class PostgresAuthority<
           { prepare: false },
         );
         const headRows =
-          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, digest FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, digest FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const headRow = headRows[0] as
           | {
               authority_id: string;
@@ -3090,28 +3090,28 @@ export class PostgresAuthority<
               }
             : null;
         const metaRows =
-          await tx`SELECT auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${this.authorityId}`;
+          await tx`SELECT auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${this.authorityId}`;
         const meta = metaRows[0] as { auxiliary_watermark: number };
         if (command.kind === "remove_session_touch") {
           const deleted =
-            await tx`DELETE FROM authority_sessions WHERE authority_id = ${this.authorityId} AND session_id = ${command.sessionId} RETURNING session_id`;
+            await tx`DELETE FROM caplets.authority_sessions WHERE authority_id = ${this.authorityId} AND session_id = ${command.sessionId} RETURNING session_id`;
           if (deleted.length === 0) {
             return { kind: "unchanged", watermark: String(meta.auxiliary_watermark) };
           }
           const watermark = meta.auxiliary_watermark + 1;
-          await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
+          await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
           return { kind: "applied", watermark: String(watermark) };
         }
         if (command.kind === "session_touch") {
           if (!matchesExpected(command.expectedGeneration, currentHead))
             return { kind: "conflict" };
           const sessionRows =
-            await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM authority_sessions WHERE authority_id = ${this.authorityId} AND session_id = ${command.sessionId} FOR UPDATE`;
+            await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM caplets.authority_sessions WHERE authority_id = ${this.authorityId} AND session_id = ${command.sessionId} FOR UPDATE`;
           const session = sessionRows[0] as PgSessionRow | undefined;
           if (!session) {
             if (command.expectedRevision !== "" || !currentHead) return { kind: "missing" };
             const generationRows =
-              await tx`SELECT snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${currentHead.id}`;
+              await tx`SELECT snapshot_json FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${currentHead.id}`;
             const generationRow = generationRows[0] as { snapshot_json: string } | undefined;
             if (
               !generationRow ||
@@ -3119,8 +3119,8 @@ export class PostgresAuthority<
             )
               return { kind: "missing" };
             const watermark = meta.auxiliary_watermark + 1;
-            await tx`INSERT INTO authority_sessions (authority_id, session_id, revision, last_used_at, revoked) VALUES (${this.authorityId}, ${command.sessionId}, ${watermark}, ${command.lastUsedAt}, 0)`;
-            await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
+            await tx`INSERT INTO caplets.authority_sessions (authority_id, session_id, revision, last_used_at, revoked) VALUES (${this.authorityId}, ${command.sessionId}, ${watermark}, ${command.lastUsedAt}, 0)`;
+            await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
             return { kind: "applied", watermark: String(watermark) };
           }
           if (session.revoked) return { kind: "revoked" };
@@ -3128,14 +3128,14 @@ export class PostgresAuthority<
           if (command.lastUsedAt <= session.last_used_at)
             return { kind: "unchanged", watermark: String(meta.auxiliary_watermark) };
           const watermark = meta.auxiliary_watermark + 1;
-          await tx`UPDATE authority_sessions SET revision = ${watermark}, last_used_at = ${command.lastUsedAt} WHERE authority_id = ${this.authorityId} AND session_id = ${command.sessionId} AND revision = ${session.revision} AND revoked = 0`;
-          await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
+          await tx`UPDATE caplets.authority_sessions SET revision = ${watermark}, last_used_at = ${command.lastUsedAt} WHERE authority_id = ${this.authorityId} AND session_id = ${command.sessionId} AND revision = ${session.revision} AND revoked = 0`;
+          await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
           return { kind: "applied", watermark: String(watermark) };
         }
         const watermark = meta.auxiliary_watermark + 1;
         const eventJson = safeJson(command.event, "Security event");
-        await tx`INSERT INTO authority_events (authority_id, watermark, kind, occurred_at, event_json) VALUES (${this.authorityId}, ${watermark}, ${command.event.kind}, ${command.event.occurredAt}, ${eventJson})`;
-        await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
+        await tx`INSERT INTO caplets.authority_events (authority_id, watermark, kind, occurred_at, event_json) VALUES (${this.authorityId}, ${watermark}, ${command.event.kind}, ${command.event.occurredAt}, ${eventJson})`;
+        await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
         return { kind: "applied", watermark: String(watermark) };
       });
     } catch (error) {
@@ -3193,13 +3193,13 @@ export class PostgresAuthority<
           { prepare: false },
         );
         const headRows =
-          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const head = headRows[0] as PgHeadRow | undefined;
         if (!head?.generation_id)
           throw new CapletsError("CONFIG_NOT_FOUND", "SQL authority has no committed generation");
         await this.assertMaintenanceWriteAllowedPostgres(tx);
         const generationRows =
-          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${head.generation_id}`;
+          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${head.generation_id}`;
         const generation = generationRows[0] as PgGenerationRow | undefined;
         if (!generation)
           throw new CapletsError(
@@ -3223,8 +3223,8 @@ export class PostgresAuthority<
             g.digest AS generation_digest,
             g.committed_at AS generation_committed_at,
             g.snapshot_json AS generation_snapshot_json
-          FROM authority_receipts AS r
-          LEFT JOIN authority_generations AS g
+          FROM caplets.authority_receipts AS r
+          LEFT JOIN caplets.authority_generations AS g
             ON g.authority_id = r.authority_id
             AND g.generation_id = r.generation_id
           WHERE r.authority_id = ${this.authorityId}
@@ -3265,11 +3265,11 @@ export class PostgresAuthority<
           }
         }
         const sessionRows =
-          (await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM authority_sessions WHERE authority_id = ${this.authorityId} ORDER BY session_id`) as unknown as PgSessionRow[];
+          (await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM caplets.authority_sessions WHERE authority_id = ${this.authorityId} ORDER BY session_id`) as unknown as PgSessionRow[];
         const eventRows =
-          (await tx`SELECT authority_id, watermark, kind, occurred_at, event_json FROM authority_events WHERE authority_id = ${this.authorityId} ORDER BY watermark`) as unknown as PgEventRow[];
+          (await tx`SELECT authority_id, watermark, kind, occurred_at, event_json FROM caplets.authority_events WHERE authority_id = ${this.authorityId} ORDER BY watermark`) as unknown as PgEventRow[];
         const metaRows =
-          await tx`SELECT auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${this.authorityId}`;
+          await tx`SELECT auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${this.authorityId}`;
         const meta = metaRows[0] as { auxiliary_watermark: number } | undefined;
         return buildSqlExport({
           provider: "postgresql",
@@ -3321,10 +3321,10 @@ export class PostgresAuthority<
           { prepare: false },
         );
         const headRows =
-          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const head = headRows[0] as PgHeadRow | undefined;
         const metaRows =
-          await tx`SELECT authority_id, namespace, logical_schema_version, auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, namespace, logical_schema_version, auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const meta = metaRows[0] as
           | {
               authority_id: string;
@@ -3348,13 +3348,13 @@ export class PostgresAuthority<
         }
         await this.assertMaintenanceWriteAllowedPostgres(tx);
         const generationRows =
-          await tx`SELECT 1 FROM authority_generations WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const receiptRows =
-          await tx`SELECT 1 FROM authority_receipts WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_receipts WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const sessionRows =
-          await tx`SELECT 1 FROM authority_sessions WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_sessions WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const eventRows =
-          await tx`SELECT 1 FROM authority_events WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_events WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const occupied =
           head.generation_id !== null ||
           head.sequence !== 0 ||
@@ -3367,8 +3367,8 @@ export class PostgresAuthority<
           eventRows.length > 0;
         if (occupied)
           throw new CapletsError("CONFIG_EXISTS", "SQL authority restore requires an empty target");
-        await tx`INSERT INTO authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${this.authorityId}, ${prepared.generation.id}, ${prepared.generation.sequence}, ${prepared.generation.predecessorId}, ${prepared.generation.schemaVersion}, ${prepared.generation.digest}, ${prepared.generation.committedAt}, ${snapshotJson})`;
-        await tx`UPDATE authority_heads SET namespace = ${this.namespace}, generation_id = ${prepared.generation.id}, sequence = ${prepared.generation.sequence}, predecessor_id = ${prepared.generation.predecessorId}, schema_version = ${prepared.generation.schemaVersion}, digest = ${prepared.generation.digest}, committed_at = ${prepared.generation.committedAt} WHERE authority_id = ${this.authorityId}`;
+        await tx`INSERT INTO caplets.authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${this.authorityId}, ${prepared.generation.id}, ${prepared.generation.sequence}, ${prepared.generation.predecessorId}, ${prepared.generation.schemaVersion}, ${prepared.generation.digest}, ${prepared.generation.committedAt}, ${snapshotJson})`;
+        await tx`UPDATE caplets.authority_heads SET namespace = ${this.namespace}, generation_id = ${prepared.generation.id}, sequence = ${prepared.generation.sequence}, predecessor_id = ${prepared.generation.predecessorId}, schema_version = ${prepared.generation.schemaVersion}, digest = ${prepared.generation.digest}, committed_at = ${prepared.generation.committedAt} WHERE authority_id = ${this.authorityId}`;
         for (let start = 0; start < prepared.receipts.length; start += POSTGRES_BULK_INSERT_ROWS) {
           const rows = prepared.receipts
             .slice(start, start + POSTGRES_BULK_INSERT_ROWS)
@@ -3382,7 +3382,7 @@ export class PostgresAuthority<
               result_json: safeJson(receipt.result, "Authority receipt result"),
               expires_at: receipt.expiresAt,
             }));
-          await tx`INSERT INTO authority_receipts ${tx(
+          await tx`INSERT INTO caplets.authority_receipts ${tx(
             rows,
             "authority_id",
             "current_host_id",
@@ -3405,7 +3405,7 @@ export class PostgresAuthority<
               last_used_at: session.lastUsedAt,
               revoked: session.revoked ? 1 : 0,
             }));
-          await tx`INSERT INTO authority_sessions ${tx(
+          await tx`INSERT INTO caplets.authority_sessions ${tx(
             rows,
             "authority_id",
             "session_id",
@@ -3424,7 +3424,7 @@ export class PostgresAuthority<
               occurred_at: row.event.occurredAt,
               event_json: safeJson(row.event, "Security event"),
             }));
-          await tx`INSERT INTO authority_events ${tx(
+          await tx`INSERT INTO caplets.authority_events ${tx(
             rows,
             "authority_id",
             "watermark",
@@ -3433,7 +3433,7 @@ export class PostgresAuthority<
             "event_json",
           )}`;
         }
-        await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${prepared.auxiliary.watermark} WHERE authority_id = ${this.authorityId}`;
+        await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${prepared.auxiliary.watermark} WHERE authority_id = ${this.authorityId}`;
       });
     } catch (error) {
       throw authorityError(error, "postgresql");
@@ -3508,10 +3508,10 @@ export class PostgresAuthority<
           { prepare: false },
         );
         const headRows =
-          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const head = headRows[0] as PgHeadRow | undefined;
         const metaRows =
-          await tx`SELECT namespace, logical_schema_version, auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT namespace, logical_schema_version, auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const meta = metaRows[0] as
           | { namespace: string; logical_schema_version: number; auxiliary_watermark: number }
           | undefined;
@@ -3530,13 +3530,13 @@ export class PostgresAuthority<
         }
         await this.assertMaintenanceWriteAllowedPostgres(tx);
         const generationRows =
-          await tx`SELECT 1 FROM authority_generations WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const receiptRows =
-          await tx`SELECT 1 FROM authority_receipts WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_receipts WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const sessionRows =
-          await tx`SELECT 1 FROM authority_sessions WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_sessions WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const eventRows =
-          await tx`SELECT 1 FROM authority_events WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_events WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const occupied =
           head.generation_id !== null ||
           head.sequence !== 0 ||
@@ -3550,10 +3550,10 @@ export class PostgresAuthority<
         if (occupied)
           throw new CapletsError("CONFIG_EXISTS", "SQL authority migration target is not empty");
         const candidateRows =
-          await tx`SELECT generation_id FROM authority_heads WHERE authority_id = ${candidateAuthorityId} FOR UPDATE`;
+          await tx`SELECT generation_id FROM caplets.authority_heads WHERE authority_id = ${candidateAuthorityId} FOR UPDATE`;
         if (candidateRows.length > 0) {
           const existingRows =
-            await tx`SELECT digest FROM authority_generations WHERE authority_id = ${candidateAuthorityId} AND generation_id = ${prepared.generation.id}`;
+            await tx`SELECT digest FROM caplets.authority_generations WHERE authority_id = ${candidateAuthorityId} AND generation_id = ${prepared.generation.id}`;
           const existing = existingRows[0] as { digest: string } | undefined;
           if (existing?.digest === candidateGeneration.digest) return;
           if (existing) {
@@ -3562,29 +3562,29 @@ export class PostgresAuthority<
               "SQL authority migration candidate already exists",
             );
           }
-          await tx`DELETE FROM authority_receipts WHERE authority_id = ${candidateAuthorityId}`;
-          await tx`DELETE FROM authority_sessions WHERE authority_id = ${candidateAuthorityId}`;
-          await tx`DELETE FROM authority_events WHERE authority_id = ${candidateAuthorityId}`;
-          await tx`DELETE FROM authority_generations WHERE authority_id = ${candidateAuthorityId}`;
-          await tx`DELETE FROM authority_schema_meta WHERE authority_id = ${candidateAuthorityId}`;
-          await tx`UPDATE authority_heads SET namespace = ${this.namespace}, generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${candidateGeneration.schemaVersion}, digest = NULL, committed_at = NULL WHERE authority_id = ${candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_receipts WHERE authority_id = ${candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_sessions WHERE authority_id = ${candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_events WHERE authority_id = ${candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_generations WHERE authority_id = ${candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_schema_meta WHERE authority_id = ${candidateAuthorityId}`;
+          await tx`UPDATE caplets.authority_heads SET namespace = ${this.namespace}, generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${candidateGeneration.schemaVersion}, digest = NULL, committed_at = NULL WHERE authority_id = ${candidateAuthorityId}`;
         } else {
-          await tx`INSERT INTO authority_heads (authority_id, namespace, schema_version) VALUES (${candidateAuthorityId}, ${this.namespace}, ${candidateGeneration.schemaVersion})`;
+          await tx`INSERT INTO caplets.authority_heads (authority_id, namespace, schema_version) VALUES (${candidateAuthorityId}, ${this.namespace}, ${candidateGeneration.schemaVersion})`;
         }
-        await tx`INSERT INTO authority_schema_meta (authority_id, namespace, logical_schema_version, auxiliary_watermark) VALUES (${candidateAuthorityId}, ${this.namespace}, ${candidateGeneration.schemaVersion}, 0)`;
-        await tx`INSERT INTO authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${candidateAuthorityId}, ${candidateGeneration.id}, ${candidateGeneration.sequence}, ${candidateGeneration.predecessorId}, ${candidateGeneration.schemaVersion}, ${candidateGeneration.digest}, ${candidateGeneration.committedAt}, ${snapshotJson})`;
+        await tx`INSERT INTO caplets.authority_schema_meta (authority_id, namespace, logical_schema_version, auxiliary_watermark) VALUES (${candidateAuthorityId}, ${this.namespace}, ${candidateGeneration.schemaVersion}, 0)`;
+        await tx`INSERT INTO caplets.authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${candidateAuthorityId}, ${candidateGeneration.id}, ${candidateGeneration.sequence}, ${candidateGeneration.predecessorId}, ${candidateGeneration.schemaVersion}, ${candidateGeneration.digest}, ${candidateGeneration.committedAt}, ${snapshotJson})`;
         for (const receipt of prepared.receipts) {
           const resultJson = safeJson(receipt.result, "Authority receipt result");
-          await tx`INSERT INTO authority_receipts (authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at) VALUES (${candidateAuthorityId}, ${receipt.currentHostId}, ${receipt.principalId}, ${receipt.idempotencyKey}, ${receipt.requestDigest}, ${candidateGeneration.id}, ${resultJson}, ${receipt.expiresAt})`;
+          await tx`INSERT INTO caplets.authority_receipts (authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at) VALUES (${candidateAuthorityId}, ${receipt.currentHostId}, ${receipt.principalId}, ${receipt.idempotencyKey}, ${receipt.requestDigest}, ${candidateGeneration.id}, ${resultJson}, ${receipt.expiresAt})`;
         }
         for (const [sessionId, session] of Object.entries(prepared.auxiliary.sessions)) {
-          await tx`INSERT INTO authority_sessions (authority_id, session_id, revision, last_used_at, revoked) VALUES (${candidateAuthorityId}, ${sessionId}, ${Number(session.revision)}, ${session.lastUsedAt}, ${session.revoked ? 1 : 0})`;
+          await tx`INSERT INTO caplets.authority_sessions (authority_id, session_id, revision, last_used_at, revoked) VALUES (${candidateAuthorityId}, ${sessionId}, ${Number(session.revision)}, ${session.lastUsedAt}, ${session.revoked ? 1 : 0})`;
         }
         for (const row of auxiliaryEventRows) {
           const eventJson = safeJson(row.event, "Security event");
-          await tx`INSERT INTO authority_events (authority_id, watermark, kind, occurred_at, event_json) VALUES (${candidateAuthorityId}, ${row.watermark}, ${row.event.kind}, ${row.event.occurredAt}, ${eventJson})`;
+          await tx`INSERT INTO caplets.authority_events (authority_id, watermark, kind, occurred_at, event_json) VALUES (${candidateAuthorityId}, ${row.watermark}, ${row.event.kind}, ${row.event.occurredAt}, ${eventJson})`;
         }
-        await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${prepared.auxiliary.watermark} WHERE authority_id = ${candidateAuthorityId}`;
+        await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${prepared.auxiliary.watermark} WHERE authority_id = ${candidateAuthorityId}`;
       });
     } catch (error) {
       throw authorityError(error, "postgresql");
@@ -3604,7 +3604,7 @@ export class PostgresAuthority<
         this.options.statementTimeoutMs,
         async (tx) => {
           const candidateHeadRows =
-            await tx`SELECT namespace, generation_id FROM authority_heads WHERE authority_id = ${token.candidateAuthorityId}`;
+            await tx`SELECT namespace, generation_id FROM caplets.authority_heads WHERE authority_id = ${token.candidateAuthorityId}`;
           const candidateHead = candidateHeadRows[0] as
             | { namespace: string; generation_id: string | null }
             | undefined;
@@ -3618,7 +3618,7 @@ export class PostgresAuthority<
               "SQL authority migration candidate is unavailable",
             );
           const generationRows =
-            await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${token.candidateAuthorityId} AND generation_id = ${token.generationId}`;
+            await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${token.candidateAuthorityId} AND generation_id = ${token.generationId}`;
           const candidateRow = generationRows[0] as PgGenerationRow | undefined;
           if (!candidateRow)
             throw new CapletsError(
@@ -3640,19 +3640,19 @@ export class PostgresAuthority<
             }),
           };
           const receiptRows = (
-            (await tx`SELECT authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at FROM authority_receipts WHERE authority_id = ${token.candidateAuthorityId} ORDER BY current_host_id, principal_id, idempotency_key`) as unknown as PgReceiptRow[]
+            (await tx`SELECT authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at FROM caplets.authority_receipts WHERE authority_id = ${token.candidateAuthorityId} ORDER BY current_host_id, principal_id, idempotency_key`) as unknown as PgReceiptRow[]
           ).map((row) => ({ ...row, authority_id: this.authorityId }));
           const receiptGenerationRows = new Map<string, PgGenerationRow>([
             [token.generationId, generation],
           ]);
           const sessionRows = (
-            (await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM authority_sessions WHERE authority_id = ${token.candidateAuthorityId} ORDER BY session_id`) as unknown as PgSessionRow[]
+            (await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM caplets.authority_sessions WHERE authority_id = ${token.candidateAuthorityId} ORDER BY session_id`) as unknown as PgSessionRow[]
           ).map((row) => ({ ...row, authority_id: this.authorityId }));
           const eventRows = (
-            (await tx`SELECT authority_id, watermark, kind, occurred_at, event_json FROM authority_events WHERE authority_id = ${token.candidateAuthorityId} ORDER BY watermark`) as unknown as PgEventRow[]
+            (await tx`SELECT authority_id, watermark, kind, occurred_at, event_json FROM caplets.authority_events WHERE authority_id = ${token.candidateAuthorityId} ORDER BY watermark`) as unknown as PgEventRow[]
           ).map((row) => ({ ...row, authority_id: this.authorityId }));
           const metaRows =
-            await tx`SELECT auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
+            await tx`SELECT auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
           const meta = metaRows[0] as { auxiliary_watermark: number } | undefined;
           const syntheticHead: PgHeadRow = {
             authority_id: this.authorityId,
@@ -3704,10 +3704,10 @@ export class PostgresAuthority<
           { prepare: false },
         );
         const headRows =
-          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, namespace, generation_id, sequence, predecessor_id, schema_version, digest, committed_at FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const head = headRows[0] as PgHeadRow | undefined;
         const metaRows =
-          await tx`SELECT namespace, logical_schema_version, auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT namespace, logical_schema_version, auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const meta = metaRows[0] as
           | { namespace: string; logical_schema_version: number; auxiliary_watermark: number }
           | undefined;
@@ -3731,32 +3731,32 @@ export class PostgresAuthority<
               "SQL authority migration target is no longer empty",
             );
           const generationRows =
-            await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${token.generationId}`;
+            await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${token.generationId}`;
           const generation = generationRows[0] as PgGenerationRow | undefined;
           if (!generation)
             throw new CapletsError(
               "CONFIG_INVALID",
               "SQL authority migration candidate is unavailable",
             );
-          await tx`DELETE FROM authority_receipts WHERE authority_id = ${token.candidateAuthorityId}`;
-          await tx`DELETE FROM authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`;
-          await tx`DELETE FROM authority_events WHERE authority_id = ${token.candidateAuthorityId}`;
-          await tx`DELETE FROM authority_generations WHERE authority_id = ${token.candidateAuthorityId}`;
-          await tx`DELETE FROM authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
-          await tx`UPDATE authority_heads SET generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, digest = NULL, committed_at = NULL WHERE authority_id = ${token.candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_receipts WHERE authority_id = ${token.candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_events WHERE authority_id = ${token.candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_generations WHERE authority_id = ${token.candidateAuthorityId}`;
+          await tx`DELETE FROM caplets.authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
+          await tx`UPDATE caplets.authority_heads SET generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, digest = NULL, committed_at = NULL WHERE authority_id = ${token.candidateAuthorityId}`;
           return {
             generation: generationIdentity(generation),
             auxiliaryWatermark: String(meta.auxiliary_watermark),
           };
         }
         const generationRows =
-          await tx`SELECT 1 FROM authority_generations WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const receiptRows =
-          await tx`SELECT 1 FROM authority_receipts WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_receipts WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const sessionRows =
-          await tx`SELECT 1 FROM authority_sessions WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_sessions WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const eventRows =
-          await tx`SELECT 1 FROM authority_events WHERE authority_id = ${this.authorityId} LIMIT 1`;
+          await tx`SELECT 1 FROM caplets.authority_events WHERE authority_id = ${this.authorityId} LIMIT 1`;
         const occupied =
           head.sequence !== 0 ||
           head.digest !== null ||
@@ -3772,12 +3772,12 @@ export class PostgresAuthority<
             "SQL authority migration target is no longer empty",
           );
         const candidateHeadRows =
-          await tx`SELECT namespace, generation_id FROM authority_heads WHERE authority_id = ${token.candidateAuthorityId} FOR UPDATE`;
+          await tx`SELECT namespace, generation_id FROM caplets.authority_heads WHERE authority_id = ${token.candidateAuthorityId} FOR UPDATE`;
         const candidateHead = candidateHeadRows[0] as
           | { namespace: string; generation_id: string | null }
           | undefined;
         const candidateMetaRows =
-          await tx`SELECT namespace, auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId} FOR UPDATE`;
+          await tx`SELECT namespace, auxiliary_watermark FROM caplets.authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId} FOR UPDATE`;
         const candidateMeta = candidateMetaRows[0] as
           | { namespace: string; auxiliary_watermark: number }
           | undefined;
@@ -3793,7 +3793,7 @@ export class PostgresAuthority<
             "SQL authority migration candidate is unavailable",
           );
         const candidateGenerationRows =
-          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${token.candidateAuthorityId} AND generation_id = ${token.generationId}`;
+          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${token.candidateAuthorityId} AND generation_id = ${token.generationId}`;
         const candidateGeneration = candidateGenerationRows[0] as PgGenerationRow | undefined;
         if (!candidateGeneration)
           throw new CapletsError(
@@ -3814,9 +3814,9 @@ export class PostgresAuthority<
             snapshot: parsed.snapshot,
           }),
         };
-        await tx`INSERT INTO authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${this.authorityId}, ${targetGeneration.generation_id}, ${targetGeneration.sequence}, ${targetGeneration.predecessor_id}, ${targetGeneration.schema_version}, ${targetGeneration.digest}, ${targetGeneration.committed_at}, ${targetGeneration.snapshot_json})`;
+        await tx`INSERT INTO caplets.authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${this.authorityId}, ${targetGeneration.generation_id}, ${targetGeneration.sequence}, ${targetGeneration.predecessor_id}, ${targetGeneration.schema_version}, ${targetGeneration.digest}, ${targetGeneration.committed_at}, ${targetGeneration.snapshot_json})`;
         const candidateReceipts =
-          (await tx`SELECT current_host_id, principal_id, idempotency_key, request_digest, result_json, expires_at FROM authority_receipts WHERE authority_id = ${token.candidateAuthorityId} AND generation_id = ${token.generationId}`) as unknown as Array<{
+          (await tx`SELECT current_host_id, principal_id, idempotency_key, request_digest, result_json, expires_at FROM caplets.authority_receipts WHERE authority_id = ${token.candidateAuthorityId} AND generation_id = ${token.generationId}`) as unknown as Array<{
             current_host_id: string;
             principal_id: string;
             idempotency_key: string;
@@ -3825,36 +3825,36 @@ export class PostgresAuthority<
             expires_at: string;
           }>;
         for (const receipt of candidateReceipts) {
-          await tx`INSERT INTO authority_receipts (authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at) VALUES (${this.authorityId}, ${receipt.current_host_id}, ${receipt.principal_id}, ${receipt.idempotency_key}, ${receipt.request_digest}, ${token.generationId}, ${receipt.result_json}, ${receipt.expires_at})`;
+          await tx`INSERT INTO caplets.authority_receipts (authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at) VALUES (${this.authorityId}, ${receipt.current_host_id}, ${receipt.principal_id}, ${receipt.idempotency_key}, ${receipt.request_digest}, ${token.generationId}, ${receipt.result_json}, ${receipt.expires_at})`;
         }
         const candidateSessions =
-          (await tx`SELECT session_id, revision, last_used_at, revoked FROM authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`) as unknown as Array<{
+          (await tx`SELECT session_id, revision, last_used_at, revoked FROM caplets.authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`) as unknown as Array<{
             session_id: string;
             revision: number;
             last_used_at: string;
             revoked: number;
           }>;
         for (const session of candidateSessions) {
-          await tx`INSERT INTO authority_sessions (authority_id, session_id, revision, last_used_at, revoked) VALUES (${this.authorityId}, ${session.session_id}, ${session.revision}, ${session.last_used_at}, ${session.revoked})`;
+          await tx`INSERT INTO caplets.authority_sessions (authority_id, session_id, revision, last_used_at, revoked) VALUES (${this.authorityId}, ${session.session_id}, ${session.revision}, ${session.last_used_at}, ${session.revoked})`;
         }
         const candidateEvents =
-          (await tx`SELECT watermark, kind, occurred_at, event_json FROM authority_events WHERE authority_id = ${token.candidateAuthorityId}`) as unknown as Array<{
+          (await tx`SELECT watermark, kind, occurred_at, event_json FROM caplets.authority_events WHERE authority_id = ${token.candidateAuthorityId}`) as unknown as Array<{
             watermark: number;
             kind: string;
             occurred_at: string;
             event_json: string;
           }>;
         for (const event of candidateEvents) {
-          await tx`INSERT INTO authority_events (authority_id, watermark, kind, occurred_at, event_json) VALUES (${this.authorityId}, ${event.watermark}, ${event.kind}, ${event.occurred_at}, ${event.event_json})`;
+          await tx`INSERT INTO caplets.authority_events (authority_id, watermark, kind, occurred_at, event_json) VALUES (${this.authorityId}, ${event.watermark}, ${event.kind}, ${event.occurred_at}, ${event.event_json})`;
         }
-        await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${candidateMeta.auxiliary_watermark} WHERE authority_id = ${this.authorityId}`;
-        await tx`UPDATE authority_heads SET namespace = ${this.namespace}, generation_id = ${targetGeneration.generation_id}, sequence = ${targetGeneration.sequence}, predecessor_id = ${targetGeneration.predecessor_id}, schema_version = ${targetGeneration.schema_version}, digest = ${targetGeneration.digest}, committed_at = ${targetGeneration.committed_at} WHERE authority_id = ${this.authorityId}`;
-        await tx`DELETE FROM authority_receipts WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_events WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_generations WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`UPDATE authority_heads SET namespace = ${this.namespace}, generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${candidateGeneration.schema_version}, digest = NULL, committed_at = NULL WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`UPDATE caplets.authority_schema_meta SET auxiliary_watermark = ${candidateMeta.auxiliary_watermark} WHERE authority_id = ${this.authorityId}`;
+        await tx`UPDATE caplets.authority_heads SET namespace = ${this.namespace}, generation_id = ${targetGeneration.generation_id}, sequence = ${targetGeneration.sequence}, predecessor_id = ${targetGeneration.predecessor_id}, schema_version = ${targetGeneration.schema_version}, digest = ${targetGeneration.digest}, committed_at = ${targetGeneration.committed_at} WHERE authority_id = ${this.authorityId}`;
+        await tx`DELETE FROM caplets.authority_receipts WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_events WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_generations WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`UPDATE caplets.authority_heads SET namespace = ${this.namespace}, generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${candidateGeneration.schema_version}, digest = NULL, committed_at = NULL WHERE authority_id = ${token.candidateAuthorityId}`;
         return {
           generation: generationIdentity(targetGeneration),
           auxiliaryWatermark: String(candidateMeta.auxiliary_watermark),
@@ -3884,7 +3884,7 @@ export class PostgresAuthority<
           { prepare: false },
         );
         const headRows =
-          await tx`SELECT generation_id FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT generation_id FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const head = headRows[0] as { generation_id: string | null } | undefined;
         if (head?.generation_id) {
           if (head.generation_id === token.generationId) return;
@@ -3892,14 +3892,14 @@ export class PostgresAuthority<
         }
         await this.assertMaintenanceWriteAllowedPostgres(tx);
         const candidateRows =
-          await tx`SELECT 1 FROM authority_heads WHERE authority_id = ${token.candidateAuthorityId} FOR UPDATE`;
+          await tx`SELECT 1 FROM caplets.authority_heads WHERE authority_id = ${token.candidateAuthorityId} FOR UPDATE`;
         if (candidateRows.length === 0) return;
-        await tx`DELETE FROM authority_receipts WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_events WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_generations WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`DELETE FROM authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
-        await tx`UPDATE authority_heads SET namespace = ${this.namespace}, generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, digest = NULL, committed_at = NULL WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_receipts WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_sessions WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_events WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_generations WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`DELETE FROM caplets.authority_schema_meta WHERE authority_id = ${token.candidateAuthorityId}`;
+        await tx`UPDATE caplets.authority_heads SET namespace = ${this.namespace}, generation_id = NULL, sequence = 0, predecessor_id = NULL, schema_version = ${this.options.schemaVersion ?? POSTGRES_LOGICAL_SCHEMA_VERSION}, digest = NULL, committed_at = NULL WHERE authority_id = ${token.candidateAuthorityId}`;
       });
     } catch (error) {
       throw authorityError(error, "postgresql");
@@ -3994,11 +3994,11 @@ export class PostgresAuthority<
 
   private async assertMaintenanceWriteAllowedPostgres(tx: TransactionSql): Promise<void> {
     const rows =
-      await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+      await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
     const row = rows[0] as SqlMaintenanceLeaseRow | undefined;
     if (!row) return;
     if (Date.parse(row.deadline_at) <= this.now().getTime()) {
-      await tx`DELETE FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
+      await tx`DELETE FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
       this.markExpiredPostgresLease(row);
       return;
     }
@@ -4030,18 +4030,18 @@ export class PostgresAuthority<
           [],
           { prepare: false },
         );
-        await tx`SELECT authority_id FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+        await tx`SELECT authority_id FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const rows =
-          await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const row = rows[0] as SqlMaintenanceLeaseRow | undefined;
         const now = this.now().getTime();
         if (row && Date.parse(row.deadline_at) > now) throw this.maintenanceHeld();
         if (row) {
-          await tx`DELETE FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
+          await tx`DELETE FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
           this.markExpiredPostgresLease(row);
         }
         token = randomUUID();
-        await tx`INSERT INTO authority_maintenance_leases (authority_id, namespace, owner, token, deadline_at, version) VALUES (${this.authorityId}, ${this.namespace}, ${context.owner}, ${token}, ${new Date(now + this.maintenanceLeaseMs).toISOString()}, 1)`;
+        await tx`INSERT INTO caplets.authority_maintenance_leases (authority_id, namespace, owner, token, deadline_at, version) VALUES (${this.authorityId}, ${this.namespace}, ${context.owner}, ${token}, ${new Date(now + this.maintenanceLeaseMs).toISOString()}, 1)`;
       });
     } catch (error) {
       if (error instanceof CapletsError) throw error;
@@ -4079,13 +4079,13 @@ export class PostgresAuthority<
           [],
           { prepare: false },
         );
-        await tx`SELECT authority_id FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+        await tx`SELECT authority_id FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const rows =
-          await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
         const row = rows[0] as SqlMaintenanceLeaseRow | undefined;
         if (!row || Date.parse(row.deadline_at) <= this.now().getTime()) {
           if (row) {
-            await tx`DELETE FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
+            await tx`DELETE FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
             this.markExpiredPostgresLease(row);
           }
           throw this.maintenanceHeld();
@@ -4126,9 +4126,9 @@ export class PostgresAuthority<
             [],
             { prepare: false },
           );
-          await tx`SELECT authority_id FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+          await tx`SELECT authority_id FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
           const rows =
-            await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+            await tx`SELECT authority_id, namespace, owner, token, deadline_at, version FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} FOR UPDATE`;
           const row = rows[0] as SqlMaintenanceLeaseRow | undefined;
           const now = this.now().getTime();
           if (
@@ -4138,12 +4138,12 @@ export class PostgresAuthority<
             Date.parse(row.deadline_at) <= now
           ) {
             if (row?.token === token) {
-              await tx`DELETE FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
+              await tx`DELETE FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${row.owner} AND token = ${row.token}`;
               this.markExpiredPostgresLease(row);
             }
             throw this.maintenanceHeld();
           }
-          await tx`UPDATE authority_maintenance_leases SET deadline_at = ${new Date(now + this.maintenanceLeaseMs).toISOString()} WHERE authority_id = ${this.authorityId} AND owner = ${context.owner} AND token = ${token}`;
+          await tx`UPDATE caplets.authority_maintenance_leases SET deadline_at = ${new Date(now + this.maintenanceLeaseMs).toISOString()} WHERE authority_id = ${this.authorityId} AND owner = ${context.owner} AND token = ${token}`;
         });
       } catch (error) {
         if (error instanceof CapletsError) throw error;
@@ -4183,8 +4183,8 @@ export class PostgresAuthority<
           [],
           { prepare: false },
         );
-        await tx`SELECT authority_id FROM authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
-        await tx`DELETE FROM authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${context.owner} AND token = ${token}`;
+        await tx`SELECT authority_id FROM caplets.authority_heads WHERE authority_id = ${this.authorityId} FOR UPDATE`;
+        await tx`DELETE FROM caplets.authority_maintenance_leases WHERE authority_id = ${this.authorityId} AND owner = ${context.owner} AND token = ${token}`;
       });
     } catch (error) {
       if (error instanceof CapletsError) throw error;
@@ -4205,7 +4205,7 @@ export class PostgresAuthority<
       this.options.statementTimeoutMs,
       async (tx) => {
         const rows =
-          await tx`SELECT authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at FROM authority_receipts WHERE authority_id = ${this.authorityId} AND current_host_id = ${envelope.currentHostId} AND principal_id = ${envelope.principalId} AND idempotency_key = ${envelope.idempotencyKey}`;
+          await tx`SELECT authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at FROM caplets.authority_receipts WHERE authority_id = ${this.authorityId} AND current_host_id = ${envelope.currentHostId} AND principal_id = ${envelope.principalId} AND idempotency_key = ${envelope.idempotencyKey}`;
         const receipt = rows[0] as PgReceiptRow | undefined;
         if (!receipt) return null;
         if (receipt.request_digest !== envelope.requestDigest)
@@ -4214,7 +4214,7 @@ export class PostgresAuthority<
             "Idempotency key was reused with a different request",
           );
         const generationRows =
-          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${receipt.generation_id}`;
+          await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM caplets.authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${receipt.generation_id}`;
         const row = generationRows[0] as PgGenerationRow | undefined;
         if (!row)
           throw new CapletsError(

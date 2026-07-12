@@ -18,6 +18,74 @@ CAPLETS_CONFIG=/path/to/caplets.json caplets doctor
 `CAPLETS_CONFIG` is useful in CI, tests, or temporary sessions where you want a different
 user config file.
 
+### Shared storage
+
+Self-hosted deployments select storage only in the global user config. Project
+`.caplets/config.json` files cannot set `storage`; they remain read-only staged inputs. Choose
+exactly one provider-shaped form:
+
+```json
+{
+  "storage": {
+    "provider": "filesystem",
+    "path": "/var/lib/caplets",
+    "pollIntervalMs": 2500,
+    "vaultKey": "env:CAPLETS_VAULT_KEY"
+  }
+}
+```
+
+```json
+{
+  "storage": {
+    "provider": "sqlite",
+    "path": "/var/lib/caplets/caplets.sqlite",
+    "pollIntervalMs": 2500,
+    "vaultKey": "env:CAPLETS_VAULT_KEY"
+  }
+}
+```
+
+```json
+{
+  "storage": {
+    "provider": "postgresql",
+    "connection": "env:CAPLETS_POSTGRES_URL",
+    "pollIntervalMs": 2500,
+    "vaultKey": "env:CAPLETS_VAULT_KEY"
+  }
+}
+```
+
+```json
+{
+  "storage": {
+    "provider": "s3",
+    "bucket": "caplets-state",
+    "region": "us-east-1",
+    "path": "production/caplets",
+    "credentials": "env:CAPLETS_S3_CREDENTIALS",
+    "endpoint": "http://minio:9000",
+    "forcePathStyle": true,
+    "pollIntervalMs": 2500,
+    "vaultKey": "env:CAPLETS_VAULT_KEY"
+  }
+}
+```
+
+For filesystem storage, `path` is optional; omission uses `<global-config-dir>/caplets`, and a
+relative path resolves from the global config that declares it. SQLite requires a local,
+persistent file and is not a multi-replica coordinator. Give each PostgreSQL deployment a
+dedicated database/connection. Give each S3 deployment a distinct bucket/root path; omitted or
+empty `path` uses `.caplets/`. Omitting S3 `credentials` uses the runtime's workload identity.
+AWS S3 and Cloudflare R2 still require credentialed live evidence before being described as
+validated.
+
+`connection`, `credentials`, and `vaultKey` are literal storage-bootstrap secret references, not
+ordinary Caplet `$vault:` substitutions. The default runtime resolves `env:NAME` (or a bare
+environment-variable name); server-local storage commands also accept `vault:NAME` and private
+`file:/…` references. Never put a DSN, S3 credential JSON, or Vault key bytes inline.
+
 ### HTTP serve defaults
 
 User config can define optional HTTP `serve` defaults for foreground `caplets serve

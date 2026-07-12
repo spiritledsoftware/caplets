@@ -102,7 +102,6 @@ export type MigrationOptions = {
   destinationFence?: MaintenanceFence;
   targetFence?: MaintenanceFence;
   dryRun?: boolean;
-  targetNamespace?: string;
   targetSchemaVersion?: number;
   knownDomains?: readonly string[];
   owner?: string;
@@ -140,7 +139,7 @@ export type MigrationResult = MigrationDryRunResult | MigrationApplyResult;
 const DEFAULT_EXCLUSIONS: readonly AuthorityInventoryExclusion[] = [
   {
     kind: "provider-credentials",
-    reason: "Deployment-native authority credentials are never authority records.",
+    reason: "Deployment-native Storage credentials are never Storage records.",
   },
   {
     kind: "encryption-key-bytes",
@@ -158,7 +157,7 @@ const DEFAULT_EXCLUSIONS: readonly AuthorityInventoryExclusion[] = [
     kind: "client-local-state",
     reason: "Remote profiles, Cloud auth, and client caches are client-owned.",
   },
-  { kind: "setup-attempts", reason: "Ephemeral setup attempts are not durable authority state." },
+  { kind: "setup-attempts", reason: "Ephemeral setup attempts are not durable Storage state." },
   {
     kind: "live-sessions",
     reason: "Live MCP, Attach, and workspace sessions remain replica-local.",
@@ -222,7 +221,7 @@ export async function inventoryAuthority(
 export function authorityExportDigest(state: AuthorityExport): string {
   const encoded = stableJsonStringify(state);
   if (typeof encoded !== "string") {
-    throw new CapletsError("CONFIG_INVALID", "Authority export is not serializable");
+    throw new CapletsError("CONFIG_INVALID", "Storage export is not serializable");
   }
   return `sha256:${createHash("sha256").update(encoded, "utf8").digest("hex")}`;
 }
@@ -244,22 +243,13 @@ export async function migrateAuthority(options: MigrationOptions): Promise<Migra
   if (!sourceFence || !destinationFence) {
     throw new CapletsError(
       "UNSUPPORTED_OPERATION",
-      "Authority lifecycle requires injected source and destination maintenance fences",
+      "Storage lifecycle requires injected source and destination maintenance fences",
     );
   }
   const sourceLifecycleIdentity = assertAuthorityLifecycleIdentity(options.source);
   const targetLifecycleIdentity = assertAuthorityLifecycleIdentity(options.target);
   const sourceNamespace = sourceLifecycleIdentity.namespace;
   const targetNamespace = targetLifecycleIdentity.namespace;
-  if (
-    options.targetNamespace !== undefined &&
-    options.targetNamespace !== targetLifecycleIdentity.namespace
-  ) {
-    throw new CapletsError(
-      "CONFIG_INVALID",
-      "Target authority namespace override does not match the provider lifecycle identity",
-    );
-  }
   const owner = options.owner ?? `migration-${randomUUID()}`;
   const targetSchemaVersion = resolveTargetSchemaVersion(
     options.target,
@@ -330,7 +320,7 @@ export async function migrateAuthority(options: MigrationOptions): Promise<Migra
         if (authorityExportDigest(rechecked) !== loaded.inventory.sourceDigest) {
           throw new CapletsError(
             "CONFIG_INVALID",
-            "Source authority changed during migration; staged state was invalidated",
+            "Source Storage changed during migration; staged state was invalidated",
           );
         }
 
@@ -397,23 +387,20 @@ async function loadInventory(
   validateExport(state);
   const head = await authority.readHead();
   if (authorityGenerationDigest(state.generation) !== state.generation.digest) {
-    throw new CapletsError("CONFIG_INVALID", "Authority export generation digest is invalid");
+    throw new CapletsError("CONFIG_INVALID", "Storage export generation digest is invalid");
   }
   if (!head || !sameHead(head, state.generation)) {
-    throw new CapletsError(
-      "CONFIG_INVALID",
-      "Authority export does not match its authoritative head",
-    );
+    throw new CapletsError("CONFIG_INVALID", "Storage export does not match its selected head");
   }
   const generation = state.generation;
   const snapshot = generation.snapshot;
   if (!isRecord(snapshot)) {
-    throw new CapletsError("CONFIG_INVALID", "Authority snapshot is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage snapshot is malformed");
   }
   const known = new Set(KNOWN_DOMAINS);
   for (const domain of options.knownDomains ?? []) {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/u.test(domain)) {
-      throw new CapletsError("CONFIG_INVALID", "Authority inventory domain name is invalid");
+      throw new CapletsError("CONFIG_INVALID", "Storage inventory domain name is invalid");
     }
     known.add(domain);
   }
@@ -465,7 +452,7 @@ function validateExport(state: AuthorityExport): void {
     !state.generation ||
     typeof state.auxiliaryWatermark !== "string"
   ) {
-    throw new CapletsError("CONFIG_INVALID", "Authority export is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage export is malformed");
   }
   const generation = state.generation;
   if (
@@ -482,10 +469,10 @@ function validateExport(state: AuthorityExport): void {
     typeof generation.provenance.provider !== "string" ||
     typeof generation.provenance.namespace !== "string"
   ) {
-    throw new CapletsError("CONFIG_INVALID", "Authority export generation is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage export generation is malformed");
   }
   if (!isRecord(generation.snapshot) || Array.isArray(generation.snapshot)) {
-    throw new CapletsError("CONFIG_INVALID", "Authority snapshot is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage snapshot is malformed");
   }
 }
 
@@ -502,7 +489,7 @@ function assertDomainShape(name: string, value: unknown): void {
     return;
   }
   if (name === "config" && !isRecord(value)) {
-    throw new CapletsError("CONFIG_INVALID", "Authority config domain is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage config domain is malformed");
   }
   if (
     [
@@ -542,7 +529,7 @@ function assertDomainShape(name: string, value: unknown): void {
     throw new CapletsError("CONFIG_INVALID", `Authority domain ${name} is malformed`);
   }
   if (name === "failedEventWatermark" && typeof value !== "string" && typeof value !== "number") {
-    throw new CapletsError("CONFIG_INVALID", "Authority failed-event watermark is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage failed-event watermark is malformed");
   }
 }
 const REMOTE_ROOT_KEYS: Record<string, true> = {
@@ -635,7 +622,7 @@ function assertRemoteCredentialsDomain(value: unknown): void {
     !Array.isArray(root.pendingLogins) ||
     !Array.isArray(root.clients)
   ) {
-    throw new CapletsError("CONFIG_INVALID", "Authority remoteCredentials domain is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage remoteCredentials domain is malformed");
   }
   root.pairingCodes.forEach((entry: unknown, index: number) =>
     assertRemotePairingCode(entry, `remoteCredentials.pairingCodes[${index}]`),
@@ -782,7 +769,7 @@ function assertEncryptedRecord(value: unknown, label: string): void {
 
 function assertSetupActivityDomain(value: unknown): void {
   if (!Array.isArray(value))
-    throw new CapletsError("CONFIG_INVALID", "Authority setupActivity domain is malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage setupActivity domain is malformed");
   value.forEach((entry: unknown, index: number) => {
     const label = `setupActivity[${index}]`;
     const record = requireRecord(entry, label);
@@ -909,7 +896,7 @@ function domainCount(name: string, value: unknown): number {
 function redactedDigest(value: unknown): string {
   const encoded = stableJsonStringify(redactForDigest(value));
   if (typeof encoded !== "string")
-    throw new CapletsError("CONFIG_INVALID", "Authority domain is not serializable");
+    throw new CapletsError("CONFIG_INVALID", "Storage domain is not serializable");
   return `sha256:${createHash("sha256").update(encoded, "utf8").digest("hex")}`;
 }
 
@@ -979,7 +966,7 @@ function normalizeAuxiliaryForTarget(value: AuthorityAuxiliaryExport): Authority
   const auxiliary = structuredClone(value);
   if (auxiliary.sessions === undefined) return auxiliary;
   if (!isRecord(auxiliary.sessions)) {
-    throw new CapletsError("CONFIG_INVALID", "Authority auxiliary sessions are malformed");
+    throw new CapletsError("CONFIG_INVALID", "Storage auxiliary sessions are malformed");
   }
   const sessions: Record<string, AuthorityAuxiliarySession> = {};
   for (const [sessionId, rawSession] of Object.entries(auxiliary.sessions)) {

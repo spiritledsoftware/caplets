@@ -137,6 +137,29 @@ async function mountRoute(
   );
 }
 
+const opaqueGeneration = {
+  authorityId: `storage-provider://${"a".repeat(120)}?credential=must-stay-opaque`,
+  id: `generation://${"b".repeat(120)}?token=must-stay-opaque`,
+  sequence: 12,
+  predecessorId: `generation://${"c".repeat(120)}?secret=must-stay-opaque`,
+};
+
+function writableHealth(activeGeneration: Record<string, unknown> = opaqueGeneration) {
+  return {
+    provider: "s3",
+    authorityId: String(activeGeneration.authorityId ?? "storage"),
+    connectivity: "healthy",
+    writable: true,
+    activeGeneration,
+    observedGeneration: activeGeneration,
+    exposureGeneration: 12,
+    refresh: "current",
+    lifecycle: "ready",
+    readiness: "ready",
+    lag: 0,
+  };
+}
+
 async function openRevealConfirmation() {
   await act(async () => {
     button(`Reveal vault value ${vaultKey}`).click();
@@ -345,15 +368,13 @@ describe("authority storage presentation", () => {
       diagnostics: { checks: [{ id: "runtime", status: "ok" }] },
     });
 
-    await waitFor(() =>
-      container?.textContent?.includes("Degraded · read-only") ? true : undefined,
-    );
+    await waitFor(() => (container?.textContent?.includes("Unavailable") ? true : undefined));
     const text = container?.textContent ?? "";
     expect(text).toContain("Postgresql");
-    expect(text).toContain("production-authority");
-    expect(text).toContain("Authority Generation · Active");
+    expect(text).not.toContain("production-authority");
+    expect(text).toContain("Storage Generation · Active");
     expect(text).toContain("Generation 7");
-    expect(text).toContain("Authority Generation · Observed");
+    expect(text).toContain("Storage Generation · Observed");
     expect(text).toContain("Generation 9");
     expect(text).toContain("Exposure Generation");
     expect(text).toContain("Generation 4");
@@ -362,6 +383,7 @@ describe("authority storage presentation", () => {
     expect(text).not.toContain("https://");
     expect(text).not.toContain("secret-value");
     expect(text).not.toContain("must-not-render");
+    expect(text).not.toMatch(/\bAuthority\b/u);
   });
 
   it("marks staged IDs reserved and exposes mutation only for authority-owned Caplets", async () => {
@@ -425,7 +447,7 @@ describe("authority storage presentation", () => {
       "Review update for shared-tool; conflicts require refresh and review",
     );
     expect(container?.textContent).toContain("Immutable on this host");
-    expect(container?.textContent).toContain("Authority Generation conflict checks");
+    expect(container?.textContent).toContain("Storage Generation protection");
     expect(container?.textContent).not.toContain("/private/project");
 
     await act(async () => {
@@ -465,10 +487,10 @@ describe("authority storage presentation", () => {
     });
 
     await waitFor(() =>
-      container?.textContent?.includes("Filesystem compatibility") ? true : undefined,
+      container?.textContent?.includes("Storage unavailable") ? true : undefined,
     );
     const text = container?.textContent ?? "";
-    expect(text).toContain("Existing local storage remains usable");
+    expect(text).toContain("Existing local reads remain available");
     expect(text).toContain("Secret values are not displayed");
     expect(text).not.toContain("private-host.example");
     expect(text).not.toContain("private-bind.example");
@@ -483,8 +505,18 @@ describe("authority storage presentation", () => {
           authorityId: "recovered-authority",
           connectivity: "healthy",
           writable: true,
-          activeGeneration: { sequence: 3 },
-          observedGeneration: { sequence: 3 },
+          activeGeneration: {
+            authorityId: "recovered-storage",
+            id: "generation-3",
+            sequence: 3,
+            predecessorId: "generation-2",
+          },
+          observedGeneration: {
+            authorityId: "recovered-storage",
+            id: "generation-3",
+            sequence: 3,
+            predecessorId: "generation-2",
+          },
           exposureGeneration: 8,
           refresh: "current",
           lifecycle: "recovered",
@@ -495,7 +527,7 @@ describe("authority storage presentation", () => {
     });
 
     await waitFor(() => (container?.textContent?.includes("Recovered") ? true : undefined));
-    expect(container?.textContent).toContain("Authority recovered");
+    expect(container?.textContent).toContain("Storage recovered");
     expect(container?.textContent).toContain("Writes are enabled");
     expect(container?.textContent).toContain("0 generations");
   });
@@ -546,20 +578,20 @@ describe("authority storage presentation", () => {
 
     await waitFor(() => button("Create Caplet"));
     expect(
-      document.querySelector('button[aria-label="Edit authority Caplet authority-tool"]'),
+      document.querySelector('button[aria-label="Edit Storage-managed Caplet authority-tool"]'),
     ).not.toBeNull();
     expect(
-      document.querySelector('button[aria-label="Delete authority Caplet authority-tool"]'),
+      document.querySelector('button[aria-label="Delete Storage-managed Caplet authority-tool"]'),
     ).not.toBeNull();
     expect(
-      document.querySelector('button[aria-label="Edit authority Caplet staged-tool"]'),
+      document.querySelector('button[aria-label="Edit Storage-managed Caplet staged-tool"]'),
     ).toBeNull();
     expect(
-      document.querySelector('button[aria-label="Delete authority Caplet staged-tool"]'),
+      document.querySelector('button[aria-label="Delete Storage-managed Caplet staged-tool"]'),
     ).toBeNull();
 
     const idInput = document.querySelector<HTMLInputElement>(
-      'input[aria-label="Authority Caplet ID"]',
+      'input[aria-label="Storage-managed Caplet ID"]',
     );
     if (!idInput) throw new Error("Authority Caplet ID input missing.");
     await act(async () => {
@@ -579,7 +611,7 @@ describe("authority storage presentation", () => {
       record: {
         id: "new-authority-tool",
         name: "new-authority-tool",
-        description: "Authority-managed Caplet",
+        description: "Storage-managed Caplet",
         backend: { transport: "stdio", command: "node" },
       },
       expectedGeneration: activeGeneration,
@@ -606,7 +638,12 @@ describe("authority storage presentation", () => {
     await mountRoute("caplets", {
       caplets: { caplets: [] },
       runtime: {
-        health: { connectivity: "healthy", writable: true, activeGeneration: firstGeneration },
+        health: {
+          connectivity: "healthy",
+          writable: true,
+          activeGeneration: firstGeneration,
+          observedGeneration: firstGeneration,
+        },
       },
       settings: { settings: {} },
     });
@@ -615,7 +652,12 @@ describe("authority storage presentation", () => {
       if (path === "caplets") return Promise.resolve({ caplets });
       if (path === "runtime" || path === "diagnostics") {
         return Promise.resolve({
-          health: { connectivity: "healthy", writable: true, activeGeneration: currentGeneration },
+          health: {
+            connectivity: "healthy",
+            writable: true,
+            activeGeneration: currentGeneration,
+            observedGeneration: currentGeneration,
+          },
         });
       }
       if (path === "caplets/create") {
@@ -656,18 +698,18 @@ describe("authority storage presentation", () => {
       }
       return Promise.resolve({});
     });
-    await setInput('input[aria-label="Authority Caplet ID"]', "new-authority-tool");
+    await setInput('input[aria-label="Storage-managed Caplet ID"]', "new-authority-tool");
     await setInput('input[aria-label="MCP stdio command"]', "node");
     await act(async () => {
       button("Create Caplet").click();
     });
     await waitFor(() => (createKey ? createKey : undefined));
-    await waitFor(() => button("Edit authority Caplet new-authority-tool"));
+    await waitFor(() => button("Edit Storage-managed Caplet new-authority-tool"));
     await act(async () => {
-      button("Edit authority Caplet new-authority-tool").click();
+      button("Edit Storage-managed Caplet new-authority-tool").click();
     });
     await waitFor(() => button("Save Caplet"));
-    await setInput('input[aria-label="Authority Caplet name"]', "Edited authority tool");
+    await setInput('input[aria-label="Storage-managed Caplet name"]', "Edited authority tool");
     await act(async () => {
       button("Save Caplet").click();
     });
@@ -687,10 +729,20 @@ describe("authority storage presentation", () => {
     let revokeKey: string | undefined;
     await mountRoute("settings", {
       diagnostics: {
-        health: { connectivity: "healthy", writable: true, activeGeneration: firstGeneration },
+        health: {
+          connectivity: "healthy",
+          writable: true,
+          activeGeneration: firstGeneration,
+          observedGeneration: firstGeneration,
+        },
       },
       runtime: {
-        health: { connectivity: "healthy", writable: true, activeGeneration: firstGeneration },
+        health: {
+          connectivity: "healthy",
+          writable: true,
+          activeGeneration: firstGeneration,
+          observedGeneration: firstGeneration,
+        },
       },
       settings: {
         settings: {
@@ -728,7 +780,12 @@ describe("authority storage presentation", () => {
         });
       }
       return Promise.resolve({
-        health: { connectivity: "healthy", writable: true, activeGeneration: firstGeneration },
+        health: {
+          connectivity: "healthy",
+          writable: true,
+          activeGeneration: firstGeneration,
+          observedGeneration: firstGeneration,
+        },
         settings: {
           telemetry: true,
           defaultSearchLimit: 10,
@@ -770,7 +827,12 @@ describe("authority storage presentation", () => {
     await mountRoute("caplets", {
       caplets: { caplets: [caplet] },
       runtime: {
-        health: { connectivity: "healthy", writable: true, activeGeneration: generation },
+        health: {
+          connectivity: "healthy",
+          writable: true,
+          activeGeneration: generation,
+          observedGeneration: generation,
+        },
       },
       settings: { settings: {} },
     });
@@ -779,7 +841,12 @@ describe("authority storage presentation", () => {
       if (path === "caplets") return Promise.resolve({ caplets: deleted ? [] : [caplet] });
       if (path === "runtime" || path === "diagnostics") {
         return Promise.resolve({
-          health: { connectivity: "healthy", writable: true, activeGeneration: generation },
+          health: {
+            connectivity: "healthy",
+            writable: true,
+            activeGeneration: generation,
+            observedGeneration: generation,
+          },
         });
       }
       if (path === "caplets/delete") {
@@ -789,11 +856,11 @@ describe("authority storage presentation", () => {
       return Promise.resolve({});
     });
     await act(async () => {
-      button("Edit authority Caplet authority-tool").click();
+      button("Edit Storage-managed Caplet authority-tool").click();
     });
     await waitFor(() => button("Save Caplet"));
     await act(async () => {
-      button("Delete authority Caplet authority-tool").click();
+      button("Delete Storage-managed Caplet authority-tool").click();
     });
     await waitFor(() =>
       document.querySelector('input[aria-label="Type delete authority-tool to confirm"]'),
@@ -809,7 +876,9 @@ describe("authority storage presentation", () => {
     await waitFor(() => button("Create Caplet"));
     expect(document.querySelector('button[aria-label="Cancel edit"]')).toBeNull();
     expect(
-      document.querySelector('input[aria-label="Authority Caplet ID"]')?.getAttribute("value"),
+      document
+        .querySelector('input[aria-label="Storage-managed Caplet ID"]')
+        ?.getAttribute("value"),
     ).toBe("");
   });
 
@@ -821,7 +890,9 @@ describe("authority storage presentation", () => {
       predecessorId: null,
     };
     await mountRoute("caplets", {
-      runtime: { health: { writable: true, activeGeneration } },
+      runtime: {
+        health: { writable: true, activeGeneration, observedGeneration: activeGeneration },
+      },
     });
     dashboardApi.mockImplementation((path: string) => {
       if (path === "caplets/create") {
@@ -841,12 +912,15 @@ describe("authority storage presentation", () => {
         };
         return Promise.reject(error);
       }
-      if (path === "diagnostics")
-        return Promise.resolve({ health: { writable: true, activeGeneration } });
+      if (path === "diagnostics") {
+        return Promise.resolve({
+          health: { writable: true, activeGeneration, observedGeneration: activeGeneration },
+        });
+      }
       return Promise.resolve({});
     });
     const idInput = document.querySelector<HTMLInputElement>(
-      'input[aria-label="Authority Caplet ID"]',
+      'input[aria-label="Storage-managed Caplet ID"]',
     );
     if (!idInput) throw new Error("Authority Caplet ID input missing.");
     await setInput('input[aria-label="MCP stdio command"]', "node");
@@ -862,10 +936,11 @@ describe("authority storage presentation", () => {
     );
     await flush();
     expect(
-      document.querySelector<HTMLInputElement>('input[aria-label="Authority Caplet ID"]')?.value,
+      document.querySelector<HTMLInputElement>('input[aria-label="Storage-managed Caplet ID"]')
+        ?.value,
     ).toBe("conflict-draft");
     expect(container?.textContent).toContain("changed to 2");
-    expect(container?.textContent).toContain("Refresh and review latest generation");
+    expect(container?.textContent).toContain("Refresh and review latest Storage Generation");
   });
 
   it("keeps a durable pending receipt and disables duplicate Caplet submission", async () => {
@@ -876,7 +951,13 @@ describe("authority storage presentation", () => {
       predecessorId: null,
     };
     await mountRoute("caplets", {
-      runtime: { health: { writable: true, activeGeneration: generation } },
+      runtime: {
+        health: {
+          writable: true,
+          activeGeneration: generation,
+          observedGeneration: generation,
+        },
+      },
     });
     dashboardApi.mockImplementation((path: string) => {
       if (path === "caplets/create") {
@@ -892,12 +973,18 @@ describe("authority storage presentation", () => {
         });
       }
       if (path === "diagnostics") {
-        return Promise.resolve({ health: { writable: true, activeGeneration: generation } });
+        return Promise.resolve({
+          health: {
+            writable: true,
+            activeGeneration: generation,
+            observedGeneration: generation,
+          },
+        });
       }
       return Promise.resolve({});
     });
     const idInput = document.querySelector<HTMLInputElement>(
-      'input[aria-label="Authority Caplet ID"]',
+      'input[aria-label="Storage-managed Caplet ID"]',
     );
     if (!idInput) throw new Error("Authority Caplet ID input missing.");
     await setInput('input[aria-label="MCP stdio command"]', "node");
@@ -913,5 +1000,211 @@ describe("authority storage presentation", () => {
     );
     expect(button("Create Caplet").disabled).toBe(true);
     expect(container?.textContent).toContain("Do not submit a duplicate change");
+  });
+  it("forwards long URL-like Storage Generation identity fields byte-for-byte without displaying them", async () => {
+    await mountRoute("caplets", {
+      runtime: { health: writableHealth() },
+      caplets: { caplets: [] },
+      settings: { settings: {} },
+      "caplets/create": { status: "active", generation: opaqueGeneration },
+    });
+
+    await setInput('input[aria-label="Storage-managed Caplet ID"]', "opaque-token-tool");
+    await setInput('input[aria-label="MCP stdio command"]', "node");
+    await act(async () => {
+      button("Create Caplet").click();
+    });
+    const createCall = await waitFor(
+      () => dashboardApi.mock.calls.find(([path]) => path === "caplets/create") ?? undefined,
+    );
+    expect(JSON.parse(String(createCall[1]?.body)).expectedGeneration).toEqual(opaqueGeneration);
+    expect(container?.textContent).not.toContain(opaqueGeneration.authorityId);
+    expect(container?.textContent).not.toContain(opaqueGeneration.id);
+    expect(container?.textContent).not.toContain(opaqueGeneration.predecessorId);
+  });
+
+  it("blocks every Caplet mutation when Storage Generation identity is incomplete", async () => {
+    await mountRoute("caplets", {
+      runtime: {
+        health: writableHealth({
+          authorityId: "raw-partial-authority-id",
+          sequence: 12,
+        }),
+      },
+      caplets: {
+        caplets: [
+          {
+            id: "managed-tool",
+            source: { kind: "authority", authorityId: "raw-partial-authority-id" },
+          },
+          { id: "legacy-tool", source: { kind: "legacy" } },
+        ],
+      },
+      "catalog/updates": {
+        updates: [
+          { id: "managed-tool", status: "available" },
+          { id: "legacy-tool", status: "available" },
+        ],
+      },
+    });
+
+    await waitFor(() =>
+      container?.textContent?.includes("Storage unavailable") ? true : undefined,
+    );
+    expect(button("Create Caplet").disabled).toBe(true);
+    expect(button("Edit Storage-managed Caplet managed-tool").disabled).toBe(true);
+    expect(button("Delete Storage-managed Caplet managed-tool").disabled).toBe(true);
+    expect(
+      button("Update unavailable for legacy-tool until Storage identity is refreshed").disabled,
+    ).toBe(true);
+    expect(container?.textContent).toContain("Refresh and review");
+    expect(container?.textContent).not.toContain("raw-partial-authority-id");
+  });
+
+  it("requires refresh and review when pending activation observes an out-of-order identity", async () => {
+    const initialGeneration = {
+      authorityId: "storage-a",
+      id: "generation-1",
+      sequence: 1,
+      predecessorId: null,
+    };
+    const receiptGeneration = {
+      authorityId: "storage-a",
+      id: "generation-2",
+      sequence: 2,
+      predecessorId: "generation-1",
+    };
+    const laterGeneration = {
+      authorityId: "storage-a",
+      id: "generation-3",
+      sequence: 3,
+      predecessorId: "generation-2",
+    };
+    await mountRoute("caplets", {
+      runtime: { health: writableHealth(initialGeneration) },
+      caplets: { caplets: [] },
+    });
+    dashboardApi.mockImplementation((path: string) => {
+      if (path === "session") return Promise.resolve({ authenticated: true, session });
+      if (path === "caplets/create") {
+        return Promise.resolve({ status: "pending", generation: receiptGeneration });
+      }
+      if (path === "diagnostics") {
+        return Promise.resolve({ health: writableHealth(laterGeneration) });
+      }
+      return Promise.resolve({});
+    });
+
+    await setInput('input[aria-label="Storage-managed Caplet ID"]', "out-of-order-tool");
+    await setInput('input[aria-label="MCP stdio command"]', "node");
+    await act(async () => {
+      button("Create Caplet").click();
+    });
+    await waitFor(() =>
+      container?.textContent?.includes("Refresh and review latest Storage Generation")
+        ? true
+        : undefined,
+    );
+    expect(container?.textContent).not.toContain("activation is still pending");
+    expect(button("Create Caplet").disabled).toBe(true);
+  });
+
+  it("forwards the same opaque identity through settings and setup mutations", async () => {
+    await mountRoute("settings", {
+      runtime: { health: writableHealth() },
+      diagnostics: { health: writableHealth() },
+      settings: {
+        settings: {
+          telemetry: false,
+          defaultSearchLimit: 20,
+          maxSearchLimit: 50,
+          options: { exposure: "code_mode" },
+        },
+      },
+      "setup/grant": { status: "active", generation: opaqueGeneration },
+    });
+    expect(container?.textContent).not.toMatch(/\bAuthority\b/u);
+    dashboardApi.mockClear();
+
+    await act(async () => {
+      button("Save settings").click();
+    });
+    await setInput('input[aria-label="Setup Caplet ID"]', "opaque-setup-tool");
+    await setInput('input[aria-label="Setup content hash"]', "sha256:12345678");
+    await act(async () => {
+      button("Grant setup approval").click();
+    });
+
+    const settingsCall = await waitFor(
+      () =>
+        dashboardApi.mock.calls.find(
+          ([path, options]) => path === "settings" && options?.method === "POST",
+        ) ?? undefined,
+    );
+    const setupCall = await waitFor(
+      () => dashboardApi.mock.calls.find(([path]) => path === "setup/grant") ?? undefined,
+    );
+    expect(JSON.parse(String(settingsCall[1]?.body)).expectedGeneration).toEqual(opaqueGeneration);
+    expect(JSON.parse(String(setupCall[1]?.body)).expectedGeneration).toEqual(opaqueGeneration);
+  });
+
+  it("re-enables mutations only after refresh returns a fresh complete identity", async () => {
+    await mountRoute("caplets", {
+      runtime: {
+        health: writableHealth({
+          authorityId: "partial-storage",
+          sequence: 12,
+        }),
+      },
+      caplets: { caplets: [] },
+    });
+    expect(button("Create Caplet").disabled).toBe(true);
+    dashboardApi.mockImplementation((path: string) => {
+      if (path === "session") return Promise.resolve({ authenticated: true, session });
+      if (path === "runtime" || path === "diagnostics") {
+        return Promise.resolve({ health: writableHealth() });
+      }
+      if (path === "caplets") return Promise.resolve({ caplets: [] });
+      return Promise.resolve({});
+    });
+
+    await act(async () => {
+      button("Refresh and review Storage").click();
+    });
+    await waitFor(() => (button("Create Caplet").disabled ? undefined : true));
+    expect(container?.textContent).not.toContain("Storage unavailable");
+  });
+
+  it("uses Storage terminology in ownership, editor, and deletion confirmation surfaces", async () => {
+    await mountRoute("caplets", {
+      runtime: { health: writableHealth() },
+      caplets: {
+        caplets: [
+          {
+            id: "managed-tool",
+            source: { kind: "authority", authorityId: opaqueGeneration.authorityId },
+          },
+          { id: "staged-tool", source: { kind: "project-file" } },
+        ],
+      },
+    });
+
+    expect(container?.textContent).toContain("Storage-managed");
+    expect(container?.textContent).toContain("Storage Generation protection");
+    expect(container?.textContent).toContain("Immutable staged definition");
+    expect(container?.textContent).not.toMatch(/\bAuthority\b/u);
+    await act(async () => {
+      button("Edit Storage-managed Caplet managed-tool").click();
+    });
+    expect(container?.textContent).toContain("Edit Storage-managed Caplet");
+    await act(async () => {
+      button("Cancel edit").click();
+    });
+    await act(async () => {
+      button("Delete Storage-managed Caplet managed-tool").click();
+    });
+    await flush();
+    expect(document.body.textContent).toContain("Delete Storage-managed Caplet?");
+    expect(document.body.textContent).toContain("Storage Generation review");
   });
 });

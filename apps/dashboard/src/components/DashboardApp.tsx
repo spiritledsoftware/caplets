@@ -109,15 +109,14 @@ type RouteKey =
   | "settings";
 
 type AuthorityGenerationView = {
-  authorityId?: string;
-  id?: string;
-  predecessorId?: string | null;
+  authorityId: string;
+  id: string;
+  predecessorId: string | null;
   sequence: number;
 };
 
 type AuthorityHealthView = {
   provider: string;
-  authorityId: string;
   connectivity: string;
   writable: boolean;
   activeGeneration: AuthorityGenerationView | null;
@@ -260,6 +259,13 @@ function safeDashboardText(value: unknown, fallback: string, limit = 120): strin
   return sanitized ? sanitized.slice(0, limit) : fallback;
 }
 
+function storageDashboardText(value: unknown, fallback: string, limit = 240): string {
+  return safeDashboardText(value, fallback, limit)
+    .replace(/\bWritable Authority\b/gu, "Storage")
+    .replace(/\bAuthority Generation\b/gu, "Storage Generation")
+    .replace(/\bauthority\b/giu, "Storage");
+}
+
 function dashboardCount(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -268,20 +274,22 @@ function authorityGeneration(value: unknown): AuthorityGenerationView | null {
   const record = dashboardRecord(value);
   if (!record) return null;
   const sequence = dashboardCount(record.sequence);
-  if (sequence === null) return null;
+  if (
+    sequence === null ||
+    typeof record.authorityId !== "string" ||
+    record.authorityId.length === 0 ||
+    typeof record.id !== "string" ||
+    record.id.length === 0 ||
+    (record.predecessorId !== null &&
+      (typeof record.predecessorId !== "string" || record.predecessorId.length === 0))
+  ) {
+    return null;
+  }
   return {
+    authorityId: record.authorityId,
+    id: record.id,
     sequence,
-    ...(typeof record.authorityId === "string"
-      ? { authorityId: safeDashboardText(record.authorityId, "Current authority", 80) }
-      : {}),
-    ...(typeof record.id === "string"
-      ? { id: safeDashboardText(record.id, "generation", 80) }
-      : {}),
-    ...(record.predecessorId === null
-      ? { predecessorId: null }
-      : typeof record.predecessorId === "string"
-        ? { predecessorId: safeDashboardText(record.predecessorId, "generation", 80) }
-        : {}),
+    predecessorId: record.predecessorId,
   };
 }
 
@@ -312,11 +320,10 @@ function authorityHealthFromData(data: DashboardData): AuthorityHealthView | und
   const error = dashboardRecord(record.lastError);
   const message =
     typeof error?.message === "string"
-      ? safeDashboardText(error.message, "The authority reported a recoverable error.", 240)
+      ? storageDashboardText(error.message, "Storage reported a recoverable error.")
       : undefined;
   return {
     provider: safeDashboardText(record.provider, "filesystem", 40),
-    authorityId: safeDashboardText(record.authorityId, "Current authority", 80),
     connectivity: safeDashboardText(record.connectivity, "unknown", 32).toLowerCase(),
     writable: record.writable === true,
     activeGeneration: authorityGeneration(record.activeGeneration),
@@ -340,7 +347,12 @@ function authorityHealthFromData(data: DashboardData): AuthorityHealthView | und
           lastError: {
             message,
             ...(typeof error?.code === "string"
-              ? { code: safeDashboardText(error.code, "AUTHORITY_ERROR", 48) }
+              ? {
+                  code: safeDashboardText(error.code, "STORAGE_ERROR", 48).replace(
+                    /^AUTHORITY_/u,
+                    "STORAGE_",
+                  ),
+                }
               : {}),
           },
         }
@@ -354,7 +366,7 @@ type CapletOwnership = {
   detail: string;
 };
 
-function capletOwnership(caplet: CapletRecord, health?: AuthorityHealthView): CapletOwnership {
+function capletOwnership(caplet: CapletRecord): CapletOwnership {
   const source =
     dashboardRecord(caplet.provenance) ??
     dashboardRecord(caplet.sourceOwnership) ??
@@ -377,15 +389,10 @@ function capletOwnership(caplet: CapletRecord, health?: AuthorityHealthView): Ca
     caplet.mutable === "false";
 
   if (kind === "authority" || kind.includes("authority-managed") || kind === "shared") {
-    const authorityId = safeDashboardText(
-      source?.authorityId,
-      health?.authorityId ?? "authority",
-      80,
-    );
     return {
       kind: "authority",
-      label: "Authority-managed",
-      detail: `Mutable through ${authorityId} with Authority Generation conflict checks.`,
+      label: "Storage-managed",
+      detail: "Mutable through Storage with provider and Storage Generation protection.",
     };
   }
   if (
@@ -1634,26 +1641,87 @@ function generationsMatch(
   return Boolean(
     left &&
     right &&
+    left.authorityId === right.authorityId &&
+    left.id === right.id &&
     left.sequence === right.sequence &&
-    (left.id === undefined || right.id === undefined || left.id === right.id) &&
-    (left.authorityId === undefined ||
-      right.authorityId === undefined ||
-      left.authorityId === right.authorityId),
+    left.predecessorId === right.predecessorId,
   );
 }
+
+function storageOperationallyUnavailable(health?: AuthorityHealthView): boolean {
+  return Boolean(
+    !health ||
+    !health.writable ||
+    health.connectivity === "degraded" ||
+    health.connectivity === "unavailable" ||
+    health.refresh === "failed" ||
+    health.lifecycle === "degraded" ||
+    health.lifecycle === "shutdown" ||
+    health.readiness === "failed",
+  );
+}
+
+function storageIdentityReady(health?: AuthorityHealthView): boolean {
+  return Boolean(
+    !storageOperationallyUnavailable(health) &&
+    health?.activeGeneration &&
+    health.observedGeneration &&
+    generationsMatch(health.activeGeneration, health.observedGeneration) &&
+    (health.lag === null || health.lag === 0),
+  );
+}
+
+function reconcileMutationReceipt(
+  health: AuthorityHealthView | undefined,
+  generation: AuthorityGenerationView,
+): Pick<DashboardMutationState, "phase" | "message"> {
+  if (
+    storageOperationallyUnavailable(health) ||
+    !health?.activeGeneration ||
+    !health.observedGeneration
+  ) {
+    return {
+      phase: "degraded",
+      message: "Storage identity is unavailable. Refresh and review before making another change.",
+    };
+  }
+  if (generationsMatch(health.activeGeneration, generation)) return { phase: "active" };
+  const candidates = [health.activeGeneration, health.observedGeneration];
+  const changedOutOfOrder = candidates.some(
+    (candidate) =>
+      candidate.authorityId !== generation.authorityId ||
+      candidate.sequence > generation.sequence ||
+      (candidate.sequence === generation.sequence && !generationsMatch(candidate, generation)),
+  );
+  return changedOutOfOrder
+    ? {
+        phase: "conflict",
+        message: "Storage observed a different or out-of-order generation.",
+      }
+    : { phase: "pending" };
+}
+
 function dashboardExpectedGeneration(
   health?: AuthorityHealthView,
 ): AuthorityGenerationView | undefined {
-  const generation = health?.activeGeneration;
-  if (
-    !generation ||
-    typeof generation.authorityId !== "string" ||
-    typeof generation.id !== "string" ||
-    generation.predecessorId === undefined
-  ) {
-    return undefined;
-  }
-  return generation;
+  return storageIdentityReady(health) ? (health?.activeGeneration ?? undefined) : undefined;
+}
+
+function StorageUnavailableNotice({ refresh }: { refresh: () => Promise<boolean> }) {
+  return (
+    <Alert variant="destructive" role="status">
+      <AlertTriangleIcon />
+      <AlertTitle>Storage unavailable</AlertTitle>
+      <AlertDescription className="grid gap-2">
+        <span>
+          Generation-checked mutations are blocked without a fresh, complete Storage identity.
+        </span>
+        <Button type="button" variant="outline" onClick={() => void refresh()}>
+          Refresh and review Storage
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
 }
 
 function MutationStatusNotice({
@@ -1675,8 +1743,8 @@ function MutationStatusNotice({
         : state.phase === "degraded"
           ? `Committed at generation ${generation ?? "unknown"}, but the Current Host is degraded. The receipt is preserved; restore health before retrying.`
           : state.phase === "conflict"
-            ? `The Authority Generation changed${generation === undefined ? "" : ` to ${generation}`}. Refresh and review the latest state before resubmitting with a new intent.`
-            : `Change active at generation ${generation ?? "unknown"}.`;
+            ? `The Storage Generation changed${generation === undefined ? "" : ` to ${generation}`}. Refresh and review the latest state before resubmitting with a new intent.`
+            : `Change active at Storage Generation ${generation ?? "unknown"}.`;
   return (
     <Alert
       variant={state.phase === "conflict" || state.phase === "degraded" ? "destructive" : "default"}
@@ -1693,7 +1761,7 @@ function MutationStatusNotice({
         <span>{state.message ? `${state.message} ${copy}` : copy}</span>
         {state.phase === "conflict" && onRefreshReview ? (
           <Button type="button" variant="outline" onClick={onRefreshReview}>
-            Refresh and review latest generation
+            Refresh and review latest Storage Generation
           </Button>
         ) : null}
         {state.phase === "pending" && onRetry ? (
@@ -1728,7 +1796,7 @@ function CapletAdminPanel({
   });
   const [mutation, setMutation] = useState<DashboardMutationState>({ phase: "idle" });
   const [activeIntent, setActiveIntent] = useState<string>();
-  const canWrite = health?.writable === true;
+  const canWrite = storageIdentityReady(health);
   const editingId = editRequest?.id ?? undefined;
 
   useEffect(() => {
@@ -1775,23 +1843,19 @@ function CapletAdminPanel({
         "diagnostics",
       );
       const nextHealth = authorityHealthFromData({ diagnostics });
-      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+      const reconciliation = reconcileMutationReceipt(nextHealth, generation);
+      if (reconciliation.phase === "active") {
         setActiveIntent(undefined);
         setMutation({ phase: "active", generation, idempotencyKey: activeIntent });
         await refresh();
         return;
       }
-      if (
-        nextHealth &&
-        (nextHealth.connectivity === "degraded" ||
-          nextHealth.connectivity === "unavailable" ||
-          !nextHealth.writable)
-      ) {
+      if (reconciliation.phase === "degraded" || reconciliation.phase === "conflict") {
         setMutation({
-          phase: "degraded",
+          ...reconciliation,
           generation,
           idempotencyKey: activeIntent,
-          message: nextHealth.lastError?.message,
+          message: nextHealth?.lastError?.message ?? reconciliation.message,
         });
         await refresh();
         return;
@@ -1806,7 +1870,7 @@ function CapletAdminPanel({
     event.preventDefault();
     const id = draft.id.trim();
     const name = draft.name.trim() || id;
-    const description = draft.description.trim() || "Authority-managed Caplet";
+    const description = draft.description.trim() || "Storage-managed Caplet";
     const command = draft.command.trim();
     const url = draft.url.trim();
     const args = draft.args
@@ -1864,7 +1928,7 @@ function CapletAdminPanel({
         phase,
         generation,
         idempotencyKey: intent,
-        message: phase === "pending" ? "The authority accepted this change durably." : undefined,
+        message: phase === "pending" ? "Storage accepted this change durably." : undefined,
       });
       if (phase === "pending" && generation) void pollActivation(generation);
       else await refresh();
@@ -1877,7 +1941,10 @@ function CapletAdminPanel({
         phase: conflictGeneration ? "conflict" : "degraded",
         generation: conflictGeneration,
         idempotencyKey: intent,
-        message: error instanceof Error ? error.message : "The authority rejected this change.",
+        message: storageDashboardText(
+          error instanceof Error ? error.message : undefined,
+          "Storage rejected this change.",
+        ),
       });
     }
   }
@@ -1890,15 +1957,15 @@ function CapletAdminPanel({
   }
 
   return (
-    <Card>
+    <Card data-testid="storage-caplet-editor" data-storage-ready={canWrite}>
       <CardHeader>
         <CardTitle>
-          {editingId ? "Edit authority-managed Caplet" : "Add authority-managed Caplet"}
+          {editingId ? "Edit Storage-managed Caplet" : "Add Storage-managed Caplet"}
         </CardTitle>
         <CardDescription>
           {canWrite
-            ? "Create or update a structured Caplet definition in the Writable Authority. Filesystem-staged IDs remain immutable."
-            : "Authority CRUD is unavailable until a writable Current Host authority is reported."}
+            ? "Create or update a Storage-managed Caplet with provider and Storage Generation protection. Filesystem-staged IDs remain immutable."
+            : "Storage unavailable. Refresh and review after Storage reports a fresh, complete generation identity."}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -1909,6 +1976,7 @@ function CapletAdminPanel({
             if (mutation.generation) void pollActivation(mutation.generation);
           }}
         />
+        {!canWrite ? <StorageUnavailableNotice refresh={refresh} /> : null}
         <form className="grid gap-3 sm:grid-cols-3" onSubmit={submit}>
           <label className="grid gap-1.5 text-sm">
             <span className="font-medium">Caplet ID</span>
@@ -1916,7 +1984,7 @@ function CapletAdminPanel({
               value={draft.id}
               disabled={Boolean(editingId) || !canWrite || mutation.phase === "pending"}
               onChange={(event) => setDraft((current) => ({ ...current, id: event.target.value }))}
-              aria-label="Authority Caplet ID"
+              aria-label="Storage-managed Caplet ID"
               required
             />
           </label>
@@ -1928,7 +1996,7 @@ function CapletAdminPanel({
               onChange={(event) =>
                 setDraft((current) => ({ ...current, name: event.target.value }))
               }
-              aria-label="Authority Caplet name"
+              aria-label="Storage-managed Caplet name"
             />
           </label>
           <label className="grid gap-1.5 text-sm sm:col-span-3">
@@ -1939,7 +2007,7 @@ function CapletAdminPanel({
               onChange={(event) =>
                 setDraft((current) => ({ ...current, description: event.target.value }))
               }
-              aria-label="Authority Caplet description"
+              aria-label="Storage-managed Caplet description"
             />
           </label>
           <label className="grid gap-1.5 text-sm">
@@ -2057,7 +2125,8 @@ function CapletsPage({
         "diagnostics",
       );
       const nextHealth = authorityHealthFromData({ diagnostics });
-      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+      const reconciliation = reconcileMutationReceipt(nextHealth, generation);
+      if (reconciliation.phase === "active") {
         setDeleteMutation({ phase: "active", generation });
         setPendingDeletes((current) => {
           const next = new Set(current);
@@ -2068,16 +2137,11 @@ function CapletsPage({
         await refresh();
         return;
       }
-      if (
-        nextHealth &&
-        (nextHealth.connectivity === "degraded" ||
-          nextHealth.connectivity === "unavailable" ||
-          !nextHealth.writable)
-      ) {
+      if (reconciliation.phase === "degraded" || reconciliation.phase === "conflict") {
         setDeleteMutation({
-          phase: "degraded",
+          ...reconciliation,
           generation,
-          message: nextHealth.lastError?.message,
+          message: nextHealth?.lastError?.message ?? reconciliation.message,
         });
         return;
       }
@@ -2087,11 +2151,11 @@ function CapletsPage({
     if (attempt < 4) void pollDelete(capletId, generation, attempt + 1);
   }
   async function deleteAuthorityCaplet(capletId: string) {
-    if (health?.writable !== true || pendingDeletes.has(capletId)) return;
+    if (!storageIdentityReady(health) || pendingDeletes.has(capletId)) return;
     if (
       !(await confirmTyped(
-        "Delete authority-managed Caplet?",
-        `${capletId} will be removed from the Writable Authority after generation review.`,
+        "Delete Storage-managed Caplet?",
+        `${capletId} will be removed from Storage after Storage Generation review.`,
         `delete ${capletId}`,
       ))
     ) {
@@ -2127,7 +2191,7 @@ function CapletsPage({
   return (
     <PageFrame
       title="Caplets"
-      description="Installed Caplets with explicit filesystem or Writable Authority ownership."
+      description="Installed Caplets with explicit staged filesystem or Storage-managed ownership."
     >
       {data.caplets?.error ? (
         <Alert variant="destructive">
@@ -2163,8 +2227,8 @@ function CapletsPage({
               caplets.map((caplet) => {
                 const capletId = caplet.id ?? caplet.name ?? "caplet";
                 const update = updateRisks.get(String(capletId));
-                const ownership = capletOwnership(caplet, health);
-                const mutationBlocked = Boolean(health && !health.writable);
+                const ownership = capletOwnership(caplet);
+                const mutationBlocked = !storageIdentityReady(health);
                 return (
                   <Row
                     key={capletId}
@@ -2191,9 +2255,9 @@ function CapletsPage({
                             type="button"
                             size="sm"
                             variant="outline"
-                            disabled={health?.writable !== true || pendingDeletes.has(capletId)}
+                            disabled={mutationBlocked || pendingDeletes.has(capletId)}
                             onClick={() => setEditing(caplet)}
-                            aria-label={`Edit authority Caplet ${capletId}`}
+                            aria-label={`Edit Storage-managed Caplet ${capletId}`}
                           >
                             Edit
                           </Button>
@@ -2201,9 +2265,9 @@ function CapletsPage({
                             type="button"
                             size="sm"
                             variant="destructive"
-                            disabled={health?.writable !== true || pendingDeletes.has(capletId)}
+                            disabled={mutationBlocked || pendingDeletes.has(capletId)}
                             onClick={() => void deleteAuthorityCaplet(capletId)}
-                            aria-label={`Delete authority Caplet ${capletId}`}
+                            aria-label={`Delete Storage-managed Caplet ${capletId}`}
                           >
                             {pendingDeletes.has(capletId) ? "Deletion pending" : "Delete"}
                           </Button>
@@ -2249,7 +2313,7 @@ function CapletsPage({
                           disabled={mutationBlocked}
                           label={
                             mutationBlocked
-                              ? `Update unavailable for ${capletId} while authority is read-only`
+                              ? `Update unavailable for ${capletId} until Storage identity is refreshed`
                               : `Review update for ${capletId}; conflicts require refresh and review`
                           }
                           onClick={async () => {
@@ -2315,7 +2379,7 @@ function CapletUpdateReadiness({
       : caplet.updateState
         ? `Lock ${caplet.updateState}`
         : ownership.kind === "authority"
-          ? "Mutable with expected Authority Generation"
+          ? "Mutable with provider and Storage Generation protection"
           : "Lock unknown";
   const authRequired = dashboardBoolean(caplet.authRequired);
   const setupRequired = dashboardBoolean(caplet.setupRequired);
@@ -2386,7 +2450,7 @@ function capletUpdateReviewSummary(
   return [
     `${capletId} has an installable update review.`,
     `Ownership: ${ownership.label}.`,
-    `Conflict policy: refresh and review before retrying against the latest Authority Generation.`,
+    `Conflict policy: refresh and review before retrying against the latest Storage Generation.`,
     `Lock state: ${updateState}.`,
     `Readiness: ${readiness}.`,
     `Update state: ${update.status ?? "available"}.`,
@@ -2771,25 +2835,26 @@ function AuthorityHealthPanel({ data }: { data: DashboardData }) {
   const health = authorityHealthFromData(data);
   if (!health) {
     return (
-      <Card>
+      <Card data-testid="storage-health" data-storage-state="unavailable">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="text-base font-medium leading-snug">Storage authority</h2>
-              <CardDescription role="status">
-                This filesystem-only response does not include authority health metadata.
+              <h2 className="text-base font-medium leading-snug">Storage</h2>
+              <CardDescription role="status" aria-live="polite">
+                Storage unavailable. Refresh and review after the host reports a fresh, complete
+                Storage Generation identity.
               </CardDescription>
             </div>
-            <Badge variant="secondary">Filesystem compatibility</Badge>
+            <Badge variant="destructive">Unavailable</Badge>
           </div>
         </CardHeader>
         <CardContent>
           <Alert>
             <DatabaseIcon />
-            <AlertTitle>Existing local storage remains usable.</AlertTitle>
+            <AlertTitle>Existing local reads remain available.</AlertTitle>
             <AlertDescription>
-              Caplets is preserving the Current Host filesystem behavior. Shared generation,
-              connectivity, and refresh diagnostics will appear when the host reports them.
+              Generation-checked mutations stay blocked until provider, connectivity, and refresh
+              diagnostics include a complete identity.
             </AlertDescription>
           </Alert>
         </CardContent>
@@ -2809,8 +2874,14 @@ function AuthorityHealthPanel({ data }: { data: DashboardData }) {
     health.connectivity === "unavailable" ||
     health.refresh === "failed";
   const readOnly = !health.writable;
-  const stateLabel = failed
-    ? "Failed"
+  const identityUnavailable =
+    !health.activeGeneration ||
+    !health.observedGeneration ||
+    !generationsMatch(health.activeGeneration, health.observedGeneration) ||
+    (health.lag !== null && health.lag !== 0);
+  const unavailable = failed || identityUnavailable;
+  const stateLabel = unavailable
+    ? "Unavailable"
     : recovering
       ? "Recovering"
       : degraded
@@ -2822,42 +2893,46 @@ function AuthorityHealthPanel({ data }: { data: DashboardData }) {
           : recovered
             ? "Recovered"
             : "Healthy";
-  const title = failed
-    ? "Authority unavailable"
+  const title = unavailable
+    ? "Storage unavailable"
     : recovering
-      ? "Authority refresh in progress"
+      ? "Storage refresh in progress"
       : degraded
         ? "Serving last-known-good state"
         : readOnly
-          ? "Authority is read-only"
+          ? "Storage is read-only"
           : recovered
-            ? "Authority recovered"
-            : "Authority healthy";
-  const guidance = failed
-    ? "Administration is unavailable. Restore provider connectivity and a valid committed generation before retrying."
+            ? "Storage recovered"
+            : "Storage healthy";
+  const guidance = unavailable
+    ? "Generation-checked mutations are blocked. Refresh and review after Storage reports a fresh, complete identity."
     : recovering
       ? "A generation is being observed or activated. Do not resubmit the same change; refresh this page if activation remains pending."
       : degraded
         ? "Existing execution can continue from the active generation, but writes are blocked. Restore connectivity, then wait for refresh recovery before retrying."
         : readOnly
-          ? "Reads remain available, but authority mutations are blocked. Restore writable operation before making changes."
-          : "Writes are enabled. If another operator advances the generation, refresh and review current state before retrying.";
+          ? "Reads remain available, but Storage mutations are blocked. Restore writable operation before making changes."
+          : "Writes are enabled with provider and Storage Generation protection. Refresh and review if another operator advances the generation.";
   const activeSequence = health.activeGeneration?.sequence;
   const observedSequence = health.observedGeneration?.sequence;
 
   return (
-    <Card>
+    <Card data-testid="storage-health" data-storage-state={stateLabel.toLowerCase()}>
       <CardHeader className="gap-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-base font-medium leading-snug">Storage authority</h2>
+            <h2 className="text-base font-medium leading-snug">Storage</h2>
             <CardDescription role="status" aria-live="polite">
               {title}. {guidance}
             </CardDescription>
           </div>
           <Badge
             variant={
-              failed || degraded ? "destructive" : readOnly || recovering ? "outline" : "secondary"
+              unavailable || degraded
+                ? "destructive"
+                : readOnly || recovering
+                  ? "outline"
+                  : "secondary"
             }
           >
             {stateLabel}
@@ -2866,17 +2941,17 @@ function AuthorityHealthPanel({ data }: { data: DashboardData }) {
       </CardHeader>
       <CardContent className="grid gap-4">
         <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          <RecordRow label="Selected provider" value={humanizeToken(health.provider)} />
-          <RecordRow label="Authority ID" value={health.authorityId} />
+          <RecordRow label="Provider" value={humanizeToken(health.provider)} />
           <RecordRow label="Connectivity" value={humanizeToken(health.connectivity)} />
+          <RecordRow label="Writability" value={health.writable ? "Writable" : "Read-only"} />
           <RecordRow
-            label="Authority Generation · Active"
-            value={activeSequence === undefined ? "None loaded" : `Generation ${activeSequence}`}
+            label="Storage Generation · Active"
+            value={activeSequence === undefined ? "Unavailable" : `Generation ${activeSequence}`}
           />
           <RecordRow
-            label="Authority Generation · Observed"
+            label="Storage Generation · Observed"
             value={
-              observedSequence === undefined ? "None observed" : `Generation ${observedSequence}`
+              observedSequence === undefined ? "Unavailable" : `Generation ${observedSequence}`
             }
           />
           <RecordRow
@@ -2889,7 +2964,7 @@ function AuthorityHealthPanel({ data }: { data: DashboardData }) {
           />
           <RecordRow label="Refresh state" value={humanizeToken(health.refresh)} />
           <RecordRow
-            label="Authority lag"
+            label="Storage lag"
             value={
               health.lag === null
                 ? "Not reported"
@@ -2900,8 +2975,8 @@ function AuthorityHealthPanel({ data }: { data: DashboardData }) {
             label="Source composition"
             value={
               health.stagedFingerprint
-                ? `Authority plus staged filesystem · Fingerprint ${health.stagedFingerprint}`
-                : "Writable Authority; staged fingerprint not reported"
+                ? `Storage-managed plus staged filesystem · Fingerprint ${health.stagedFingerprint}`
+                : "Storage-managed; staged fingerprint not reported"
             }
           />
         </dl>
@@ -2911,7 +2986,7 @@ function AuthorityHealthPanel({ data }: { data: DashboardData }) {
             <AlertTitle>
               {health.lastError.code
                 ? `Last safe error · ${health.lastError.code}`
-                : "Last safe authority error"}
+                : "Last safe Storage error"}
             </AlertTitle>
             <AlertDescription>{health.lastError.message}</AlertDescription>
           </Alert>
@@ -3223,7 +3298,7 @@ function AuthoritySettingsPanel({
   const [dirty, setDirty] = useState(false);
   const [mutation, setMutation] = useState<DashboardMutationState>({ phase: "idle" });
   const [intent, setIntent] = useState<string>();
-  const canWrite = health?.writable === true;
+  const canWrite = storageIdentityReady(health);
   async function pollActivation(generation: AuthorityGenerationView, attempt = 0) {
     if (attempt > 0) {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
@@ -3233,23 +3308,19 @@ function AuthoritySettingsPanel({
         "diagnostics",
       );
       const nextHealth = authorityHealthFromData({ diagnostics });
-      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+      const reconciliation = reconcileMutationReceipt(nextHealth, generation);
+      if (reconciliation.phase === "active") {
         setIntent(undefined);
         setMutation({ phase: "active", generation, idempotencyKey: intent });
         await refresh();
         return;
       }
-      if (
-        nextHealth &&
-        (nextHealth.connectivity === "degraded" ||
-          nextHealth.connectivity === "unavailable" ||
-          !nextHealth.writable)
-      ) {
+      if (reconciliation.phase === "degraded" || reconciliation.phase === "conflict") {
         setMutation({
-          phase: "degraded",
+          ...reconciliation,
           generation,
           idempotencyKey: intent,
-          message: nextHealth.lastError?.message,
+          message: nextHealth?.lastError?.message ?? reconciliation.message,
         });
         await refresh();
         return;
@@ -3308,18 +3379,21 @@ function AuthoritySettingsPanel({
         phase: conflictGeneration ? "conflict" : "degraded",
         generation: conflictGeneration,
         idempotencyKey: nextIntent,
-        message: error instanceof Error ? error.message : "Settings update failed.",
+        message: storageDashboardText(
+          error instanceof Error ? error.message : undefined,
+          "Settings update failed.",
+        ),
       });
     }
   }
 
   return (
-    <Card>
+    <Card data-testid="storage-settings" data-storage-ready={canWrite}>
       <CardHeader>
         <CardTitle>Allowlisted Current Host settings</CardTitle>
         <CardDescription>
-          Edit safe runtime controls only. Authority credentials, URLs, paths, Caplet maps, and
-          secret values are never shown or accepted here.
+          Edit safe runtime controls only. Storage credentials, URLs, paths, Caplet maps, and secret
+          values are never shown or accepted here.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -3332,6 +3406,7 @@ function AuthoritySettingsPanel({
             });
           }}
         />
+        {!canWrite ? <StorageUnavailableNotice refresh={refresh} /> : null}
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={submit}>
           <label className="flex min-h-11 items-center gap-2 rounded-lg border px-3 text-sm">
             <input
@@ -3406,7 +3481,9 @@ function AuthoritySettingsPanel({
             >
               {mutation.phase === "submitting" ? "Saving…" : "Save settings"}
             </Button>
-            {!canWrite ? <Badge variant="outline">Read-only until authority recovers</Badge> : null}
+            {!canWrite ? (
+              <Badge variant="outline">Storage unavailable · refresh and review</Badge>
+            ) : null}
           </div>
         </form>
       </CardContent>
@@ -3427,7 +3504,7 @@ function SetupApprovalPanel({
   const [targetKind, setTargetKind] = useState("local_host");
   const [mutation, setMutation] = useState<DashboardMutationState>({ phase: "idle" });
   const [intent, setIntent] = useState<string>();
-  const canWrite = health?.writable === true;
+  const canWrite = storageIdentityReady(health);
   async function pollActivation(generation: AuthorityGenerationView, attempt = 0) {
     if (attempt > 0) {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
@@ -3437,23 +3514,19 @@ function SetupApprovalPanel({
         "diagnostics",
       );
       const nextHealth = authorityHealthFromData({ diagnostics });
-      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+      const reconciliation = reconcileMutationReceipt(nextHealth, generation);
+      if (reconciliation.phase === "active") {
         setIntent(undefined);
         setMutation({ phase: "active", generation, idempotencyKey: intent });
         await refresh();
         return;
       }
-      if (
-        nextHealth &&
-        (nextHealth.connectivity === "degraded" ||
-          nextHealth.connectivity === "unavailable" ||
-          !nextHealth.writable)
-      ) {
+      if (reconciliation.phase === "degraded" || reconciliation.phase === "conflict") {
         setMutation({
-          phase: "degraded",
+          ...reconciliation,
           generation,
           idempotencyKey: intent,
-          message: nextHealth.lastError?.message,
+          message: nextHealth?.lastError?.message ?? reconciliation.message,
         });
         await refresh();
         return;
@@ -3505,18 +3578,22 @@ function SetupApprovalPanel({
         phase: conflictGeneration ? "conflict" : "degraded",
         generation: conflictGeneration,
         idempotencyKey: nextIntent,
-        message: error instanceof Error ? error.message : "Setup approval update failed.",
+        message: storageDashboardText(
+          error instanceof Error ? error.message : undefined,
+          "Setup approval update failed.",
+        ),
       });
     }
   }
 
   return (
-    <Card>
+    <Card data-testid="storage-setup" data-storage-ready={canWrite}>
       <CardHeader>
         <CardTitle>Setup approvals</CardTitle>
         <CardDescription>
           Grant or revoke one Caplet setup decision for a target. Approval identifiers are durable
-          authority state and are never inferred from filesystem paths.
+          Storage-managed records protected by provider and Storage Generation checks; they are
+          never inferred from filesystem paths.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -3529,6 +3606,7 @@ function SetupApprovalPanel({
             });
           }}
         />
+        {!canWrite ? <StorageUnavailableNotice refresh={refresh} /> : null}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1.5 text-sm">
             <span className="font-medium">Caplet ID</span>
@@ -3609,7 +3687,7 @@ function SettingsPage({
   return (
     <PageFrame
       title="Settings"
-      description="Inspect session authority, storage ownership, and Current Host operating state."
+      description="Inspect session access, Storage ownership, and Current Host operating state."
     >
       <AuthorityHealthPanel data={data} />
       <AuthoritySettingsPanel data={data} refresh={refresh} />

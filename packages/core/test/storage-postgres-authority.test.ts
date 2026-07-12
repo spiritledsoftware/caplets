@@ -161,7 +161,7 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority", () => {
     const blocker = loadPostgres(connectionString!, { max: 1, prepare: false });
     try {
       await blocker.begin(async (tx) => {
-        await tx`LOCK TABLE authority_heads IN ACCESS EXCLUSIVE MODE`;
+        await tx`LOCK TABLE caplets.authority_heads IN ACCESS EXCLUSIVE MODE`;
         await expect(authority.readHead()).rejects.toMatchObject({
           code: "SERVER_UNAVAILABLE",
         });
@@ -208,7 +208,7 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority", () => {
     const blocker = loadPostgres(connectionString!, { max: 1, prepare: false });
     try {
       await blocker.begin(async (tx) => {
-        await tx`LOCK TABLE authority_heads IN ACCESS EXCLUSIVE MODE`;
+        await tx`LOCK TABLE caplets.authority_heads IN ACCESS EXCLUSIVE MODE`;
         await expect(authority.close()).rejects.toMatchObject({
           code: "SERVER_UNAVAILABLE",
         });

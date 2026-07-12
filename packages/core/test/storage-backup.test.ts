@@ -266,7 +266,6 @@ describe("external-key authority backups", () => {
       restoreAuthorityBackup(namespaceMismatch, backup, {
         key: Buffer.alloc(32, 9),
         fence,
-        targetNamespace: "namespace",
       }),
     ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(fence.acquired).toBe(0);

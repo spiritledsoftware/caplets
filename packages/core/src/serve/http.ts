@@ -14,10 +14,11 @@ import { WebSocketServer } from "ws";
 import { fingerprintProjectRoot } from "../cloud/project-root";
 import {
   defaultCapletsLockfilePath,
-  loadAuthorityBootstrap,
+  loadResolvedStorageContext,
   resolveCapletsRoot,
   resolveProjectCapletsRoot,
   vaultStoreForAuthDir,
+  type ResolvedStorageContext,
 } from "../config";
 import { isAllowedRemoteUrl } from "../config/validation";
 import { AuthorityVaultStore, type VaultAdministrationStore } from "../vault";
@@ -203,7 +204,7 @@ export function createHttpServeApp(
 ): CapletsHttpApp {
   const app = new Hono() as CapletsHttpApp;
   const runtime = io.runtime;
-  const vaultStore = io.vaultStore ?? authorityVaultStoreForRuntime(runtime);
+  const vaultStore = io.vaultStore;
   const requestLeases = new WeakMap<Request, RuntimeEpochLease>();
   const sessions = new Map<string, HttpSession>();
   const attachSessions = new Map<string, AttachSessionRecord>();
@@ -224,21 +225,7 @@ export function createHttpServeApp(
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
-  const authorityStoresInjected =
-    io.remoteCredentialAuthorityStore !== undefined &&
-    io.dashboardAuthoritySessionStore !== undefined &&
-    io.dashboardAuthorityActivityLog !== undefined;
-  const authorityDomainOptions = authorityStoresInjected
-    ? undefined
-    : authorityDomainOptionsForRuntime(runtime);
-  const remoteCredentialAuthorityStore =
-    io.remoteCredentialAuthorityStore ??
-    (authorityDomainOptions
-      ? new AuthorityRemoteServerCredentialStore({
-          ...authorityDomainOptions,
-          ...(options.remoteCredentialStateDir ? { dir: options.remoteCredentialStateDir } : {}),
-        })
-      : undefined);
+  const remoteCredentialAuthorityStore = io.remoteCredentialAuthorityStore;
   const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
   const remoteCredentialAdministrationStore =
     remoteCredentialAuthorityStore ?? remoteCredentialStore;
@@ -251,18 +238,10 @@ export function createHttpServeApp(
     new DashboardSessionStore({
       dir: dashboardStateDir,
     });
-  const dashboardAuthoritySessionStore =
-    io.dashboardAuthoritySessionStore ??
-    (authorityDomainOptions
-      ? new AuthorityDashboardSessionStore(authorityDomainOptions)
-      : undefined);
+  const dashboardAuthoritySessionStore = io.dashboardAuthoritySessionStore;
   const dashboardActivityLog =
     io.dashboardActivityLog ?? new DashboardActivityLog({ dir: dashboardStateDir });
-  const dashboardAuthorityActivityLog =
-    io.dashboardAuthorityActivityLog ??
-    (authorityDomainOptions
-      ? new AuthorityDashboardActivityLog(authorityDomainOptions)
-      : undefined);
+  const dashboardAuthorityActivityLog = io.dashboardAuthorityActivityLog;
   const currentHostOperations = createCurrentHostOperations({
     engine,
     ...(runtime ? { runtime } : {}),
@@ -276,9 +255,7 @@ export function createHttpServeApp(
             authDir: io.control.authDir,
             globalCapletsRoot: io.control.globalCapletsRoot,
             globalLockfilePath: io.control.globalLockfilePath,
-            ...(runtime?.coordinator.bootstrap.bootstrap.authorityId
-              ? { authorityId: runtime.coordinator.bootstrap.bootstrap.authorityId }
-              : {}),
+            ...(runtime ? { authorityId: "current-host" } : {}),
             ...(runtime ? { currentHostId: "http-current-host" } : {}),
           },
         }),
@@ -3057,20 +3034,15 @@ async function prepareHttpRuntime(
   dashboardAuthoritySessionStore?: AuthorityDashboardSessionStore | undefined;
   dashboardAuthorityActivityLog?: AuthorityDashboardActivityLog | undefined;
 }> {
-  if (!configuredSharedAuthority(engineOptions)) {
-    return { engine: new CapletsEngine(engineOptions) };
-  }
+  const storageContext = resolvedSharedStorageContext(engineOptions);
+  if (!storageContext) return { engine: new CapletsEngine(engineOptions) };
   const runtime = await assembleCapletsHost({
     configPath: engineOptions.configPath,
     projectConfigPath: engineOptions.projectConfigPath,
     engineOptions: { ...engineOptions, watch: false },
   });
-  const vaultStore = authorityVaultStoreForRuntime(runtime);
-  const authorityOptions = authorityDomainOptionsForRuntime(runtime);
-  if (!vaultStore || !authorityOptions) {
-    await runtime.close().catch(() => undefined);
-    throw new CapletsError("SERVER_UNAVAILABLE", "Shared authority stores are unavailable.");
-  }
+  const authorityOptions = authorityDomainOptionsForRuntime(runtime, storageContext);
+  const vaultStore = authorityVaultStoreForRuntime(runtime, storageContext);
   try {
     await vaultStore.listValues();
   } catch (error) {
@@ -3098,10 +3070,10 @@ async function prepareHttpRuntime(
 }
 
 function authorityDomainOptionsForRuntime(
-  runtime: PreparedRuntimeHost | undefined,
-): AuthorityDomainCodecOptions | undefined {
-  if (!runtime || !runtime.coordinator) return undefined;
-  const key = runtime.coordinator.bootstrap.secrets.vaultKey;
+  runtime: PreparedRuntimeHost,
+  storageContext: ResolvedStorageContext,
+): AuthorityDomainCodecOptions {
+  const key = storageContext.secrets.vaultKey;
   if (key === undefined) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -3117,17 +3089,17 @@ function authorityDomainOptionsForRuntime(
   }
   return {
     authority,
-    authorityId: runtime.coordinator.bootstrap.bootstrap.authorityId,
+    authorityId: storageContext.bootstrap.authorityId,
     currentHostId: "http-current-host",
     encryptionKey: key,
   };
 }
 
 function authorityVaultStoreForRuntime(
-  runtime: PreparedRuntimeHost | undefined,
-): AuthorityVaultStore | undefined {
-  const authorityOptions = authorityDomainOptionsForRuntime(runtime);
-  if (!authorityOptions) return undefined;
+  runtime: PreparedRuntimeHost,
+  storageContext: ResolvedStorageContext,
+): AuthorityVaultStore {
+  const authorityOptions = authorityDomainOptionsForRuntime(runtime, storageContext);
   return new AuthorityVaultStore({
     authority: authorityOptions.authority,
     authorityId: authorityOptions.authorityId,
@@ -3137,9 +3109,11 @@ function authorityVaultStoreForRuntime(
   });
 }
 
-function configuredSharedAuthority(engineOptions: CapletsEngineOptions): boolean {
+function resolvedSharedStorageContext(
+  engineOptions: CapletsEngineOptions,
+): ResolvedStorageContext | undefined {
   try {
-    const loaded = loadAuthorityBootstrap(
+    const loaded = loadResolvedStorageContext(
       engineOptions.configPath,
       process.env,
       undefined,
@@ -3147,11 +3121,15 @@ function configuredSharedAuthority(engineOptions: CapletsEngineOptions): boolean
         ? {}
         : { projectPath: engineOptions.projectConfigPath },
     );
-    return loaded.bootstrap.provider !== "filesystem";
+    return loaded.configured ? loaded : undefined;
   } catch (error) {
-    if (error instanceof CapletsError && error.code === "CONFIG_NOT_FOUND") return false;
+    if (error instanceof CapletsError && error.code === "CONFIG_NOT_FOUND") return undefined;
     throw error;
   }
+}
+
+export function configuredSharedHttpAuthority(engineOptions: CapletsEngineOptions): boolean {
+  return resolvedSharedStorageContext(engineOptions) !== undefined;
 }
 
 export function sanitizeRemoteEngineOptions(

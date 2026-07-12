@@ -363,29 +363,49 @@ export type CompletionConfig = {
   negativeCacheTtlMs: number;
 };
 
-export type AuthoritySecretResolver = (reference: string) => string | Uint8Array | undefined;
+export type StorageSecretResolver = (reference: string) => string | Uint8Array | undefined;
 
-export type ResolvedAuthoritySecrets = {
+export type ResolvedStorageSecrets = {
   credential?: string | Uint8Array | undefined;
   vaultKey?: string | Uint8Array | undefined;
 };
 
-type AuthorityBootstrapBase = {
+type StorageBootstrapBase = {
+  pollIntervalMs: number;
+  vaultKey?: string | undefined;
+};
+type NormalizedStorageBootstrapBase = StorageBootstrapBase & {
   authorityId: string;
   namespace: string;
-  pollIntervalMs: number;
-  credentialRef?: string | undefined;
-  vaultKeyRef?: string | undefined;
 };
 
-export type AuthorityBootstrap =
-  | (AuthorityBootstrapBase & { provider: "filesystem" })
-  | (AuthorityBootstrapBase & { provider: "sqlite"; databasePath: string })
-  | (AuthorityBootstrapBase & { provider: "postgresql"; connectionRef: string })
-  | (AuthorityBootstrapBase & {
+export type StorageBootstrap =
+  | (StorageBootstrapBase & { provider: "filesystem"; path?: string | undefined })
+  | (StorageBootstrapBase & { provider: "sqlite"; path: string })
+  | (StorageBootstrapBase & { provider: "postgresql"; connection: string })
+  | (StorageBootstrapBase & {
       provider: "s3";
       bucket: string;
       region: string;
+      path?: string | undefined;
+      credentials?: string | undefined;
+      endpoint?: string | undefined;
+      forcePathStyle?: boolean | undefined;
+    });
+
+export type NormalizedStorageBootstrap =
+  | (NormalizedStorageBootstrapBase & {
+      provider: "filesystem";
+      path?: string | undefined;
+    })
+  | (NormalizedStorageBootstrapBase & { provider: "sqlite"; databasePath: string })
+  | (NormalizedStorageBootstrapBase & { provider: "postgresql"; connection: string })
+  | (NormalizedStorageBootstrapBase & {
+      provider: "s3";
+      bucket: string;
+      region: string;
+      path?: string | undefined;
+      credentials?: string | undefined;
       endpoint?: string | undefined;
       forcePathStyle?: boolean | undefined;
     });
@@ -399,10 +419,17 @@ export type SourceOwner =
 
 export type SourceInventoryEntry = { path: string; owner: SourceOwner };
 export type SourceInventory = { entries: SourceInventoryEntry[] };
-export type LoadedAuthorityBootstrap = {
-  bootstrap: AuthorityBootstrap;
+export type LoadedStorageBootstrap = {
+  bootstrap: StorageBootstrap;
   inventory: SourceInventory;
-  secrets: ResolvedAuthoritySecrets;
+};
+
+export type ResolvedStorageContext = {
+  bootstrap: NormalizedStorageBootstrap;
+  publicBootstrap: StorageBootstrap;
+  configured: boolean;
+  inventory: SourceInventory;
+  secrets: ResolvedStorageSecrets;
 };
 
 export type CapletsConfig = {
@@ -1240,6 +1267,7 @@ type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 export type ConfigInput = {
+  storage?: unknown;
   authority?: unknown;
   telemetry?: unknown;
   serve?: unknown;
@@ -1324,56 +1352,87 @@ type MissingEnvReference = {
   path: string;
 };
 
-const authorityBootstrapSchema = z
+const storageCommonSchema = {
+  pollIntervalMs: z
+    .number()
+    .int()
+    .positive()
+    .max(2_500)
+    .default(2_500)
+    .describe("Maximum milliseconds between checks for storage changes."),
+  vaultKey: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("Reference to the Vault encryption key; never put key bytes inline."),
+};
+
+const storageBootstrapSchema = z
   .discriminatedUnion("provider", [
     z
       .object({
-        provider: z.literal("filesystem"),
-        authorityId: z.string().trim().min(1),
-        namespace: z.string().trim().min(1).default("default"),
-        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
-        credentialRef: z.string().trim().min(1).optional(),
-        vaultKeyRef: z.string().trim().min(1).optional(),
+        provider: z.literal("filesystem").describe("Use local filesystem storage."),
+        path: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Local storage root; defaults to the Caplets global data directory."),
+        ...storageCommonSchema,
       })
       .strict(),
     z
       .object({
-        provider: z.literal("sqlite"),
-        authorityId: z.string().trim().min(1),
-        namespace: z.string().trim().min(1).default("default"),
-        databasePath: z.string().trim().min(1),
-        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
-        credentialRef: z.string().trim().min(1).optional(),
-        vaultKeyRef: z.string().trim().min(1).optional(),
+        provider: z.literal("sqlite").describe("Use a local SQLite database."),
+        path: z
+          .string()
+          .trim()
+          .min(1)
+          .describe("Path to the local persistent SQLite database file."),
+        ...storageCommonSchema,
       })
       .strict(),
     z
       .object({
-        provider: z.literal("postgresql"),
-        authorityId: z.string().trim().min(1),
-        namespace: z.string().trim().min(1).default("default"),
-        connectionRef: z.string().trim().min(1),
-        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
-        credentialRef: z.string().trim().min(1).optional(),
-        vaultKeyRef: z.string().trim().min(1).optional(),
+        provider: z.literal("postgresql").describe("Use a dedicated PostgreSQL database."),
+        connection: z
+          .string()
+          .trim()
+          .min(1)
+          .describe("Reference to the DSN for a dedicated deployment database."),
+        ...storageCommonSchema,
       })
       .strict(),
     z
       .object({
-        provider: z.literal("s3"),
-        authorityId: z.string().trim().min(1),
-        namespace: z.string().trim().min(1).default("default"),
-        bucket: z.string().trim().min(1),
-        region: z.string().trim().min(1),
-        endpoint: z.string().url().optional(),
-        forcePathStyle: z.boolean().optional(),
-        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
-        credentialRef: z.string().trim().min(1).optional(),
-        vaultKeyRef: z.string().trim().min(1).optional(),
+        provider: z.literal("s3").describe("Use S3-compatible object storage."),
+        bucket: z.string().trim().min(1).describe("Dedicated S3 bucket for this deployment."),
+        region: z.string().trim().min(1).describe("AWS region containing the S3 bucket."),
+        path: z
+          .string()
+          .optional()
+          .describe("Optional physical root path within the bucket for this deployment."),
+        credentials: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Optional credentials reference; omit to use workload identity."),
+        endpoint: z
+          .string()
+          .url()
+          .optional()
+          .describe("Optional S3-compatible service endpoint URL."),
+        forcePathStyle: z
+          .boolean()
+          .optional()
+          .describe("Use path-style rather than virtual-hosted-style S3 requests."),
+        ...storageCommonSchema,
       })
       .strict(),
   ])
-  .describe("Infrastructure-owned Writable Authority bootstrap settings.");
+  .describe("Infrastructure-owned storage provider settings.");
 
 function configSchemaFor(
   serverValueSchema: z.ZodTypeAny,
@@ -1388,9 +1447,9 @@ function configSchemaFor(
     .object({
       $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
       version: z.literal(1).default(1).describe("Caplets config schema version."),
-      authority: authorityBootstrapSchema
+      storage: storageBootstrapSchema
         .optional()
-        .describe("Global-only Writable Authority bootstrap configuration."),
+        .describe("Global-only storage provider configuration."),
       defaultSearchLimit: z
         .number()
         .int()
@@ -1862,10 +1921,63 @@ export function configJsonSchema(): unknown {
   });
 }
 
-export function loadAuthorityBootstrap(
+function resolveDeclaredStorageSecrets(
+  bootstrap: StorageBootstrap,
+  resolver: StorageSecretResolver,
+): ResolvedStorageSecrets {
+  const resolveRequired = (
+    reference: string,
+    field: "connection" | "credentials" | "vaultKey",
+  ): string | Uint8Array => {
+    const value = resolver(reference);
+    if (
+      value === undefined ||
+      (typeof value === "string" ? value.length === 0 : value.byteLength === 0)
+    ) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Storage ${bootstrap.provider} ${field} reference did not resolve to non-empty secret material`,
+      );
+    }
+    return value;
+  };
+
+  return {
+    ...(bootstrap.provider === "postgresql"
+      ? { credential: resolveRequired(bootstrap.connection, "connection") }
+      : {}),
+    ...(bootstrap.provider === "s3" && bootstrap.credentials
+      ? { credential: resolveRequired(bootstrap.credentials, "credentials") }
+      : {}),
+    ...(bootstrap.vaultKey ? { vaultKey: resolveRequired(bootstrap.vaultKey, "vaultKey") } : {}),
+  };
+}
+
+export function loadStorageBootstrap(
   globalPath = resolveConfigPath(),
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
-  secretResolver: AuthoritySecretResolver = (reference) =>
+  secretResolver?: StorageSecretResolver,
+  options: {
+    projectPath?: string;
+    stagedPaths?: string[];
+    replicaLocalPaths?: string[];
+    clientLocalPaths?: string[];
+    migrationInputPaths?: string[];
+  } = {},
+): LoadedStorageBootstrap {
+  const { publicBootstrap, inventory } = loadResolvedStorageContext(
+    globalPath,
+    env,
+    secretResolver,
+    options,
+  );
+  return { bootstrap: publicBootstrap, inventory };
+}
+
+export function loadResolvedStorageContext(
+  globalPath = resolveConfigPath(),
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  secretResolver: StorageSecretResolver = (reference) =>
     env[reference.startsWith("env:") ? reference.slice("env:".length) : reference],
   options: {
     projectPath?: string;
@@ -1874,41 +1986,54 @@ export function loadAuthorityBootstrap(
     clientLocalPaths?: string[];
     migrationInputPaths?: string[];
   } = {},
-): LoadedAuthorityBootstrap {
+): ResolvedStorageContext {
   if (!existsSync(globalPath)) {
     throw new CapletsError("CONFIG_NOT_FOUND", `Caplets user config not found at ${globalPath}`);
   }
   const globalInput = readPublicConfigInput(globalPath);
-  const parsed = authorityBootstrapSchema.safeParse(
-    globalInput.authority ?? {
+  const parsed = storageBootstrapSchema.safeParse(
+    globalInput.storage ?? {
       provider: "filesystem",
-      authorityId: "filesystem",
-      namespace: "default",
     },
   );
   if (!parsed.success) {
-    throw new CapletsError(
-      "CONFIG_INVALID",
-      "Writable Authority bootstrap is invalid",
-      parsed.error.issues,
-    );
+    throw new CapletsError("CONFIG_INVALID", "Storage bootstrap is invalid", parsed.error.issues);
   }
   const projectPath = options.projectPath ?? resolveProjectConfigPath();
   if (existsSync(projectPath)) {
     const projectInput = readPublicConfigInput(projectPath);
-    if (projectInput.authority !== undefined) {
+    if (projectInput.storage !== undefined || projectInput.authority !== undefined) {
       throw new CapletsError(
         "CONFIG_INVALID",
-        `Project config at ${projectPath} must not define infrastructure-owned authority settings`,
+        `Project config at ${projectPath} must not define infrastructure-owned storage settings`,
       );
     }
   }
 
-  const bootstrap = parsed.data as AuthorityBootstrap;
+  const publicBootstrap = parsed.data as StorageBootstrap;
+  const configured = globalInput.storage !== undefined;
+  const bootstrap: NormalizedStorageBootstrap =
+    publicBootstrap.provider === "sqlite"
+      ? {
+          ...publicBootstrap,
+          databasePath: publicBootstrap.path,
+          authorityId: "current-host",
+          namespace: "default",
+        }
+      : { ...publicBootstrap, authorityId: "current-host", namespace: "default" };
+  const physicalAuthorityPath =
+    bootstrap.provider === "filesystem"
+      ? bootstrap.path
+      : bootstrap.provider === "sqlite"
+        ? bootstrap.databasePath
+        : undefined;
   const entries: SourceInventoryEntry[] = [
     { path: globalPath, owner: "authority" },
     { path: resolveCapletsRoot(globalPath), owner: "authority" },
     { path: defaultCapletsLockfilePath(env as NodeJS.ProcessEnv), owner: "authority" },
+    ...(physicalAuthorityPath === undefined
+      ? []
+      : [{ path: physicalAuthorityPath, owner: "authority" as const }]),
     ...(
       options.stagedPaths ??
       [projectPath, resolveProjectCapletsRootForConfigPath(projectPath)].filter(
@@ -1938,28 +2063,50 @@ export function loadAuthorityBootstrap(
 
   return {
     bootstrap,
+    publicBootstrap,
+    configured,
     inventory: { entries },
-    secrets: {
-      ...(bootstrap.credentialRef ? { credential: secretResolver(bootstrap.credentialRef) } : {}),
-      ...(bootstrap.vaultKeyRef ? { vaultKey: secretResolver(bootstrap.vaultKeyRef) } : {}),
-    },
+    secrets: resolveDeclaredStorageSecrets(publicBootstrap, secretResolver),
   };
 }
 
-function assertSynchronousAuthorityBootstrap(globalPath: string, projectPath: string): void {
-  if (!existsSync(globalPath)) return;
-  let loaded;
+export function loadDeclaredStorageBootstrapForSync(
+  globalPath: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  secretResolver: StorageSecretResolver = (reference) =>
+    env[reference.startsWith("env:") ? reference.slice("env:".length) : reference],
+): StorageBootstrap | undefined {
+  let input: unknown;
   try {
-    loaded = loadAuthorityBootstrap(globalPath, process.env, undefined, { projectPath });
+    input = JSON.parse(readFileSync(globalPath, "utf8"));
   } catch {
-    return;
+    // Best-effort local overlays report malformed files through their normal warning path.
+    return undefined;
   }
-  if (loaded.bootstrap.provider === "filesystem") return;
+  if (!isPlainObject(input) || input.storage === undefined) return undefined;
+
+  const normalized = normalizeLocalPaths(
+    { version: 1, storage: input.storage } as ConfigInput,
+    dirname(globalPath),
+  );
+  const parsed = storageBootstrapSchema.safeParse(normalized.storage);
+  if (!parsed.success) {
+    throw new CapletsError("CONFIG_INVALID", "Storage bootstrap is invalid", parsed.error.issues);
+  }
+  const bootstrap = parsed.data as StorageBootstrap;
+  resolveDeclaredStorageSecrets(bootstrap, secretResolver);
+  return bootstrap;
+}
+
+function assertSynchronousStorageBootstrap(globalPath: string): void {
+  if (!existsSync(globalPath)) return;
+  const loaded = loadDeclaredStorageBootstrapForSync(globalPath);
+  if (loaded === undefined) return;
   throw new CapletsError(
     "ASYNC_AUTHORITY_REQUIRED",
-    `Authority provider ${loaded.bootstrap.provider} requires async host assembly before config loading`,
+    `Storage provider ${loaded.provider} requires async host assembly before config loading`,
     {
-      provider: loaded.bootstrap.provider,
+      provider: loaded.provider,
       guidance: "Use assembleCapletsHost or createAsyncCapletsRuntime.",
     },
   );
@@ -1970,7 +2117,7 @@ export function loadConfig(
   projectPath = resolveProjectConfigPath(),
   options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): CapletsConfig {
-  assertSynchronousAuthorityBootstrap(path, projectPath);
+  assertSynchronousStorageBootstrap(path);
   return loadConfigWithSources(path, projectPath, options).config;
 }
 
@@ -1979,7 +2126,7 @@ export function loadConfigWithSources(
   projectPath = resolveProjectConfigPath(),
   options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): ConfigWithSources {
-  assertSynchronousAuthorityBootstrap(path, projectPath);
+  assertSynchronousStorageBootstrap(path);
   const hasUserConfig = existsSync(path);
   const hasProjectConfig = existsSync(projectPath);
   const userConfig = hasUserConfig ? readPublicConfigInput(path) : undefined;
@@ -2186,7 +2333,7 @@ export function loadLocalRuntimeConfig(
     writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined;
   } = {},
 ): CapletsConfig {
-  assertSynchronousAuthorityBootstrap(path, projectPath);
+  assertSynchronousStorageBootstrap(path);
   const overlay = loadLocalOverlayConfigWithSources(path, projectPath, {
     vaultResolver: options.vaultResolver,
     vaultRecoveryTarget: options.vaultRecoveryTarget,
@@ -2719,8 +2866,18 @@ function readServeDefaultsInput(path: string): ServeConfig | undefined {
 }
 
 function normalizeLocalPaths(input: ConfigInput, baseDir: string): ConfigInput {
+  const storage = isPlainObject(input.storage)
+    ? {
+        ...input.storage,
+        ...((input.storage.provider === "filesystem" || input.storage.provider === "sqlite") &&
+        typeof input.storage.path === "string"
+          ? { path: resolve(baseDir, input.storage.path) }
+          : {}),
+      }
+    : input.storage;
   return stripUndefined({
     ...input,
+    storage,
     openapiEndpoints: normalizeEndpointPaths(input.openapiEndpoints, baseDir, normalizeOpenApiPath),
     googleDiscoveryApis: normalizeEndpointPaths(
       input.googleDiscoveryApis,
@@ -2841,10 +2998,10 @@ function normalizeLocalPath(value: unknown, baseDir: string): unknown {
 }
 
 function rejectProjectConfigExecutableBackendMaps(input: ConfigInput, path: string): ConfigInput {
-  if (input.authority !== undefined) {
+  if (input.storage !== undefined || input.authority !== undefined) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      `Project config at ${path} cannot define infrastructure-owned authority settings`,
+      `Project config at ${path} cannot define infrastructure-owned storage settings`,
     );
   }
   if (input.openapiEndpoints && Object.keys(input.openapiEndpoints).length > 0) {

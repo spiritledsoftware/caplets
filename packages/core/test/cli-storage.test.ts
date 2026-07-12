@@ -39,9 +39,9 @@ type JsonRun = CliRun & {
   value: Record<string, unknown>;
 };
 
-const sourceAuthorityId = "authority-source";
-const destinationAuthorityId = "authority-target";
-const namespace = "production";
+const sourceAuthorityId = "current-host";
+const destinationAuthorityId = "current-host";
+const namespace = "default";
 
 async function makeFixture(): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "caplets-cli-storage-"));
@@ -55,14 +55,14 @@ async function makeFixture(): Promise<Fixture> {
   const keyFile = join(root, "backup.key");
   const providerCredential =
     "postgres://provider-user:provider-password@db.example.invalid/authority";
-  const vaultKey = "vault-encryption-key-bytes";
+  const vaultKey = Buffer.alloc(32, 7).toString("base64url");
   const keyMaterial = "external-backup-key-material";
   const vaultSecret = "plaintext-vault-secret";
   const oauthSecret = "plaintext-oauth-secret";
   const sessionSecret = "plaintext-session-secret";
   const snapshot: Record<string, unknown> = {
-    config: { safeSetting: "safe-value" },
-    caplets: { example: { name: "Example Caplet", enabled: true } },
+    config: {},
+    caplets: {},
     vault: { tokenRecord: { token: vaultSecret, oauthSecret } },
     sessions: { active: { sessionToken: sessionSecret, revision: 1 } },
   };
@@ -87,13 +87,10 @@ async function makeFixture(): Promise<Fixture> {
     `${JSON.stringify(
       {
         version: 1,
-        authority: {
+        storage: {
           provider: "sqlite",
-          authorityId: sourceAuthorityId,
-          namespace,
-          databasePath: sourceDb,
-          credentialRef: "env:CAPLETS_PROVIDER_CONNECTION",
-          vaultKeyRef: "env:CAPLETS_VAULT_KEY_BYTES",
+          path: sourceDb,
+          vaultKey: "env:CAPLETS_VAULT_KEY_BYTES",
         },
       },
       null,
@@ -105,11 +102,10 @@ async function makeFixture(): Promise<Fixture> {
     `${JSON.stringify(
       {
         version: 1,
-        authority: {
+        storage: {
           provider: "sqlite",
-          authorityId: destinationAuthorityId,
-          namespace,
-          databasePath: destinationDb,
+          path: destinationDb,
+          vaultKey: "env:CAPLETS_VAULT_KEY_BYTES",
         },
       },
       null,
@@ -121,11 +117,9 @@ async function makeFixture(): Promise<Fixture> {
     `${JSON.stringify(
       {
         version: 1,
-        authority: {
+        storage: {
           provider: "sqlite",
-          authorityId: sourceAuthorityId,
-          namespace,
-          databasePath: restoreDb,
+          path: restoreDb,
         },
       },
       null,
@@ -137,7 +131,7 @@ async function makeFixture(): Promise<Fixture> {
     `${JSON.stringify(
       {
         version: 1,
-        authority: { provider: "filesystem", authorityId: sourceAuthorityId, namespace },
+        storage: { provider: "filesystem", path: join(root, "filesystem", "state") },
       },
       null,
       2,
@@ -354,7 +348,7 @@ describe("storage lifecycle CLI", () => {
         },
       });
       const inventoryOutput = inventory.text;
-      expect(inventoryOutput).toContain("authority-source");
+      expect(inventoryOutput).toContain("current-host");
       expect(inventoryOutput).toContain("vault");
       expectSafeOutput(inventoryOutput, fixture);
       const sourceFlagInventory = await runStorageJson(
@@ -381,7 +375,7 @@ describe("storage lifecycle CLI", () => {
         undefined,
         {
           CAPLETS_CONFIG: join(fixture.root, "missing-config.json"),
-          CAPLETS_AUTHORITY_PROFILE_SOURCE_PROFILE: fixture.sourceConfig,
+          CAPLETS_STORAGE_PROFILE_SOURCE_PROFILE: fixture.sourceConfig,
         },
       );
       expect(sourceProfileInventory.value.inventory).toMatchObject({
@@ -389,13 +383,99 @@ describe("storage lifecycle CLI", () => {
       });
       expectSafeOutput(sourceProfileInventory.text, fixture);
 
+      for (const invalidProfile of ["", "lower", "WITH-HYPHEN", "ÜNICODE", "env:SOURCE"]) {
+        const invalid = await runStorageJson(
+          fixture,
+          ["storage", "inventory", "--source-profile", invalidProfile],
+          undefined,
+          {
+            CAPLETS_STORAGE_PROFILE_SOURCE: fixture.sourceConfig,
+            CAPLETS_STORAGE_PROFILE_LOWER: fixture.sourceConfig,
+          },
+        );
+        expectJsonError(invalid.value, "REQUEST_INVALID");
+      }
+
+      const legacyProfile = await runStorageJson(
+        fixture,
+        ["storage", "inventory", "--source-profile", "SOURCE_PROFILE"],
+        undefined,
+        { CAPLETS_AUTHORITY_PROFILE_SOURCE_PROFILE: fixture.sourceConfig },
+      );
+      expectJsonError(legacyProfile.value, "CONFIG_INVALID");
+
+      const profileAuth = await runStorage(fixture, ["auth", "list", "--json"], undefined, {
+        CAPLETS_CONFIG: join(fixture.root, "missing-config.json"),
+        CAPLETS_STORAGE_PROFILE_SHARED: fixture.sourceConfig,
+      });
+      expect(JSON.parse(profileAuth.text)).toEqual([]);
+      expectSafeOutput(profileAuth.text, fixture);
+
+      await expect(
+        runStorage(fixture, ["auth", "list", "--json"], undefined, {
+          CAPLETS_CONFIG: join(fixture.root, "missing-config.json"),
+          CAPLETS_STORAGE_PROFILE_ALPHA: fixture.sourceConfig,
+          CAPLETS_STORAGE_PROFILE_BETA: fixture.destinationConfig,
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      for (const malformedProfiles of [
+        { CAPLETS_STORAGE_PROFILE_lower: fixture.sourceConfig },
+        { CAPLETS_STORAGE_PROFILE_: fixture.sourceConfig },
+        { CAPLETS_STORAGE_PROFILE_EMPTY: "" },
+        { CAPLETS_STORAGE_PROFILE_BLANK: "   " },
+      ]) {
+        await expect(
+          runStorage(fixture, ["auth", "list", "--json"], undefined, {
+            CAPLETS_CONFIG: join(fixture.root, "missing-config.json"),
+            ...malformedProfiles,
+          }),
+        ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      }
+
+      const aliasedProfiles = await runStorageJson(
+        fixture,
+        [
+          "storage",
+          "migration",
+          "dry-run",
+          "--source-profile",
+          "SOURCE",
+          "--destination-profile",
+          "DESTINATION",
+        ],
+        undefined,
+        {
+          CAPLETS_STORAGE_PROFILE_SOURCE: fixture.sourceConfig,
+          CAPLETS_STORAGE_PROFILE_DESTINATION: fixture.sourceConfig,
+        },
+      );
+      expectJsonError(aliasedProfiles.value, "REQUEST_INVALID");
+      expect(aliasedProfiles.value.error).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining("different config paths or profiles"),
+        }),
+      );
+      await expect(
+        runStorage(fixture, [
+          "storage",
+          "migration",
+          "dry-run",
+          "--source-config",
+          fixture.sourceConfig,
+          "--destination-config",
+          fixture.destinationConfig,
+          "--target-namespace",
+          "chosen",
+        ]),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+
       const inventoryHuman = await runStorage(fixture, [
         "storage",
         "inventory",
         "--config",
         fixture.sourceConfig,
       ]);
-      expect(inventoryHuman.text).toContain("Authority inventory");
+      expect(inventoryHuman.text).toContain("Storage inventory");
       expect(inventoryHuman.text).toContain("Source digest:");
       expectSafeOutput(inventoryHuman.text, fixture);
 
@@ -610,7 +690,7 @@ describe("storage lifecycle CLI", () => {
       });
       await writeFile(
         wrongKeyConfig,
-        `${JSON.stringify({ version: 1, authority: { provider: "sqlite", authorityId: fixture.sourceAuthorityId, namespace, databasePath: wrongKeyTargetDb } }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, storage: { provider: "sqlite", path: wrongKeyTargetDb } }, null, 2)}\n`,
       );
       const wrongKey = await runStorageJson(fixture, [
         "storage",
@@ -697,7 +777,7 @@ describe("storage lifecycle CLI", () => {
       });
       await writeFile(
         corruptBodyConfig,
-        `${JSON.stringify({ version: 1, authority: { provider: "sqlite", authorityId: fixture.sourceAuthorityId, namespace, databasePath: corruptBodyTargetDb } }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, storage: { provider: "sqlite", path: corruptBodyTargetDb } }, null, 2)}\n`,
       );
       const corruptBodyPath = join(fixture.root, "corrupt-body.backup");
       const corruptBody = Buffer.from(await readFile(backupPath));
@@ -730,7 +810,7 @@ describe("storage lifecycle CLI", () => {
       });
       await writeFile(
         nonEmptyTargetConfig,
-        `${JSON.stringify({ version: 1, authority: { provider: "sqlite", authorityId: fixture.sourceAuthorityId, namespace, databasePath: nonEmptyTargetDb } }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, storage: { provider: "sqlite", path: nonEmptyTargetDb } }, null, 2)}\n`,
       );
       await seedNonEmptySqlite(nonEmptyTargetDb, fixture.sourceAuthorityId, namespace);
       const nonEmpty = await runStorageJson(fixture, [
@@ -759,7 +839,7 @@ describe("storage lifecycle CLI", () => {
       });
       await writeFile(
         schemaMismatchConfig,
-        `${JSON.stringify({ version: 1, authority: { provider: "sqlite", authorityId: fixture.sourceAuthorityId, namespace, databasePath: schemaMismatchTargetDb } }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, storage: { provider: "sqlite", path: schemaMismatchTargetDb } }, null, 2)}\n`,
       );
       const schemaMismatch = await runStorageJson(fixture, [
         "storage",

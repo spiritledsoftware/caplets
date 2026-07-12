@@ -10,9 +10,9 @@ export { CapletsEngine } from "./engine";
 export type { CapletsEngineOptions, CapletsEngineReloadEvent } from "./engine";
 export { parseConfig, loadConfig } from "./config";
 export {
-  loadAuthorityBootstrap,
-  type AuthorityBootstrap,
-  type LoadedAuthorityBootstrap,
+  loadStorageBootstrap,
+  type StorageBootstrap,
+  type LoadedStorageBootstrap,
   type SourceInventory,
   type SourceInventoryEntry,
   type SourceOwner,
@@ -56,7 +56,14 @@ export type {
   DecodedAuthorityBackup,
   RestoreAuthorityBackupOptions,
 } from "./storage/backup";
-export * from "./storage/factory";
+export {
+  AuthorityProviderRegistryMissError,
+  lookupAuthorityProvider,
+  registerAuthorityProvider,
+  registeredAuthorityProviders,
+  type AuthorityProviderFactory,
+  type AuthorityProviderLookupResult,
+} from "./storage/factory";
 export {
   PreparedRuntimeView,
   RuntimeEpochCoordinator,

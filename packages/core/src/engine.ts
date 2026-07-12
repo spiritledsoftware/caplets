@@ -10,7 +10,7 @@ import { findProjectRoot, fingerprintProjectRoot } from "./cloud/project-root";
 import {
   type CapletConfig,
   type CapletsConfig,
-  loadAuthorityBootstrap,
+  loadDeclaredStorageBootstrapForSync,
   loadLocalRuntimeConfig,
   type LocalOverlayConfigWarning,
   resolveCapletsRoot,
@@ -147,7 +147,7 @@ export class CapletsEngine {
       projectConfigPath: options.projectConfigPath ?? resolveProjectConfigPath(),
     };
     if (!options.allowSharedAuthority) {
-      assertSynchronousAuthority(this.paths.configPath, this.paths.projectConfigPath);
+      assertSynchronousAuthority(this.paths.configPath);
     }
     this.exposureGeneration = options.initialExposureGeneration ?? 0;
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
@@ -772,22 +772,15 @@ export class CapletsEngine {
   }
 }
 
-function assertSynchronousAuthority(configPath: string, projectConfigPath: string): void {
+function assertSynchronousAuthority(configPath: string): void {
   if (!existsSync(configPath)) return;
-  let loaded;
-  try {
-    loaded = loadAuthorityBootstrap(configPath, process.env, undefined, {
-      projectPath: projectConfigPath,
-    });
-  } catch {
-    return;
-  }
-  if (loaded.bootstrap.provider === "filesystem") return;
+  const loaded = loadDeclaredStorageBootstrapForSync(configPath);
+  if (loaded === undefined) return;
   throw new CapletsError(
     "ASYNC_AUTHORITY_REQUIRED",
-    `Authority provider ${loaded.bootstrap.provider} requires async host assembly before runtime construction`,
+    `Authority provider ${loaded.provider} requires async host assembly before runtime construction`,
     {
-      provider: loaded.bootstrap.provider,
+      provider: loaded.provider,
       guidance: "Use assembleCapletsHost or createAsyncCapletsRuntime.",
     },
   );

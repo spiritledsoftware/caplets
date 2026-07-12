@@ -577,7 +577,6 @@ describe("provider-neutral authority migration", () => {
         source,
         target,
         fence: sourceFence(),
-        targetNamespace: "target-ns",
       });
       expect(result.kind).toBe("applied");
       const head = await target.readHead();
@@ -637,7 +636,6 @@ describe("provider-neutral authority migration", () => {
         source: sqliteSource,
         target: sqliteTarget,
         fence: sourceFence(),
-        targetNamespace: "target-ns",
       });
       expect(result.kind).toBe("applied");
       const head = await sqliteTarget.readHead();
@@ -705,7 +703,6 @@ describe("provider-neutral authority migration", () => {
           source,
           target,
           fence: sourceFence(),
-          targetNamespace: "target-ns",
         }),
       ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
       expect(await target.readHead()).toBeNull();
@@ -714,7 +711,6 @@ describe("provider-neutral authority migration", () => {
         source,
         target,
         fence: sourceFence(),
-        targetNamespace: "target-ns",
       });
       expect(retry.kind).toBe("applied");
       expect(await target.readHead()).toMatchObject({ id: expect.any(String) });
@@ -781,7 +777,6 @@ describe("provider-neutral authority migration", () => {
         source: filesystemSource,
         target: sqliteTarget,
         fence: sourceFence(),
-        targetNamespace: "sqlite-target-ns",
       });
       expect(toSqlite.kind).toBe("applied");
       if (toSqlite.kind !== "applied") throw new Error("expected filesystem-to-SQLite migration");
@@ -801,7 +796,6 @@ describe("provider-neutral authority migration", () => {
         source: sqliteSource,
         target: filesystemTarget,
         fence: sourceFence(),
-        targetNamespace: "filesystem-target-ns",
       });
       expect(toFilesystem.kind).toBe("applied");
       if (toFilesystem.kind !== "applied")
@@ -862,24 +856,24 @@ describe("provider-neutral authority migration", () => {
     expect(await target.readHead()).not.toBeNull();
   });
 
-  it("fails closed when a target namespace override disagrees with provider identity", async () => {
+  it("derives the target namespace from provider identity", async () => {
     const source = new FakeAuthority(sourceState({ caplets: { one: { id: "one" } } }));
     const target = new FakeAuthority(sourceState({ caplets: {} }), {
       authorityId: "target",
       namespace: "target-provider-namespace",
     });
-    const fence = sourceFence();
 
-    await expect(
-      migrateAuthority({
-        source,
-        target,
-        fence,
-        targetNamespace: "source-ns",
-      }),
-    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await target.readHead()).toBeNull();
-    expect(target.stageCalls).toBe(0);
+    const result = await migrateAuthority({
+      source,
+      target,
+      fence: sourceFence(),
+    });
+
+    expect(result.kind).toBe("applied");
+    if (result.kind !== "applied") throw new Error("expected applied migration");
+    expect(result.cutover.namespace).toBe("target-provider-namespace");
+    expect(await target.readHead()).not.toBeNull();
+    expect(target.stageCalls).toBe(1);
   });
 
   it("fails closed instead of adapting restoreState as publish-early staging", () => {

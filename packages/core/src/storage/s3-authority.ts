@@ -50,6 +50,32 @@ const SESSION_INDEX_SHARDS = 32;
 const AUXILIARY_STATE_VERSION = 1;
 const RECEIPT_MANIFEST_VERSION = 1;
 const INDEX_RECORD_VERSION = 1;
+
+function canonicalS3Root(path: string | undefined): string {
+  const normalized = (path ?? "").replace(/^\/+|\/+$/gu, "");
+  if (!normalized) return ".caplets/";
+  for (const character of normalized) {
+    const codePoint = character.codePointAt(0);
+    if (
+      codePoint === undefined ||
+      codePoint < 0x20 ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      character === "\\"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 storage path contains unsafe characters");
+    }
+  }
+  const segments = normalized.split("/");
+  if (
+    segments.some(
+      (segment) => segment === "" || segment === "." || segment === ".." || segment === ".caplets",
+    )
+  ) {
+    throw new CapletsError("CONFIG_INVALID", "S3 storage path contains an unsafe segment");
+  }
+  return `${segments.join("/")}/.caplets/`;
+}
+
 type S3RequestOptions = { abortSignal?: AbortSignal };
 type S3Command = { input: unknown };
 
@@ -89,6 +115,7 @@ export type S3CommandApplier<TSnapshot, TCommand> = (
 export type S3AuthorityOptions<TSnapshot = unknown, TCommand = unknown> = {
   authorityId: string;
   namespace: string;
+  path?: string;
   bucket: string;
   region: string;
   endpoint?: string;
@@ -682,8 +709,19 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     if (!Number.isSafeInteger(this.schemaVersion) || this.schemaVersion < 1) {
       throw new CapletsError("CONFIG_INVALID", "S3 authority schema version is invalid");
     }
-    this.rootPrefix = `${this.namespace}/`;
+    this.rootPrefix = canonicalS3Root(options.path);
   }
+  async prepareRoot(): Promise<void> {
+    const [firstKey] = await this.listObjects(this.rootPrefix, 1);
+    if (firstKey === undefined) return;
+    if ((await this.readHeadRecord()) === null) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        "S3 storage path contains provider-owned objects without a valid head",
+      );
+    }
+  }
+
   maintenanceFence(): MaintenanceFence {
     return {
       acquire: async (context) => await this.acquireMaintenanceFence(context),
@@ -2874,7 +2912,8 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
       typeof generation.committedAt !== "string" ||
       typeof generation.digest !== "string" ||
       !asRecord(generation.provenance) ||
-      typeof generation.provenance.namespace !== "string"
+      generation.provenance.provider !== "s3" ||
+      generation.provenance.namespace !== this.namespace
     ) {
       throw new CapletsError("CONFIG_INVALID", "S3 authority generation is invalid");
     }
@@ -3632,9 +3671,13 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     );
   }
 
-  private async listObjects(prefix: string): Promise<string[]> {
+  private async listObjects(prefix: string, maxKeys?: number): Promise<string[]> {
     const output = await this.sendRaw(
-      new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix }),
+      new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: prefix,
+        ...(maxKeys === undefined ? {} : { MaxKeys: maxKeys }),
+      }),
       "list",
     );
     const contents = readProperty(output, "Contents");
@@ -3884,5 +3927,16 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
 export async function createS3Authority<TSnapshot = unknown, TCommand = unknown>(
   options: S3AuthorityOptions<TSnapshot, TCommand>,
 ): Promise<S3Authority<TSnapshot, TCommand>> {
-  return new S3Authority(options);
+  const authority = new S3Authority(options);
+  try {
+    await authority.prepareRoot();
+    return authority;
+  } catch (error) {
+    try {
+      await authority.close();
+    } catch {
+      // Preserve the root preparation failure.
+    }
+    throw error;
+  }
 }

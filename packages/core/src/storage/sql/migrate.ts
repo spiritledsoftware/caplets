@@ -109,19 +109,20 @@ CREATE TABLE IF NOT EXISTS authority_events (
 CREATE INDEX IF NOT EXISTS authority_events_after_idx ON authority_events (authority_id, watermark);
 `;
 
-const POSTGRES_INITIAL_SQL = `CREATE TABLE IF NOT EXISTS authority_migrations (
+const POSTGRES_INITIAL_SQL = `CREATE SCHEMA IF NOT EXISTS caplets;
+CREATE TABLE IF NOT EXISTS caplets.authority_migrations (
   version INTEGER PRIMARY KEY NOT NULL,
   name TEXT NOT NULL,
   checksum TEXT NOT NULL,
   applied_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS authority_schema_meta (
+CREATE TABLE IF NOT EXISTS caplets.authority_schema_meta (
   authority_id TEXT PRIMARY KEY NOT NULL,
   namespace TEXT NOT NULL,
   logical_schema_version INTEGER NOT NULL,
   auxiliary_watermark INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS authority_heads (
+CREATE TABLE IF NOT EXISTS caplets.authority_heads (
   authority_id TEXT PRIMARY KEY NOT NULL,
   namespace TEXT NOT NULL,
   generation_id TEXT,
@@ -132,7 +133,7 @@ CREATE TABLE IF NOT EXISTS authority_heads (
   committed_at TEXT,
   CONSTRAINT authority_heads_singleton CHECK (authority_id <> '')
 );
-CREATE TABLE IF NOT EXISTS authority_generations (
+CREATE TABLE IF NOT EXISTS caplets.authority_generations (
   authority_id TEXT NOT NULL,
   generation_id TEXT NOT NULL,
   sequence INTEGER NOT NULL,
@@ -144,7 +145,7 @@ CREATE TABLE IF NOT EXISTS authority_generations (
   PRIMARY KEY (authority_id, generation_id),
   UNIQUE (authority_id, sequence)
 );
-CREATE TABLE IF NOT EXISTS authority_receipts (
+CREATE TABLE IF NOT EXISTS caplets.authority_receipts (
   authority_id TEXT NOT NULL,
   current_host_id TEXT NOT NULL,
   principal_id TEXT NOT NULL,
@@ -155,7 +156,7 @@ CREATE TABLE IF NOT EXISTS authority_receipts (
   expires_at TEXT NOT NULL,
   PRIMARY KEY (authority_id, current_host_id, principal_id, idempotency_key)
 );
-CREATE TABLE IF NOT EXISTS authority_sessions (
+CREATE TABLE IF NOT EXISTS caplets.authority_sessions (
   authority_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 0,
@@ -163,7 +164,7 @@ CREATE TABLE IF NOT EXISTS authority_sessions (
   revoked INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (authority_id, session_id)
 );
-CREATE TABLE IF NOT EXISTS authority_events (
+CREATE TABLE IF NOT EXISTS caplets.authority_events (
   authority_id TEXT NOT NULL,
   watermark INTEGER NOT NULL,
   kind TEXT NOT NULL,
@@ -171,7 +172,7 @@ CREATE TABLE IF NOT EXISTS authority_events (
   event_json TEXT NOT NULL,
   PRIMARY KEY (authority_id, watermark)
 );
-CREATE INDEX IF NOT EXISTS authority_events_after_idx ON authority_events (authority_id, watermark);
+CREATE INDEX IF NOT EXISTS authority_events_after_idx ON caplets.authority_events (authority_id, watermark);
 `;
 
 const SQLITE_HEAD_GUARD_SQL = `CREATE TRIGGER IF NOT EXISTS authority_heads_undeletable
@@ -182,16 +183,16 @@ const SQLITE_HEAD_GUARD_SQL = `CREATE TRIGGER IF NOT EXISTS authority_heads_unde
   END;
 `;
 
-const POSTGRES_HEAD_GUARD_SQL = `CREATE OR REPLACE FUNCTION caplets_prevent_authority_head_delete() RETURNS trigger
+const POSTGRES_HEAD_GUARD_SQL = `CREATE OR REPLACE FUNCTION caplets.caplets_prevent_authority_head_delete() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'authority head rows are undeletable';
 END;
 $$;
-DROP TRIGGER IF EXISTS authority_heads_undeletable ON authority_heads;
+DROP TRIGGER IF EXISTS authority_heads_undeletable ON caplets.authority_heads;
 CREATE TRIGGER authority_heads_undeletable
-  BEFORE DELETE ON authority_heads
-  FOR EACH ROW EXECUTE FUNCTION caplets_prevent_authority_head_delete();
+  BEFORE DELETE ON caplets.authority_heads
+  FOR EACH ROW EXECUTE FUNCTION caplets.caplets_prevent_authority_head_delete();
 `;
 
 const SQLITE_MAINTENANCE_LEASE_SQL = `CREATE TABLE IF NOT EXISTS authority_maintenance_leases (
@@ -203,14 +204,15 @@ const SQLITE_MAINTENANCE_LEASE_SQL = `CREATE TABLE IF NOT EXISTS authority_maint
   version INTEGER NOT NULL DEFAULT 1
 );`;
 
-const POSTGRES_MAINTENANCE_LEASE_SQL = `CREATE TABLE IF NOT EXISTS authority_maintenance_leases (
+const POSTGRES_MAINTENANCE_LEASE_SQL = `CREATE TABLE IF NOT EXISTS caplets.authority_maintenance_leases (
   authority_id TEXT PRIMARY KEY NOT NULL,
   namespace TEXT NOT NULL,
   owner TEXT NOT NULL,
   token TEXT NOT NULL,
   deadline_at TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1
-);`;
+);
+`;
 
 function checksum(sql: string): string {
   return `sha256:${createHash("sha256").update(sql).digest("hex")}`;
@@ -399,24 +401,28 @@ async function assertPostgresAuthorityNamespace(
   tx: TransactionSql,
   authorityId: string,
   namespace: string,
+  requireIdentity = false,
 ): Promise<void> {
   const tables = await tx`SELECT
-    to_regclass('public.authority_schema_meta') AS meta_table,
-    to_regclass('public.authority_heads') AS heads_table`;
+    to_regclass('caplets.authority_schema_meta') AS meta_table,
+    to_regclass('caplets.authority_heads') AS heads_table`;
   const table = tables[0] as { meta_table: string | null; heads_table: string | null } | undefined;
+  if (requireIdentity && (!table?.meta_table || !table.heads_table)) {
+    throw new CapletsError("CONFIG_INVALID", "PostgreSQL caplets schema identity is missing");
+  }
   if (table?.meta_table) {
     const rows =
-      await tx`SELECT namespace FROM authority_schema_meta WHERE authority_id = ${authorityId}`;
+      await tx`SELECT namespace FROM caplets.authority_schema_meta WHERE authority_id = ${authorityId}`;
     const row = rows[0] as { namespace: string } | undefined;
-    if (row && row.namespace !== namespace) {
+    if ((requireIdentity && !row) || (row && row.namespace !== namespace)) {
       throw new CapletsError("CONFIG_INVALID", "PostgreSQL authority namespace does not match");
     }
   }
   if (table?.heads_table) {
     const rows =
-      await tx`SELECT namespace FROM authority_heads WHERE authority_id = ${authorityId}`;
+      await tx`SELECT namespace FROM caplets.authority_heads WHERE authority_id = ${authorityId}`;
     const row = rows[0] as { namespace: string } | undefined;
-    if (row && row.namespace !== namespace) {
+    if ((requireIdentity && !row) || (row && row.namespace !== namespace)) {
       throw new CapletsError("CONFIG_INVALID", "PostgreSQL authority namespace does not match");
     }
   }
@@ -560,7 +566,7 @@ export async function runPostgresMigrations(
     lockTimeout,
     boundedMilliseconds(options.statementTimeoutMs, 5_000, "PostgreSQL statement timeout"),
   );
-  const lockKey = "caplets:sql:migrate";
+  const lockKey = "caplets:sql:migrate:caplets";
   let applied = 0;
   try {
     await client.begin(async (tx) => {
@@ -569,22 +575,55 @@ export async function runPostgresMigrations(
         prepare: false,
       });
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-      const tableRows = await tx`SELECT to_regclass('public.authority_migrations') AS table_name`;
-      const tableRow = tableRows[0] as { table_name: string | null } | undefined;
-      const lockedRows = tableRow?.table_name
-        ? await tx`SELECT version, name, checksum FROM authority_migrations ORDER BY version`
+      const schemaRows = await tx`SELECT
+        to_regnamespace('caplets') AS schema_name,
+        has_database_privilege(current_database(), 'CREATE') AS can_create_schema,
+        has_schema_privilege(current_user, to_regnamespace('caplets'), 'USAGE') AS can_use_schema`;
+      const schema = schemaRows[0] as
+        | { schema_name: string | null; can_create_schema: boolean; can_use_schema: boolean | null }
+        | undefined;
+      if (!schema?.schema_name && !schema?.can_create_schema) {
+        throw new CapletsError("CONFIG_INVALID", "PostgreSQL caplets schema cannot be initialized");
+      }
+      if (schema?.schema_name && !schema.can_use_schema) {
+        throw new CapletsError("CONFIG_INVALID", "PostgreSQL caplets schema is not accessible");
+      }
+      const tableRows = schema?.schema_name
+        ? await tx`SELECT
+            to_regclass('caplets.authority_migrations') AS migrations,
+            to_regclass('caplets.authority_schema_meta') AS schema_meta,
+            to_regclass('caplets.authority_heads') AS heads,
+            to_regclass('caplets.authority_generations') AS generations,
+            to_regclass('caplets.authority_receipts') AS receipts,
+            to_regclass('caplets.authority_sessions') AS sessions,
+            to_regclass('caplets.authority_events') AS events,
+            to_regclass('caplets.authority_maintenance_leases') AS maintenance_leases`
+        : [];
+      const tableRow = tableRows[0] as Record<string, string | null> | undefined;
+      if (schema?.schema_name && (!tableRow || Object.values(tableRow).some((name) => !name))) {
+        throw new CapletsError("CONFIG_INVALID", "PostgreSQL caplets schema is not recognized");
+      }
+      const lockedRows = tableRow?.migrations
+        ? await tx`SELECT version, name, checksum FROM caplets.authority_migrations ORDER BY version`
         : [];
       const lockedHistory = lockedRows as unknown as AppliedMigration[];
-      verifyMigrationHistory(lockedHistory, migrations);
-      await assertPostgresAuthorityNamespace(tx, options.authorityId, options.namespace);
+      verifyMigrationHistory(lockedHistory, migrations, {
+        requireComplete: Boolean(schema?.schema_name),
+      });
+      await assertPostgresAuthorityNamespace(
+        tx,
+        options.authorityId,
+        options.namespace,
+        Boolean(schema?.schema_name),
+      );
       for (const migration of migrations.slice(lockedHistory.length)) {
         await tx.unsafe(migration.sql, [], { prepare: false });
-        await tx`INSERT INTO authority_migrations (version, name, checksum, applied_at) VALUES (${migration.version}, ${migration.name}, ${migration.checksum}, ${new Date().toISOString()})`;
+        await tx`INSERT INTO caplets.authority_migrations (version, name, checksum, applied_at) VALUES (${migration.version}, ${migration.name}, ${migration.checksum}, ${new Date().toISOString()})`;
         applied += 1;
       }
       await assertPostgresAuthorityNamespace(tx, options.authorityId, options.namespace);
-      await tx`INSERT INTO authority_schema_meta (authority_id, namespace, logical_schema_version, auxiliary_watermark) VALUES (${options.authorityId}, ${options.namespace}, ${migrations.at(-1)?.version ?? 0}, 0) ON CONFLICT (authority_id) DO UPDATE SET logical_schema_version = EXCLUDED.logical_schema_version`;
-      await tx`INSERT INTO authority_heads (authority_id, namespace, schema_version) VALUES (${options.authorityId}, ${options.namespace}, ${migrations.at(-1)?.version ?? 0}) ON CONFLICT (authority_id) DO NOTHING`;
+      await tx`INSERT INTO caplets.authority_schema_meta (authority_id, namespace, logical_schema_version, auxiliary_watermark) VALUES (${options.authorityId}, ${options.namespace}, ${migrations.at(-1)?.version ?? 0}, 0) ON CONFLICT (authority_id) DO UPDATE SET logical_schema_version = EXCLUDED.logical_schema_version`;
+      await tx`INSERT INTO caplets.authority_heads (authority_id, namespace, schema_version) VALUES (${options.authorityId}, ${options.namespace}, ${migrations.at(-1)?.version ?? 0}) ON CONFLICT (authority_id) DO NOTHING`;
     });
     return { applied, logicalSchemaVersion: migrations.at(-1)?.version ?? 0 };
   } catch (error) {
@@ -611,9 +650,9 @@ export async function verifyPostgresSchema(
       options.statementTimeoutMs,
       async (tx) => {
         const migrationRows =
-          await tx`SELECT version, name, checksum FROM authority_migrations ORDER BY version`;
+          await tx`SELECT version, name, checksum FROM caplets.authority_migrations ORDER BY version`;
         const metaRows =
-          await tx`SELECT namespace, logical_schema_version FROM authority_schema_meta WHERE authority_id = ${options.authorityId}`;
+          await tx`SELECT namespace, logical_schema_version FROM caplets.authority_schema_meta WHERE authority_id = ${options.authorityId}`;
         return {
           rows: migrationRows as unknown as AppliedMigration[],
           meta: metaRows as unknown as {
@@ -629,9 +668,9 @@ export async function verifyPostgresSchema(
   verifyMigrationHistory(rows, migrations, { requireComplete: true });
   const record = meta[0];
   if (
-    record &&
-    (record.namespace !== options.namespace ||
-      record.logical_schema_version !== (migrations.at(-1)?.version ?? 0))
+    !record ||
+    record.namespace !== options.namespace ||
+    record.logical_schema_version !== (migrations.at(-1)?.version ?? 0)
   ) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -640,7 +679,7 @@ export async function verifyPostgresSchema(
   }
   return {
     applied: 0,
-    logicalSchemaVersion: record?.logical_schema_version ?? migrations.at(-1)?.version ?? 0,
+    logicalSchemaVersion: record.logical_schema_version,
   };
 }
 

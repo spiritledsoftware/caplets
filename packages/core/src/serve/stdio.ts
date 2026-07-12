@@ -1,5 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
-import { loadAuthorityBootstrap } from "../config";
+import { loadResolvedStorageContext } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError } from "../errors";
 import {
@@ -72,16 +72,16 @@ export async function serveStdio(options: ServeStdioOptions = {}): Promise<void>
   }
 }
 
-function configuredSharedAuthority(options: ServeStdioOptions): boolean {
+export function configuredSharedAuthority(options: ServeStdioOptions): boolean {
   if (options.authority || options.authorityFactory) return true;
   try {
-    const loaded = loadAuthorityBootstrap(
+    const loaded = loadResolvedStorageContext(
       options.configPath,
-      process.env,
-      undefined,
+      options.env,
+      options.secretResolver,
       options.projectConfigPath === undefined ? {} : { projectPath: options.projectConfigPath },
     );
-    return loaded.bootstrap.provider !== "filesystem";
+    return loaded.configured;
   } catch (error) {
     if (error instanceof CapletsError && error.code === "CONFIG_NOT_FOUND") return false;
     throw error;

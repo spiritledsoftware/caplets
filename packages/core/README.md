@@ -75,23 +75,24 @@ The root export includes the provider-neutral types and helpers:
   `AuthorityCommitResult` — ordered generation/CAS/idempotency values.
 - `AuthorityHealth` — orthogonal `connectivity`, `writable`, and `refresh` fields plus provider,
   authority ID, and active generation.
-- `registerAuthorityProvider`, `registeredAuthorityProviders`, and `createAuthority` — register an
-  alternate factory for one of the four provider kinds before host assembly, inspect registered
-  kinds, or construct the selected provider through the factory boundary.
+- The explicit provider-registration allowlist is `AuthorityProviderRegistryMissError`,
+  `AuthorityProviderFactory`, `AuthorityProviderLookupResult`, `lookupAuthorityProvider`,
+  `registerAuthorityProvider`, and `registeredAuthorityProviders`. Provider construction and
+  resolved assembly context are not root exports.
 - The composition layer (`composeRuntimeConfig`, `loadStagedFilesystemSource`, and
   `computeStagedFingerprint`) is internal to the root host assembly. It composes immutable staged
   inputs with one authority generation, preserves source provenance, and rejects staged/authority
   ID collisions.
 
-A provider factory receives an `AuthorityProviderContext` containing the parsed `AuthorityBootstrap`
-and deployment-native resolved secrets. Resolved secret bytes do not belong in a config snapshot,
-generation, health object, diagnostics, or log.
+`AuthorityProviderFactory` is the typed factory boundary used by `registerAuthorityProvider`.
+Assembly supplies its internal normalized bootstrap and deployment-native resolved secrets;
+callers do not select opaque authority IDs or namespaces. Resolved secret bytes do not belong in a
+loaded bootstrap, config snapshot, generation, health object, diagnostics, or log.
 
 Call `registerAuthorityProvider(kind, factory)` before host assembly when embedding or testing an
-alternate factory for one of the four provider kinds. The factory has type
-`(context: AuthorityProviderContext) => Promise<WritableAuthority>` and receives the parsed bootstrap
-plus deployment-native secrets; the function returns an unregister callback for cleanup. A custom
-factory must preserve the same generation, CAS, idempotency, health, maintenance-fence,
+alternate factory for one of the four provider kinds. The function returns an unregister callback
+for cleanup. A custom factory must preserve the same generation, CAS, idempotency, health,
+maintenance-fence,
 export/restore, and shutdown contract. Do not mix writable providers by domain.
 
 Built-in providers use the same contract:
@@ -130,27 +131,28 @@ the authority context.
 
 ## Configuration and source ownership
 
-`loadAuthorityBootstrap` reads provider kind, authority ID, namespace, connection/endpoint fields,
-polling policy, and secret references from the global config only. `parseConfig` and
-`loadConfigWithSources` remain available for ordinary filesystem configuration. Project config
-cannot claim infrastructure-owned authority settings.
+`loadStorageBootstrap` reads the global config's provider-shaped `storage` selection. `parseConfig`
+and `loadConfigWithSources` remain available for ordinary filesystem configuration. Project config
+cannot claim infrastructure-owned storage settings.
 
-The bootstrap provider union is:
+The four public forms are:
 
-The discriminant and provider-specific fields are:
+- `filesystem`: `{ "provider": "filesystem", "path"?: "…", "pollIntervalMs"?: 2500, "vaultKey"?: "env:…" }`;
+- `sqlite`: `{ "provider": "sqlite", "path": "/var/lib/caplets/caplets.sqlite", "pollIntervalMs"?: 2500, "vaultKey"?: "env:…" }`;
+- `postgresql`: `{ "provider": "postgresql", "connection": "env:CAPLETS_POSTGRES_URL", "pollIntervalMs"?: 2500, "vaultKey"?: "env:…" }`;
+- `s3`: `{ "provider": "s3", "bucket": "caplets-state", "region": "us-east-1", "path"?: "production/caplets", "credentials"?: "env:CAPLETS_S3_CREDENTIALS", "endpoint"?: "…", "forcePathStyle"?: true, "pollIntervalMs"?: 2500, "vaultKey"?: "env:…" }`.
 
-- `filesystem`: `authorityId`, optional `namespace`/`pollIntervalMs`, and optional secret refs;
-- `sqlite`: the same shared fields plus `databasePath`;
-- `postgresql`: the same shared fields plus non-secret `connectionRef`;
-- `s3`: the same shared fields plus `bucket`, `region`, optional `endpoint`, and
-  `forcePathStyle`.
+Filesystem `path` is optional and relative local paths resolve from the declaring global config.
+SQLite requires a local persistent file and is not a multi-replica coordinator. Isolate each
+PostgreSQL deployment with a dedicated database/connection and each S3 deployment with a distinct
+bucket/root path. An omitted or empty S3 `path` uses `.caplets/`; omitting `credentials` uses
+workload identity.
 
-All variants may use optional `credentialRef` and `vaultKeyRef`; the generated schema also applies
-defaults and strict unknown-field rejection.
-
-Use `credentialRef` and `vaultKeyRef` as deployment-native selectors (`env:NAME`, `vault:NAME`,
-or a resolver-owned reference), not inline credentials. The generated schema is authoritative;
-run `pnpm schema:check` after changing `packages/core/src/config.ts`.
+`connection`, `credentials`, and `vaultKey` are literal storage secret references, not inline
+secrets or ordinary Caplet `$vault:` substitutions. The default runtime resolves `env:NAME` or a
+bare environment-variable name; server-local storage commands additionally accept `vault:NAME`
+and private `file:/…` references. `packages/core/src/config.ts` is authoritative. Configuration
+schemas and references are generated outputs; run `pnpm schema:check` after changing that source.
 
 ## Lifecycle helpers
 

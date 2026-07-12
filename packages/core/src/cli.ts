@@ -65,6 +65,8 @@ import {
   registerStorageCommands,
   openStorageAuthority,
   resolveStorageAuthoritySelector,
+  resolveStorageProfileSelector,
+  singleStorageProfileName,
   type StorageCliIO,
 } from "./cli/storage";
 import { assembleCapletsHost } from "./storage/coordinator";
@@ -2432,10 +2434,10 @@ export function createProgram(io: CliIO = {}): Command {
     });
   const currentHost = program
     .command(cliCommands.currentHost)
-    .description("Manage the authenticated Current Host authority.");
+    .description("Manage authenticated Current Host Storage.");
   currentHost
     .command("health")
-    .description("Show Current Host authority and runtime health.")
+    .description("Show Current Host Storage and runtime health.")
     .option("--json", "print deterministic JSON output")
     .action(async (options: { json?: boolean }) => {
       const result = await requireRemoteClientForTarget(io).currentHostHealth();
@@ -2444,10 +2446,10 @@ export function createProgram(io: CliIO = {}): Command {
 
   const currentHostCaplets = currentHost
     .command("caplets")
-    .description("Manage authority-owned Current Host Caplets.");
+    .description("Manage Storage-owned Current Host Caplets.");
   currentHostCaplets
     .command("list")
-    .description("List authority-owned and staged Current Host Caplets.")
+    .description("List Storage-owned and staged Current Host Caplets.")
     .option("--json", "print deterministic JSON output")
     .action(async (options: { json?: boolean }) => {
       const result = await requireRemoteClientForTarget(io).currentHostCaplets();
@@ -2455,9 +2457,9 @@ export function createProgram(io: CliIO = {}): Command {
     });
   currentHostCaplets
     .command("create")
-    .description("Create an authority-owned Current Host Caplet from a JSON record.")
-    .requiredOption("--record <json-object>", "authority Caplet record as a JSON object")
-    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .description("Create a Storage-owned Current Host Caplet from a JSON record.")
+    .requiredOption("--record <json-object>", "Storage Caplet record as a JSON object")
+    .option("--expected-generation <json-object>", "expected Storage Generation identity")
     .option("--idempotency-key <key>", "stable mutation intent key")
     .option("--json", "print deterministic JSON output")
     .action(
@@ -2479,10 +2481,10 @@ export function createProgram(io: CliIO = {}): Command {
     );
   currentHostCaplets
     .command("update")
-    .description("Update an authority-owned Current Host Caplet from a JSON record.")
-    .argument("<id>", "authority Caplet ID")
-    .requiredOption("--record <json-object>", "authority Caplet record as a JSON object")
-    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .description("Update a Storage-owned Current Host Caplet from a JSON record.")
+    .argument("<id>", "Storage Caplet ID")
+    .requiredOption("--record <json-object>", "Storage Caplet record as a JSON object")
+    .option("--expected-generation <json-object>", "expected Storage Generation identity")
     .option("--idempotency-key <key>", "stable mutation intent key")
     .option("--json", "print deterministic JSON output")
     .action(
@@ -2508,9 +2510,9 @@ export function createProgram(io: CliIO = {}): Command {
     );
   currentHostCaplets
     .command("delete")
-    .description("Delete an authority-owned Current Host Caplet.")
-    .argument("<id>", "authority Caplet ID")
-    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .description("Delete a Storage-owned Current Host Caplet.")
+    .argument("<id>", "Storage Caplet ID")
+    .option("--expected-generation <json-object>", "expected Storage Generation identity")
     .option("--idempotency-key <key>", "stable mutation intent key")
     .option("--json", "print deterministic JSON output")
     .action(
@@ -2541,7 +2543,7 @@ export function createProgram(io: CliIO = {}): Command {
     .command("update")
     .description("Update safe Current Host settings from a JSON patch.")
     .requiredOption("--settings <json-object>", "settings patch as a JSON object")
-    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .option("--expected-generation <json-object>", "expected Storage Generation identity")
     .option("--idempotency-key <key>", "stable mutation intent key")
     .option("--json", "print deterministic JSON output")
     .action(
@@ -2571,7 +2573,7 @@ export function createProgram(io: CliIO = {}): Command {
       .argument("<target-kind>", "local_host, remote_host, or hosted_sandbox")
       .option("--project-fingerprint <fingerprint>", "project identity for the approval")
       .option("--actor <actor>", "setup actor: cli-interactive, cli-yes, ui, or automation")
-      .option("--expected-generation <json-object>", "expected Authority Generation identity")
+      .option("--expected-generation <json-object>", "expected Storage Generation identity")
       .option("--idempotency-key <key>", "stable mutation intent key")
       .option("--json", "print deterministic JSON output")
       .action(
@@ -2899,7 +2901,7 @@ export function createProgram(io: CliIO = {}): Command {
             if (!config) {
               throw new CapletsError(
                 "CONFIG_INVALID",
-                "Shared setup requires a resolved authority configuration.",
+                "Shared setup requires a resolved Storage configuration.",
               );
             }
             const configured = [
@@ -3375,8 +3377,8 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--remote", "install through remote control")
     .option("--force", "overwrite installed Caplets")
     .option("--json", "print JSON output")
-    .option("--source <source>", "stable catalog source identity for shared authority installs")
-    .option("--entry-key <entryKey>", "stable catalog entry key for shared authority installs")
+    .option("--source <source>", "stable catalog source identity for shared Storage installs")
+    .option("--entry-key <entryKey>", "stable catalog entry key for shared Storage installs")
     .action(
       async (
         repo: string | undefined,
@@ -4308,7 +4310,7 @@ export function createProgram(io: CliIO = {}): Command {
         if (target !== undefined) {
           throw new CapletsError(
             "REQUEST_INVALID",
-            "Shared authority auth list has no project/global source scope; omit --project or --global.",
+            "Shared Storage auth list has no project/global source scope; omit --project or --global.",
           );
         }
         return await listAuthRowsAsync({
@@ -4330,24 +4332,21 @@ export function createProgram(io: CliIO = {}): Command {
 async function resolveCliAuthorityContext(io: CliIO): Promise<CliAuthorityContext | undefined> {
   const env = io.env ?? process.env;
   const configPath = envConfigPath(env);
-  const defaultAuthorityConfigPath = configPath ?? resolveConfigPath(env.CAPLETS_CONFIG);
-  if (existsSync(defaultAuthorityConfigPath)) {
+  const defaultStorageConfigPath = configPath ?? resolveConfigPath(env.CAPLETS_CONFIG);
+  let hasDirectStorage = false;
+  if (existsSync(defaultStorageConfigPath)) {
     try {
-      const parsed = JSON.parse(readFileSync(defaultAuthorityConfigPath, "utf8")) as {
-        authority?: unknown;
+      const parsed = JSON.parse(readFileSync(defaultStorageConfigPath, "utf8")) as {
+        storage?: unknown;
       };
-      if (!parsed || typeof parsed !== "object" || parsed.authority === undefined) return undefined;
+      hasDirectStorage =
+        parsed !== null && typeof parsed === "object" && parsed.storage !== undefined;
     } catch {
       return undefined;
     }
   }
-  const hasAuthorityProfile = Object.entries(env).some(
-    ([key, value]) =>
-      key.startsWith("CAPLETS_AUTHORITY_PROFILE_") &&
-      typeof value === "string" &&
-      value.trim().length > 0,
-  );
-  if (!existsSync(defaultAuthorityConfigPath) && !hasAuthorityProfile) return undefined;
+  const profile = hasDirectStorage ? undefined : singleStorageProfileName(env);
+  if (!hasDirectStorage && profile === undefined) return undefined;
   const storageIo: StorageCliIO = {
     writeOut: () => undefined,
     env,
@@ -4356,12 +4355,15 @@ async function resolveCliAuthorityContext(io: CliIO): Promise<CliAuthorityContex
     projectConfigPath: envProjectConfigPath(env),
     ...(io.signal === undefined ? {} : { signal: io.signal }),
   };
-  const selector = resolveStorageAuthoritySelector(storageIo);
+  const selector =
+    profile === undefined
+      ? resolveStorageAuthoritySelector(storageIo)
+      : resolveStorageProfileSelector(profile, storageIo);
   if (selector.bootstrap.provider === "filesystem") return undefined;
   if (selector.secrets.vaultKey === undefined) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      "Shared authority CLI operations require a stable external vault key reference",
+      "Shared Storage CLI operations require a stable external vault key reference",
     );
   }
   const opened = await openStorageAuthority(storageIo, selector);
@@ -5334,12 +5336,11 @@ function writeCurrentHostResult(
     const status = typeof result.status === "string" ? result.status : "unknown";
     const lines = [
       `Current Host health: ${status}`,
-      `Authority: ${typeof health.authorityId === "string" ? health.authorityId : "unknown"}`,
       `Provider: ${typeof health.provider === "string" ? health.provider : "unknown"}`,
       `Connectivity: ${typeof health.connectivity === "string" ? health.connectivity : "unknown"}`,
       `Writable: ${health.writable === true ? "yes" : "no"}`,
-      `Authority generation (active): ${describeCurrentHostGeneration(health.activeGeneration)}`,
-      `Authority generation (observed): ${describeCurrentHostGeneration(health.observedGeneration)}`,
+      `Storage Generation (active): ${describeCurrentHostGeneration(health.activeGeneration)}`,
+      `Storage Generation (observed): ${describeCurrentHostGeneration(health.observedGeneration)}`,
       `Exposure generation: ${
         health.exposureGeneration === null || health.exposureGeneration === undefined
           ? "none"

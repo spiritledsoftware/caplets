@@ -1,22 +1,24 @@
-import { integer, pgTable, text } from "drizzle-orm/pg-core";
+import { integer, pgSchema, text } from "drizzle-orm/pg-core";
 
 export const POSTGRES_LOGICAL_SCHEMA_VERSION = 3;
 
-export const authoritySchemaMeta = pgTable("authority_schema_meta", {
+export const capletsSchema = pgSchema("caplets");
+
+export const authoritySchemaMeta = capletsSchema.table("authority_schema_meta", {
   authorityId: text("authority_id").primaryKey(),
   namespace: text("namespace").notNull(),
   logicalSchemaVersion: integer("logical_schema_version").notNull(),
   auxiliaryWatermark: integer("auxiliary_watermark").notNull().default(0),
 });
 
-export const authorityMigrations = pgTable("authority_migrations", {
+export const authorityMigrations = capletsSchema.table("authority_migrations", {
   version: integer("version").primaryKey(),
   name: text("name").notNull(),
   checksum: text("checksum").notNull(),
   appliedAt: text("applied_at").notNull(),
 });
 
-export const authorityHeads = pgTable("authority_heads", {
+export const authorityHeads = capletsSchema.table("authority_heads", {
   authorityId: text("authority_id").primaryKey(),
   namespace: text("namespace").notNull(),
   generationId: text("generation_id"),
@@ -27,7 +29,7 @@ export const authorityHeads = pgTable("authority_heads", {
   committedAt: text("committed_at"),
 });
 
-export const authorityGenerations = pgTable("authority_generations", {
+export const authorityGenerations = capletsSchema.table("authority_generations", {
   authorityId: text("authority_id").notNull(),
   generationId: text("generation_id").notNull(),
   sequence: integer("sequence").notNull(),
@@ -38,7 +40,7 @@ export const authorityGenerations = pgTable("authority_generations", {
   snapshotJson: text("snapshot_json").notNull(),
 });
 
-export const authorityReceipts = pgTable("authority_receipts", {
+export const authorityReceipts = capletsSchema.table("authority_receipts", {
   authorityId: text("authority_id").notNull(),
   currentHostId: text("current_host_id").notNull(),
   principalId: text("principal_id").notNull(),
@@ -49,7 +51,7 @@ export const authorityReceipts = pgTable("authority_receipts", {
   expiresAt: text("expires_at").notNull(),
 });
 
-export const authoritySessions = pgTable("authority_sessions", {
+export const authoritySessions = capletsSchema.table("authority_sessions", {
   authorityId: text("authority_id").notNull(),
   sessionId: text("session_id").notNull(),
   revision: integer("revision").notNull().default(0),
@@ -57,7 +59,7 @@ export const authoritySessions = pgTable("authority_sessions", {
   revoked: integer("revoked").notNull().default(0),
 });
 
-export const authorityEvents = pgTable("authority_events", {
+export const authorityEvents = capletsSchema.table("authority_events", {
   authorityId: text("authority_id").notNull(),
   watermark: integer("watermark").notNull(),
   kind: text("kind").notNull(),
@@ -65,7 +67,7 @@ export const authorityEvents = pgTable("authority_events", {
   eventJson: text("event_json").notNull(),
 });
 
-export const authorityMaintenanceLeases = pgTable("authority_maintenance_leases", {
+export const authorityMaintenanceLeases = capletsSchema.table("authority_maintenance_leases", {
   authorityId: text("authority_id").primaryKey(),
   namespace: text("namespace").notNull(),
   owner: text("owner").notNull(),

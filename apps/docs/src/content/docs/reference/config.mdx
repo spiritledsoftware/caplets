@@ -36,6 +36,32 @@ Global HTTP serve defaults (user config only):
 }
 ```
 
+Storage providers (global config only):
+
+```json
+{ "storage": { "provider": "filesystem", "path": "/var/lib/caplets" } }
+```
+
+```json
+{ "storage": { "provider": "sqlite", "path": "/var/lib/caplets/caplets.sqlite" } }
+```
+
+```json
+{ "storage": { "provider": "postgresql", "connection": "env:CAPLETS_POSTGRES_URL" } }
+```
+
+```json
+{
+  "storage": {
+    "provider": "s3",
+    "bucket": "caplets-state",
+    "region": "us-east-1",
+    "path": "production/caplets",
+    "credentials": "env:CAPLETS_S3_CREDENTIALS"
+  }
+}
+```
+
 Keep `options.exposure` at the default `code_mode` unless your client cannot run Code
 Mode. Add backend maps such as `mcpServers`, `openapiEndpoints`,
 `googleDiscoveryApis`, `graphqlEndpoints`, `httpApis`, `cliTools`, or `capletSets` only
@@ -80,7 +106,7 @@ Public OpenAPI endpoint:
 | --------------------- | -------- | ------- | ------------------------------------------------------------------------- |
 | `$schema`             | Optional | string  | Optional JSON Schema for editor validation.                               |
 | `version`             | Optional | number  | Caplets config schema version.                                            |
-| `authority`           | Optional | object  | Global-only Writable Authority bootstrap configuration.                   |
+| `storage`             | Optional | object  | Global-only storage provider configuration.                               |
 | `defaultSearchLimit`  | Optional | integer | Default maximum number of same-server search results.                     |
 | `maxSearchLimit`      | Optional | integer | Maximum accepted search_tools limit.                                      |
 | `telemetry`           | Optional | boolean | Set false to disable anonymous Caplets telemetry for this user config.    |
@@ -97,6 +123,53 @@ Public OpenAPI endpoint:
 | `capletSets`          | Optional | object  | Nested Caplet collections keyed by stable Caplet ID.                      |
 
 ## Major sections
+
+### `storage`
+
+Global-only storage provider configuration.
+
+Choose exactly one provider shape. Storage belongs only in the global config.
+
+#### `filesystem`
+
+| Field            | Status   | Type    | Description                                                        |
+| ---------------- | -------- | ------- | ------------------------------------------------------------------ |
+| `provider`       | Required | string  | Use local filesystem storage.                                      |
+| `path`           | Optional | string  | Local storage root; defaults to the Caplets global data directory. |
+| `pollIntervalMs` | Optional | integer | Maximum milliseconds between checks for storage changes.           |
+| `vaultKey`       | Optional | string  | Reference to the Vault encryption key; never put key bytes inline. |
+
+#### `sqlite`
+
+| Field            | Status   | Type    | Description                                                        |
+| ---------------- | -------- | ------- | ------------------------------------------------------------------ |
+| `provider`       | Required | string  | Use a local SQLite database.                                       |
+| `path`           | Required | string  | Path to the local persistent SQLite database file.                 |
+| `pollIntervalMs` | Optional | integer | Maximum milliseconds between checks for storage changes.           |
+| `vaultKey`       | Optional | string  | Reference to the Vault encryption key; never put key bytes inline. |
+
+#### `postgresql`
+
+| Field            | Status   | Type    | Description                                                        |
+| ---------------- | -------- | ------- | ------------------------------------------------------------------ |
+| `provider`       | Required | string  | Use a dedicated PostgreSQL database.                               |
+| `connection`     | Required | string  | Reference to the DSN for a dedicated deployment database.          |
+| `pollIntervalMs` | Optional | integer | Maximum milliseconds between checks for storage changes.           |
+| `vaultKey`       | Optional | string  | Reference to the Vault encryption key; never put key bytes inline. |
+
+#### `s3`
+
+| Field            | Status   | Type    | Description                                                        |
+| ---------------- | -------- | ------- | ------------------------------------------------------------------ |
+| `provider`       | Required | string  | Use S3-compatible object storage.                                  |
+| `bucket`         | Required | string  | Dedicated S3 bucket for this deployment.                           |
+| `region`         | Required | string  | AWS region containing the S3 bucket.                               |
+| `path`           | Optional | string  | Optional physical root path within the bucket for this deployment. |
+| `credentials`    | Optional | string  | Optional credentials reference; omit to use workload identity.     |
+| `endpoint`       | Optional | string  | Optional S3-compatible service endpoint URL.                       |
+| `forcePathStyle` | Optional | boolean | Use path-style rather than virtual-hosted-style S3 requests.       |
+| `pollIntervalMs` | Optional | integer | Maximum milliseconds between checks for storage changes.           |
+| `vaultKey`       | Optional | string  | Reference to the Vault encryption key; never put key bytes inline. |
 
 ### `serve`
 

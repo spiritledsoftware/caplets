@@ -1,15 +1,17 @@
 import { existsSync, statSync } from "node:fs";
 import {
-  loadAuthorityBootstrap,
+  loadResolvedStorageContext,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
   resolveConfigPath,
-  type AuthorityBootstrap,
-  type AuthoritySecretResolver,
+  type StorageBootstrap,
+  type StorageSecretResolver,
   type CapletsConfig,
   type ConfigSource,
-  type LoadedAuthorityBootstrap,
-  type ResolvedAuthoritySecrets,
+  type LoadedStorageBootstrap,
+  type ResolvedStorageContext,
+  type NormalizedStorageBootstrap,
+  type ResolvedStorageSecrets,
 } from "../config";
 import {
   CapletsEngine,
@@ -46,7 +48,7 @@ type TimerHandle = ReturnType<typeof setTimeout>;
 
 type AuthorityLike<TSnapshot> = WritableAuthority<TSnapshot, unknown>;
 
-type AuthorityBootstrapInput = AuthorityBootstrap | LoadedAuthorityBootstrap;
+type StorageBootstrapInput = LoadedStorageBootstrap;
 
 export type RuntimeEpochLease = {
   readonly view: PreparedRuntimeView;
@@ -162,11 +164,11 @@ export type RuntimeEpochCoordinatorOptions<TSnapshot = AuthoritySnapshot> = {
   authorityFactory?:
     | ((context: AuthorityProviderContext) => Promise<AuthorityLike<TSnapshot>>)
     | undefined;
-  bootstrap?: AuthorityBootstrapInput | undefined;
+  bootstrap?: StorageBootstrapInput | undefined;
   configPath?: string | undefined;
   projectConfigPath?: string | undefined;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined> | undefined;
-  secretResolver?: AuthoritySecretResolver | undefined;
+  secretResolver?: StorageSecretResolver | undefined;
   staged?: StagedConfigSource[] | undefined;
   stagedPaths?: string[] | undefined;
   stagedFingerprint?: string | undefined;
@@ -189,11 +191,14 @@ export type RuntimeEpochCoordinatorOptions<TSnapshot = AuthoritySnapshot> = {
   signal?: AbortSignal | undefined;
 };
 
-type ResolvedCoordinatorOptions<TSnapshot> = RuntimeEpochCoordinatorOptions<TSnapshot> & {
-  bootstrap: LoadedAuthorityBootstrap;
+type ResolvedCoordinatorOptions<TSnapshot> = Omit<
+  RuntimeEpochCoordinatorOptions<TSnapshot>,
+  "bootstrap"
+> & {
+  bootstrap: ResolvedStorageContext;
   configPath: string;
   projectConfigPath: string;
-  secrets: ResolvedAuthoritySecrets;
+  secrets: ResolvedStorageSecrets;
   pollIntervalMs: number;
   readDeadlineMs: number;
   activationDeadlineMs: number;
@@ -216,8 +221,9 @@ export type RuntimeRefreshAtLeastResult = {
  * until the first valid generation has been prepared and activated.
  */
 export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
-  readonly options: ResolvedCoordinatorOptions<TSnapshot>;
-  readonly bootstrap: LoadedAuthorityBootstrap;
+  private readonly options: ResolvedCoordinatorOptions<TSnapshot>;
+  readonly bootstrap: LoadedStorageBootstrap;
+  private readonly resolvedBootstrap: ResolvedStorageContext;
 
   private authorityInstance: AuthorityLike<TSnapshot> | undefined;
   private active: PreparedRuntimeView | undefined;
@@ -263,7 +269,8 @@ export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
       setTimeout: options.setTimeout ?? ((handler, timeout) => setTimeout(handler, timeout)),
       clearTimeout: options.clearTimeout ?? ((timer) => clearTimeout(timer)),
     };
-    this.bootstrap = loaded;
+    this.resolvedBootstrap = loaded;
+    this.bootstrap = { bootstrap: loaded.publicBootstrap, inventory: loaded.inventory };
     this.pollBackoffMs = pollIntervalMs;
   }
 
@@ -415,8 +422,8 @@ export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
       ).catch(() => undefined);
     }
     return {
-      provider: authorityHealth?.provider ?? this.bootstrap.bootstrap.provider,
-      authorityId: authorityHealth?.authorityId ?? this.bootstrap.bootstrap.authorityId,
+      provider: authorityHealth?.provider ?? this.resolvedBootstrap.bootstrap.provider,
+      authorityId: authorityHealth?.authorityId ?? this.resolvedBootstrap.bootstrap.authorityId,
       connectivity:
         this.lifecycle === "degraded"
           ? "degraded"
@@ -482,6 +489,20 @@ export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
         this.options.readDeadlineMs,
         "authority head read",
       );
+      if (
+        !this.options.authority &&
+        head &&
+        head.authorityId !== this.resolvedBootstrap.bootstrap.authorityId
+      ) {
+        throw new CapletsError(
+          "CONFIG_INVALID",
+          "Authority head identity does not match normalized storage",
+          {
+            expected: this.resolvedBootstrap.bootstrap.authorityId,
+            observed: head.authorityId,
+          },
+        );
+      }
       this.observed = head ? identityOf(head) : null;
       if (!head) {
         throw new CapletsError(
@@ -603,7 +624,7 @@ export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
     const stagedFingerprint = this.options.stagedFingerprint ?? (await computeFingerprint(staged));
     this.stagedFingerprint = stagedFingerprint;
     const authority: AuthorityCompositionInput = {
-      authorityId: this.bootstrap.bootstrap.authorityId,
+      authorityId: this.resolvedBootstrap.bootstrap.authorityId,
       generation: generation as AuthorityGeneration<AuthoritySnapshot>,
       ...(this.options.bundleCache ? { bundleCache: this.options.bundleCache } : {}),
     };
@@ -613,7 +634,7 @@ export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
   private loadStagedSources(): StagedConfigSource[] {
     const paths =
       this.options.stagedPaths ??
-      this.bootstrap.inventory.entries
+      this.resolvedBootstrap.inventory.entries
         .filter((entry) => entry.owner === "staged")
         .map((entry) => entry.path);
     const resolvedPaths =
@@ -647,14 +668,47 @@ export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
   private async createAuthority(): Promise<AuthorityLike<TSnapshot>> {
     if (this.options.authority) return this.options.authority;
     const context: AuthorityProviderContext = {
-      bootstrap: this.bootstrap.bootstrap,
-      secrets: this.bootstrap.secrets,
+      bootstrap: this.resolvedBootstrap.bootstrap,
+      secrets: this.resolvedBootstrap.secrets,
     };
-    if (this.options.authorityFactory) return await this.options.authorityFactory(context);
-    return (await createAuthorityWithBuiltinFallback(
-      context,
-      this.options.configPath,
-    )) as AuthorityLike<TSnapshot>;
+    const authority = this.options.authorityFactory
+      ? await this.options.authorityFactory(context)
+      : ((await createAuthorityWithBuiltinFallback(
+          context,
+          this.options.configPath,
+        )) as AuthorityLike<TSnapshot>);
+    this.authorityInstance = authority;
+    if (authority.namespace !== context.bootstrap.namespace) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "Authority namespace does not match normalized storage",
+        {
+          expected: context.bootstrap.namespace,
+          observed: authority.namespace,
+        },
+      );
+    }
+    const health = await withDeadline(
+      authority.health(),
+      this.options.readDeadlineMs,
+      "authority identity health check",
+    );
+    if (
+      health.authorityId !== context.bootstrap.authorityId ||
+      health.provider !== context.bootstrap.provider
+    ) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "Authority health identity does not match normalized storage",
+        {
+          expectedAuthorityId: context.bootstrap.authorityId,
+          observedAuthorityId: health.authorityId,
+          expectedProvider: context.bootstrap.provider,
+          observedProvider: health.provider,
+        },
+      );
+    }
+    return authority;
   }
   private activate(view: PreparedRuntimeView): void {
     const previous = this.active;
@@ -747,13 +801,15 @@ function resolveLoadedBootstrap<TSnapshot>(
   options: RuntimeEpochCoordinatorOptions<TSnapshot>,
   configPath: string,
   projectConfigPath: string,
-): LoadedAuthorityBootstrap {
-  if (options.bootstrap && "bootstrap" in options.bootstrap) return options.bootstrap;
+): ResolvedStorageContext {
   if (options.bootstrap) {
+    const normalized = normalizeLoadedBootstrap(options.bootstrap.bootstrap, options.authority);
     return {
-      bootstrap: options.bootstrap,
-      inventory: { entries: [{ path: configPath, owner: "authority" }] },
-      secrets: resolveSecrets(options.bootstrap, options.secretResolver, options.env),
+      bootstrap: normalized,
+      publicBootstrap: options.bootstrap.bootstrap,
+      inventory: options.bootstrap.inventory,
+      secrets: resolveSecrets(normalized, options.secretResolver, options.env),
+      configured: true,
     };
   }
   if (options.authority && !existsSync(configPath)) {
@@ -764,31 +820,61 @@ function resolveLoadedBootstrap<TSnapshot>(
       typeof options.authority.authorityId === "string"
         ? options.authority.authorityId
         : "test-authority";
+    const bootstrap: NormalizedStorageBootstrap = {
+      provider: "filesystem",
+      authorityId,
+      namespace: "default",
+      pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
+    };
     return {
-      bootstrap: {
-        provider: "filesystem",
-        authorityId,
-        namespace: "default",
-        pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
-      },
+      bootstrap,
+      publicBootstrap: { provider: "filesystem", pollIntervalMs: DEFAULT_POLL_INTERVAL_MS },
       inventory: { entries: [] },
       secrets: {},
+      configured: false,
     };
   }
-  return loadAuthorityBootstrap(configPath, options.env, options.secretResolver, {
+  return loadResolvedStorageContext(configPath, options.env, options.secretResolver, {
     projectPath: projectConfigPath,
   });
 }
 
+function normalizeLoadedBootstrap<TSnapshot>(
+  bootstrap: StorageBootstrap,
+  authority: AuthorityLike<TSnapshot> | undefined,
+): NormalizedStorageBootstrap {
+  const authorityId =
+    authority &&
+    typeof authority === "object" &&
+    "authorityId" in authority &&
+    typeof authority.authorityId === "string"
+      ? authority.authorityId
+      : "current-host";
+  const namespace = authority?.namespace ?? "default";
+  return bootstrap.provider === "sqlite"
+    ? {
+        ...bootstrap,
+        databasePath: bootstrap.path,
+        authorityId,
+        namespace,
+      }
+    : { ...bootstrap, authorityId, namespace };
+}
+
 function resolveSecrets(
-  bootstrap: AuthorityBootstrap,
-  resolver: AuthoritySecretResolver | undefined,
+  bootstrap: NormalizedStorageBootstrap,
+  resolver: StorageSecretResolver | undefined,
   env: NodeJS.ProcessEnv | Record<string, string | undefined> | undefined,
-): ResolvedAuthoritySecrets {
+): ResolvedStorageSecrets {
   const resolveSecret = resolver ?? ((reference: string) => (env ?? process.env)[reference]);
   return {
-    ...(bootstrap.credentialRef ? { credential: resolveSecret(bootstrap.credentialRef) } : {}),
-    ...(bootstrap.vaultKeyRef ? { vaultKey: resolveSecret(bootstrap.vaultKeyRef) } : {}),
+    ...(bootstrap.provider === "postgresql"
+      ? { credential: resolveSecret(bootstrap.connection) }
+      : {}),
+    ...(bootstrap.provider === "s3" && bootstrap.credentials
+      ? { credential: resolveSecret(bootstrap.credentials) }
+      : {}),
+    ...(bootstrap.vaultKey ? { vaultKey: resolveSecret(bootstrap.vaultKey) } : {}),
   };
 }
 function boundedInterval(value: number, label = "poll interval"): number {

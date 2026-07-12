@@ -1,11 +1,12 @@
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type postgres from "postgres";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import corePackage from "../package.json";
 import {
   POSTGRES_MIGRATIONS,
@@ -14,9 +15,11 @@ import {
   migrateSqliteDatabase,
   verifyMigrationHistory,
 } from "../src/storage/sql/migrate";
+import { postgresSchema } from "../src/storage/sql/schema-postgres";
 
 const require = createRequire(import.meta.url);
 const loadPostgres = require("postgres") as typeof postgres;
+const coreRoot = fileURLToPath(new URL("..", import.meta.url));
 
 it("pins the stable Drizzle and native driver packaging", () => {
   expect(corePackage.dependencies["drizzle-orm"]).toBe("0.45.2");
@@ -38,6 +41,28 @@ describe("SQL authority migrations", () => {
     );
     expect(POSTGRES_MIGRATIONS.map((migration) => migration.version)).toEqual(
       SQLITE_MIGRATIONS.map((migration) => migration.version),
+    );
+  });
+
+  it("pins every PostgreSQL migration and Drizzle table to the caplets schema", () => {
+    for (const migration of POSTGRES_MIGRATIONS) {
+      expect(migration.sql).toContain("caplets.");
+      expect(migration.sql).not.toMatch(
+        /\b(?:FROM|INTO|UPDATE|TABLE(?: IF NOT EXISTS)?|ON)\s+authority_/,
+      );
+    }
+    for (const table of Object.values(postgresSchema)) {
+      expect(getTableConfig(table).schema).toBe("caplets");
+    }
+  });
+
+  it("uses valid fixed-schema PostgreSQL index DDL", () => {
+    const initial = POSTGRES_MIGRATIONS.find((migration) => migration.name === "0000_initial");
+    expect(initial?.sql).toContain(
+      "CREATE INDEX IF NOT EXISTS authority_events_after_idx ON caplets.authority_events (authority_id, watermark);",
+    );
+    expect(initial?.sql).not.toContain(
+      "CREATE INDEX IF NOT EXISTS caplets.authority_events_after_idx",
     );
   });
 
@@ -96,13 +121,13 @@ describe("SQL authority migrations", () => {
   it("keeps the lease migration in both Drizzle journal histories", async () => {
     const sqliteJournal = JSON.parse(
       await readFile(
-        join(process.cwd(), "packages/core/src/storage/sql/migrations/sqlite/meta/_journal.json"),
+        join(coreRoot, "src/storage/sql/migrations/sqlite/meta/_journal.json"),
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; version: string; tag: string }> };
     const postgresJournal = JSON.parse(
       await readFile(
-        join(process.cwd(), "packages/core/src/storage/sql/migrations/postgres/meta/_journal.json"),
+        join(coreRoot, "src/storage/sql/migrations/postgres/meta/_journal.json"),
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; version: string; tag: string }> };
@@ -115,19 +140,29 @@ describe("SQL authority migrations", () => {
     }
   });
 
-  it("serializes different PostgreSQL authority migrators behind a rollback-safe global lock", async () => {
+  it("keeps checked-in PostgreSQL artifacts byte-aligned with runtime migrations", async () => {
+    for (const migration of POSTGRES_MIGRATIONS) {
+      const sql = await readFile(
+        join(coreRoot, "src/storage/sql/migrations/postgres", `${migration.name}.sql`),
+        "utf8",
+      );
+      expect(sql).toBe(migration.sql);
+    }
+  });
+
+  it("serializes concurrent fixed-schema PostgreSQL migrators behind a rollback-safe lock", async () => {
     const connectionString = process.env.TEST_POSTGRES_URL;
     if (!connectionString) return;
     const blocker = loadPostgres(connectionString, { max: 1, prepare: false });
     const firstPromise = migratePostgresDatabase({
       connectionString,
-      authorityId: `migration-lock-${randomUUID()}`,
-      namespace: "test",
+      authorityId: "current-host",
+      namespace: "default",
     });
     const secondPromise = migratePostgresDatabase({
       connectionString,
-      authorityId: `migration-lock-${randomUUID()}`,
-      namespace: "test",
+      authorityId: "current-host",
+      namespace: "default",
     });
     let settled = false;
     const resultsPromise = Promise.all([firstPromise, secondPromise]).then((results) => {
@@ -137,7 +172,7 @@ describe("SQL authority migrations", () => {
     try {
       await expect(
         blocker.begin(async (tx) => {
-          await tx`SELECT pg_advisory_xact_lock(hashtextextended('caplets:sql:migrate', 0))`;
+          await tx`SELECT pg_advisory_xact_lock(hashtextextended('caplets:sql:migrate:caplets', 0))`;
           await delay(100);
           expect(settled).toBe(false);
           throw new Error("rollback global migration lock");
