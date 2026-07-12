@@ -1,6 +1,16 @@
 import { defineConfig } from "rolldown";
 import { runtimeSentryPlugins, sentryConfigured } from "../../scripts/runtime-sentry-rolldown";
 
+const providerDependencies = [
+  "@aws-sdk/client-s3",
+  "better-sqlite3",
+  "drizzle-orm",
+  "drizzle-orm/better-sqlite3",
+  "drizzle-orm/pg-core",
+  "drizzle-orm/sqlite-core",
+  "postgres",
+] as const;
+
 export default defineConfig([
   {
     input: {
@@ -17,7 +27,7 @@ export default defineConfig([
       sourcemap: sentryConfigured(),
     },
     plugins: runtimeSentryPlugins("core"),
-    external: ["jsonc-parser", "quickjs-emscripten", "typescript"],
+    external: [...providerDependencies, "jsonc-parser", "quickjs-emscripten", "typescript"],
     platform: "node",
   },
   {
@@ -37,6 +47,7 @@ export default defineConfig([
       sourcemap: sentryConfigured(),
     },
     plugins: runtimeSentryPlugins("core"),
+    external: [...providerDependencies],
     platform: "browser",
   },
 ]);

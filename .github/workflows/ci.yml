@@ -5,6 +5,13 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "Run credentialed AWS S3/R2 validation (requires repository variable CAPLETS_STORAGE_LIVE_ENABLED=true)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -39,6 +46,68 @@ jobs:
 
       - name: Run quality gates
         run: pnpm verify
+
+  storage-provider-matrix:
+    name: Storage provider matrix (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run deterministic storage provider matrix
+        run: pnpm storage:test:providers
+
+  storage-provider-live:
+    name: Credentialed live storage providers
+    if: github.event_name == 'workflow_dispatch' && (inputs.live == true) && vars.CAPLETS_STORAGE_LIVE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CAPLETS_STORAGE_AWS_BUCKET: ${{ secrets.CAPLETS_STORAGE_AWS_BUCKET }}
+      CAPLETS_STORAGE_AWS_REGION: ${{ secrets.CAPLETS_STORAGE_AWS_REGION }}
+      CAPLETS_STORAGE_AWS_ENDPOINT: ${{ secrets.CAPLETS_STORAGE_AWS_ENDPOINT }}
+      CAPLETS_STORAGE_AWS_ACCESS_KEY_ID: ${{ secrets.CAPLETS_STORAGE_AWS_ACCESS_KEY_ID }}
+      CAPLETS_STORAGE_AWS_SECRET_ACCESS_KEY: ${{ secrets.CAPLETS_STORAGE_AWS_SECRET_ACCESS_KEY }}
+      CAPLETS_STORAGE_AWS_SESSION_TOKEN: ${{ secrets.CAPLETS_STORAGE_AWS_SESSION_TOKEN }}
+      CAPLETS_STORAGE_R2_BUCKET: ${{ secrets.CAPLETS_STORAGE_R2_BUCKET }}
+      CAPLETS_STORAGE_R2_REGION: ${{ secrets.CAPLETS_STORAGE_R2_REGION }}
+      CAPLETS_STORAGE_R2_ENDPOINT: ${{ secrets.CAPLETS_STORAGE_R2_ENDPOINT }}
+      CAPLETS_STORAGE_R2_ACCESS_KEY_ID: ${{ secrets.CAPLETS_STORAGE_R2_ACCESS_KEY_ID }}
+      CAPLETS_STORAGE_R2_SECRET_ACCESS_KEY: ${{ secrets.CAPLETS_STORAGE_R2_SECRET_ACCESS_KEY }}
+      CAPLETS_STORAGE_R2_SESSION_TOKEN: ${{ secrets.CAPLETS_STORAGE_R2_SESSION_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run requested live storage targets
+        run: pnpm storage:test:providers -- --live=aws,r2
 
   changeset:
     name: Changeset

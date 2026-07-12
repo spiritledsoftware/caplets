@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,6 +12,8 @@ import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { AuthorityVaultStore } from "../src/vault";
+import { FilesystemAuthority } from "../src/storage/filesystem-authority";
 
 const dirs: string[] = [];
 
@@ -206,6 +208,21 @@ describe("Current Host administration operations", () => {
     });
   });
 
+  it("rejects a caplet update when the envelope id differs from record.id", async () => {
+    const setup = testOperations();
+    try {
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "caplet_update",
+          id: "different-id",
+          record: { id: "status", config: { mcpServers: {} } },
+        }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    } finally {
+      await setup.engine.close();
+    }
+  });
+
   it("rejects an Access principal before reading or mutating administration state", async () => {
     const setup = testOperations();
     const accessPrincipal: CurrentHostPrincipal = {
@@ -352,6 +369,118 @@ describe("Current Host administration operations", () => {
       expect(JSON.stringify(entries)).not.toContain(pending.operatorCode);
       expect(JSON.stringify(entries)).not.toContain(pending.pendingCompletionSecret);
     } finally {
+      await setup.engine.close();
+    }
+  });
+
+  it("routes shared Current Host Vault set-and-grant through one authority generation and replica reads", async () => {
+    const setup = testOperations();
+    const authorityRoot = tempDir("caplets-current-host-shared-vault-");
+    const authority = new FilesystemAuthority({ root: authorityRoot, authorityId: "shared-vault" });
+    const key = Buffer.alloc(32, 11).toString("base64url");
+    let replica: FilesystemAuthority | undefined;
+    try {
+      await authority.initialize();
+      const seeded = await authority.commit({
+        authorityId: "shared-vault",
+        currentHostId: "seed",
+        principalId: "seed",
+        expectedGeneration: null,
+        idempotencyKey: "seed",
+        requestDigest: "seed",
+        command: {
+          kind: "replace_snapshot",
+          snapshot: { caplets: { status: { id: "status" } } },
+        },
+      });
+      if (seeded.kind !== "committed") throw new Error("Expected shared Vault seed generation.");
+      const activeGeneration = await authority.readGeneration(seeded.generation.id);
+      const sharedStore = new AuthorityVaultStore({
+        authority,
+        authorityId: "shared-vault",
+        currentHostId: "current-host-a",
+        key,
+      });
+      const activity = new DashboardActivityLog({ dir: join(setup.root, "shared-activity") });
+      const operations = createCurrentHostOperations({
+        engine: setup.engine,
+        control: {
+          configPath: setup.configPath,
+          projectConfigPath: join(setup.root, "project", ".caplets", "config.json"),
+          authDir: join(setup.root, "auth"),
+          authorityId: "shared-vault",
+          currentHostId: "current-host-a",
+        },
+        vaultStore: sharedStore,
+        activeGeneration,
+        activityLog: activity,
+        version: "test-version",
+      });
+      const before = await authority.readHead();
+      const set = await operations.execute(setup.principal, {
+        kind: "vault_set",
+        name: "GH_TOKEN",
+        value: "shared_authority_secret",
+        grant: "status",
+        referenceName: "API_TOKEN",
+      });
+      expect(set).toEqual(
+        expect.objectContaining({
+          kind: "vault_set",
+          status: expect.objectContaining({ key: "GH_TOKEN", present: true }),
+        }),
+      );
+      const after = await authority.readHead();
+      expect(after?.sequence).toBe((before?.sequence ?? 0) + 1);
+      expect(existsSync(join(setup.root, "auth", "vault"))).toBe(false);
+
+      replica = new FilesystemAuthority({ root: authorityRoot, authorityId: "shared-vault" });
+      await replica.initialize();
+      const replicaHead = await replica.readHead();
+      if (!replicaHead) throw new Error("Expected replica Vault head.");
+      const replicaStore = new AuthorityVaultStore({
+        authority: replica,
+        authorityId: "shared-vault",
+        currentHostId: "current-host-b",
+        key,
+      });
+      const replicaOperations = createCurrentHostOperations({
+        engine: setup.engine,
+        control: {
+          configPath: setup.configPath,
+          projectConfigPath: join(setup.root, "project", ".caplets", "config.json"),
+          authDir: join(setup.root, "auth"),
+          authorityId: "shared-vault",
+          currentHostId: "current-host-b",
+        },
+        vaultStore: replicaStore,
+        activeGeneration: await replica.readGeneration(replicaHead.id),
+        activityLog: new DashboardActivityLog({ dir: join(setup.root, "replica-activity") }),
+        version: "test-version",
+      });
+      await expect(
+        replicaOperations.execute(setup.principal, { kind: "vault_list" }),
+      ).resolves.toEqual({
+        kind: "vault_list",
+        values: [expect.objectContaining({ key: "GH_TOKEN", present: true })],
+        grants: [
+          expect.objectContaining({
+            storedKey: "GH_TOKEN",
+            referenceName: "API_TOKEN",
+            capletId: "status",
+            origin: { kind: "authority" },
+          }),
+        ],
+      });
+      await expect(
+        replicaOperations.execute(setup.principal, { kind: "vault_get", name: "GH_TOKEN" }),
+      ).resolves.toEqual({
+        kind: "vault_get",
+        status: expect.objectContaining({ key: "GH_TOKEN", present: true }),
+      });
+    } finally {
+      await replica?.close();
+      await authority.close();
       await setup.engine.close();
     }
   });

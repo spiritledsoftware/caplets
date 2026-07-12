@@ -19,6 +19,12 @@ import { NativeCapletsMcpSession } from "./native-session";
 import { serveStdio } from "./stdio";
 
 export { serveHttp } from "./http";
+export type {
+  CapletsHttpApp,
+  HttpMcpSessionContext,
+  HttpMcpSessionFactory,
+  HttpServeIo,
+} from "./http";
 export { resolveServeOptions } from "./options";
 export type { HttpServeOptions, RawServeOptions, ServeOptions, StdioServeOptions } from "./options";
 export { NativeCapletsMcpSession } from "./native-session";

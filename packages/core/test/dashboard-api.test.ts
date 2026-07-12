@@ -128,6 +128,43 @@ describe("dashboard API read model", () => {
 
     await setup.engine.close();
   });
+  it("protects authority CRUD, settings, and setup mutations with dashboard CSRF and field allowlists", async () => {
+    const setup = await authenticatedDashboard();
+    const missingCsrf = await setup.app.request(
+      "http://127.0.0.1:5387/dashboard/api/caplets/create",
+      {
+        method: "POST",
+        headers: { cookie: setup.cookie, "content-type": "application/json" },
+        body: JSON.stringify({
+          record: { id: "safe-id", config: { name: "Safe" } },
+        }),
+      },
+    );
+    expect(missingCsrf.status).toBe(403);
+
+    const unknownSetting = await setup.app.request("http://127.0.0.1:5387/dashboard/api/settings", {
+      method: "POST",
+      headers: {
+        cookie: setup.cookie,
+        "x-caplets-csrf": setup.csrfToken,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        settings: { unsupportedSecret: "must-not-appear" },
+      }),
+    });
+    expect(unknownSetting.status).toBe(400);
+    const unknownBody = await unknownSetting.text();
+    expect(unknownBody).not.toContain("must-not-appear");
+
+    const settings = await dashboardGet(setup, "/dashboard/api/settings");
+    expect(settings.status).toBe(200);
+    const settingsBody = await settings.text();
+    expect(settingsBody).not.toContain(setup.context.configPath);
+    expect(settingsBody).not.toContain("super-secret-token");
+
+    await setup.engine.close();
+  });
 });
 
 async function authenticatedDashboard() {
@@ -152,8 +189,9 @@ async function authenticatedDashboard() {
     pendingCompletionSecret: startBody.pendingCompletionSecret,
   });
   expect(completed.status).toBe(200);
+  const completedBody = (await completed.json()) as { session: { csrfToken: string } };
   const cookie = completed.headers.get("set-cookie") ?? "";
-  return { ...setup, cookie };
+  return { ...setup, cookie, csrfToken: completedBody.session.csrfToken };
 }
 
 async function dashboardGet(

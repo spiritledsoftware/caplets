@@ -18,15 +18,56 @@ import { buildCloudCapletBundle } from "./cli/cloud-add";
 import {
   loginAuth,
   logoutAuth,
+  logoutAuthAsync,
+  listAuthRowsAsync,
+  refreshAuth,
   formatAuthRows,
   listLocalAuthRows,
   localAuthConfigForTarget,
   localAuthTargets,
-  refreshAuth,
   type AuthSource,
   type AuthStatusRow,
+  type CliAuthorityContext,
 } from "./cli/auth";
 import { cliCommands } from "./cli/commands";
+import {
+  setVaultValue,
+  getVaultValue,
+  listVaultValues,
+  deleteVaultValue,
+  grantVaultAccess,
+  listVaultAccess,
+  revokeVaultAccess,
+  formatVaultAccessGrant,
+  formatVaultAccessList,
+  formatVaultAccessRevoke,
+  formatVaultDeleteStatus,
+  formatVaultValueList,
+  formatVaultValueStatus,
+  type VaultCliStore,
+} from "./cli/vault";
+import { AuthorityOAuthTokenStore } from "./auth/store";
+import { LocalSetupStore } from "./setup/local-store";
+import { AuthorityVaultStore } from "./vault";
+import {
+  createCurrentHostCatalogOperations,
+  type CurrentHostCatalogOperations,
+} from "./current-host/catalog-operations";
+import {
+  createCurrentHostOperations,
+  trustedDevelopmentOperatorPrincipal,
+  type CurrentHostOperations,
+  type CurrentHostRuntime,
+  type CurrentHostSetupMutation,
+} from "./current-host/operations";
+import { DashboardActivityLog } from "./dashboard/activity-log";
+import {
+  registerStorageCommands,
+  openStorageAuthority,
+  resolveStorageAuthoritySelector,
+  type StorageCliIO,
+} from "./cli/storage";
+import { assembleCapletsHost } from "./storage/coordinator";
 import { codeModeTypesCli, runCodeModeCli, runCodeModeReplCli } from "./cli/code-mode";
 import { initConfig } from "./cli/init";
 import { doctorJsonReport, formatDoctorReport } from "./cli/doctor";
@@ -47,19 +88,14 @@ import {
   resolveCliConfigPaths,
 } from "./cli/inspection";
 import {
-  formatVaultAccessGrant,
-  formatVaultAccessList,
-  formatVaultAccessRevoke,
-  formatVaultDeleteStatus,
-  formatVaultValueList,
-  formatVaultValueStatus,
-} from "./cli/vault";
-import {
   installCaplets,
+  installCapletsForCli,
+  updateCapletsForCli,
   indexInstalledCapletsFromLockfile,
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
 } from "./cli/install";
+import { runCapletSetupCli } from "./cli/setup-caplet";
 import type { CatalogIndexingResult } from "./catalog-indexing/payload";
 import { readCapletsLockfile } from "./cli/lockfile";
 import {
@@ -93,6 +129,9 @@ import {
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
+import { stableJsonValue } from "./stable-json";
+import type { AuthorityGenerationIdentity } from "./storage/types";
+import type { AuthorityCapletRecord } from "./storage/bundle-cache";
 import { resolveAttachServeOptions, type AttachServeOptions } from "./attach/options";
 import { attachResolvedCaplets } from "./attach/server";
 import { attachProjectOnce } from "./project-binding/attach";
@@ -105,7 +144,10 @@ import {
   createRemoteProfileStore,
   type FileRemoteProfileStore,
 } from "./remote/profile-store";
-import { RemoteServerCredentialStore } from "./remote/server-credential-store";
+import {
+  AuthorityRemoteServerCredentialStore,
+  RemoteServerCredentialStore,
+} from "./remote/server-credential-store";
 import type { RemoteClientRole } from "./remote/server-credentials";
 import { resolveRemoteSelection } from "./remote/selection";
 import {
@@ -178,6 +220,7 @@ type CliIO = {
   fetch?: typeof fetch;
   signal?: AbortSignal;
   projectBindingWebSocketFactory?: ProjectBindingWebSocketFactory;
+  remoteCredentialAuthorityStore?: AuthorityRemoteServerCredentialStore;
   authDir?: string;
   telemetryStateDir?: string;
   updateCheckCacheDir?: string;
@@ -431,6 +474,7 @@ function telemetryCommandFamilyFromArgs(
   if (command === cliCommands.add) return { commandFamily: "add", surface: "cli" };
   if (command === cliCommands.doctor) return { commandFamily: "doctor", surface: "cli" };
   if (command === cliCommands.auth) return { commandFamily: "auth", surface: "cli" };
+  if (command === cliCommands.currentHost) return { commandFamily: "remote", surface: "cli" };
   if (command === cliCommands.remote || command === cliCommands.cloud) {
     return { commandFamily: "remote", surface: "cli" };
   }
@@ -758,6 +802,13 @@ function remoteServerCredentialStore(
     dir:
       statePath ?? env.CAPLETS_REMOTE_SERVER_STATE_DIR ?? join(DEFAULT_AUTH_DIR, "remote-server"),
   });
+}
+function remoteCredentialServiceForCli(
+  io: CliIO,
+  statePath: string | undefined,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): RemoteServerCredentialStore | AuthorityRemoteServerCredentialStore {
+  return io.remoteCredentialAuthorityStore ?? remoteServerCredentialStore(statePath, env);
 }
 
 function compactCloudCaplet(value: unknown): Record<string, unknown> {
@@ -1452,6 +1503,18 @@ export function createProgram(io: CliIO = {}): Command {
     telemetryStateDir: telemetryContext().stateDir,
     telemetryDebugSink: io.telemetryDebugSink,
   });
+  const runWithAuthority = async <T>(
+    enabled: boolean,
+    action: (authority: CliAuthorityContext | undefined) => Promise<T>,
+  ): Promise<T> => {
+    if (!enabled) return await action(undefined);
+    const authority = await resolveCliAuthorityContext(io);
+    try {
+      return await action(authority);
+    } finally {
+      await authority?.close?.();
+    }
+  };
   const program = new Command();
 
   program
@@ -1464,6 +1527,18 @@ export function createProgram(io: CliIO = {}): Command {
       writeErr,
       outputError: (value, write) => write(value),
     });
+  const storageConfigPath = currentConfigPath();
+  const storageIo: StorageCliIO = {
+    writeOut,
+    writeErr,
+    setExitCode,
+    env,
+    ...(io.authDir === undefined ? {} : { authDir: io.authDir }),
+    ...(storageConfigPath === undefined ? {} : { configPath: storageConfigPath }),
+    projectConfigPath: envProjectConfigPath(env),
+    ...(io.signal === undefined ? {} : { signal: io.signal }),
+  };
+  registerStorageCommands(program, storageIo);
 
   program
     .command(cliCommands.completion)
@@ -2247,8 +2322,8 @@ export function createProgram(io: CliIO = {}): Command {
     .description("List paired self-hosted remote clients from server state.")
     .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((options: { statePath?: string; json?: boolean }) => {
-      const clients = remoteServerCredentialStore(options.statePath, env).listClients();
+    .action(async (options: { statePath?: string; json?: boolean }) => {
+      const clients = await remoteCredentialServiceForCli(io, options.statePath, env).listClients();
       if (options.json) {
         writeOut(`${JSON.stringify({ clients }, null, 2)}\n`);
         return;
@@ -2268,8 +2343,12 @@ export function createProgram(io: CliIO = {}): Command {
     .description("List pending self-hosted Remote Login approvals from server state.")
     .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((options: { statePath?: string; json?: boolean }) => {
-      const pendingLogins = remoteServerCredentialStore(options.statePath, env).listPendingLogins();
+    .action(async (options: { statePath?: string; json?: boolean }) => {
+      const pendingLogins = await remoteCredentialServiceForCli(
+        io,
+        options.statePath,
+        env,
+      ).listPendingLogins();
       if (options.json) {
         writeOut(`${JSON.stringify({ pendingLogins }, null, 2)}\n`);
         return;
@@ -2293,14 +2372,18 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--yes", "approve without an interactive confirmation prompt")
     .option("--json", "print JSON output")
     .action(
-      (
+      async (
         code: string,
         options: { statePath?: string; role?: RemoteClientRole; yes?: boolean; json?: boolean },
       ) => {
         if (!options.yes && !options.json) {
           throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
         }
-        const approved = remoteServerCredentialStore(options.statePath, env).approvePendingLogin({
+        const approved = await remoteCredentialServiceForCli(
+          io,
+          options.statePath,
+          env,
+        ).approvePendingLogin({
           operatorCode: code,
           ...(options.role ? { grantedRole: options.role } : {}),
         });
@@ -2317,8 +2400,12 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<code>", "operator-visible Remote Login code")
     .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((code: string, options: { statePath?: string; json?: boolean }) => {
-      const denied = remoteServerCredentialStore(options.statePath, env).denyPendingLogin({
+    .action(async (code: string, options: { statePath?: string; json?: boolean }) => {
+      const denied = await remoteCredentialServiceForCli(
+        io,
+        options.statePath,
+        env,
+      ).denyPendingLogin({
         operatorCode: code,
       });
       if (options.json) {
@@ -2333,14 +2420,195 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<client-id>", "remote client ID")
     .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((clientId: string, options: { statePath?: string; json?: boolean }) => {
-      const revoked = remoteServerCredentialStore(options.statePath, env).revokeClient(clientId);
+    .action(async (clientId: string, options: { statePath?: string; json?: boolean }) => {
+      const revoked = await remoteCredentialServiceForCli(io, options.statePath, env).revokeClient(
+        clientId,
+      );
       if (options.json) {
         writeOut(`${JSON.stringify({ revoked, clientId }, null, 2)}\n`);
         return;
       }
       writeOut(revoked ? `Revoked ${clientId}.\n` : `No remote client found for ${clientId}.\n`);
     });
+  const currentHost = program
+    .command(cliCommands.currentHost)
+    .description("Manage the authenticated Current Host authority.");
+  currentHost
+    .command("health")
+    .description("Show Current Host authority and runtime health.")
+    .option("--json", "print deterministic JSON output")
+    .action(async (options: { json?: boolean }) => {
+      const result = await requireRemoteClientForTarget(io).currentHostHealth();
+      writeCurrentHostResult(result, Boolean(options.json), writeOut);
+    });
+
+  const currentHostCaplets = currentHost
+    .command("caplets")
+    .description("Manage authority-owned Current Host Caplets.");
+  currentHostCaplets
+    .command("list")
+    .description("List authority-owned and staged Current Host Caplets.")
+    .option("--json", "print deterministic JSON output")
+    .action(async (options: { json?: boolean }) => {
+      const result = await requireRemoteClientForTarget(io).currentHostCaplets();
+      writeCurrentHostResult(result, Boolean(options.json), writeOut);
+    });
+  currentHostCaplets
+    .command("create")
+    .description("Create an authority-owned Current Host Caplet from a JSON record.")
+    .requiredOption("--record <json-object>", "authority Caplet record as a JSON object")
+    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .option("--idempotency-key <key>", "stable mutation intent key")
+    .option("--json", "print deterministic JSON output")
+    .action(
+      async (options: {
+        record: string;
+        expectedGeneration?: string;
+        idempotencyKey?: string;
+        json?: boolean;
+      }) => {
+        const result = await requireRemoteClientForTarget(io).currentHostCapletCreate(
+          parseJsonObjectOption(
+            options.record,
+            "current-host caplets create --record",
+          ) as AuthorityCapletRecord,
+          currentHostMutationOptions(options, "current-host caplets create --expected-generation"),
+        );
+        writeCurrentHostResult(result, Boolean(options.json), writeOut);
+      },
+    );
+  currentHostCaplets
+    .command("update")
+    .description("Update an authority-owned Current Host Caplet from a JSON record.")
+    .argument("<id>", "authority Caplet ID")
+    .requiredOption("--record <json-object>", "authority Caplet record as a JSON object")
+    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .option("--idempotency-key <key>", "stable mutation intent key")
+    .option("--json", "print deterministic JSON output")
+    .action(
+      async (
+        id: string,
+        options: {
+          record: string;
+          expectedGeneration?: string;
+          idempotencyKey?: string;
+          json?: boolean;
+        },
+      ) => {
+        const result = await requireRemoteClientForTarget(io).currentHostCapletUpdate(
+          id,
+          parseJsonObjectOption(
+            options.record,
+            "current-host caplets update --record",
+          ) as AuthorityCapletRecord,
+          currentHostMutationOptions(options, "current-host caplets update --expected-generation"),
+        );
+        writeCurrentHostResult(result, Boolean(options.json), writeOut);
+      },
+    );
+  currentHostCaplets
+    .command("delete")
+    .description("Delete an authority-owned Current Host Caplet.")
+    .argument("<id>", "authority Caplet ID")
+    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .option("--idempotency-key <key>", "stable mutation intent key")
+    .option("--json", "print deterministic JSON output")
+    .action(
+      async (
+        id: string,
+        options: { expectedGeneration?: string; idempotencyKey?: string; json?: boolean },
+      ) => {
+        const result = await requireRemoteClientForTarget(io).currentHostCapletDelete(
+          id,
+          currentHostMutationOptions(options, "current-host caplets delete --expected-generation"),
+        );
+        writeCurrentHostResult(result, Boolean(options.json), writeOut);
+      },
+    );
+
+  const currentHostSettings = currentHost
+    .command("settings")
+    .description("Read or update safe Current Host settings.");
+  currentHostSettings
+    .command("get")
+    .description("Read safe Current Host settings.")
+    .option("--json", "print deterministic JSON output")
+    .action(async (options: { json?: boolean }) => {
+      const result = await requireRemoteClientForTarget(io).currentHostSettingsGet();
+      writeCurrentHostResult(result, Boolean(options.json), writeOut);
+    });
+  currentHostSettings
+    .command("update")
+    .description("Update safe Current Host settings from a JSON patch.")
+    .requiredOption("--settings <json-object>", "settings patch as a JSON object")
+    .option("--expected-generation <json-object>", "expected Authority Generation identity")
+    .option("--idempotency-key <key>", "stable mutation intent key")
+    .option("--json", "print deterministic JSON output")
+    .action(
+      async (options: {
+        settings: string;
+        expectedGeneration?: string;
+        idempotencyKey?: string;
+        json?: boolean;
+      }) => {
+        const result = await requireRemoteClientForTarget(io).currentHostSettingsUpdate(
+          parseJsonObjectOption(options.settings, "current-host settings update --settings"),
+          currentHostMutationOptions(options, "current-host settings update --expected-generation"),
+        );
+        writeCurrentHostResult(result, Boolean(options.json), writeOut);
+      },
+    );
+
+  const currentHostSetup = currentHost
+    .command("setup")
+    .description("Grant or revoke a Current Host setup approval.");
+  for (const command of ["grant", "revoke"] as const) {
+    currentHostSetup
+      .command(command)
+      .description(`${command === "grant" ? "Grant" : "Revoke"} a setup approval.`)
+      .argument("<caplet-id>", "Caplet ID")
+      .argument("<content-hash>", "immutable Caplet content hash")
+      .argument("<target-kind>", "local_host, remote_host, or hosted_sandbox")
+      .option("--project-fingerprint <fingerprint>", "project identity for the approval")
+      .option("--actor <actor>", "setup actor: cli-interactive, cli-yes, ui, or automation")
+      .option("--expected-generation <json-object>", "expected Authority Generation identity")
+      .option("--idempotency-key <key>", "stable mutation intent key")
+      .option("--json", "print deterministic JSON output")
+      .action(
+        async (
+          capletId: string,
+          contentHash: string,
+          targetKind: string,
+          options: {
+            projectFingerprint?: string;
+            actor?: string;
+            expectedGeneration?: string;
+            idempotencyKey?: string;
+            json?: boolean;
+          },
+        ) => {
+          const result = await requireRemoteClientForTarget(io).currentHostSetup(
+            command === "grant" ? "setup_grant" : "setup_revoke",
+            {
+              capletId,
+              contentHash,
+              targetKind: targetKind as CurrentHostSetupMutation["targetKind"],
+              ...(options.projectFingerprint
+                ? { projectFingerprint: options.projectFingerprint }
+                : {}),
+              ...(options.actor
+                ? { actor: options.actor as CurrentHostSetupMutation["actor"] }
+                : {}),
+            },
+            currentHostMutationOptions(
+              options,
+              `current-host setup ${command} --expected-generation`,
+            ),
+          );
+          writeCurrentHostResult(result, Boolean(options.json), writeOut);
+        },
+      );
+  }
 
   const cloud = program.command(cliCommands.cloud).description("Manage hosted Caplets Cloud.");
   const cloudAuth = cloud
@@ -2624,6 +2892,56 @@ export function createProgram(io: CliIO = {}): Command {
         },
       ) => {
         printTelemetryNotice("cli");
+        if (integration && !options.remote) {
+          const shared = await runWithAuthority(true, async (authority) => {
+            if (!authority) return false;
+            const config = authority.config;
+            if (!config) {
+              throw new CapletsError(
+                "CONFIG_INVALID",
+                "Shared setup requires a resolved authority configuration.",
+              );
+            }
+            const configured = [
+              ...Object.values(config.mcpServers),
+              ...Object.values(config.openapiEndpoints),
+              ...Object.values(config.googleDiscoveryApis),
+              ...Object.values(config.graphqlEndpoints),
+              ...Object.values(config.httpApis),
+              ...Object.values(config.cliTools),
+              ...Object.values(config.capletSets),
+            ].some((entry) => entry.server === integration);
+            if (!configured) {
+              throw new CapletsError(
+                "ASYNC_AUTHORITY_REQUIRED",
+                `Shared setup does not support integration ${integration}; local files were not changed.`,
+              );
+            }
+            const target =
+              options.target === "remote"
+                ? "remote_host"
+                : options.target === "cloud"
+                  ? "hosted_sandbox"
+                  : "local_host";
+            const output = await runCapletSetupCli(integration, {
+              yes: Boolean(options.yes),
+              target,
+              config,
+              store: authority.setupStore,
+              ...(io.runSetupCommand
+                ? {
+                    spawn: async (command, args) => {
+                      const result = await io.runSetupCommand!(command, args);
+                      return { ...result, exitCode: 0, durationMs: 0 };
+                    },
+                  }
+                : {}),
+            });
+            writeOut(output);
+            return true;
+          });
+          if (shared) return;
+        }
         const setupOptions: SetupOptions = { ...options, env };
         if (io.runSetupCommand) setupOptions.runCommand = io.runSetupCommand;
         if (io.setupOperations) setupOptions.setupOperations = io.setupOperations;
@@ -2716,6 +3034,27 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
         const value = await readVaultValue(io);
+        const shared = await runWithAuthority(true, async (authority) => {
+          if (!authority) return false;
+          const status = await setVaultValue(authority.vaultStore, name, value, {
+            force: Boolean(options.force),
+            ...(options.grant ? { grant: options.grant } : {}),
+            ...((options.as ?? options.grant) ? { referenceName: options.as ?? name } : {}),
+            authority,
+          });
+          if (options.json) {
+            writeOut(`${JSON.stringify(status, null, 2)}\n`);
+            return true;
+          }
+          writeOut(`Set Vault key ${validateVaultKeyName(name)}.\n`);
+          if (options.grant) {
+            writeOut(
+              `Granted Vault key ${validateVaultKeyName(name)} to ${options.grant} as ${validateVaultKeyName(options.as ?? name)}.\n`,
+            );
+          }
+          return true;
+        });
+        if (shared) return;
         const store = new FileVaultStore({ env });
         const existed = store.getStatus(name).present;
         const previousValue = existed && options.grant ? store.resolveValue(name) : undefined;
@@ -2780,15 +3119,28 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        const store = new FileVaultStore({ env });
-        if (options.show) {
-          const value = store.resolveValue(name);
-          writeOut(
-            options.json ? `${JSON.stringify({ key: name, value }, null, 2)}\n` : `${value}\n`,
+        await runWithAuthority(true, async (authority) => {
+          if (options.show) {
+            const result = await getVaultValue(
+              authority?.vaultStore ?? new FileVaultStore({ env }),
+              name,
+              {
+                reveal: true,
+              },
+            );
+            const output = options.json
+              ? `${JSON.stringify(result, null, 2)}\n`
+              : `${"value" in result ? result.value : ""}\n`;
+            writeOut(output);
+            return;
+          }
+          const result = await getVaultValue(
+            authority?.vaultStore ?? new FileVaultStore({ env }),
+            name,
+            { reveal: false },
           );
-          return;
-        }
-        writeOut(formatVaultValueStatus(store.getStatus(name), Boolean(options.json)));
+          writeOut(formatVaultValueStatus(result, Boolean(options.json)));
+        });
       },
     );
 
@@ -2810,9 +3162,10 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      writeOut(
-        formatVaultValueList(new FileVaultStore({ env }).listValues(), Boolean(options.json)),
-      );
+      await runWithAuthority(true, async (authority) => {
+        const result = await listVaultValues(authority?.vaultStore ?? new FileVaultStore({ env }));
+        writeOut(formatVaultValueList(result, Boolean(options.json)));
+      });
     });
 
   vault
@@ -2834,9 +3187,13 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      writeOut(
-        formatVaultDeleteStatus(new FileVaultStore({ env }).delete(name), Boolean(options.json)),
-      );
+      await runWithAuthority(true, async (authority) => {
+        const result = await deleteVaultValue(
+          authority?.vaultStore ?? new FileVaultStore({ env }),
+          name,
+        );
+        writeOut(formatVaultDeleteStatus(result, Boolean(options.json)));
+      });
     });
 
   const vaultAccess = vault.command("access").description("Manage Vault access grants.");
@@ -2871,14 +3228,19 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        const origin = resolveVaultAccessOrigin(capletId, io);
-        const grant = new FileVaultStore({ env }).grantAccess({
-          storedKey: name,
-          referenceName: options.as ?? name,
-          capletId,
-          origin,
+        await runWithAuthority(true, async (authority) => {
+          const origin = resolveVaultAccessOrigin(capletId, io, authority?.config);
+          const grant = await grantVaultAccess(
+            authority?.vaultStore ?? new FileVaultStore({ env }),
+            {
+              storedKey: name,
+              referenceName: options.as ?? name,
+              capletId,
+              origin,
+            },
+          );
+          writeOut(formatVaultAccessGrant(grant, Boolean(options.json)));
         });
-        writeOut(formatVaultAccessGrant(grant, Boolean(options.json)));
       },
     );
 
@@ -2918,12 +3280,13 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        writeOut(
-          formatVaultAccessList(
-            new FileVaultStore({ env }).listAccess(vaultAccessFilter(name, capletFilter)),
-            Boolean(options.json),
-          ),
-        );
+        await runWithAuthority(true, async (authority) => {
+          const grants = await listVaultAccess(
+            authority?.vaultStore ?? new FileVaultStore({ env }),
+            vaultAccessFilter(name, capletFilter),
+          );
+          writeOut(formatVaultAccessList(grants, Boolean(options.json)));
+        });
       },
     );
 
@@ -2957,9 +3320,14 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        const filter = vaultAccessFilter(name, capletId, options.as);
-        const revoked = new FileVaultStore({ env }).revokeAccess(filter);
-        writeOut(formatVaultAccessRevoke(revoked.length, Boolean(options.json)));
+        await runWithAuthority(true, async (authority) => {
+          const filter = vaultAccessFilter(name, capletId, options.as);
+          const revoked = await revokeVaultAccess(
+            authority?.vaultStore ?? new FileVaultStore({ env }),
+            filter,
+          );
+          writeOut(formatVaultAccessRevoke(revoked.length, Boolean(options.json)));
+        });
       },
     );
 
@@ -3007,11 +3375,18 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--remote", "install through remote control")
     .option("--force", "overwrite installed Caplets")
     .option("--json", "print JSON output")
+    .option("--source <source>", "stable catalog source identity for shared authority installs")
+    .option("--entry-key <entryKey>", "stable catalog entry key for shared authority installs")
     .action(
       async (
         repo: string | undefined,
         capletIds: string[],
-        options: MutationTargetOptions & { force?: boolean; json?: boolean },
+        options: MutationTargetOptions & {
+          force?: boolean;
+          json?: boolean;
+          source?: string;
+          entryKey?: string;
+        },
       ) => {
         printTelemetryNotice("cli");
         const target = parseCatalogLifecycleTarget(options);
@@ -3061,6 +3436,30 @@ export function createProgram(io: CliIO = {}): Command {
           }
           return;
         }
+        const shared = await runWithAuthority(true, async (authority) => {
+          if (!authority) return false;
+          const result = await installCapletsForCli(installSource, {
+            authority,
+            catalog: authority.catalog,
+            principal: authority.principal,
+            source: options.source,
+            entryKey: options.entryKey,
+            capletIds: selectedCapletIds,
+            force: Boolean(options.force),
+            disableCatalogIndexing: catalogIndexingDisabled(env),
+          });
+          if (options.json) {
+            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+          } else {
+            for (const caplet of result.installed) {
+              writeOut(
+                `${caplet.status === "noop" ? "Already installed" : "Installed"} ${caplet.id}\n`,
+              );
+            }
+          }
+          return true;
+        });
+        if (shared) return;
         const destinationRoot =
           target === "global"
             ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
@@ -3153,6 +3552,30 @@ export function createProgram(io: CliIO = {}): Command {
           }
           return;
         }
+        const shared = await runWithAuthority(true, async (authority) => {
+          if (!authority) return false;
+          const result = await updateCapletsForCli({
+            authority,
+            catalog: authority.catalog,
+            principal: authority.principal,
+            capletIds,
+            force: Boolean(options.force),
+            allowRiskIncrease: Boolean(options.force),
+            lockfilePath: defaultCapletsLockfilePath(env),
+            disableCatalogIndexing: catalogIndexingDisabled(env),
+          });
+          if (options.json) {
+            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+          } else {
+            for (const caplet of result.installed) {
+              writeOut(
+                `${caplet.status === "noop" ? "Already current" : "Updated"} ${caplet.id}\n`,
+              );
+            }
+          }
+          return true;
+        });
+        if (shared) return;
         const destinationRoot =
           target === "global"
             ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
@@ -3753,22 +4176,28 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      const configPath = currentConfigPath();
-      const projectConfigPath = envProjectConfigPath(env);
-      await loginAuth(serverId, {
-        noOpen: options.open === false,
-        writeOut,
-        writeErr,
-        ...(configPath ? { configPath } : {}),
-        ...(projectConfigPath ? { projectConfigPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
+      await runWithAuthority(true, async (authority) => {
+        const configPath = currentConfigPath();
+        const projectConfigPath = envProjectConfigPath(env);
+        const config =
+          authority?.config ??
+          localAuthConfigForTarget({
+            serverId,
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(configPath ? { configPath } : {}),
+            ...(projectConfigPath ? { projectConfigPath } : {}),
+            source: target,
+          });
+        await loginAuth(serverId, {
+          noOpen: options.open === false,
+          writeOut,
+          writeErr,
           ...(configPath ? { configPath } : {}),
           ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
+          config,
+          ...(authority ? { authority } : {}),
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+        });
       });
     });
 
@@ -3793,19 +4222,33 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      const configPath = currentConfigPath();
-      const projectConfigPath = envProjectConfigPath(env);
-      logoutAuth(serverId, {
-        writeOut,
-        ...(configPath ? { configPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
-          ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
+      await runWithAuthority(true, async (authority) => {
+        const configPath = currentConfigPath();
+        const projectConfigPath = envProjectConfigPath(env);
+        const config =
+          authority?.config ??
+          localAuthConfigForTarget({
+            serverId,
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(configPath ? { configPath } : {}),
+            ...(projectConfigPath ? { projectConfigPath } : {}),
+            source: target,
+          });
+        if (authority) {
+          await logoutAuthAsync(serverId, {
+            writeOut,
+            config,
+            authority,
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+          });
+        } else {
+          logoutAuth(serverId, {
+            writeOut,
+            config,
+            ...(configPath ? { configPath } : {}),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+          });
+        }
       });
     });
 
@@ -3824,19 +4267,25 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(`Refreshed remote OAuth credentials for \`${serverId}\`.\n`);
         return;
       }
-      const configPath = currentConfigPath();
-      const projectConfigPath = envProjectConfigPath(env);
-      await refreshAuth(serverId, {
-        writeOut,
-        ...(configPath ? { configPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
+      await runWithAuthority(true, async (authority) => {
+        const configPath = currentConfigPath();
+        const projectConfigPath = envProjectConfigPath(env);
+        const config =
+          authority?.config ??
+          localAuthConfigForTarget({
+            serverId,
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(configPath ? { configPath } : {}),
+            ...(projectConfigPath ? { projectConfigPath } : {}),
+            source: target,
+          });
+        await refreshAuth(serverId, {
+          writeOut,
           ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
+          config,
+          ...(authority ? { authority } : {}),
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+        });
       });
     });
 
@@ -3854,7 +4303,20 @@ export function createProgram(io: CliIO = {}): Command {
       const format =
         options.json || options.format === "json" ? "json" : (options.format ?? "plain");
       const target = parseAuthFlagTarget(options);
-      const rows = await authListRowsForCli(target, io, configPath, projectConfigPath);
+      const rows = await runWithAuthority(target !== "remote", async (authority) => {
+        if (!authority) return await authListRowsForCli(target, io, configPath, projectConfigPath);
+        if (target !== undefined) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "Shared authority auth list has no project/global source scope; omit --project or --global.",
+          );
+        }
+        return await listAuthRowsAsync({
+          authority,
+          config: authority.config,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+        });
+      });
       if (format === "json") {
         writeOut(`${JSON.stringify(rows, null, 2)}\n`);
         return;
@@ -3863,6 +4325,131 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   return program;
+}
+
+async function resolveCliAuthorityContext(io: CliIO): Promise<CliAuthorityContext | undefined> {
+  const env = io.env ?? process.env;
+  const configPath = envConfigPath(env);
+  const defaultAuthorityConfigPath = configPath ?? resolveConfigPath(env.CAPLETS_CONFIG);
+  if (existsSync(defaultAuthorityConfigPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(defaultAuthorityConfigPath, "utf8")) as {
+        authority?: unknown;
+      };
+      if (!parsed || typeof parsed !== "object" || parsed.authority === undefined) return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const hasAuthorityProfile = Object.entries(env).some(
+    ([key, value]) =>
+      key.startsWith("CAPLETS_AUTHORITY_PROFILE_") &&
+      typeof value === "string" &&
+      value.trim().length > 0,
+  );
+  if (!existsSync(defaultAuthorityConfigPath) && !hasAuthorityProfile) return undefined;
+  const storageIo: StorageCliIO = {
+    writeOut: () => undefined,
+    env,
+    ...(io.authDir === undefined ? {} : { authDir: io.authDir }),
+    ...(configPath === undefined ? {} : { configPath }),
+    projectConfigPath: envProjectConfigPath(env),
+    ...(io.signal === undefined ? {} : { signal: io.signal }),
+  };
+  const selector = resolveStorageAuthoritySelector(storageIo);
+  if (selector.bootstrap.provider === "filesystem") return undefined;
+  if (selector.secrets.vaultKey === undefined) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Shared authority CLI operations require a stable external vault key reference",
+    );
+  }
+  const opened = await openStorageAuthority(storageIo, selector);
+  try {
+    const host = await assembleCapletsHost({
+      authority: opened.authority,
+      configPath: opened.configPath,
+      projectConfigPath: storageIo.projectConfigPath,
+      env,
+      ...(io.signal === undefined ? {} : { signal: io.signal }),
+      autoRefresh: false,
+    });
+    const currentHostId = "cli";
+    const principal = trustedDevelopmentOperatorPrincipal("http://127.0.0.1");
+    const runtime: CurrentHostRuntime = {
+      retain: host.retain,
+      refresh: host.refresh,
+      commit: host.commit,
+      refreshAtLeast: host.refreshAtLeast,
+      health: host.health,
+      currentHostId,
+      authorityId: opened.bootstrap.authorityId,
+    };
+    const activityLog = new DashboardActivityLog({
+      dir: join(dirname(opened.configPath), ".caplets-cli-activity"),
+    });
+    const authorityVault = new AuthorityVaultStore({
+      authority: opened.authority,
+      authorityId: opened.bootstrap.authorityId,
+      currentHostId,
+      principalId: "vault",
+      key: selector.secrets.vaultKey,
+    });
+    const dependencies = {
+      engine: host.engine,
+      runtime,
+      control: {
+        configPath: opened.configPath,
+        projectConfigPath: storageIo.projectConfigPath,
+        ...(io.authDir === undefined ? {} : { authDir: io.authDir }),
+        globalCapletsRoot: resolveCapletsRoot(opened.configPath),
+        globalLockfilePath: defaultCapletsLockfilePath(env),
+        currentHostId,
+        authorityId: opened.bootstrap.authorityId,
+      },
+      vaultStore: authorityVault,
+      activityLog,
+      activeGeneration: host.view.authorityGeneration,
+      version: io.version ?? packageJsonVersion,
+    };
+    const currentHost: CurrentHostOperations = createCurrentHostOperations(dependencies);
+    const catalog: CurrentHostCatalogOperations = createCurrentHostCatalogOperations(dependencies);
+    const tokenStore = new AuthorityOAuthTokenStore({
+      authority: opened.authority,
+      authorityId: opened.bootstrap.authorityId,
+      currentHostId,
+      principalId: "oauth",
+      key: selector.secrets.vaultKey,
+    });
+    const vaultStore: VaultCliStore = {
+      set: (key, value, options) => authorityVault.set(key, value, options),
+      getStatus: (key) => authorityVault.getStatus(key),
+      listValues: () => authorityVault.listValues(),
+      delete: (key) => authorityVault.delete(key),
+      grantAccess: (input) => authorityVault.grantAccess(input),
+      listAccess: (filter) => authorityVault.listAccess(filter),
+      revokeAccess: (filter) => authorityVault.revokeAccess(filter),
+    };
+    const setupStore = new LocalSetupStore({
+      authority: opened.authority,
+      authorityId: opened.bootstrap.authorityId,
+      currentHostId,
+      principalId: "setup",
+    });
+    return {
+      config: host.view.config,
+      tokenStore,
+      vaultStore,
+      setupStore,
+      catalog,
+      currentHost,
+      principal,
+      close: async () => await host.close(),
+    };
+  } catch (error) {
+    await opened.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 function formatDaemonStatus(status: Awaited<ReturnType<typeof daemonStatus>>): string {
@@ -4222,7 +4809,32 @@ function assertVaultTransportValueSize(value: string): void {
   }
 }
 
-function resolveVaultAccessOrigin(capletId: string, io: CliIO): ConfigSource {
+function resolveVaultAccessOrigin(
+  capletId: string,
+  io: CliIO,
+  preparedConfig?: CapletsConfig,
+): ConfigSource {
+  if (preparedConfig !== undefined) {
+    const configured = [
+      ...Object.values(preparedConfig.mcpServers),
+      ...Object.values(preparedConfig.openapiEndpoints),
+      ...Object.values(preparedConfig.googleDiscoveryApis),
+      ...Object.values(preparedConfig.graphqlEndpoints),
+      ...Object.values(preparedConfig.httpApis),
+      ...Object.values(preparedConfig.cliTools),
+      ...Object.values(preparedConfig.capletSets),
+    ].some((entry) => entry.server === capletId);
+    if (!configured) {
+      throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
+    }
+    return {
+      kind: "authority",
+      path: "authority",
+      authorityId: "shared",
+      recordId: capletId,
+      generationId: "active",
+    };
+  }
   const env = io.env ?? process.env;
   const configPath = envConfigPath(env);
   const projectConfigPath = envProjectConfigPath(env);
@@ -4685,6 +5297,84 @@ function parseJsonObjectOption(value: string | undefined, label: string): Record
     throw new CapletsError("REQUEST_INVALID", `${label} must be a JSON object`);
   }
   return parsed;
+}
+
+function currentHostMutationOptions(
+  options: { expectedGeneration?: string; idempotencyKey?: string },
+  label: string,
+): {
+  expectedGeneration?: AuthorityGenerationIdentity;
+  idempotencyKey?: string;
+} {
+  return {
+    ...(options.expectedGeneration === undefined
+      ? {}
+      : {
+          expectedGeneration: parseJsonObjectOption(
+            options.expectedGeneration,
+            label,
+          ) as AuthorityGenerationIdentity,
+        }),
+    ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+  };
+}
+
+function writeCurrentHostResult(
+  result: unknown,
+  json: boolean,
+  writeOut: (value: string) => void,
+): void {
+  if (json) {
+    writeOut(`${JSON.stringify(stableJsonValue(result), null, 2)}\n`);
+    return;
+  }
+
+  if (isPlainObject(result) && "health" in result && isPlainObject(result.health)) {
+    const health = result.health;
+    const status = typeof result.status === "string" ? result.status : "unknown";
+    const lines = [
+      `Current Host health: ${status}`,
+      `Authority: ${typeof health.authorityId === "string" ? health.authorityId : "unknown"}`,
+      `Provider: ${typeof health.provider === "string" ? health.provider : "unknown"}`,
+      `Connectivity: ${typeof health.connectivity === "string" ? health.connectivity : "unknown"}`,
+      `Writable: ${health.writable === true ? "yes" : "no"}`,
+      `Authority generation (active): ${describeCurrentHostGeneration(health.activeGeneration)}`,
+      `Authority generation (observed): ${describeCurrentHostGeneration(health.observedGeneration)}`,
+      `Exposure generation: ${
+        health.exposureGeneration === null || health.exposureGeneration === undefined
+          ? "none"
+          : String(health.exposureGeneration)
+      }`,
+      `Lag: ${health.lag === null || health.lag === undefined ? "none" : String(health.lag)}`,
+    ];
+    if (typeof health.lastSafeError === "object" && health.lastSafeError !== null) {
+      lines.push("Last error: degraded");
+    }
+    writeOut(`${lines.join("\n")}\n`);
+    return;
+  }
+
+  if (isPlainObject(result) && Array.isArray(result.caplets)) {
+    if (result.caplets.length === 0) {
+      writeOut("No Current Host Caplets.\n");
+      return;
+    }
+    for (const caplet of result.caplets) {
+      if (isPlainObject(caplet) && typeof caplet.id === "string") {
+        writeOut(`${caplet.id}\n`);
+      }
+    }
+    return;
+  }
+
+  writeOut(`${JSON.stringify(stableJsonValue(result), null, 2)}\n`);
+}
+
+function describeCurrentHostGeneration(value: unknown): string {
+  if (!isPlainObject(value)) return "none";
+  const id = typeof value.id === "string" ? value.id : "unknown";
+  const sequence = typeof value.sequence === "number" ? ` (sequence ${value.sequence})` : "";
+  return `${id}${sequence}`;
 }
 
 function completionRefFromOptions(options: { prompt?: string; resourceTemplate?: string }) {

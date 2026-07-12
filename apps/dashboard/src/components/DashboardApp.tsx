@@ -108,10 +108,35 @@ type RouteKey =
   | "activity"
   | "settings";
 
+type AuthorityGenerationView = {
+  authorityId?: string;
+  id?: string;
+  predecessorId?: string | null;
+  sequence: number;
+};
+
+type AuthorityHealthView = {
+  provider: string;
+  authorityId: string;
+  connectivity: string;
+  writable: boolean;
+  activeGeneration: AuthorityGenerationView | null;
+  refresh: string;
+  lifecycle: string;
+  readiness: string;
+  observedGeneration: AuthorityGenerationView | null;
+  exposureGeneration: number | null;
+  stagedFingerprint?: string;
+  lag: number | null;
+  lastError?: { code?: string; message: string };
+};
+
 type Summary = {
   host?: { baseUrl?: string; version?: string };
   attention?: Array<{ label: string; severity?: string; kind?: string }>;
   sections?: Record<string, unknown>;
+  health?: unknown;
+  storageHealth?: unknown;
 };
 
 type CapletRecord = Record<string, unknown> & {
@@ -120,11 +145,23 @@ type CapletRecord = Record<string, unknown> & {
   title?: string;
   description?: string;
   kind?: string;
-  source?: string;
+  source?: unknown;
+  provenance?: unknown;
+  ownership?: unknown;
+  sourceOwnership?: unknown;
+  immutable?: boolean | "true" | "false";
+  reserved?: boolean | "true" | "false";
+  mutable?: boolean | "true" | "false";
   updateState?: string;
   authRequired?: boolean | "true" | "false";
   setupRequired?: boolean | "true" | "false";
   projectBindingRequired?: boolean | "true" | "false";
+  backendConfig?: {
+    transport?: string;
+    command?: string;
+    args?: string[];
+    url?: string;
+  };
 };
 
 type DashboardData = {
@@ -137,8 +174,24 @@ type DashboardData = {
     grants?: Array<Record<string, unknown>>;
     error?: string;
   };
-  runtime?: { runtime?: Record<string, string>; daemon?: Record<string, unknown>; error?: string };
-  diagnostics?: { status?: string; checks?: Array<Record<string, string>>; error?: string };
+  settings?: {
+    settings?: Record<string, unknown>;
+    error?: string;
+  };
+  runtime?: {
+    runtime?: Record<string, unknown>;
+    daemon?: Record<string, unknown>;
+    health?: unknown;
+    storageHealth?: unknown;
+    error?: string;
+  };
+  diagnostics?: {
+    status?: string;
+    checks?: Array<Record<string, string>>;
+    health?: unknown;
+    storageHealth?: unknown;
+    error?: string;
+  };
   activity?: { entries?: Array<Record<string, unknown>>; error?: string };
   logs?: { entries?: Array<Record<string, unknown>>; error?: string };
   projectBinding?: {
@@ -186,6 +239,174 @@ type DashboardTheme = "light" | "dark" | "system";
 
 function dashboardBoolean(value: unknown): boolean {
   return value === true || value === "true";
+}
+
+function dashboardRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function safeDashboardText(value: unknown, fallback: string, limit = 120): string {
+  if (typeof value !== "string") return fallback;
+  const sanitized = Array.from(value, (char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return code <= 0x1f || code === 0x7f ? " " : char;
+  })
+    .join("")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/giu, "remote endpoint")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return sanitized ? sanitized.slice(0, limit) : fallback;
+}
+
+function dashboardCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function authorityGeneration(value: unknown): AuthorityGenerationView | null {
+  const record = dashboardRecord(value);
+  if (!record) return null;
+  const sequence = dashboardCount(record.sequence);
+  if (sequence === null) return null;
+  return {
+    sequence,
+    ...(typeof record.authorityId === "string"
+      ? { authorityId: safeDashboardText(record.authorityId, "Current authority", 80) }
+      : {}),
+    ...(typeof record.id === "string"
+      ? { id: safeDashboardText(record.id, "generation", 80) }
+      : {}),
+    ...(record.predecessorId === null
+      ? { predecessorId: null }
+      : typeof record.predecessorId === "string"
+        ? { predecessorId: safeDashboardText(record.predecessorId, "generation", 80) }
+        : {}),
+  };
+}
+
+function authorityHealthFromData(data: DashboardData): AuthorityHealthView | undefined {
+  const runtime = dashboardRecord(data.runtime?.runtime);
+  const candidates = [
+    data.runtime?.health,
+    data.runtime?.storageHealth,
+    runtime?.health,
+    runtime?.storageHealth,
+    data.diagnostics?.health,
+    data.diagnostics?.storageHealth,
+    data.summary?.health,
+    data.summary?.storageHealth,
+  ];
+  const record = candidates
+    .map(dashboardRecord)
+    .find((candidate) =>
+      candidate
+        ? "provider" in candidate ||
+          "authorityId" in candidate ||
+          "activeGeneration" in candidate ||
+          "writable" in candidate
+        : false,
+    );
+  if (!record) return undefined;
+
+  const error = dashboardRecord(record.lastError);
+  const message =
+    typeof error?.message === "string"
+      ? safeDashboardText(error.message, "The authority reported a recoverable error.", 240)
+      : undefined;
+  return {
+    provider: safeDashboardText(record.provider, "filesystem", 40),
+    authorityId: safeDashboardText(record.authorityId, "Current authority", 80),
+    connectivity: safeDashboardText(record.connectivity, "unknown", 32).toLowerCase(),
+    writable: record.writable === true,
+    activeGeneration: authorityGeneration(record.activeGeneration),
+    refresh: safeDashboardText(record.refresh, "unknown", 32).toLowerCase(),
+    lifecycle: safeDashboardText(record.lifecycle, "unknown", 32).toLowerCase(),
+    readiness: safeDashboardText(record.readiness, "unknown", 32).toLowerCase(),
+    observedGeneration: authorityGeneration(record.observedGeneration),
+    exposureGeneration: dashboardCount(record.exposureGeneration),
+    ...(typeof record.stagedFingerprint === "string"
+      ? {
+          stagedFingerprint: safeDashboardText(
+            record.stagedFingerprint,
+            "Fingerprint unavailable",
+            18,
+          ),
+        }
+      : {}),
+    lag: dashboardCount(record.lag),
+    ...(message
+      ? {
+          lastError: {
+            message,
+            ...(typeof error?.code === "string"
+              ? { code: safeDashboardText(error.code, "AUTHORITY_ERROR", 48) }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+type CapletOwnership = {
+  kind: "authority" | "staged" | "legacy";
+  label: string;
+  detail: string;
+};
+
+function capletOwnership(caplet: CapletRecord, health?: AuthorityHealthView): CapletOwnership {
+  const source =
+    dashboardRecord(caplet.provenance) ??
+    dashboardRecord(caplet.sourceOwnership) ??
+    dashboardRecord(caplet.ownership) ??
+    dashboardRecord(caplet.source);
+  const explicitKind =
+    source?.kind ??
+    (typeof caplet.provenance === "string"
+      ? caplet.provenance
+      : typeof caplet.sourceOwnership === "string"
+        ? caplet.sourceOwnership
+        : typeof caplet.ownership === "string"
+          ? caplet.ownership
+          : caplet.source);
+  const kind = typeof explicitKind === "string" ? explicitKind.toLowerCase() : "";
+  const immutable =
+    dashboardBoolean(caplet.immutable) ||
+    dashboardBoolean(caplet.reserved) ||
+    caplet.mutable === false ||
+    caplet.mutable === "false";
+
+  if (kind === "authority" || kind.includes("authority-managed") || kind === "shared") {
+    const authorityId = safeDashboardText(
+      source?.authorityId,
+      health?.authorityId ?? "authority",
+      80,
+    );
+    return {
+      kind: "authority",
+      label: "Authority-managed",
+      detail: `Mutable through ${authorityId} with Authority Generation conflict checks.`,
+    };
+  }
+  if (
+    immutable ||
+    kind === "staged" ||
+    kind === "global-config" ||
+    kind === "global-file" ||
+    kind === "project-config" ||
+    kind === "project-file"
+  ) {
+    return {
+      kind: "staged",
+      label: "Staged filesystem · Reserved",
+      detail: "Immutable on this host. Its Caplet ID is reserved against dashboard mutations.",
+    };
+  }
+  return {
+    kind: "legacy",
+    label: "Local configuration",
+    detail: "Existing filesystem response; source ownership metadata is not available.",
+  };
 }
 
 type ConfirmationOptions = {
@@ -326,6 +547,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         load("clients", "access/clients"),
         load("pending", "access/pending-logins"),
         load("vault", "vault"),
+        load("settings", "settings"),
         load("runtime", "runtime"),
         load("diagnostics", "diagnostics"),
         load("activity", "activity?limit=50"),
@@ -604,7 +826,10 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
                   <Separator orientation="vertical" className="h-6" />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm text-muted-foreground">
-                      {data.summary?.host?.baseUrl ?? "Current Host"}
+                      Current Host
+                      {data.summary?.host?.version
+                        ? ` · ${safeDashboardText(data.summary.host.version, "Version unknown", 40)}`
+                        : ""}
                     </div>
                   </div>
                   <TooltipIconButton
@@ -625,6 +850,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
                     data={data}
                     loading={dataLoading}
                     action={action}
+                    refresh={refresh}
                     session={session}
                   />
                 </div>
@@ -741,6 +967,7 @@ function Page({
   data,
   loading,
   action,
+  refresh,
   session,
 }: {
   route: RouteKey;
@@ -748,16 +975,19 @@ function Page({
   loading: boolean;
   session: DashboardSession;
   action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  refresh: () => Promise<boolean>;
 }) {
   const { confirmTyped } = useActionConfirm();
   if (route === "access") return <AccessPage data={data} loading={loading} action={action} />;
-  if (route === "caplets") return <CapletsPage data={data} loading={loading} action={action} />;
+  if (route === "caplets")
+    return <CapletsPage data={data} loading={loading} action={action} refresh={refresh} />;
   if (route === "catalog")
     return <CatalogPage data={data} action={action} confirmTyped={confirmTyped} />;
   if (route === "vault") return <VaultPage data={data} loading={loading} action={action} />;
   if (route === "runtime") return <RuntimePage data={data} loading={loading} action={action} />;
   if (route === "activity") return <ActivityPage data={data} loading={loading} />;
-  if (route === "settings") return <SettingsPage session={session} summary={data.summary} />;
+  if (route === "settings")
+    return <SettingsPage session={session} data={data} loading={loading} refresh={refresh} />;
   return <OverviewPage data={data} loading={loading} />;
 }
 
@@ -881,7 +1111,11 @@ function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean
   const attention = data.summary?.attention ?? [];
   const pendingCount = data.pending?.pendingLogins?.length ?? 0;
   const updateSummary = catalogUpdateSummary(data.updates?.updates ?? []);
-  const runtimeStatus = data.runtime?.runtime?.status ?? data.diagnostics?.status ?? "unknown";
+  const runtimeStatus = safeDashboardText(
+    data.runtime?.runtime?.status ?? data.diagnostics?.status,
+    "unknown",
+    32,
+  );
   const projectBindingState = data.projectBinding?.projectBinding?.state ?? "not configured";
   const vaultGrantCount = data.vault?.grants?.length ?? 0;
   const inventoryCount = (data.caplets?.caplets ?? []).length;
@@ -1355,23 +1589,573 @@ function ClientActions({
   );
 }
 
+type CapletDraft = {
+  id: string;
+  name: string;
+  description: string;
+  transport: "stdio" | "http";
+  command: string;
+  args: string;
+  url: string;
+};
+
+type DashboardMutationState = {
+  phase: "idle" | "submitting" | "active" | "pending" | "degraded" | "conflict";
+  message?: string;
+  generation?: AuthorityGenerationView | null;
+  idempotencyKey?: string;
+};
+
+function newDashboardIntent(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `dashboard-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function dashboardRecordFromError(error: unknown): Record<string, unknown> | undefined {
+  const body = dashboardRecord((error as { body?: unknown } | undefined)?.body);
+  return dashboardRecord(body?.error);
+}
+
+function dashboardMutationStatus(value: unknown): DashboardMutationState["phase"] {
+  const status = dashboardRecord(value)?.status;
+  return status === "pending" || status === "degraded" || status === "active" ? status : "active";
+}
+
+function dashboardMutationGeneration(value: unknown): AuthorityGenerationView | null {
+  return authorityGeneration(value);
+}
+
+function generationsMatch(
+  left: AuthorityGenerationView | null | undefined,
+  right: AuthorityGenerationView | null | undefined,
+): boolean {
+  return Boolean(
+    left &&
+    right &&
+    left.sequence === right.sequence &&
+    (left.id === undefined || right.id === undefined || left.id === right.id) &&
+    (left.authorityId === undefined ||
+      right.authorityId === undefined ||
+      left.authorityId === right.authorityId),
+  );
+}
+function dashboardExpectedGeneration(
+  health?: AuthorityHealthView,
+): AuthorityGenerationView | undefined {
+  const generation = health?.activeGeneration;
+  if (
+    !generation ||
+    typeof generation.authorityId !== "string" ||
+    typeof generation.id !== "string" ||
+    generation.predecessorId === undefined
+  ) {
+    return undefined;
+  }
+  return generation;
+}
+
+function MutationStatusNotice({
+  state,
+  onRefreshReview,
+  onRetry,
+}: {
+  state: DashboardMutationState;
+  onRefreshReview?: () => void;
+  onRetry?: () => void;
+}) {
+  if (state.phase === "idle") return null;
+  const generation = state.generation?.sequence;
+  const copy =
+    state.phase === "submitting"
+      ? "Submitting a durable Current Host change…"
+      : state.phase === "pending"
+        ? `Committed at generation ${generation ?? "unknown"}; activation is still pending. Do not submit a duplicate change.`
+        : state.phase === "degraded"
+          ? `Committed at generation ${generation ?? "unknown"}, but the Current Host is degraded. The receipt is preserved; restore health before retrying.`
+          : state.phase === "conflict"
+            ? `The Authority Generation changed${generation === undefined ? "" : ` to ${generation}`}. Refresh and review the latest state before resubmitting with a new intent.`
+            : `Change active at generation ${generation ?? "unknown"}.`;
+  return (
+    <Alert
+      variant={state.phase === "conflict" || state.phase === "degraded" ? "destructive" : "default"}
+      role="status"
+      aria-live="polite"
+    >
+      {state.phase === "conflict" || state.phase === "degraded" ? (
+        <AlertTriangleIcon />
+      ) : (
+        <CheckIcon />
+      )}
+      <AlertTitle>{humanizeToken(state.phase)}</AlertTitle>
+      <AlertDescription className="grid gap-2">
+        <span>{state.message ? `${state.message} ${copy}` : copy}</span>
+        {state.phase === "conflict" && onRefreshReview ? (
+          <Button type="button" variant="outline" onClick={onRefreshReview}>
+            Refresh and review latest generation
+          </Button>
+        ) : null}
+        {state.phase === "pending" && onRetry ? (
+          <Button type="button" variant="outline" onClick={onRetry}>
+            Check activation status
+          </Button>
+        ) : null}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function CapletAdminPanel({
+  health,
+  refresh,
+  editRequest,
+  onClearEdit,
+}: {
+  health?: AuthorityHealthView;
+  refresh: () => Promise<boolean>;
+  editRequest?: CapletRecord;
+  onClearEdit: () => void;
+}) {
+  const [draft, setDraft] = useState<CapletDraft>({
+    id: "",
+    name: "",
+    description: "",
+    transport: "stdio",
+    command: "",
+    args: "",
+    url: "",
+  });
+  const [mutation, setMutation] = useState<DashboardMutationState>({ phase: "idle" });
+  const [activeIntent, setActiveIntent] = useState<string>();
+  const canWrite = health?.writable === true;
+  const editingId = editRequest?.id ?? undefined;
+
+  useEffect(() => {
+    if (!editRequest) {
+      setDraft({
+        id: "",
+        name: "",
+        description: "",
+        transport: "stdio",
+        command: "",
+        args: "",
+        url: "",
+      });
+      setActiveIntent(undefined);
+      setMutation({ phase: "idle" });
+      return;
+    }
+    const config = dashboardRecord(editRequest.config);
+    const backend = dashboardRecord(editRequest.backendConfig);
+    const transport = backend?.transport === "http" ? "http" : "stdio";
+    setDraft({
+      id: editRequest.id ?? "",
+      name: typeof config?.name === "string" ? config.name : (editRequest.name ?? ""),
+      description:
+        typeof config?.description === "string"
+          ? config.description
+          : (editRequest.description ?? ""),
+      transport,
+      command: typeof backend?.command === "string" ? backend.command : "",
+      args: Array.isArray(backend?.args)
+        ? backend.args.filter((value): value is string => typeof value === "string").join("\n")
+        : "",
+      url: typeof backend?.url === "string" ? backend.url : "",
+    });
+    setMutation({ phase: "idle" });
+  }, [editRequest]);
+
+  async function pollActivation(generation: AuthorityGenerationView, attempt = 0) {
+    if (attempt > 0) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    }
+    try {
+      const diagnostics = await dashboardApi<{ health?: unknown; storageHealth?: unknown }>(
+        "diagnostics",
+      );
+      const nextHealth = authorityHealthFromData({ diagnostics });
+      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+        setActiveIntent(undefined);
+        setMutation({ phase: "active", generation, idempotencyKey: activeIntent });
+        await refresh();
+        return;
+      }
+      if (
+        nextHealth &&
+        (nextHealth.connectivity === "degraded" ||
+          nextHealth.connectivity === "unavailable" ||
+          !nextHealth.writable)
+      ) {
+        setMutation({
+          phase: "degraded",
+          generation,
+          idempotencyKey: activeIntent,
+          message: nextHealth.lastError?.message,
+        });
+        await refresh();
+        return;
+      }
+    } catch {
+      // Keep the durable pending receipt visible; the bounded poll can be retried manually.
+    }
+    if (attempt < 4) void pollActivation(generation, attempt + 1);
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const id = draft.id.trim();
+    const name = draft.name.trim() || id;
+    const description = draft.description.trim() || "Authority-managed Caplet";
+    const command = draft.command.trim();
+    const url = draft.url.trim();
+    const args = draft.args
+      .split(/\r?\n/u)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (
+      !id ||
+      !canWrite ||
+      mutation.phase === "pending" ||
+      mutation.phase === "submitting" ||
+      mutation.phase === "conflict"
+    )
+      return;
+    if (draft.transport === "stdio" && !command) {
+      setMutation({ phase: "degraded", message: "An MCP stdio command is required." });
+      return;
+    }
+    if (draft.transport === "http" && !url) {
+      setMutation({ phase: "degraded", message: "An MCP HTTP URL is required." });
+      return;
+    }
+    const intent = activeIntent ?? newDashboardIntent();
+    setActiveIntent(intent);
+    setMutation({ phase: "submitting", idempotencyKey: intent });
+    try {
+      const response = await dashboardApi<Record<string, unknown>>(
+        editingId ? "caplets/update" : "caplets/create",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...(editingId ? { id: editingId } : {}),
+            record: {
+              id,
+              name,
+              description,
+              backend:
+                draft.transport === "stdio"
+                  ? { transport: "stdio", command, ...(args.length ? { args } : {}) }
+                  : { transport: "http", url },
+            },
+            ...(dashboardExpectedGeneration(health)
+              ? { expectedGeneration: dashboardExpectedGeneration(health) }
+              : {}),
+            idempotencyKey: intent,
+          }),
+        },
+      );
+      const phase = dashboardMutationStatus(response);
+      const generation = dashboardMutationGeneration(dashboardRecord(response)?.generation);
+      if (phase === "active") {
+        setActiveIntent(undefined);
+      }
+      setMutation({
+        phase,
+        generation,
+        idempotencyKey: intent,
+        message: phase === "pending" ? "The authority accepted this change durably." : undefined,
+      });
+      if (phase === "pending" && generation) void pollActivation(generation);
+      else await refresh();
+    } catch (error) {
+      const details = dashboardRecordFromError(error)?.details;
+      const conflictGeneration = dashboardMutationGeneration(
+        dashboardRecord(details)?.changedGeneration ?? dashboardRecord(details)?.activeGeneration,
+      );
+      setMutation({
+        phase: conflictGeneration ? "conflict" : "degraded",
+        generation: conflictGeneration,
+        idempotencyKey: intent,
+        message: error instanceof Error ? error.message : "The authority rejected this change.",
+      });
+    }
+  }
+
+  function refreshReview() {
+    void refresh().then(() => {
+      setActiveIntent(newDashboardIntent());
+      setMutation({ phase: "idle" });
+    });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>
+          {editingId ? "Edit authority-managed Caplet" : "Add authority-managed Caplet"}
+        </CardTitle>
+        <CardDescription>
+          {canWrite
+            ? "Create or update a structured Caplet definition in the Writable Authority. Filesystem-staged IDs remain immutable."
+            : "Authority CRUD is unavailable until a writable Current Host authority is reported."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <MutationStatusNotice
+          state={mutation}
+          onRefreshReview={refreshReview}
+          onRetry={() => {
+            if (mutation.generation) void pollActivation(mutation.generation);
+          }}
+        />
+        <form className="grid gap-3 sm:grid-cols-3" onSubmit={submit}>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Caplet ID</span>
+            <Input
+              value={draft.id}
+              disabled={Boolean(editingId) || !canWrite || mutation.phase === "pending"}
+              onChange={(event) => setDraft((current) => ({ ...current, id: event.target.value }))}
+              aria-label="Authority Caplet ID"
+              required
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Name</span>
+            <Input
+              value={draft.name}
+              disabled={!canWrite || mutation.phase === "pending"}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, name: event.target.value }))
+              }
+              aria-label="Authority Caplet name"
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm sm:col-span-3">
+            <span className="font-medium">Description</span>
+            <Input
+              value={draft.description}
+              disabled={!canWrite || mutation.phase === "pending"}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, description: event.target.value }))
+              }
+              aria-label="Authority Caplet description"
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">MCP transport</span>
+            <Select
+              value={draft.transport}
+              onValueChange={(value) => {
+                if (value !== "stdio" && value !== "http") return;
+                setDraft((current) => ({ ...current, transport: value }));
+              }}
+            >
+              <SelectTrigger aria-label="MCP transport">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="stdio">Stdio command</SelectItem>
+                <SelectItem value="http">HTTP URL</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+          {draft.transport === "stdio" ? (
+            <>
+              <label className="grid gap-1.5 text-sm sm:col-span-2">
+                <span className="font-medium">MCP command</span>
+                <Input
+                  value={draft.command}
+                  disabled={!canWrite || mutation.phase === "pending"}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, command: event.target.value }))
+                  }
+                  aria-label="MCP stdio command"
+                  placeholder="Executable command"
+                />
+              </label>
+              <label className="grid gap-1.5 text-sm sm:col-span-3">
+                <span className="font-medium">MCP arguments (one per line)</span>
+                <textarea
+                  className="min-h-20 rounded-md border bg-background px-3 py-2 text-sm"
+                  value={draft.args}
+                  disabled={!canWrite || mutation.phase === "pending"}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, args: event.target.value }))
+                  }
+                  aria-label="MCP stdio arguments"
+                />
+              </label>
+            </>
+          ) : (
+            <label className="grid gap-1.5 text-sm sm:col-span-2">
+              <span className="font-medium">MCP HTTP URL</span>
+              <Input
+                type="url"
+                value={draft.url}
+                disabled={!canWrite || mutation.phase === "pending"}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, url: event.target.value }))
+                }
+                aria-label="MCP HTTP URL"
+                placeholder="https://mcp.example.com"
+              />
+            </label>
+          )}
+          <div className="flex flex-wrap gap-2 sm:col-span-3">
+            <Button
+              type="submit"
+              disabled={
+                !canWrite ||
+                mutation.phase === "pending" ||
+                mutation.phase === "submitting" ||
+                mutation.phase === "conflict"
+              }
+            >
+              {mutation.phase === "submitting"
+                ? "Submitting…"
+                : editingId
+                  ? "Save Caplet"
+                  : "Create Caplet"}
+            </Button>
+            {editingId ? (
+              <Button type="button" variant="outline" onClick={onClearEdit}>
+                Cancel edit
+              </Button>
+            ) : null}
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 function CapletsPage({
   data,
   loading,
   action,
+  refresh,
 }: {
   data: DashboardData;
   loading: boolean;
   action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  refresh: () => Promise<boolean>;
 }) {
   const { confirmTyped } = useActionConfirm();
+  const [editing, setEditing] = useState<CapletRecord>();
+  const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
+  const [deleteMutation, setDeleteMutation] = useState<DashboardMutationState>({ phase: "idle" });
   const caplets = data.caplets?.caplets ?? [];
+  const health = authorityHealthFromData(data);
   const updateRisks = new Map(
     (data.updates?.updates ?? []).map((update) => [String(update.id), update]),
   );
+  async function pollDelete(capletId: string, generation: AuthorityGenerationView, attempt = 0) {
+    if (attempt > 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    try {
+      const diagnostics = await dashboardApi<{ health?: unknown; storageHealth?: unknown }>(
+        "diagnostics",
+      );
+      const nextHealth = authorityHealthFromData({ diagnostics });
+      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+        setDeleteMutation({ phase: "active", generation });
+        setPendingDeletes((current) => {
+          const next = new Set(current);
+          next.delete(capletId);
+          return next;
+        });
+        setEditing((current) => (current?.id === capletId ? undefined : current));
+        await refresh();
+        return;
+      }
+      if (
+        nextHealth &&
+        (nextHealth.connectivity === "degraded" ||
+          nextHealth.connectivity === "unavailable" ||
+          !nextHealth.writable)
+      ) {
+        setDeleteMutation({
+          phase: "degraded",
+          generation,
+          message: nextHealth.lastError?.message,
+        });
+        return;
+      }
+    } catch {
+      // Keep the pending deletion receipt visible for a manual retry.
+    }
+    if (attempt < 4) void pollDelete(capletId, generation, attempt + 1);
+  }
+  async function deleteAuthorityCaplet(capletId: string) {
+    if (health?.writable !== true || pendingDeletes.has(capletId)) return;
+    if (
+      !(await confirmTyped(
+        "Delete authority-managed Caplet?",
+        `${capletId} will be removed from the Writable Authority after generation review.`,
+        `delete ${capletId}`,
+      ))
+    ) {
+      return;
+    }
+    try {
+      const response = await dashboardApi<Record<string, unknown>>("caplets/delete", {
+        method: "POST",
+        body: JSON.stringify({
+          id: capletId,
+          ...(dashboardExpectedGeneration(health)
+            ? { expectedGeneration: dashboardExpectedGeneration(health) }
+            : {}),
+          idempotencyKey: newDashboardIntent(),
+        }),
+      });
+      const phase = dashboardMutationStatus(response);
+      const generation = dashboardMutationGeneration(dashboardRecord(response)?.generation);
+      setDeleteMutation({ phase, generation });
+      if (phase === "pending" && generation) {
+        setPendingDeletes((current) => new Set(current).add(capletId));
+        void pollDelete(capletId, generation);
+      } else {
+        await refresh();
+        setEditing((current) => (current?.id === capletId ? undefined : current));
+        toast.success(`Caplet ${capletId} deleted`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Caplet deletion failed.");
+    }
+  }
   if (loading && !data.caplets) return <DashboardLoadingState title="Caplets" />;
   return (
-    <PageFrame title="Caplets" description="Installed Caplets on this host.">
+    <PageFrame
+      title="Caplets"
+      description="Installed Caplets with explicit filesystem or Writable Authority ownership."
+    >
+      {data.caplets?.error ? (
+        <Alert variant="destructive">
+          <AlertTriangleIcon />
+          <AlertTitle>Caplet inventory unavailable</AlertTitle>
+          <AlertDescription>
+            {safeDashboardText(data.caplets.error, "Retry the page.")}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      <CapletAdminPanel
+        health={health}
+        refresh={refresh}
+        editRequest={editing}
+        onClearEdit={() => setEditing(undefined)}
+      />
+      <MutationStatusNotice
+        state={deleteMutation}
+        onRefreshReview={() => {
+          void refresh().then(() => setDeleteMutation({ phase: "idle" }));
+        }}
+        onRetry={() => {
+          if (deleteMutation.generation) {
+            const pendingId = Array.from(pendingDeletes)[0];
+            if (pendingId) void pollDelete(pendingId, deleteMutation.generation);
+          }
+        }}
+      />
       <Card>
         <CardContent className="pt-6">
           <div className="grid gap-2">
@@ -1379,22 +2163,100 @@ function CapletsPage({
               caplets.map((caplet) => {
                 const capletId = caplet.id ?? caplet.name ?? "caplet";
                 const update = updateRisks.get(String(capletId));
+                const ownership = capletOwnership(caplet, health);
+                const mutationBlocked = Boolean(health && !health.writable);
                 return (
                   <Row
                     key={capletId}
                     title={capletId}
-                    detail={<CapletUpdateReadiness caplet={caplet} update={update} />}
+                    detail={
+                      <CapletUpdateReadiness
+                        caplet={caplet}
+                        update={update}
+                        ownership={ownership}
+                      />
+                    }
                     actions={
-                      update ? (
+                      ownership.kind === "staged" ? (
+                        <Badge
+                          variant="outline"
+                          aria-label={`${capletId} is immutable and reserved`}
+                        >
+                          <ShieldCheckIcon />
+                          Reserved
+                        </Badge>
+                      ) : ownership.kind === "authority" ? (
+                        <>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={health?.writable !== true || pendingDeletes.has(capletId)}
+                            onClick={() => setEditing(caplet)}
+                            aria-label={`Edit authority Caplet ${capletId}`}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="destructive"
+                            disabled={health?.writable !== true || pendingDeletes.has(capletId)}
+                            onClick={() => void deleteAuthorityCaplet(capletId)}
+                            aria-label={`Delete authority Caplet ${capletId}`}
+                          >
+                            {pendingDeletes.has(capletId) ? "Deletion pending" : "Delete"}
+                          </Button>
+                          {update ? (
+                            <TooltipIconButton
+                              size="icon-sm"
+                              variant="outline"
+                              disabled={mutationBlocked}
+                              label={`Review update for ${capletId}; conflicts require refresh and review`}
+                              onClick={async () => {
+                                if (
+                                  !(await confirmTyped(
+                                    "Review Caplet update?",
+                                    capletUpdateReviewSummary(caplet, update, ownership),
+                                    `update ${capletId}`,
+                                  ))
+                                )
+                                  return;
+                                await action("Update requested", () =>
+                                  dashboardApi("catalog/update", {
+                                    method: "POST",
+                                    body: JSON.stringify({
+                                      capletId,
+                                      acknowledgeRiskIncrease: true,
+                                      ...(dashboardExpectedGeneration(health)
+                                        ? {
+                                            expectedGeneration: dashboardExpectedGeneration(health),
+                                          }
+                                        : {}),
+                                    }),
+                                  }),
+                                );
+                              }}
+                            >
+                              <RefreshCwIcon />
+                            </TooltipIconButton>
+                          ) : null}
+                        </>
+                      ) : update ? (
                         <TooltipIconButton
                           size="icon-sm"
                           variant="outline"
-                          label={`Review update for ${capletId}`}
+                          disabled={mutationBlocked}
+                          label={
+                            mutationBlocked
+                              ? `Update unavailable for ${capletId} while authority is read-only`
+                              : `Review update for ${capletId}; conflicts require refresh and review`
+                          }
                           onClick={async () => {
                             if (
                               !(await confirmTyped(
                                 "Review Caplet update?",
-                                capletUpdateReviewSummary(caplet, update),
+                                capletUpdateReviewSummary(caplet, update, ownership),
                                 `update ${capletId}`,
                               ))
                             )
@@ -1405,6 +2267,9 @@ function CapletsPage({
                                 body: JSON.stringify({
                                   capletId,
                                   acknowledgeRiskIncrease: true,
+                                  ...(dashboardExpectedGeneration(health)
+                                    ? { expectedGeneration: dashboardExpectedGeneration(health) }
+                                    : {}),
                                 }),
                               }),
                             );
@@ -1425,7 +2290,7 @@ function CapletsPage({
                 );
               })
             ) : (
-              <EmptyLine text="No Caplets are installed." />
+              <EmptyLine text="No Caplets are installed. Add a mutable Caplet through the dashboard, or stage one in the filesystem before startup." />
             )}
           </div>
         </CardContent>
@@ -1437,13 +2302,21 @@ function CapletsPage({
 function CapletUpdateReadiness({
   caplet,
   update,
+  ownership,
 }: {
   caplet: CapletRecord;
   update?: { id?: string; status?: string; risk?: unknown };
+  ownership: CapletOwnership;
 }) {
   const capletName = caplet.id ?? caplet.name ?? "caplet";
-  const sourceLabel = caplet.source ? `Source ${caplet.source}` : "Source local/config";
-  const lockLabel = caplet.updateState ? `Lock ${caplet.updateState}` : "Lock unknown";
+  const lockLabel =
+    ownership.kind === "staged"
+      ? "Immutable staged definition; ID reserved"
+      : caplet.updateState
+        ? `Lock ${caplet.updateState}`
+        : ownership.kind === "authority"
+          ? "Mutable with expected Authority Generation"
+          : "Lock unknown";
   const authRequired = dashboardBoolean(caplet.authRequired);
   const setupRequired = dashboardBoolean(caplet.setupRequired);
   const projectBindingRequired = dashboardBoolean(caplet.projectBindingRequired);
@@ -1452,13 +2325,19 @@ function CapletUpdateReadiness({
   const bindingLabel = projectBindingRequired
     ? "Project Binding required"
     : "No Project Binding required";
-  const updateLabel = update ? `Update ${update.status ?? "available"}` : "No update available";
+  const updateLabel =
+    ownership.kind === "staged"
+      ? "Dashboard updates unavailable for staged definitions"
+      : update
+        ? `Update ${update.status ?? "available"}`
+        : "No update available";
   const riskSummary = riskSummaryLines(update?.risk);
   return (
     <div className="grid gap-2 text-sm">
       <p>{caplet.title ?? caplet.description ?? caplet.kind}</p>
+      <p className="text-muted-foreground">{ownership.detail}</p>
       <div className="flex flex-wrap gap-1.5" aria-label="Caplet readiness summary">
-        <TooltipIconBadge label={sourceLabel} variant="secondary">
+        <TooltipIconBadge label={ownership.label} variant="secondary">
           <DatabaseIcon />
         </TooltipIconBadge>
         <TooltipIconBadge label={lockLabel} variant="secondary">
@@ -1476,10 +2355,13 @@ function CapletUpdateReadiness({
         >
           <LinkIcon />
         </TooltipIconBadge>
-        <TooltipIconBadge label={updateLabel} variant={update ? "destructive" : "secondary"}>
-          {update ? <RefreshCwIcon /> : <CheckIcon />}
+        <TooltipIconBadge
+          label={updateLabel}
+          variant={update && ownership.kind !== "staged" ? "destructive" : "secondary"}
+        >
+          {update && ownership.kind !== "staged" ? <RefreshCwIcon /> : <CheckIcon />}
         </TooltipIconBadge>
-        {riskSummary.summary ? (
+        {riskSummary.summary && ownership.kind !== "staged" ? (
           <TooltipIconBadge
             label={`Update risk summary for ${capletName}: ${riskSummary.summary}`}
             variant="outline"
@@ -1495,15 +2377,16 @@ function CapletUpdateReadiness({
 function capletUpdateReviewSummary(
   caplet: CapletRecord,
   update: { id?: string; status?: string; risk?: unknown },
+  ownership: CapletOwnership,
 ): string {
   const riskSummary = riskSummaryLines(update.risk);
   const capletId = caplet.id ?? caplet.name ?? "caplet";
-  const source = caplet.source ?? "local/config";
   const updateState = caplet.updateState ?? "unknown";
   const readiness = `${dashboardBoolean(caplet.authRequired) ? "auth required" : "no auth"}, ${dashboardBoolean(caplet.setupRequired) ? "setup required" : "no setup"}, ${dashboardBoolean(caplet.projectBindingRequired) ? "Project Binding required" : "no Project Binding requirement"}`;
   return [
     `${capletId} has an installable update review.`,
-    `Source: ${source}.`,
+    `Ownership: ${ownership.label}.`,
+    `Conflict policy: refresh and review before retrying against the latest Authority Generation.`,
     `Lock state: ${updateState}.`,
     `Readiness: ${readiness}.`,
     `Update state: ${update.status ?? "available"}.`,
@@ -1884,6 +2767,160 @@ function activityEntryView(entry: Record<string, unknown>) {
   };
 }
 
+function AuthorityHealthPanel({ data }: { data: DashboardData }) {
+  const health = authorityHealthFromData(data);
+  if (!health) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-medium leading-snug">Storage authority</h2>
+              <CardDescription role="status">
+                This filesystem-only response does not include authority health metadata.
+              </CardDescription>
+            </div>
+            <Badge variant="secondary">Filesystem compatibility</Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <Alert>
+            <DatabaseIcon />
+            <AlertTitle>Existing local storage remains usable.</AlertTitle>
+            <AlertDescription>
+              Caplets is preserving the Current Host filesystem behavior. Shared generation,
+              connectivity, and refresh diagnostics will appear when the host reports them.
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const failed = health.readiness === "failed" || health.lifecycle === "shutdown";
+  const recovering =
+    health.lifecycle === "recovering" ||
+    health.readiness === "recovering" ||
+    health.refresh === "pending";
+  const recovered = health.lifecycle === "recovered" || health.readiness === "recovered";
+  const degraded =
+    health.lifecycle === "degraded" ||
+    health.connectivity === "degraded" ||
+    health.connectivity === "unavailable" ||
+    health.refresh === "failed";
+  const readOnly = !health.writable;
+  const stateLabel = failed
+    ? "Failed"
+    : recovering
+      ? "Recovering"
+      : degraded
+        ? readOnly
+          ? "Degraded · read-only"
+          : "Degraded"
+        : readOnly
+          ? "Read-only"
+          : recovered
+            ? "Recovered"
+            : "Healthy";
+  const title = failed
+    ? "Authority unavailable"
+    : recovering
+      ? "Authority refresh in progress"
+      : degraded
+        ? "Serving last-known-good state"
+        : readOnly
+          ? "Authority is read-only"
+          : recovered
+            ? "Authority recovered"
+            : "Authority healthy";
+  const guidance = failed
+    ? "Administration is unavailable. Restore provider connectivity and a valid committed generation before retrying."
+    : recovering
+      ? "A generation is being observed or activated. Do not resubmit the same change; refresh this page if activation remains pending."
+      : degraded
+        ? "Existing execution can continue from the active generation, but writes are blocked. Restore connectivity, then wait for refresh recovery before retrying."
+        : readOnly
+          ? "Reads remain available, but authority mutations are blocked. Restore writable operation before making changes."
+          : "Writes are enabled. If another operator advances the generation, refresh and review current state before retrying.";
+  const activeSequence = health.activeGeneration?.sequence;
+  const observedSequence = health.observedGeneration?.sequence;
+
+  return (
+    <Card>
+      <CardHeader className="gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-medium leading-snug">Storage authority</h2>
+            <CardDescription role="status" aria-live="polite">
+              {title}. {guidance}
+            </CardDescription>
+          </div>
+          <Badge
+            variant={
+              failed || degraded ? "destructive" : readOnly || recovering ? "outline" : "secondary"
+            }
+          >
+            {stateLabel}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <RecordRow label="Selected provider" value={humanizeToken(health.provider)} />
+          <RecordRow label="Authority ID" value={health.authorityId} />
+          <RecordRow label="Connectivity" value={humanizeToken(health.connectivity)} />
+          <RecordRow
+            label="Authority Generation · Active"
+            value={activeSequence === undefined ? "None loaded" : `Generation ${activeSequence}`}
+          />
+          <RecordRow
+            label="Authority Generation · Observed"
+            value={
+              observedSequence === undefined ? "None observed" : `Generation ${observedSequence}`
+            }
+          />
+          <RecordRow
+            label="Exposure Generation"
+            value={
+              health.exposureGeneration === null
+                ? "Not reported"
+                : `Generation ${health.exposureGeneration}`
+            }
+          />
+          <RecordRow label="Refresh state" value={humanizeToken(health.refresh)} />
+          <RecordRow
+            label="Authority lag"
+            value={
+              health.lag === null
+                ? "Not reported"
+                : `${health.lag} ${health.lag === 1 ? "generation" : "generations"}`
+            }
+          />
+          <RecordRow
+            label="Source composition"
+            value={
+              health.stagedFingerprint
+                ? `Authority plus staged filesystem · Fingerprint ${health.stagedFingerprint}`
+                : "Writable Authority; staged fingerprint not reported"
+            }
+          />
+        </dl>
+        {health.lastError ? (
+          <Alert variant="destructive">
+            <AlertTriangleIcon />
+            <AlertTitle>
+              {health.lastError.code
+                ? `Last safe error · ${health.lastError.code}`
+                : "Last safe authority error"}
+            </AlertTitle>
+            <AlertDescription>{health.lastError.message}</AlertDescription>
+          </Alert>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function RuntimePage({
   data,
   loading,
@@ -1901,6 +2938,7 @@ function RuntimePage({
   if (loading && !data.runtime) return <DashboardLoadingState title="Runtime" />;
   return (
     <PageFrame title="Runtime" description="Health, diagnostics, and daemon actions.">
+      <AuthorityHealthPanel data={data} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
         <Card>
           <CardHeader className="gap-3">
@@ -1920,8 +2958,14 @@ function RuntimePage({
           </CardHeader>
           <CardContent className="grid gap-4">
             <dl className="grid gap-3 sm:grid-cols-2">
-              <RecordRow label="Version" value={String(runtime.version ?? "Unknown")} />
-              <RecordRow label="Bind address" value={String(runtime.bind ?? "Unknown")} />
+              <RecordRow
+                label="Version"
+                value={safeDashboardText(runtime.version, "Unknown", 80)}
+              />
+              <RecordRow
+                label="Runtime ownership"
+                value="Replica-local process using the active composed storage view"
+              />
             </dl>
             <Alert>
               <AlertTriangleIcon />
@@ -2162,13 +3206,414 @@ function ActivityPage({ data, loading }: { data: DashboardData; loading: boolean
   );
 }
 
-function SettingsPage({ session, summary }: { session: DashboardSession; summary?: Summary }) {
+function AuthoritySettingsPanel({
+  data,
+  refresh,
+}: {
+  data: DashboardData;
+  refresh: () => Promise<boolean>;
+}) {
+  const health = authorityHealthFromData(data);
+  const settings = dashboardRecord(data.settings?.settings);
+  const options = dashboardRecord(settings?.options);
+  const [telemetry, setTelemetry] = useState(false);
+  const [defaultSearchLimit, setDefaultSearchLimit] = useState("20");
+  const [maxSearchLimit, setMaxSearchLimit] = useState("50");
+  const [exposure, setExposure] = useState("code_mode");
+  const [dirty, setDirty] = useState(false);
+  const [mutation, setMutation] = useState<DashboardMutationState>({ phase: "idle" });
+  const [intent, setIntent] = useState<string>();
+  const canWrite = health?.writable === true;
+  async function pollActivation(generation: AuthorityGenerationView, attempt = 0) {
+    if (attempt > 0) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    }
+    try {
+      const diagnostics = await dashboardApi<{ health?: unknown; storageHealth?: unknown }>(
+        "diagnostics",
+      );
+      const nextHealth = authorityHealthFromData({ diagnostics });
+      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+        setIntent(undefined);
+        setMutation({ phase: "active", generation, idempotencyKey: intent });
+        await refresh();
+        return;
+      }
+      if (
+        nextHealth &&
+        (nextHealth.connectivity === "degraded" ||
+          nextHealth.connectivity === "unavailable" ||
+          !nextHealth.writable)
+      ) {
+        setMutation({
+          phase: "degraded",
+          generation,
+          idempotencyKey: intent,
+          message: nextHealth.lastError?.message,
+        });
+        await refresh();
+        return;
+      }
+    } catch {
+      // Preserve the durable receipt while the bounded status check is retried.
+    }
+    if (attempt < 4) void pollActivation(generation, attempt + 1);
+  }
+
+  useEffect(() => {
+    if (dirty || !settings) return;
+    if (typeof settings.telemetry === "boolean") setTelemetry(settings.telemetry);
+    if (typeof settings.defaultSearchLimit === "number")
+      setDefaultSearchLimit(String(settings.defaultSearchLimit));
+    if (typeof settings.maxSearchLimit === "number")
+      setMaxSearchLimit(String(settings.maxSearchLimit));
+    if (typeof options?.exposure === "string") setExposure(options.exposure);
+  }, [dirty, options, settings]);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canWrite || mutation.phase === "pending" || mutation.phase === "submitting") return;
+    const nextIntent = intent ?? newDashboardIntent();
+    setIntent(nextIntent);
+    setMutation({ phase: "submitting", idempotencyKey: nextIntent });
+    const patch = {
+      telemetry,
+      defaultSearchLimit: Number(defaultSearchLimit),
+      maxSearchLimit: Number(maxSearchLimit),
+      options: { exposure },
+    };
+    try {
+      const response = await dashboardApi<Record<string, unknown>>("settings", {
+        method: "POST",
+        body: JSON.stringify({
+          settings: patch,
+          ...(dashboardExpectedGeneration(health)
+            ? { expectedGeneration: dashboardExpectedGeneration(health) }
+            : {}),
+          idempotencyKey: nextIntent,
+        }),
+      });
+      const phase = dashboardMutationStatus(response);
+      const generation = dashboardMutationGeneration(dashboardRecord(response)?.generation);
+      if (phase === "active") setIntent(undefined);
+      setMutation({ phase, generation, idempotencyKey: nextIntent });
+      if (phase === "pending" && generation) void pollActivation(generation);
+      else await refresh();
+    } catch (error) {
+      const details = dashboardRecordFromError(error)?.details;
+      const conflictGeneration = dashboardMutationGeneration(
+        dashboardRecord(details)?.changedGeneration ?? dashboardRecord(details)?.activeGeneration,
+      );
+      setMutation({
+        phase: conflictGeneration ? "conflict" : "degraded",
+        generation: conflictGeneration,
+        idempotencyKey: nextIntent,
+        message: error instanceof Error ? error.message : "Settings update failed.",
+      });
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Allowlisted Current Host settings</CardTitle>
+        <CardDescription>
+          Edit safe runtime controls only. Authority credentials, URLs, paths, Caplet maps, and
+          secret values are never shown or accepted here.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <MutationStatusNotice
+          state={mutation}
+          onRefreshReview={() => {
+            void refresh().then(() => {
+              setIntent(newDashboardIntent());
+              setMutation({ phase: "idle" });
+            });
+          }}
+        />
+        <form className="grid gap-3 sm:grid-cols-2" onSubmit={submit}>
+          <label className="flex min-h-11 items-center gap-2 rounded-lg border px-3 text-sm">
+            <input
+              type="checkbox"
+              checked={telemetry}
+              disabled={!canWrite || mutation.phase === "pending"}
+              onChange={(event) => {
+                setDirty(true);
+                setTelemetry(event.target.checked);
+              }}
+            />
+            <span>Anonymous telemetry enabled</span>
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Default search limit</span>
+            <Input
+              type="number"
+              min={1}
+              max={50}
+              value={defaultSearchLimit}
+              disabled={!canWrite || mutation.phase === "pending"}
+              onChange={(event) => {
+                setDirty(true);
+                setDefaultSearchLimit(event.target.value);
+              }}
+              aria-label="Default search limit"
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Maximum search limit</span>
+            <Input
+              type="number"
+              min={1}
+              max={50}
+              value={maxSearchLimit}
+              disabled={!canWrite || mutation.phase === "pending"}
+              onChange={(event) => {
+                setDirty(true);
+                setMaxSearchLimit(event.target.value);
+              }}
+              aria-label="Maximum search limit"
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Exposure mode</span>
+            <Select
+              value={exposure}
+              onValueChange={(value) => {
+                if (!value) return;
+                setDirty(true);
+                setExposure(value);
+              }}
+            >
+              <SelectTrigger aria-label="Exposure mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="direct">Direct</SelectItem>
+                <SelectItem value="progressive">Progressive</SelectItem>
+                <SelectItem value="code_mode">Code Mode</SelectItem>
+                <SelectItem value="direct_and_code_mode">Direct + Code Mode</SelectItem>
+                <SelectItem value="progressive_and_code_mode">Progressive + Code Mode</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+          <div className="flex flex-wrap gap-2 sm:col-span-2">
+            <Button
+              type="submit"
+              disabled={
+                !canWrite || mutation.phase === "pending" || mutation.phase === "submitting"
+              }
+            >
+              {mutation.phase === "submitting" ? "Saving…" : "Save settings"}
+            </Button>
+            {!canWrite ? <Badge variant="outline">Read-only until authority recovers</Badge> : null}
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SetupApprovalPanel({
+  health,
+  refresh,
+}: {
+  health?: AuthorityHealthView;
+  refresh: () => Promise<boolean>;
+}) {
+  const [capletId, setCapletId] = useState("");
+  const [contentHash, setContentHash] = useState("");
+  const [projectFingerprint, setProjectFingerprint] = useState("");
+  const [targetKind, setTargetKind] = useState("local_host");
+  const [mutation, setMutation] = useState<DashboardMutationState>({ phase: "idle" });
+  const [intent, setIntent] = useState<string>();
+  const canWrite = health?.writable === true;
+  async function pollActivation(generation: AuthorityGenerationView, attempt = 0) {
+    if (attempt > 0) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    }
+    try {
+      const diagnostics = await dashboardApi<{ health?: unknown; storageHealth?: unknown }>(
+        "diagnostics",
+      );
+      const nextHealth = authorityHealthFromData({ diagnostics });
+      if (generationsMatch(nextHealth?.activeGeneration, generation)) {
+        setIntent(undefined);
+        setMutation({ phase: "active", generation, idempotencyKey: intent });
+        await refresh();
+        return;
+      }
+      if (
+        nextHealth &&
+        (nextHealth.connectivity === "degraded" ||
+          nextHealth.connectivity === "unavailable" ||
+          !nextHealth.writable)
+      ) {
+        setMutation({
+          phase: "degraded",
+          generation,
+          idempotencyKey: intent,
+          message: nextHealth.lastError?.message,
+        });
+        await refresh();
+        return;
+      }
+    } catch {
+      // Keep the committed approval receipt visible if status polling cannot reach the host.
+    }
+    if (attempt < 4) void pollActivation(generation, attempt + 1);
+  }
+
+  async function submit(kind: "grant" | "revoke") {
+    if (
+      !canWrite ||
+      !capletId.trim() ||
+      contentHash.trim().length < 8 ||
+      mutation.phase === "pending" ||
+      mutation.phase === "submitting"
+    )
+      return;
+    const nextIntent = intent ?? newDashboardIntent();
+    setIntent(nextIntent);
+    setMutation({ phase: "submitting", idempotencyKey: nextIntent });
+    try {
+      const response = await dashboardApi<Record<string, unknown>>(`setup/${kind}`, {
+        method: "POST",
+        body: JSON.stringify({
+          capletId: capletId.trim(),
+          contentHash: contentHash.trim(),
+          targetKind,
+          ...(projectFingerprint.trim() ? { projectFingerprint: projectFingerprint.trim() } : {}),
+          ...(dashboardExpectedGeneration(health)
+            ? { expectedGeneration: dashboardExpectedGeneration(health) }
+            : {}),
+          idempotencyKey: nextIntent,
+        }),
+      });
+      const phase = dashboardMutationStatus(response);
+      const generation = dashboardMutationGeneration(dashboardRecord(response)?.generation);
+      if (phase === "active") setIntent(undefined);
+      setMutation({ phase, generation, idempotencyKey: nextIntent });
+      if (phase === "pending" && generation) void pollActivation(generation);
+      else await refresh();
+    } catch (error) {
+      const details = dashboardRecordFromError(error)?.details;
+      const conflictGeneration = dashboardMutationGeneration(
+        dashboardRecord(details)?.changedGeneration ?? dashboardRecord(details)?.activeGeneration,
+      );
+      setMutation({
+        phase: conflictGeneration ? "conflict" : "degraded",
+        generation: conflictGeneration,
+        idempotencyKey: nextIntent,
+        message: error instanceof Error ? error.message : "Setup approval update failed.",
+      });
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Setup approvals</CardTitle>
+        <CardDescription>
+          Grant or revoke one Caplet setup decision for a target. Approval identifiers are durable
+          authority state and are never inferred from filesystem paths.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <MutationStatusNotice
+          state={mutation}
+          onRefreshReview={() => {
+            void refresh().then(() => {
+              setIntent(newDashboardIntent());
+              setMutation({ phase: "idle" });
+            });
+          }}
+        />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Caplet ID</span>
+            <Input
+              value={capletId}
+              onChange={(event) => setCapletId(event.target.value)}
+              aria-label="Setup Caplet ID"
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Content hash</span>
+            <Input
+              value={contentHash}
+              onChange={(event) => setContentHash(event.target.value)}
+              aria-label="Setup content hash"
+              minLength={8}
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Project fingerprint (optional)</span>
+            <Input
+              value={projectFingerprint}
+              onChange={(event) => setProjectFingerprint(event.target.value)}
+              aria-label="Setup project fingerprint"
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Target</span>
+            <Select value={targetKind} onValueChange={(value) => value && setTargetKind(value)}>
+              <SelectTrigger aria-label="Setup target kind">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="local_host">Local host</SelectItem>
+                <SelectItem value="remote_host">Remote host</SelectItem>
+                <SelectItem value="hosted_sandbox">Hosted sandbox</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            disabled={!canWrite || mutation.phase === "pending" || mutation.phase === "submitting"}
+            onClick={() => void submit("grant")}
+          >
+            Grant setup approval
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!canWrite || mutation.phase === "pending" || mutation.phase === "submitting"}
+            onClick={() => void submit("revoke")}
+          >
+            Revoke setup approval
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SettingsPage({
+  session,
+  data,
+  loading,
+  refresh,
+}: {
+  session: DashboardSession;
+  data: DashboardData;
+  loading: boolean;
+  refresh: () => Promise<boolean>;
+}) {
   const isDevelopmentSession = session.operatorClientId === "development_unauthenticated";
+  if (loading && !data.summary && !data.runtime && !data.diagnostics) {
+    return <DashboardLoadingState title="Settings" />;
+  }
   return (
     <PageFrame
       title="Settings"
-      description="Inspect the current dashboard session, authentication mode, and host connection details."
+      description="Inspect session authority, storage ownership, and Current Host operating state."
     >
+      <AuthorityHealthPanel data={data} />
+      <AuthoritySettingsPanel data={data} refresh={refresh} />
+      <SetupApprovalPanel health={authorityHealthFromData(data)} refresh={refresh} />
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2206,9 +3651,15 @@ function SettingsPage({ session, summary }: { session: DashboardSession; summary
                 isDevelopmentSession ? "Development no-auth bypass" : "Approved operator session"
               }
             />
-            <RecordRow label="Current Host" value={summary?.host?.baseUrl ?? "Current Host"} />
-            <RecordRow label="Operator client ID" value={session.operatorClientId} />
-            <RecordRow label="CSRF token" value={session.csrfToken} />
+            <RecordRow label="Current Host" value="Logical Current Host · Network address hidden" />
+            <RecordRow
+              label="Operator client ID"
+              value={safeDashboardText(session.operatorClientId, "Operator", 80)}
+            />
+            <RecordRow
+              label="Session credentials"
+              value="Protected by the browser session · Secret values are not displayed"
+            />
           </dl>
           <div className="flex flex-wrap gap-2">
             <TooltipIconButton

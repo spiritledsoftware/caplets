@@ -59,6 +59,7 @@ describe("CLI completion resolver", () => {
       .map((command) => command.name())
       .sort();
     expect((await completeCliWords([""])).toSorted()).toEqual(registeredCommands);
+    expect(createProgram().helpInformation()).toContain("current-host");
   });
 
   it("suggests nested static subcommands and enum values", async () => {
@@ -94,6 +95,26 @@ describe("CLI completion resolver", () => {
     await expect(completeCliWords(["remote", "host", ""])).resolves.toEqual([
       "pair",
       "clients",
+      "revoke",
+    ]);
+    await expect(completeCliWords(["current-host", ""])).resolves.toEqual([
+      "health",
+      "caplets",
+      "settings",
+      "setup",
+    ]);
+    await expect(completeCliWords(["current-host", "caplets", ""])).resolves.toEqual([
+      "list",
+      "create",
+      "update",
+      "delete",
+    ]);
+    await expect(completeCliWords(["current-host", "settings", ""])).resolves.toEqual([
+      "get",
+      "update",
+    ]);
+    await expect(completeCliWords(["current-host", "setup", ""])).resolves.toEqual([
+      "grant",
       "revoke",
     ]);
     await expect(completeCliWords(["completion", ""])).resolves.toEqual([

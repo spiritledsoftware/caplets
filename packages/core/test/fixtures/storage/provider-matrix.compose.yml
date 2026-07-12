@@ -1,0 +1,51 @@
+services:
+  caplets-u9-postgres:
+    image: docker.io/library/postgres:18.1
+    environment:
+      POSTGRES_DB: caplets
+      POSTGRES_USER: caplets_u9
+      POSTGRES_PASSWORD: caplets_u9_fixture_secret
+    ports:
+      - "127.0.0.1:${CAPLETS_STORAGE_POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U caplets_u9 -d caplets"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+    volumes:
+      - caplets-u9-postgres-data:/var/lib/postgresql
+
+  caplets-u9-minio:
+    image: docker.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: caplets-u9-fixture
+      MINIO_ROOT_PASSWORD: caplets-u9-fixture-secret
+    ports:
+      - "127.0.0.1:${CAPLETS_STORAGE_MINIO_PORT:-59000}:9000"
+      - "127.0.0.1:${CAPLETS_STORAGE_MINIO_CONSOLE_PORT:-59001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+    volumes:
+      - caplets-u9-minio-data:/data
+
+  caplets-u9-minio-init:
+    image: docker.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    depends_on:
+      caplets-u9-minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mc alias set local http://caplets-u9-minio:9000 caplets-u9-fixture caplets-u9-fixture-secret
+        && mc mb --ignore-existing local/caplets-u9
+    restart: "no"
+
+volumes:
+  caplets-u9-postgres-data:
+  caplets-u9-minio-data:

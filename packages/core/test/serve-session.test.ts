@@ -14,6 +14,7 @@ import { getCompleter } from "@modelcontextprotocol/sdk/server/completable";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
 import { CapletsMcpSession } from "../src/serve/session";
+import type { PreparedRuntimeView, RuntimeEpochLease } from "../src/storage/coordinator";
 import type { ResolvedExposureProjection } from "../src/engine";
 import {
   buildManifestExposureProjection,
@@ -59,6 +60,31 @@ describe("CapletsMcpSession", () => {
     );
 
     await session.close();
+    await engine.close();
+  });
+
+  it("releases a retained runtime epoch exactly once on session close", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: { name: "Alpha", description: "Search alpha.", command: "node" },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const release = vi.fn();
+    const lease = {
+      view: {} as PreparedRuntimeView,
+      release,
+    } as RuntimeEpochLease;
+    const session = new CapletsMcpSession(engine, {
+      server: mockServer(),
+      runtimeLease: lease,
+    });
+
+    await session.close();
+    await session.close();
+
+    expect(release).toHaveBeenCalledOnce();
     await engine.close();
   });
 

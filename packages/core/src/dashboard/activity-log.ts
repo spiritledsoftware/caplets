@@ -9,6 +9,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { randomToken } from "../remote/pairing";
+import {
+  AuthorityDomainCodec,
+  hashAuthoritySecret,
+  type AuthorityDomainCodecOptions,
+} from "../remote/authority-codec";
+import type { RedactedAuthorityEvent } from "../storage/types";
 import type { RemoteClientRole } from "../remote/server-credentials";
 
 export type DashboardActivityAction =
@@ -20,6 +26,12 @@ export type DashboardActivityAction =
   | "remote_client_role_changed"
   | "catalog_installed"
   | "catalog_updated"
+  | "caplet_created"
+  | "caplet_updated"
+  | "caplet_deleted"
+  | "settings_updated"
+  | "setup_granted"
+  | "setup_revoked"
   | "vault_set"
   | "vault_deleted"
   | "vault_grant_added"
@@ -142,6 +154,147 @@ export function roleChangeMetadata(
 ): DashboardActivityMetadata {
   return { fromRole, toRole };
 }
+export function createDashboardActivityEntry(
+  input: AppendDashboardActivityInput & { id?: string | undefined },
+): DashboardActivityEntry {
+  return sanitizeActivityEntry({
+    id: input.id ?? `act_${randomToken(12)}`,
+    createdAt: (input.now ?? new Date()).toISOString(),
+    actorClientId: input.actorClientId,
+    action: input.action,
+    outcome: input.outcome ?? "success",
+    target: input.target,
+    ...(input.metadata ? { metadata: sanitizeMetadata(input.metadata) } : {}),
+  });
+}
+
+export type AuthorityDashboardActivityLogOptions = AuthorityDomainCodecOptions;
+
+export class AuthorityDashboardActivityLog {
+  private readonly codec: AuthorityDomainCodec;
+
+  constructor(options: AuthorityDashboardActivityLogOptions) {
+    this.codec = new AuthorityDomainCodec(options);
+  }
+
+  async append(
+    input: AppendDashboardActivityInput & {
+      idempotencyKey?: string | undefined;
+      principalId?: string | undefined;
+    },
+  ): Promise<DashboardActivityEntry> {
+    const read = await this.codec.read();
+    const entries = parseAuthorityActivityEntries(read.snapshot.dashboardActivity);
+    const entry = createDashboardActivityEntry(input);
+    const nextEntries = retainBoundedEntries([...entries, entry]);
+    const committed = await this.codec.commit({
+      read,
+      domain: "dashboardActivity",
+      command: { kind: "append_activity" },
+      snapshot: { ...read.snapshot, dashboardActivity: nextEntries },
+      result: entry,
+      payload: {
+        action: entry.action,
+        outcome: entry.outcome,
+        target: entry.target,
+        actorClientId: entry.actorClientId,
+        metadata: entry.metadata,
+      },
+      idempotencyKey: input.idempotencyKey,
+      principalId: input.principalId,
+      now: input.now,
+    });
+    return committed.result;
+  }
+
+  async recordFailure(input: {
+    kind: RedactedAuthorityEvent["kind"];
+    code: string;
+    occurredAt?: string | undefined;
+    attemptedGenerationId?: string | undefined;
+    idempotencyKey?: string | undefined;
+  }): Promise<
+    | { kind: "applied" | "unchanged"; watermark: string }
+    | { kind: "missing" | "revoked" | "conflict" }
+  > {
+    const event: RedactedAuthorityEvent = {
+      kind: input.kind,
+      occurredAt: input.occurredAt ?? new Date().toISOString(),
+      ...(input.attemptedGenerationId
+        ? { attemptedGenerationId: input.attemptedGenerationId }
+        : {}),
+      ...(input.idempotencyKey
+        ? { idempotencyKeyHash: hashAuthoritySecret(input.idempotencyKey) }
+        : {}),
+      code: input.code.slice(0, 120),
+    };
+    return await this.codec.commitAuxiliary({ kind: "security_event", event });
+  }
+
+  async list(input: ListDashboardActivityInput = {}): Promise<{
+    entries: DashboardActivityEntry[];
+    nextCursor?: string | undefined;
+  }> {
+    const read = await this.codec.read();
+    let entries = parseAuthorityActivityEntries(read.snapshot.dashboardActivity);
+    if (input.after) {
+      const index = entries.findIndex((entry) => entry.id === input.after);
+      if (index >= 0) entries = entries.slice(0, index);
+    }
+    if (input.action) entries = entries.filter((entry) => entry.action === input.action);
+    const newest = entries.slice().reverse();
+    const limit = boundedLimit(input.limit);
+    const page = newest.slice(0, limit);
+    const nextCursor = newest.length > limit ? page.at(-1)?.id : undefined;
+    return { entries: page, ...(nextCursor ? { nextCursor } : {}) };
+  }
+
+  async readFailures(input: { afterWatermark?: string; limit?: number } = {}): Promise<{
+    watermark?: string;
+    events: RedactedAuthorityEvent[];
+  }> {
+    const value = await this.codec.readAuxiliary({
+      kind: "security_events",
+      ...(input.afterWatermark ? { afterWatermark: input.afterWatermark } : {}),
+      limit: boundedLimit(input.limit),
+    });
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { events: [] };
+    const record = value as { watermark?: unknown; events?: unknown };
+    const events = Array.isArray(record.events)
+      ? record.events.filter((event): event is RedactedAuthorityEvent =>
+          isRedactedAuthorityEvent(event),
+        )
+      : [];
+    return {
+      ...(typeof record.watermark === "string" ? { watermark: record.watermark } : {}),
+      events,
+    };
+  }
+}
+
+function parseAuthorityActivityEntries(value: unknown): DashboardActivityEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    try {
+      return [sanitizeActivityEntry(entry as Partial<DashboardActivityEntry>)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function isRedactedAuthorityEvent(value: unknown): value is RedactedAuthorityEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const event = value as Partial<RedactedAuthorityEvent>;
+  return (
+    (event.kind === "rejected" || event.kind === "conflicted") &&
+    typeof event.occurredAt === "string" &&
+    typeof event.code === "string" &&
+    (event.attemptedGenerationId === undefined ||
+      typeof event.attemptedGenerationId === "string") &&
+    (event.idempotencyKeyHash === undefined || typeof event.idempotencyKeyHash === "string")
+  );
+}
 
 function retainBoundedEntries(entries: DashboardActivityEntry[]): DashboardActivityEntry[] {
   let retained = entries.slice(-MAX_ACTIVITY_ENTRIES);
@@ -215,6 +368,12 @@ function isActivityAction(value: unknown): value is DashboardActivityAction {
     value === "remote_client_role_changed" ||
     value === "catalog_installed" ||
     value === "catalog_updated" ||
+    value === "caplet_created" ||
+    value === "caplet_updated" ||
+    value === "caplet_deleted" ||
+    value === "settings_updated" ||
+    value === "setup_granted" ||
+    value === "setup_revoked" ||
     value === "vault_set" ||
     value === "vault_deleted" ||
     value === "vault_grant_added" ||

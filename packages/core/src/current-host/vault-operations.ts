@@ -5,7 +5,13 @@ import {
 } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import { CapletsError } from "../errors";
-import { FileVaultStore, validateVaultKeyName, type VaultAccessGrantInput } from "../vault";
+import {
+  type VaultAdministrationStore,
+  type VaultAccessGrantInput,
+  type VaultMutationOptions,
+  type VaultSetWithGrantResult,
+  validateVaultKeyName,
+} from "../vault";
 import type {
   CurrentHostOperation,
   CurrentHostOperationOutcome,
@@ -32,39 +38,72 @@ type VaultAccessRevokeOutcome = Extract<
 >;
 type VaultAccessListOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_access_list" }>;
 
-/** Safe Vault administration implementation. Raw value reveal remains in the dashboard adapter. */
-export function createCurrentHostVaultOperations(dependencies: CurrentHostOperationsDependencies) {
-  const vault = vaultStoreForAuthDir(dependencies.control?.authDir);
+export interface CurrentHostVaultOperations {
+  valueCount(): Promise<number>;
+  list(operation: VaultListOperation): Promise<VaultListOutcome>;
+  get(operation: VaultGetOperation): Promise<VaultGetOutcome>;
+  set(
+    principal: CurrentHostOperatorPrincipal,
+    operation: VaultSetOperation,
+  ): Promise<VaultSetOutcome>;
+  delete(
+    principal: CurrentHostOperatorPrincipal,
+    operation: VaultDeleteOperation,
+  ): Promise<VaultDeleteOutcome>;
+  grant(
+    principal: CurrentHostOperatorPrincipal,
+    operation: VaultAccessGrantOperation,
+  ): Promise<VaultAccessGrantOutcome>;
+  revoke(
+    principal: CurrentHostOperatorPrincipal,
+    operation: VaultAccessRevokeOperation,
+  ): Promise<VaultAccessRevokeOutcome>;
+  listAccess(operation: VaultAccessListOperation): Promise<VaultAccessListOutcome>;
+}
 
+/** Safe Vault administration implementation. Raw value reveal remains in the dashboard adapter. */
+export function createCurrentHostVaultOperations(
+  dependencies: CurrentHostOperationsDependencies,
+): CurrentHostVaultOperations {
+  const vault =
+    dependencies.vaultStore ?? fileVaultAdministrationStore(dependencies.control?.authDir);
   return {
-    valueCount: (): number => vault.listValues().length,
-    list: (_operation: VaultListOperation): VaultListOutcome => ({
-      kind: "vault_list",
-      values: vault.listValues(),
-      grants: vault.listAccess().map(redactedVaultGrant),
-    }),
-    get: (operation: VaultGetOperation): VaultGetOutcome => ({
+    valueCount: async (): Promise<number> => (await vault.listValues()).length,
+    list: async (_operation: VaultListOperation): Promise<VaultListOutcome> => {
+      const [values, grants] = await Promise.all([vault.listValues(), vault.listAccess()]);
+      return {
+        kind: "vault_list",
+        values,
+        grants: grants.map(redactedVaultGrant),
+      };
+    },
+    get: async (operation: VaultGetOperation): Promise<VaultGetOutcome> => ({
       kind: "vault_get",
-      status: vault.getStatus(validateVaultKeyName(operation.name)),
+      status: await vault.getStatus(validateVaultKeyName(operation.name)),
     }),
-    set: (principal: CurrentHostOperatorPrincipal, operation: VaultSetOperation): VaultSetOutcome =>
-      vaultSetOutcome(dependencies, vault, principal, operation),
-    delete: (
+    set: async (
+      principal: CurrentHostOperatorPrincipal,
+      operation: VaultSetOperation,
+    ): Promise<VaultSetOutcome> => await vaultSetOutcome(dependencies, vault, principal, operation),
+    delete: async (
       principal: CurrentHostOperatorPrincipal,
       operation: VaultDeleteOperation,
-    ): VaultDeleteOutcome => vaultDeleteOutcome(dependencies, vault, principal, operation),
-    grant: (
+    ): Promise<VaultDeleteOutcome> =>
+      await vaultDeleteOutcome(dependencies, vault, principal, operation),
+    grant: async (
       principal: CurrentHostOperatorPrincipal,
       operation: VaultAccessGrantOperation,
-    ): VaultAccessGrantOutcome => vaultGrantOutcome(dependencies, vault, principal, operation),
-    revoke: (
+    ): Promise<VaultAccessGrantOutcome> =>
+      await vaultGrantOutcome(dependencies, vault, principal, operation),
+    revoke: async (
       principal: CurrentHostOperatorPrincipal,
       operation: VaultAccessRevokeOperation,
-    ): VaultAccessRevokeOutcome => vaultRevokeOutcome(dependencies, vault, principal, operation),
-    listAccess: (operation: VaultAccessListOperation): VaultAccessListOutcome => ({
+    ): Promise<VaultAccessRevokeOutcome> =>
+      await vaultRevokeOutcome(dependencies, vault, principal, operation),
+    listAccess: async (operation: VaultAccessListOperation): Promise<VaultAccessListOutcome> => ({
       kind: "vault_access_list",
-      grants: vault
-        .listAccess({
+      grants: (
+        await vault.listAccess({
           ...(operation.storedKey === undefined
             ? {}
             : { storedKey: validateVaultKeyName(operation.storedKey) }),
@@ -72,17 +111,32 @@ export function createCurrentHostVaultOperations(dependencies: CurrentHostOperat
             ? {}
             : { capletId: requiredCapletId(operation.capletId) }),
         })
-        .map(redactedVaultGrant),
+      ).map(redactedVaultGrant),
     }),
   };
 }
+function fileVaultAdministrationStore(authDir: string | undefined): VaultAdministrationStore & {
+  resolveValue(key: string): Promise<string>;
+} {
+  const file = vaultStoreForAuthDir(authDir);
+  return {
+    set: async (key, value, options) => file.set(key, value, options),
+    getStatus: async (key) => file.getStatus(key),
+    listValues: async () => file.listValues(),
+    delete: async (key, _options) => file.delete(key),
+    grantAccess: async (input, _options) => file.grantAccess(input),
+    listAccess: async (filter) => file.listAccess(filter),
+    revokeAccess: async (filter, _options) => file.revokeAccess(filter),
+    resolveValue: async (key) => file.resolveValue(key),
+  };
+}
 
-function vaultSetOutcome(
+async function vaultSetOutcome(
   dependencies: CurrentHostOperationsDependencies,
-  vault: FileVaultStore,
+  vault: VaultAdministrationStore,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultSetOperation,
-): VaultSetOutcome {
+): Promise<VaultSetOutcome> {
   const storedKey = validateVaultKeyName(operation.name);
   const capletId = operation.grant === undefined ? undefined : requiredCapletId(operation.grant);
   const referenceName =
@@ -101,19 +155,45 @@ function vaultSetOutcome(
             capletId,
             origin: vaultAccessOrigin(capletId, dependencies),
           } satisfies VaultAccessGrantInput);
-    const existed = vault.getStatus(storedKey).present;
-    const previousValue = existed && grantInput ? vault.resolveValue(storedKey) : undefined;
-    const status = vault.set(storedKey, operation.value, { force: operation.force ?? false });
+    const mutationOptions: VaultMutationOptions = {
+      force: operation.force ?? false,
+      ...(operation.expectedGeneration === undefined
+        ? {}
+        : { expectedGeneration: operation.expectedGeneration }),
+      ...(operation.idempotencyKey === undefined
+        ? {}
+        : { idempotencyKey: operation.idempotencyKey }),
+    };
+    let status;
     let grant;
-    try {
-      grant = grantInput ? vault.grantAccess(grantInput) : undefined;
-    } catch (error) {
-      if (existed && previousValue !== undefined) {
-        vault.set(storedKey, previousValue, { force: true });
-      } else {
-        vault.delete(storedKey);
+    let setWithGrantResult: VaultSetWithGrantResult | undefined;
+    if (grantInput && vault.setWithGrant) {
+      setWithGrantResult = await vault.setWithGrant(storedKey, operation.value, {
+        ...mutationOptions,
+        grant: grantInput,
+      });
+      status = setWithGrantResult.status;
+      grant = setWithGrantResult.grant;
+    } else {
+      const existed = (await vault.getStatus(storedKey)).present;
+      const rollbackVault = vault as VaultAdministrationStore & {
+        resolveValue?: (key: string) => Promise<string>;
+      };
+      const previousValue =
+        existed && grantInput && rollbackVault.resolveValue
+          ? await rollbackVault.resolveValue(storedKey)
+          : undefined;
+      status = await vault.set(storedKey, operation.value, mutationOptions);
+      try {
+        grant = grantInput ? await vault.grantAccess(grantInput, mutationOptions) : undefined;
+      } catch (error) {
+        if (existed && previousValue !== undefined) {
+          await vault.set(storedKey, previousValue, { ...mutationOptions, force: true });
+        } else {
+          await vault.delete(storedKey, mutationOptions);
+        }
+        throw error;
       }
-      throw error;
     }
     dependencies.activityLog.append({
       actorClientId: principal.clientId,
@@ -140,15 +220,21 @@ function vaultSetOutcome(
   }
 }
 
-function vaultDeleteOutcome(
+async function vaultDeleteOutcome(
   dependencies: CurrentHostOperationsDependencies,
-  vault: FileVaultStore,
+  vault: VaultAdministrationStore,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultDeleteOperation,
-): VaultDeleteOutcome {
+): Promise<VaultDeleteOutcome> {
   const storedKey = validateVaultKeyName(operation.name);
+  const mutationOptions: VaultMutationOptions = {
+    ...(operation.expectedGeneration === undefined
+      ? {}
+      : { expectedGeneration: operation.expectedGeneration }),
+    ...(operation.idempotencyKey === undefined ? {} : { idempotencyKey: operation.idempotencyKey }),
+  };
   try {
-    const deleted = vault.delete(storedKey);
+    const deleted = await vault.delete(storedKey, mutationOptions);
     dependencies.activityLog.append({
       actorClientId: principal.clientId,
       action: "vault_deleted",
@@ -165,22 +251,31 @@ function vaultDeleteOutcome(
   }
 }
 
-function vaultGrantOutcome(
+async function vaultGrantOutcome(
   dependencies: CurrentHostOperationsDependencies,
-  vault: FileVaultStore,
+  vault: VaultAdministrationStore,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultAccessGrantOperation,
-): VaultAccessGrantOutcome {
+): Promise<VaultAccessGrantOutcome> {
   const storedKey = validateVaultKeyName(operation.storedKey);
   const referenceName = validateVaultKeyName(operation.referenceName);
   const capletId = requiredCapletId(operation.capletId);
+  const mutationOptions: VaultMutationOptions = {
+    ...(operation.expectedGeneration === undefined
+      ? {}
+      : { expectedGeneration: operation.expectedGeneration }),
+    ...(operation.idempotencyKey === undefined ? {} : { idempotencyKey: operation.idempotencyKey }),
+  };
   try {
-    const grant = vault.grantAccess({
-      storedKey,
-      referenceName,
-      capletId,
-      origin: vaultAccessOrigin(capletId, dependencies),
-    });
+    const grant = await vault.grantAccess(
+      {
+        storedKey,
+        referenceName,
+        capletId,
+        origin: vaultAccessOrigin(capletId, dependencies),
+      },
+      mutationOptions,
+    );
     dependencies.activityLog.append({
       actorClientId: principal.clientId,
       action: "vault_grant_added",
@@ -201,12 +296,12 @@ function vaultGrantOutcome(
   }
 }
 
-function vaultRevokeOutcome(
+async function vaultRevokeOutcome(
   dependencies: CurrentHostOperationsDependencies,
-  vault: FileVaultStore,
+  vault: VaultAdministrationStore,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultAccessRevokeOperation,
-): VaultAccessRevokeOutcome {
+): Promise<VaultAccessRevokeOutcome> {
   const storedKey = validateVaultKeyName(operation.storedKey);
   const referenceName =
     operation.referenceName === undefined
@@ -214,12 +309,21 @@ function vaultRevokeOutcome(
       : validateVaultKeyName(operation.referenceName);
   const capletId =
     operation.capletId === undefined ? undefined : requiredCapletId(operation.capletId);
+  const mutationOptions: VaultMutationOptions = {
+    ...(operation.expectedGeneration === undefined
+      ? {}
+      : { expectedGeneration: operation.expectedGeneration }),
+    ...(operation.idempotencyKey === undefined ? {} : { idempotencyKey: operation.idempotencyKey }),
+  };
   try {
-    const revoked = vault.revokeAccess({
-      storedKey,
-      ...(referenceName === undefined ? {} : { referenceName }),
-      ...(capletId === undefined ? {} : { capletId }),
-    });
+    const revoked = await vault.revokeAccess(
+      {
+        storedKey,
+        ...(referenceName === undefined ? {} : { referenceName }),
+        ...(capletId === undefined ? {} : { capletId }),
+      },
+      mutationOptions,
+    );
     for (const grant of revoked) {
       dependencies.activityLog.append({
         actorClientId: principal.clientId,
@@ -243,6 +347,31 @@ function vaultRevokeOutcome(
 }
 
 function vaultAccessOrigin(capletId: string, dependencies: CurrentHostOperationsDependencies) {
+  if (dependencies.vaultStore && dependencies.activeGeneration) {
+    if (dependencies.stagedProvenance?.[capletId]) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Shared Vault grants require authority-backed Caplet provenance.",
+      );
+    }
+    const generation = dependencies.activeGeneration;
+    const snapshot = isRecord(generation.snapshot) ? generation.snapshot : {};
+    const records = isRecord(snapshot.caplets)
+      ? Object.entries(snapshot.caplets)
+      : isRecord(snapshot.records)
+        ? Object.entries(snapshot.records)
+        : [];
+    const matching = records.find(
+      ([id, record]) => id === capletId || (isRecord(record) && record.id === capletId),
+    );
+    const recordId = matching?.[0] ?? (isRecord(snapshot.config) ? "snapshot" : capletId);
+    return {
+      kind: "authority" as const,
+      authorityId: generation.authorityId,
+      recordId,
+      generationId: generation.id,
+    };
+  }
   const control = dependencies.control;
   if (!control) {
     throw new CapletsError(
@@ -299,4 +428,7 @@ function appendFailureActivity(
     outcome: "failure",
     target,
   });
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

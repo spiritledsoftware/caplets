@@ -1,3 +1,4 @@
+import { authorityRecords, type AuthoritySnapshot } from "../storage/composition";
 import { defaultCapletsLockfilePath, resolveCapletsRoot } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import {
@@ -6,6 +7,7 @@ import {
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
 } from "./../cli/install";
+import type { AuthorityCapletRecord } from "../storage/bundle-cache";
 import { CapletsError } from "../errors";
 import {
   currentHostCatalogDetail,
@@ -14,6 +16,7 @@ import {
   currentHostCatalogSearch,
   currentHostCatalogUpdateReadiness,
   currentHostInstalledCaplets,
+  type CurrentHostInstalledCatalogCaplet,
   type CurrentHostSetupAction,
 } from "./catalog";
 import type {
@@ -23,6 +26,7 @@ import type {
   CurrentHostOperatorPrincipal,
   CurrentHostOperationsDependencies,
 } from "./operations";
+import { authoritySnapshotForMutation, commitCurrentHostMutation } from "./operations";
 
 type CapletsListOperation = Extract<CurrentHostOperation, { kind: "caplets_list" }>;
 type CatalogSearchOperation = Extract<CurrentHostOperation, { kind: "catalog_search" }>;
@@ -39,10 +43,26 @@ type CatalogUpdatesOutcome = Extract<CurrentHostOperationOutcome, { kind: "catal
 type CatalogInstallOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_install" }>;
 type CatalogUpdateOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_update" }>;
 
+export interface CurrentHostCatalogOperations {
+  capletsList(operation: CapletsListOperation): CapletsListOutcome;
+  search(operation: CatalogSearchOperation): Promise<CatalogSearchOutcome>;
+  index(operation: CatalogIndexOperation): Promise<CatalogIndexOutcome>;
+  detail(operation: CatalogDetailOperation): Promise<CatalogDetailOutcome>;
+  updates(operation: CatalogUpdatesOperation): CatalogUpdatesOutcome;
+  install(
+    principal: CurrentHostOperatorPrincipal,
+    operation: CatalogInstallOperation,
+  ): Promise<CatalogInstallOutcome>;
+  update(
+    principal: CurrentHostOperatorPrincipal,
+    operation: CatalogUpdateOperation,
+  ): Promise<CatalogUpdateOutcome>;
+}
+
 /** Current Host catalog administration implementation, kept behind the facade. */
 export function createCurrentHostCatalogOperations(
   dependencies: CurrentHostOperationsDependencies,
-) {
+): CurrentHostCatalogOperations {
   return {
     capletsList: (_operation: CapletsListOperation): CapletsListOutcome => ({
       kind: "caplets_list",
@@ -91,6 +111,9 @@ async function catalogInstallOutcome(
       "REQUEST_INVALID",
       "Catalog install accepts either a source or repository, not both.",
     );
+  }
+  if (dependencies.runtime?.commit) {
+    return await sharedCatalogInstallOutcome(dependencies, principal, operation);
   }
   try {
     const control = requireControlContext(dependencies.control, "Catalog actions");
@@ -151,6 +174,9 @@ async function catalogUpdateOutcome(
   operation: CatalogUpdateOperation,
 ): Promise<CatalogUpdateOutcome> {
   const capletIds = optionalCapletIds(operation.capletIds);
+  if (dependencies.runtime?.commit) {
+    return await sharedCatalogUpdateOutcome(dependencies, principal, operation);
+  }
   try {
     const control = requireControlContext(dependencies.control, "Catalog actions");
     const installed = updateCapletsFromLockfile({
@@ -178,6 +204,128 @@ async function catalogUpdateOutcome(
     appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
     throw error;
   }
+}
+async function sharedCatalogInstallOutcome(
+  dependencies: CurrentHostOperationsDependencies,
+  principal: CurrentHostOperatorPrincipal,
+  operation: CatalogInstallOperation,
+): Promise<CatalogInstallOutcome> {
+  if (operation.source === undefined || operation.entryKey === undefined) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Shared authority catalog install requires a stable source and entryKey.",
+    );
+  }
+  const detail = await currentHostCatalogDetail({
+    source: operation.source,
+    entryKey: operation.entryKey,
+  });
+  if (
+    typeof detail.entry.contentMarkdown !== "string" ||
+    detail.entry.contentMarkdown.length === 0 ||
+    (operation.source.trim() === "official" &&
+      (!detail.entry.installCommand.copyable ||
+        detail.entry.installCommand.revisionBound !== true ||
+        typeof detail.entry.resolvedRevision !== "string" ||
+        detail.entry.resolvedRevision.length === 0))
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Catalog entry is not currently installable.");
+  }
+  assertNotStaged(dependencies, detail.entry.id);
+  const snapshot = authoritySnapshotForMutation(dependencies);
+  const caplets = authorityCapletRecords(snapshot);
+  if (caplets[detail.entry.id] && operation.force !== true) {
+    throw new CapletsError("CONFIG_EXISTS", `Authority Caplet ${detail.entry.id} already exists.`);
+  }
+  const record: AuthorityCapletRecord = {
+    id: detail.entry.id,
+    bundle: {
+      entryPath: "CAPLET.md",
+      files: [{ path: "CAPLET.md", content: detail.entry.contentMarkdown }],
+    },
+  };
+  caplets[detail.entry.id] = record;
+  snapshot.caplets = caplets;
+  const receipt = await commitCurrentHostMutation(
+    dependencies,
+    principal,
+    operation,
+    {
+      kind: "catalog_install",
+      id: detail.entry.id,
+      source: operation.source,
+      entryKey: operation.entryKey,
+    },
+    snapshot,
+  );
+  return {
+    kind: "catalog_install",
+    installed: [
+      {
+        id: detail.entry.id,
+        source: operation.source,
+        destination: `authority://${detail.entry.id}`,
+        kind: "file",
+        status: "installed",
+      },
+    ],
+    setupActions: detail.setupActions,
+    ...receipt,
+  };
+}
+
+async function sharedCatalogUpdateOutcome(
+  dependencies: CurrentHostOperationsDependencies,
+  principal: CurrentHostOperatorPrincipal,
+  operation: CatalogUpdateOperation,
+): Promise<CatalogUpdateOutcome> {
+  const snapshot = authoritySnapshotForMutation(dependencies);
+  const caplets = authorityCapletRecords(snapshot);
+  const ids = optionalCapletIds(operation.capletIds) ?? Object.keys(caplets);
+  if (ids.length === 0)
+    throw new CapletsError("CONFIG_NOT_FOUND", "No authority Caplets are installed.");
+  const installed: CurrentHostInstalledCatalogCaplet[] = [];
+  for (const id of ids) {
+    assertNotStaged(dependencies, id);
+    if (!caplets[id])
+      throw new CapletsError("CONFIG_NOT_FOUND", `Authority Caplet ${id} does not exist.`);
+    installed.push({
+      id,
+      source: `authority://${id}`,
+      destination: `authority://${id}`,
+      kind: "file",
+      status: "updated",
+    });
+  }
+  const receipt = await commitCurrentHostMutation(
+    dependencies,
+    principal,
+    operation,
+    { kind: "catalog_update", ids },
+    snapshot,
+  );
+  return { kind: "catalog_update", installed, setupActions: [], ...receipt };
+}
+
+function authorityCapletRecords(
+  snapshot: Record<string, unknown>,
+): Record<string, AuthorityCapletRecord> {
+  return Object.fromEntries(authorityRecords(snapshot as AuthoritySnapshot));
+}
+
+function assertNotStaged(dependencies: CurrentHostOperationsDependencies, id: string): void {
+  const provenance = dependencies.stagedProvenance?.[id];
+  if (!provenance) return;
+  throw new CapletsError(
+    "CONFIG_INVALID",
+    `Caplet ID ${id} is reserved by a staged filesystem source.`,
+    {
+      id,
+      staged: true,
+      authority: false,
+      provenance: { kind: provenance.kind, ...(provenance.path ? { path: provenance.path } : {}) },
+    },
+  );
 }
 
 function appendCatalogFailureActivities(

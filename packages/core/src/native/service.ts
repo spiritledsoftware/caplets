@@ -24,6 +24,12 @@ import {
   type SdkRemoteCapletsClientOptions,
 } from "./remote";
 import { CapletsEngine, type ResolvedExposureProjection } from "../engine";
+import {
+  assembleCapletsHost,
+  type PreparedRuntimeView,
+  type PreparedRuntimeHost,
+  type RuntimeEpochCoordinatorOptions,
+} from "../storage/coordinator";
 import { CapletsError, errorResult } from "../errors";
 import type {
   RuntimeMode,
@@ -102,6 +108,8 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
   telemetryStateDir?: string | undefined;
   telemetryEnv?: NodeJS.ProcessEnv | undefined;
   telemetrySurface?: TelemetrySurface | undefined;
+  /** Internal async assembly seam; the coordinator owns this view's lifecycle. */
+  preparedRuntimeView?: PreparedRuntimeView | undefined;
   telemetryVisibility?: TelemetryVisibility | undefined;
   telemetryRuntimeMode?: RuntimeMode | undefined;
   telemetryIntegration?: "opencode" | "pi" | "native" | "unknown" | undefined;
@@ -183,6 +191,69 @@ export function createNativeCapletsService(
   return new DefaultNativeCapletsService(options);
 }
 
+export type AsyncNativeCapletsServiceOptions = NativeCapletsServiceOptions &
+  RuntimeEpochCoordinatorOptions;
+
+export type PreparedNativeCapletsServiceHost = PreparedRuntimeHost & {
+  readonly service: NativeCapletsService;
+};
+
+/** Assemble native service state only after the first immutable epoch is ready. */
+export async function createAsyncNativeCapletsService(
+  options: AsyncNativeCapletsServiceOptions = {},
+): Promise<PreparedNativeCapletsServiceHost> {
+  const host = await assembleCapletsHost({
+    ...options,
+    engineOptions: {
+      ...options.engineOptions,
+      ...(options.configPath === undefined ? {} : { configPath: options.configPath }),
+      ...(options.projectConfigPath === undefined
+        ? {}
+        : { projectConfigPath: options.projectConfigPath }),
+      watch: false,
+    },
+  });
+  const lease = host.retain();
+  let service: NativeCapletsService;
+  try {
+    service = createNativeCapletsService({
+      ...options,
+      mode: "local",
+      preparedRuntimeView: lease.view,
+    });
+  } catch (error) {
+    lease.release();
+    await host.close();
+    throw error;
+  }
+  let closed = false;
+  return {
+    coordinator: host.coordinator,
+    get view() {
+      return host.coordinator.requireCurrent();
+    },
+    get engine() {
+      return host.coordinator.requireCurrent().engine;
+    },
+    service,
+    retain: () => host.coordinator.retain(),
+    refresh: () => host.coordinator.refresh(),
+    health: () => host.coordinator.health(),
+    refreshAtLeast: (generation) => host.refreshAtLeast(generation),
+    commit: (envelope) => host.coordinator.commit(envelope),
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      try {
+        await service.close();
+      } finally {
+        lease.release();
+        await host.coordinator.close();
+      }
+    },
+  };
+}
+
 export function resetNativeProjectBindingFallbackWarningForTests(): void {
   hasWarnedRemoteProjectBindingFallback = false;
 }
@@ -193,6 +264,7 @@ type LocalNativeCapletsServiceOptions = NativeCapletsServiceOptions & {
 
 class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly engine: CapletsEngine;
+  private readonly ownsEngine: boolean;
   private readonly writeErr: (value: string) => void;
   private readonly unsubscribeEngineReload: () => void;
   private readonly toolListeners = new Set<NativeCapletsToolsChangedListener>();
@@ -208,16 +280,22 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   constructor(options: LocalNativeCapletsServiceOptions) {
     this.writeErr = options.writeErr ?? (() => undefined);
-    this.engine = new CapletsEngine({
-      ...options,
-      writeErr: this.writeErr,
-      projectBindingContext: projectBindingContextForNativeOptions(options),
-      telemetrySurface: options.telemetrySurface ?? "native",
-      telemetryVisibility: options.telemetryVisibility ?? "hidden",
-      telemetryRuntimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
-      telemetryIntegration: options.telemetryIntegration ?? "native",
-    });
-    this.postReloadRefresh = this.refreshExposureProjection({ emitToolsChanged: true });
+    this.ownsEngine = options.preparedRuntimeView === undefined;
+    this.engine =
+      options.preparedRuntimeView?.engine ??
+      new CapletsEngine({
+        ...options,
+        writeErr: this.writeErr,
+        projectBindingContext: projectBindingContextForNativeOptions(options),
+        telemetrySurface: options.telemetrySurface ?? "native",
+        telemetryVisibility: options.telemetryVisibility ?? "hidden",
+        telemetryRuntimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
+        telemetryIntegration: options.telemetryIntegration ?? "native",
+      });
+    this.resolvedProjection = options.preparedRuntimeView?.projection;
+    this.postReloadRefresh = this.resolvedProjection
+      ? Promise.resolve()
+      : this.refreshExposureProjection({ emitToolsChanged: true });
     this.unsubscribeEngineReload = this.engine.onReload(() => {
       this.postReloadRefresh = this.refreshExposureProjection({ emitToolsChanged: true });
     });
@@ -370,7 +448,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     this.unsubscribeEngineReload();
     this.codeModeSessions.close();
     this.toolListeners.clear();
-    await this.engine.close();
+    if (this.ownsEngine) await this.engine.close();
   }
 
   private directNativeTool(

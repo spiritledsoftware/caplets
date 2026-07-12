@@ -36,6 +36,60 @@ describe("RemoteControlClient", () => {
     expect(new Headers(requests[0]?.init?.headers).get("content-type")).toBe("application/json");
   });
 
+  it("exposes authenticated Current Host health and mutation helpers", async () => {
+    const requests: Array<{ command: string; arguments: Record<string, unknown> }> = [];
+    const fetchStub: typeof fetch = async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as {
+        command: string;
+        arguments: Record<string, unknown>;
+      };
+      requests.push(request);
+      return Response.json({
+        ok: true,
+        result:
+          request.command === "status"
+            ? {
+                remote: true,
+                status: "degraded",
+                health: {
+                  authorityId: "authority-a",
+                  activeGeneration: null,
+                  observedGeneration: null,
+                  exposureGeneration: 2,
+                },
+              }
+            : { remote: true, outcome: { operation: request.command } },
+      });
+    };
+    const client = new RemoteControlClient({
+      baseUrl: new URL("https://example.com/caplets"),
+      requestInit: { headers: { Authorization: "Bearer operator-token" } },
+      fetch: fetchStub,
+    });
+
+    await expect(client.currentHostHealth()).resolves.toMatchObject({
+      status: "degraded",
+      health: { authorityId: "authority-a", exposureGeneration: 2 },
+    });
+    await expect(
+      client.currentHostCapletCreate(
+        { id: "created", name: "Created" },
+        { idempotencyKey: "create-1" },
+      ),
+    ).resolves.toMatchObject({ remote: true });
+
+    expect(requests).toEqual([
+      { command: "status", arguments: {} },
+      {
+        command: "caplet_create",
+        arguments: {
+          record: { id: "created", name: "Created" },
+          idempotencyKey: "create-1",
+        },
+      },
+    ]);
+  });
+
   it("maps control error payloads to CapletsError", async () => {
     const client = new RemoteControlClient({
       baseUrl: new URL("https://example.com"),

@@ -18,6 +18,8 @@ import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { listCaplets } from "./../cli/inspection";
 import { loadConfigWithSources, vaultBootstrapResolver, vaultResolverForAuthDir } from "../config";
+import type { AuthorityCapletRecord } from "../storage/bundle-cache";
+import type { AuthorityGenerationIdentity } from "../storage/types";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
@@ -26,6 +28,7 @@ import {
   toCurrentHostSafeError,
   type CurrentHostOperatorPrincipal,
   type CurrentHostOperations,
+  type CurrentHostRuntime,
 } from "../current-host/operations";
 import type { RemoteCliRequest, RemoteCliResponse } from "./types";
 
@@ -35,6 +38,7 @@ export type RemoteControlDispatchContext = CapletsEngineOptions & {
   globalLockfilePath?: string | undefined;
   authFlowStore?: RemoteAuthFlowStore;
   controlCallbackBaseUrl?: string;
+  runtime?: CurrentHostRuntime | undefined;
 };
 
 type AddKind =
@@ -100,6 +104,13 @@ async function dispatch(
   assertObject(request.arguments, "remote control request arguments");
 
   if (request.command === "list") {
+    const administration = currentHostAdministration;
+    if (administration) {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "caplets_list",
+      });
+      return { remote: true, caplets: outcome.caplets };
+    }
     const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
       vaultResolver: vaultBootstrapResolver,
     });
@@ -108,14 +119,37 @@ async function dispatch(
     });
   }
 
-  if (ENGINE_COMMANDS.has(request.command)) {
+  if (request.command === "status") {
+    const administration = requireCurrentHostAdministration(currentHostAdministration);
+    const diagnostics = await administration.operations.execute(administration.principal, {
+      kind: "diagnostics",
+    });
+    return { remote: true, status: diagnostics.status, health: diagnostics.health };
+  }
+
+  if (request.command === "execute") {
     const caplet = requiredString(request.arguments, "caplet");
-    const toolRequest = requiredEngineRequest(request.arguments, request.command);
-    const engine = new CapletsEngine(context);
+    const toolRequest = requiredExecuteRequest(request.arguments);
+    const lease = context.runtime?.retain();
+    const engine = lease?.view.engine ?? new CapletsEngine(context);
     try {
       return await engine.execute(caplet, toolRequest);
     } finally {
-      await engine.close();
+      if (lease) lease.release();
+      else await engine.close();
+    }
+  }
+
+  if (ENGINE_COMMANDS.has(request.command)) {
+    const caplet = requiredString(request.arguments, "caplet");
+    const toolRequest = requiredEngineRequest(request.arguments, request.command);
+    const lease = context.runtime?.retain();
+    const engine = lease?.view.engine ?? new CapletsEngine(context);
+    try {
+      return await engine.execute(caplet, toolRequest);
+    } finally {
+      if (lease) lease.release();
+      else await engine.close();
     }
   }
 
@@ -164,14 +198,31 @@ async function dispatch(
     return { remote: true, installed: outcome.installed };
   }
 
+  if (
+    request.command === "caplet_create" ||
+    request.command === "caplet_update" ||
+    request.command === "caplet_delete" ||
+    request.command === "settings_get" ||
+    request.command === "settings_update" ||
+    request.command === "setup_grant" ||
+    request.command === "setup_revoke"
+  ) {
+    return await dispatchCurrentHostMutation(
+      request,
+      requireCurrentHostAdministration(currentHostAdministration),
+    );
+  }
+
   if (request.command === "complete_cli") {
     const shell = optionalString(request.arguments, "shell") ?? "bash";
     if (!completionShells.includes(shell as CompletionShell)) return [];
-    const engine = new CapletsEngine(context);
+    const lease = context.runtime?.retain();
+    const engine = lease?.view.engine ?? new CapletsEngine(context);
     try {
       return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
     } finally {
-      await engine.close();
+      if (lease) lease.release();
+      else await engine.close();
     }
   }
 
@@ -229,11 +280,98 @@ async function dispatch(
     `Unsupported remote control command ${request.command}`,
   );
 }
-
 function isCurrentHostAdministrationCommand(command: unknown): boolean {
-  return command === "install" || command === "update" || String(command).startsWith("vault_");
+  return (
+    command === "install" ||
+    command === "update" ||
+    command === "status" ||
+    command === "list" ||
+    command === "execute" ||
+    command === "caplet_create" ||
+    command === "caplet_update" ||
+    command === "caplet_delete" ||
+    command === "settings_get" ||
+    command === "settings_update" ||
+    command === "setup_grant" ||
+    command === "setup_revoke" ||
+    String(command).startsWith("vault_")
+  );
 }
 
+async function dispatchCurrentHostMutation(
+  request: RemoteCliRequest,
+  administration: CurrentHostRemoteAdministration,
+): Promise<unknown> {
+  const args = request.arguments;
+  const common = {
+    ...optionalProp("expectedGeneration", optionalGeneration(args, "expectedGeneration")),
+    ...optionalProp("idempotencyKey", optionalString(args, "idempotencyKey")),
+  };
+  switch (request.command) {
+    case "caplet_create": {
+      const record = authorityRecordArgument(args, "record");
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "caplet_create",
+        record,
+        ...common,
+      });
+      return { remote: true, outcome };
+    }
+    case "caplet_update": {
+      const record = authorityRecordArgument(args, "record");
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "caplet_update",
+        id: requiredString(args, "id"),
+        record,
+        ...common,
+      });
+      return { remote: true, outcome };
+    }
+    case "caplet_delete": {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "caplet_delete",
+        id: requiredString(args, "id"),
+        ...common,
+      });
+      return { remote: true, outcome };
+    }
+    case "settings_get":
+      return {
+        remote: true,
+        ...(await administration.operations.execute(administration.principal, {
+          kind: "settings_get",
+        })),
+      };
+    case "settings_update":
+      return {
+        remote: true,
+        ...(await administration.operations.execute(administration.principal, {
+          kind: "settings_update",
+          settings: optionalObject(args, "settings"),
+          ...common,
+        })),
+      };
+    case "setup_grant":
+    case "setup_revoke":
+      return {
+        remote: true,
+        ...(await administration.operations.execute(administration.principal, {
+          kind: request.command,
+          capletId: requiredString(args, "capletId"),
+          contentHash: requiredString(args, "contentHash"),
+          targetKind: requiredSetupTarget(args, "targetKind"),
+          ...optionalProp("projectFingerprint", optionalString(args, "projectFingerprint")),
+          ...optionalProp("actor", optionalSetupActor(args, "actor")),
+          ...common,
+        })),
+      };
+    default:
+      throw new CapletsError(
+        "UNKNOWN_OPERATION",
+        `Unsupported Current Host command ${request.command}`,
+      );
+  }
+}
 function requireCurrentHostAdministration(
   administration: CurrentHostRemoteAdministration | undefined,
 ): CurrentHostRemoteAdministration {
@@ -454,6 +592,10 @@ function assertObject(value: unknown, label: string): asserts value is Record<st
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function requiredString(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   if (typeof value !== "string" || value.length === 0) {
@@ -497,6 +639,23 @@ function requiredEngineRequest(
     );
   }
   return toolRequest;
+}
+
+function requiredExecuteRequest(args: Record<string, unknown>): Record<string, unknown> {
+  const request = optionalObject(args, "request");
+  if (typeof request.operation !== "string") request.operation = "call_tool";
+  return request;
+}
+
+function authorityRecordArgument(
+  args: Record<string, unknown>,
+  key: string,
+): AuthorityCapletRecord {
+  const value = args[key];
+  if (!isRecord(value) || typeof value.id !== "string") {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be an authority Caplet record.`);
+  }
+  return { ...value, id: value.id };
 }
 
 function remoteAddOptions(
@@ -628,6 +787,55 @@ function optionalStringArray(args: Record<string, unknown>, key: string): string
     throw new CapletsError("REQUEST_INVALID", `${key} must be an array of strings`);
   }
   return value;
+}
+
+function optionalGeneration(
+  args: Record<string, unknown>,
+  key: string,
+): AuthorityGenerationIdentity | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (
+    !isRecord(value) ||
+    typeof value.authorityId !== "string" ||
+    typeof value.id !== "string" ||
+    typeof value.sequence !== "number" ||
+    !Number.isSafeInteger(value.sequence) ||
+    (value.predecessorId !== null && typeof value.predecessorId !== "string")
+  ) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be an Authority Generation identity.`);
+  }
+  return {
+    authorityId: value.authorityId,
+    id: value.id,
+    sequence: value.sequence,
+    predecessorId: value.predecessorId,
+  };
+}
+
+function requiredSetupTarget(
+  args: Record<string, unknown>,
+  key: string,
+): "local_host" | "remote_host" | "hosted_sandbox" {
+  const value = requiredString(args, key);
+  if (value === "local_host" || value === "remote_host" || value === "hosted_sandbox") return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} must be a valid setup target.`);
+}
+
+function optionalSetupActor(
+  args: Record<string, unknown>,
+  key: string,
+): "cli-interactive" | "cli-yes" | "ui" | "automation" | undefined {
+  const value = optionalString(args, key);
+  if (value === undefined) return undefined;
+  if (
+    value === "cli-interactive" ||
+    value === "cli-yes" ||
+    value === "ui" ||
+    value === "automation"
+  )
+    return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} must be a valid setup actor.`);
 }
 
 function nextAction(details: unknown): string | undefined {

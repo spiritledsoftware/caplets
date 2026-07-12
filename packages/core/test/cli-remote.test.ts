@@ -235,6 +235,272 @@ describe("remote CLI routing", () => {
     ]);
   });
 
+  it("routes every Current Host operator command with structured JSON and profile auth", async () => {
+    const context = testContext("caplets-cli-current-host-operator-");
+    const requests: Array<{
+      url: string;
+      authorization: string | null;
+      body: string;
+    }> = [];
+    const outputs: string[] = [];
+    const generation = {
+      authorityId: "authority-a",
+      id: "generation-4",
+      sequence: 4,
+      predecessorId: "generation-3",
+    };
+    const fetch = vi.fn(async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        command: string;
+        arguments: Record<string, unknown>;
+      };
+      requests.push({
+        url: String(url),
+        authorization: new Headers(init?.headers).get("authorization"),
+        body: String(init?.body),
+      });
+      switch (body.command) {
+        case "status":
+          return Response.json({
+            ok: true,
+            result: {
+              remote: true,
+              status: "degraded",
+              health: {
+                provider: "sqlite",
+                authorityId: "authority-a",
+                writable: false,
+                connectivity: "degraded",
+                activeGeneration: generation,
+                observedGeneration: {
+                  ...generation,
+                  id: "generation-5",
+                  sequence: 5,
+                  predecessorId: generation.id,
+                },
+                exposureGeneration: 9,
+                lag: 1,
+              },
+            },
+          });
+        case "list":
+          return Response.json({
+            ok: true,
+            result: { remote: true, caplets: [{ id: "shared-caplet" }] },
+          });
+        default:
+          return Response.json({
+            ok: true,
+            result: { remote: true, outcome: { operation: body.command } },
+          });
+      }
+    });
+    const env = remoteEnv(context);
+    const run = async (args: string[]) => {
+      outputs.length = 0;
+      await runCli(args, {
+        env,
+        fetch,
+        writeOut: (value) => outputs.push(value),
+      });
+      expect(outputs).toHaveLength(1);
+      return JSON.parse(outputs[0] ?? "null") as unknown;
+    };
+    const generationJson = JSON.stringify(generation);
+
+    const healthResult = await run(["current-host", "health", "--json"]);
+    expect(healthResult).toMatchObject({
+      status: "degraded",
+      health: {
+        authorityId: "authority-a",
+        activeGeneration: generation,
+        exposureGeneration: 9,
+      },
+    });
+    expect(outputs[0]).toContain('"exposureGeneration": 9');
+    await run(["current-host", "caplets", "list", "--json"]);
+    await run([
+      "current-host",
+      "caplets",
+      "create",
+      "--record",
+      JSON.stringify({ id: "created", name: "Created" }),
+      "--expected-generation",
+      generationJson,
+      "--idempotency-key",
+      "create-1",
+      "--json",
+    ]);
+    await run([
+      "current-host",
+      "caplets",
+      "update",
+      "created",
+      "--record",
+      JSON.stringify({ id: "created", name: "Updated" }),
+      "--expected-generation",
+      generationJson,
+      "--idempotency-key",
+      "update-1",
+      "--json",
+    ]);
+    await run([
+      "current-host",
+      "caplets",
+      "delete",
+      "created",
+      "--expected-generation",
+      generationJson,
+      "--idempotency-key",
+      "delete-1",
+      "--json",
+    ]);
+    await run(["current-host", "settings", "get", "--json"]);
+    await run([
+      "current-host",
+      "settings",
+      "update",
+      "--settings",
+      JSON.stringify({ telemetry: true }),
+      "--expected-generation",
+      generationJson,
+      "--idempotency-key",
+      "settings-1",
+      "--json",
+    ]);
+    await run([
+      "current-host",
+      "setup",
+      "grant",
+      "created",
+      "sha256:created",
+      "local_host",
+      "--project-fingerprint",
+      "project-1",
+      "--actor",
+      "automation",
+      "--expected-generation",
+      generationJson,
+      "--idempotency-key",
+      "grant-1",
+      "--json",
+    ]);
+    await run([
+      "current-host",
+      "setup",
+      "revoke",
+      "created",
+      "sha256:created",
+      "local_host",
+      "--project-fingerprint",
+      "project-1",
+      "--actor",
+      "automation",
+      "--expected-generation",
+      generationJson,
+      "--idempotency-key",
+      "revoke-1",
+      "--json",
+    ]);
+
+    expect(requests).toHaveLength(9);
+    expect(requests.map((request) => request.url)).toEqual(
+      Array.from({ length: 9 }, () => "http://127.0.0.1:5387/caplets/v1/admin"),
+    );
+    expect(requests.map((request) => request.authorization)).toEqual(
+      Array.from({ length: 9 }, () => "Bearer remote-profile-access-token"),
+    );
+    expect(requests.map((request) => JSON.parse(request.body))).toEqual([
+      { command: "status", arguments: {} },
+      { command: "list", arguments: {} },
+      {
+        command: "caplet_create",
+        arguments: {
+          record: { id: "created", name: "Created" },
+          expectedGeneration: generation,
+          idempotencyKey: "create-1",
+        },
+      },
+      {
+        command: "caplet_update",
+        arguments: {
+          id: "created",
+          record: { id: "created", name: "Updated" },
+          expectedGeneration: generation,
+          idempotencyKey: "update-1",
+        },
+      },
+      {
+        command: "caplet_delete",
+        arguments: {
+          id: "created",
+          expectedGeneration: generation,
+          idempotencyKey: "delete-1",
+        },
+      },
+      { command: "settings_get", arguments: {} },
+      {
+        command: "settings_update",
+        arguments: {
+          settings: { telemetry: true },
+          expectedGeneration: generation,
+          idempotencyKey: "settings-1",
+        },
+      },
+      {
+        command: "setup_grant",
+        arguments: {
+          capletId: "created",
+          contentHash: "sha256:created",
+          targetKind: "local_host",
+          projectFingerprint: "project-1",
+          actor: "automation",
+          expectedGeneration: generation,
+          idempotencyKey: "grant-1",
+        },
+      },
+      {
+        command: "setup_revoke",
+        arguments: {
+          capletId: "created",
+          contentHash: "sha256:created",
+          targetKind: "local_host",
+          projectFingerprint: "project-1",
+          actor: "automation",
+          expectedGeneration: generation,
+          idempotencyKey: "revoke-1",
+        },
+      },
+    ]);
+    expect(outputs).toHaveLength(1);
+  });
+
+  it("keeps Current Host operator errors structured and redacted", async () => {
+    const context = testContext("caplets-cli-current-host-error-");
+    const out: string[] = [];
+    const fetch = vi.fn(async () =>
+      Response.json({
+        ok: false,
+        error: {
+          code: "AUTH_FAILED",
+          message: "Operator bearer rejected: bearer super-secret",
+        },
+      }),
+    );
+
+    await expect(
+      runCli(["current-host", "health", "--json"], {
+        env: remoteEnv(context),
+        fetch,
+        writeOut: (value) => out.push(value),
+      }),
+    ).rejects.toMatchObject({
+      code: "AUTH_FAILED",
+      message: expect.stringContaining("[REDACTED]"),
+    });
+    expect(out).toEqual([]);
+  });
+
   it("routes Vault set and remote grants through remote control without local mirroring", async () => {
     const context = testContext("caplets-cli-remote-vault-");
     const requests: unknown[] = [];

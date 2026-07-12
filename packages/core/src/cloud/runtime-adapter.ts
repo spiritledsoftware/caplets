@@ -2,9 +2,16 @@ import type { CapletConfig } from "../config";
 import { CapletsEngine } from "../engine";
 import { CapletsError } from "../errors";
 import { capletSetupContentHash } from "../setup/hash";
-import { LocalSetupStore } from "../setup/local-store";
+import {
+  LocalSetupStore,
+  type SetupApprovalAuthority,
+  type SetupApprovalMutation,
+  setupOwnership,
+  type StoredSetupApproval,
+} from "../setup/local-store";
 import { runCapletSetup } from "../setup/runner";
 import type { SetupActor, SetupAttempt, SetupPlan } from "../setup/types";
+import type { AuthorityGenerationIdentity } from "../storage/types";
 
 export type CloudRuntimeAdapterOptions = {
   configPath?: string;
@@ -14,6 +21,10 @@ export type CloudRuntimeAdapterOptions = {
   sandboxId?: string;
   executionKind: "cloud" | "local-fallback";
   setupStore?: LocalSetupStore;
+  setupAuthority?: SetupApprovalAuthority | undefined;
+  setupAuthorityId?: string | undefined;
+  setupCurrentHostId?: string | undefined;
+  setupPrincipalId?: string | undefined;
 };
 
 export type CloudRuntimeAdapter = {
@@ -21,6 +32,18 @@ export type CloudRuntimeAdapter = {
   callTool(name: string, args: unknown): Promise<unknown>;
   checkBackend(capletId: string): Promise<unknown>;
   setupPlan(capletId: string): Promise<SetupPlan>;
+  grantSetup(
+    capletId: string,
+    input: { actor: SetupActor; expectedGeneration?: AuthorityGenerationIdentity | null },
+  ): Promise<StoredSetupApproval>;
+  denySetup(
+    capletId: string,
+    input: { actor: SetupActor; expectedGeneration?: AuthorityGenerationIdentity | null },
+  ): Promise<StoredSetupApproval>;
+  revokeSetup(
+    capletId: string,
+    input: { actor: SetupActor; expectedGeneration?: AuthorityGenerationIdentity | null },
+  ): Promise<StoredSetupApproval>;
   runSetup(
     capletId: string,
     input: { approved: boolean; actor: SetupActor },
@@ -37,7 +60,6 @@ export function createCloudRuntimeAdapter(
 class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
   private readonly engine: CapletsEngine;
   private readonly setupStore: LocalSetupStore;
-
   constructor(private readonly options: CloudRuntimeAdapterOptions) {
     this.engine = new CapletsEngine({
       ...(options.configPath === undefined ? {} : { configPath: options.configPath }),
@@ -48,7 +70,20 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
       exposeLocalArtifactPaths: false,
       watch: false,
     });
-    this.setupStore = options.setupStore ?? new LocalSetupStore();
+    this.setupStore =
+      options.setupStore ??
+      new LocalSetupStore({
+        ...(options.setupAuthority === undefined ? {} : { authority: options.setupAuthority }),
+        ...(options.setupAuthorityId === undefined
+          ? {}
+          : { authorityId: options.setupAuthorityId }),
+        ...(options.setupCurrentHostId === undefined
+          ? {}
+          : { currentHostId: options.setupCurrentHostId }),
+        ...(options.setupPrincipalId === undefined
+          ? {}
+          : { principalId: options.setupPrincipalId }),
+      });
   }
 
   async listTools(): Promise<unknown> {
@@ -57,8 +92,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
         name: caplet.server,
         title: caplet.name,
         description: caplet.description,
-        inputSchema: { type: "object", additionalProperties: true },
-        _meta: { caplets: { execution: this.executionMetadata() } },
+        _meta: { caplets: { execution: this.executionMetadata(), ownership: setupOwnership } },
       })),
     };
   }
@@ -84,8 +118,11 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     const contentHash = capletSetupContentHash(caplet);
     const projectFingerprint = "hosted";
     const targetKind = "hosted_sandbox";
-    const approved = Boolean(
-      await this.setupStore.getApproval(projectFingerprint, capletId, contentHash, targetKind),
+    const approval = await this.setupStore.getApproval(
+      projectFingerprint,
+      capletId,
+      contentHash,
+      targetKind,
     );
     return {
       projectFingerprint,
@@ -94,26 +131,75 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
       contentHash,
       targetKind,
       setup: caplet.setup ?? {},
-      approved,
+      approved: approval?.decision === "grant",
       commands: caplet.setup?.commands ?? [],
       verify: caplet.setup?.verify ?? [],
     };
+  }
+
+  async grantSetup(
+    capletId: string,
+    input: { actor: SetupActor; expectedGeneration?: AuthorityGenerationIdentity | null },
+  ): Promise<StoredSetupApproval> {
+    const plan = await this.setupPlan(capletId);
+    return await this.setupStore.grant({
+      projectFingerprint: plan.projectFingerprint,
+      capletId,
+      contentHash: plan.contentHash,
+      targetKind: plan.targetKind,
+      actor: input.actor,
+      approvedAt: new Date().toISOString(),
+      ...(input.expectedGeneration === undefined
+        ? {}
+        : { expectedGeneration: input.expectedGeneration }),
+    });
+  }
+
+  async denySetup(
+    capletId: string,
+    input: { actor: SetupActor; expectedGeneration?: AuthorityGenerationIdentity | null },
+  ): Promise<StoredSetupApproval> {
+    return await this.mutateSetupDecision(capletId, "deny", input);
+  }
+
+  private async mutateSetupDecision(
+    capletId: string,
+    decision: "deny" | "revoke",
+    input: { actor: SetupActor; expectedGeneration?: AuthorityGenerationIdentity | null },
+  ): Promise<StoredSetupApproval> {
+    const plan = await this.setupPlan(capletId);
+    const mutation: SetupApprovalMutation = {
+      projectFingerprint: plan.projectFingerprint,
+      capletId,
+      contentHash: plan.contentHash,
+      targetKind: plan.targetKind,
+      actor: input.actor,
+      approvedAt: new Date().toISOString(),
+      decision,
+      ...(input.expectedGeneration === undefined
+        ? {}
+        : { expectedGeneration: input.expectedGeneration }),
+    };
+    return decision === "deny"
+      ? await this.setupStore.deny(mutation)
+      : await this.setupStore.revoke(mutation);
+  }
+
+  async revokeSetup(
+    capletId: string,
+    input: { actor: SetupActor; expectedGeneration?: AuthorityGenerationIdentity | null },
+  ): Promise<StoredSetupApproval> {
+    return await this.mutateSetupDecision(capletId, "revoke", input);
   }
 
   async runSetup(
     capletId: string,
     input: { approved: boolean; actor: SetupActor },
   ): Promise<SetupAttempt[]> {
-    const plan = await this.setupPlan(capletId);
+    let plan = await this.setupPlan(capletId);
     if (input.approved && !plan.approved) {
-      await this.setupStore.approve({
-        projectFingerprint: plan.projectFingerprint,
-        capletId,
-        contentHash: plan.contentHash,
-        targetKind: plan.targetKind,
-        actor: input.actor,
-        approvedAt: new Date().toISOString(),
-      });
+      await this.grantSetup(capletId, { actor: input.actor });
+      plan = await this.setupPlan(capletId);
     }
     return await runCapletSetup({
       capletId,
@@ -122,7 +208,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
       targetKind: plan.targetKind,
       setup: plan.setup,
       actor: input.actor,
-      approved: input.approved || plan.approved,
+      approved: plan.approved,
       store: this.setupStore,
     });
   }

@@ -40,6 +40,17 @@ export type CurrentHostInstalledCapletProjection = {
   source?: string | undefined;
   updateState: "unknown" | "locked";
   setupActions: CurrentHostSetupAction[];
+  /** Authority/staged ownership metadata used by the dashboard and operator API. */
+  mutable?: boolean | undefined;
+  reserved?: boolean | undefined;
+  provenance?: Record<string, unknown> | undefined;
+  /** Editable non-secret MCP connection fields for authority administration. */
+  backendConfig?: {
+    transport: "stdio" | "http" | "sse";
+    command?: string | undefined;
+    args?: string[] | undefined;
+    url?: string | undefined;
+  };
 };
 
 export type CurrentHostSetupAction = {
@@ -78,6 +89,7 @@ export function currentHostInstalledCaplets(
   return caplets
     .map((caplet) => {
       const lock = lockEntries.get(caplet.server);
+      const backendConfig = mcpBackendConfig(caplet);
       return {
         id: caplet.server,
         name: caplet.name,
@@ -87,6 +99,7 @@ export function currentHostInstalledCaplets(
         setupRequired: Boolean(caplet.setup),
         authRequired: authRequired(caplet),
         projectBindingRequired: Boolean(caplet.projectBinding),
+        ...(backendConfig ? { backendConfig } : {}),
         ...(lock
           ? {
               source:
@@ -104,6 +117,18 @@ export function currentHostInstalledCaplets(
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function mcpBackendConfig(
+  caplet: CapletConfig,
+): CurrentHostInstalledCapletProjection["backendConfig"] | undefined {
+  if (caplet.backend !== "mcp") return undefined;
+  return {
+    transport: caplet.transport,
+    ...(caplet.command ? { command: caplet.command } : {}),
+    ...(caplet.args ? { args: [...caplet.args] } : {}),
+    ...(caplet.url ? { url: caplet.url } : {}),
+  };
 }
 
 export async function currentHostCatalogSearch(input: {

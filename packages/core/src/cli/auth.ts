@@ -8,7 +8,16 @@ import {
   runGenericOAuthFlow,
   runOAuthFlow,
   type GenericAuthTarget,
+  type OAuthTokenStore,
 } from "../auth";
+import type { CurrentHostCatalogOperations } from "../current-host/catalog-operations";
+import type {
+  CurrentHostOperations,
+  CurrentHostOperatorPrincipal,
+} from "../current-host/operations";
+import type { LocalSetupStore } from "../setup/local-store";
+import type { VaultCliStore } from "./vault";
+
 import {
   loadConfig,
   loadGlobalConfig,
@@ -23,6 +32,24 @@ import {
 import { CapletsError, toSafeError } from "../errors";
 import { GoogleDiscoveryManager } from "../google-discovery";
 import { ServerRegistry } from "../registry";
+
+/**
+ * Resources resolved once at the CLI boundary for a shared Current Host.
+ *
+ * The resolver owns the authority/coordinator lifecycle; command handlers only
+ * consume the injected stores/facade and never construct a synchronous engine.
+ * Client-local commands intentionally do not receive this context.
+ */
+export type CliAuthorityContext = {
+  config?: CapletsConfig | undefined;
+  tokenStore?: OAuthTokenStore | undefined;
+  vaultStore?: VaultCliStore | undefined;
+  setupStore?: LocalSetupStore | undefined;
+  catalog?: CurrentHostCatalogOperations | undefined;
+  currentHost?: CurrentHostOperations | undefined;
+  principal?: CurrentHostOperatorPrincipal | undefined;
+  close?: (() => Promise<void>) | undefined;
+};
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
 type AuthListFormat = "plain" | "markdown" | "json";
@@ -44,17 +71,21 @@ export async function loginAuth(
     writeOut: (value: string) => void;
     writeErr: (value: string) => void;
     authDir?: string;
+    tokenStore?: OAuthTokenStore | undefined;
+    authority?: CliAuthorityContext | undefined;
     config?: CapletsConfig;
   },
 ): Promise<void> {
-  const config = options.config ?? loadAuthResolvedConfig(options);
-  const server = await resolveAuthTarget(serverId, config, options.authDir);
+  const config = options.config ?? options.authority?.config ?? loadAuthConfigForCli(options);
+  const tokenStore = options.tokenStore ?? options.authority?.tokenStore;
+  const server = await resolveAuthTarget(serverId, config, options.authDir, tokenStore);
   assertLoginTarget(server, serverId);
 
   try {
     const flowOptions = {
       noOpen: options.noOpen,
       ...(options.authDir ? { authDir: options.authDir } : {}),
+      ...(tokenStore ? { tokenStore } : {}),
       ...(options.noOpen ? { readManualInput: maybeReadManualInput } : {}),
       print: (line: string) => options.writeOut(`${line}\n`),
     };
@@ -76,9 +107,16 @@ export function logoutAuth(
     authDir?: string;
     configPath?: string;
     config?: CapletsConfig;
+    authority?: CliAuthorityContext | undefined;
     writeOut: (value: string) => void;
   },
 ): void {
+  if (options.authority?.tokenStore) {
+    throw new CapletsError(
+      "ASYNC_AUTHORITY_REQUIRED",
+      "Shared authority OAuth logout must use the async CLI handler.",
+    );
+  }
   const result = logoutAuthResult(serverId, options);
   if (result.deleted) {
     options.writeOut(`Deleted OAuth credentials for \`${serverId}\`.\n`);
@@ -89,21 +127,60 @@ export function logoutAuth(
 
 export function logoutAuthResult(
   serverId: string,
-  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
+  options: {
+    authDir?: string;
+    configPath?: string;
+    config?: CapletsConfig;
+    authority?: CliAuthorityContext | undefined;
+  },
 ): { server: string; deleted: boolean } {
+  if (options.authority?.tokenStore) {
+    throw new CapletsError(
+      "ASYNC_AUTHORITY_REQUIRED",
+      "Shared authority OAuth logout must use the async CLI handler.",
+    );
+  }
   const target = findAuthTarget(
     serverId,
-    options.config ??
-      loadConfig(options.configPath, undefined, { vaultResolver: vaultBootstrapResolver }),
+    options.config ?? options.authority?.config ?? loadAuthConfigForCli(options),
   );
   assertLoginTarget(target, serverId);
   return { server: serverId, deleted: deleteTokenBundle(serverId, options.authDir) };
+}
+
+export async function logoutAuthAsync(
+  serverId: string,
+  options: {
+    authDir?: string;
+    tokenStore?: OAuthTokenStore | undefined;
+    authority?: CliAuthorityContext | undefined;
+    configPath?: string;
+    config?: CapletsConfig;
+    writeOut: (value: string) => void;
+  },
+): Promise<void> {
+  const target = findAuthTarget(
+    serverId,
+    options.config ?? options.authority?.config ?? loadAuthConfigForCli(options),
+  );
+  assertLoginTarget(target, serverId);
+  const tokenStore = options.tokenStore ?? options.authority?.tokenStore;
+  const deleted = tokenStore
+    ? await tokenStore.delete(serverId)
+    : deleteTokenBundle(serverId, options.authDir);
+  options.writeOut(
+    deleted
+      ? `Deleted OAuth credentials for \`${serverId}\`.\n`
+      : `No OAuth credentials found for \`${serverId}\`.\n`,
+  );
 }
 
 export async function refreshAuth(
   serverId: string,
   options: {
     authDir?: string;
+    tokenStore?: OAuthTokenStore | undefined;
+    authority?: CliAuthorityContext | undefined;
     configPath?: string;
     config?: CapletsConfig;
     writeOut: (value: string) => void;
@@ -115,15 +192,23 @@ export async function refreshAuth(
 
 export async function refreshAuthResult(
   serverId: string,
-  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
+  options: {
+    authDir?: string;
+    tokenStore?: OAuthTokenStore | undefined;
+    authority?: CliAuthorityContext | undefined;
+    configPath?: string;
+    config?: CapletsConfig;
+  },
 ): Promise<{ server: string }> {
+  const tokenStore = options.tokenStore ?? options.authority?.tokenStore;
   const target = await resolveAuthTarget(
     serverId,
-    options.config ?? loadAuthResolvedConfig(options),
+    options.config ?? options.authority?.config ?? loadAuthConfigForCli(options),
     options.authDir,
+    tokenStore,
   );
   assertLoginTarget(target, serverId);
-  await refreshOAuthTokenBundle(target, options.authDir);
+  await refreshOAuthTokenBundle(target, options.authDir, tokenStore ? { tokenStore } : {});
   return { server: serverId };
 }
 
@@ -142,6 +227,36 @@ export function listAuth(options: {
   options.writeOut(formatAuthRows(rows, format));
 }
 
+export async function listAuthAsync(options: {
+  authDir?: string;
+  tokenStore?: OAuthTokenStore | undefined;
+  authority?: CliAuthorityContext | undefined;
+  configPath?: string;
+  config?: CapletsConfig | undefined;
+  writeOut: (value: string) => void;
+  format?: AuthListFormat;
+}): Promise<void> {
+  const rows = await listAuthRowsAsync(options);
+  const format = options.format ?? "plain";
+  if (format === "json") {
+    options.writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+    return;
+  }
+  options.writeOut(formatAuthRows(rows, format));
+}
+
+export async function listAuthRowsAsync(options: {
+  authDir?: string;
+  tokenStore?: OAuthTokenStore | undefined;
+  authority?: CliAuthorityContext | undefined;
+  configPath?: string;
+  config?: CapletsConfig | undefined;
+}): Promise<AuthStatusRow[]> {
+  const config = options.config ?? options.authority?.config ?? loadAuthConfigForCli(options);
+  const tokenStore = options.tokenStore ?? options.authority?.tokenStore;
+  return authRowsForTargetsAsync(authTargets(config), options.authDir, tokenStore);
+}
+
 export function listAuthRows(options: { authDir?: string; configPath?: string }): AuthStatusRow[] {
   const config = loadConfig(options.configPath, undefined, {
     vaultResolver: vaultBootstrapResolver,
@@ -149,10 +264,19 @@ export function listAuthRows(options: { authDir?: string; configPath?: string })
   return authRowsForTargets(authTargets(config), options.authDir);
 }
 
-function loadAuthResolvedConfig(options: {
+function loadAuthConfigForCli(options: {
   authDir?: string | undefined;
   configPath?: string | undefined;
+  config?: CapletsConfig | undefined;
+  authority?: CliAuthorityContext | undefined;
 }): CapletsConfig {
+  if (options.config) return options.config;
+  if (options.authority) {
+    throw new CapletsError(
+      "ASYNC_AUTHORITY_REQUIRED",
+      "Shared authority CLI commands require an async prepared host config.",
+    );
+  }
   return loadConfig(options.configPath, undefined, {
     vaultResolver: vaultResolverForAuthDir(options.authDir),
   });
@@ -165,6 +289,18 @@ export function listLocalAuthRows(options: {
   source?: Exclude<AuthSource, "remote">;
 }): AuthStatusRow[] {
   return authRowsForTargets(localAuthTargets(options), options.authDir);
+}
+
+export async function listLocalAuthRowsAsync(options: {
+  authDir?: string;
+  tokenStore?: OAuthTokenStore | undefined;
+  authority?: CliAuthorityContext | undefined;
+  configPath?: string;
+  projectConfigPath?: string;
+  source?: Exclude<AuthSource, "remote">;
+}): Promise<AuthStatusRow[]> {
+  const tokenStore = options.tokenStore ?? options.authority?.tokenStore;
+  return authRowsForTargetsAsync(localAuthTargets(options), options.authDir, tokenStore);
 }
 
 export function localAuthTargets(options: {
@@ -245,6 +381,36 @@ function authRowsForTargets(
     });
 }
 
+async function authRowsForTargetsAsync(
+  targets: (AuthTarget & { source?: AuthSource })[],
+  authDir: string | undefined,
+  tokenStore: OAuthTokenStore | undefined,
+): Promise<AuthStatusRow[]> {
+  const bundles = tokenStore
+    ? await tokenStore.list()
+    : targets
+        .map((target) => readTokenBundle(target.server, authDir))
+        .filter((bundle): bundle is NonNullable<typeof bundle> => Boolean(bundle));
+  const byServer = new Map(bundles.map((bundle) => [bundle.server, bundle]));
+  return targets
+    .sort((left, right) => left.server.localeCompare(right.server))
+    .map((server) => {
+      const bundle = byServer.get(server.server);
+      const status = !bundle
+        ? "missing"
+        : isTokenBundleExpired(bundle)
+          ? "expired"
+          : "authenticated";
+      return {
+        server: server.server,
+        status,
+        ...(bundle?.expiresAt ? { expiresAt: bundle.expiresAt } : {}),
+        ...(bundle?.scope ? { scope: bundle.scope } : {}),
+        ...(server.source ? { source: server.source } : {}),
+      };
+    });
+}
+
 export function formatAuthRows(
   rows: AuthStatusRow[],
   format: Exclude<AuthListFormat, "json">,
@@ -292,6 +458,7 @@ export async function resolveAuthTarget(
   serverId: string,
   config: CapletsConfig,
   authDir?: string,
+  tokenStore?: OAuthTokenStore,
 ): Promise<AuthTarget | undefined> {
   const target = findAuthTarget(serverId, config);
   if (target?.backend !== "googleDiscovery") return target;
@@ -299,7 +466,7 @@ export async function resolveAuthTarget(
   if (!api || (api.auth.type !== "oauth2" && api.auth.type !== "oidc")) return target;
   const manager = new GoogleDiscoveryManager(
     new ServerRegistry(config),
-    authDir ? { authDir } : {},
+    tokenStore ? { ...(authDir ? { authDir } : {}), tokenStore } : authDir ? { authDir } : {},
   );
   const baseUrl =
     api.baseUrl ?? (await manager.resolveBaseUrl(api).catch(() => undefined)) ?? api.discoveryUrl;

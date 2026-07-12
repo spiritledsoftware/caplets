@@ -21,6 +21,7 @@ import {
   FileOAuthProvider,
   readTokenBundle,
   staticRemoteHeaders,
+  type OAuthTokenStore,
 } from "./auth";
 import { CapletsError, toSafeError, type CapletsErrorCode, type SafeErrorSummary } from "./errors";
 import {
@@ -70,10 +71,13 @@ export type CompactPrompt = {
   description?: string;
   arguments?: Prompt["arguments"];
 };
-
+type DownstreamTransport =
+  | StdioClientTransport
+  | StreamableHTTPClientTransport
+  | SSEClientTransport;
 type ManagedConnection = {
   client: Client;
-  transport: Transport;
+  transport: DownstreamTransport;
   configFingerprint: string;
   tools?: Tool[] | undefined;
   toolsFetchedAt?: number | undefined;
@@ -96,11 +100,11 @@ export class DownstreamManager {
   private readonly connections = new Map<string, ManagedConnection>();
   private readonly connecting = new Map<string, PendingConnection>();
   private readonly restartState = new Map<string, { restartUsed: boolean; backoffUntil: number }>();
-
   constructor(
     private registry: ServerRegistry,
     private readonly options: {
       authDir?: string | undefined;
+      tokenStore?: OAuthTokenStore | undefined;
       projectBindingContext?: ProjectBindingExecutionContext | undefined;
     } = {},
   ) {}
@@ -697,7 +701,9 @@ export class DownstreamManager {
     connection: ManagedConnection,
   ): Promise<ManagedConnection> {
     try {
-      await connection.client.connect(connection.transport, { timeout: server.startupTimeoutMs });
+      await connection.client.connect(connection.transport as Transport, {
+        timeout: server.startupTimeoutMs,
+      });
       if (connection.closing) {
         await connection.transport.close();
         throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was closed`);
@@ -727,7 +733,7 @@ export class DownstreamManager {
     }
   }
 
-  private createTransport(server: CapletServerConfig): any {
+  private createTransport(server: CapletServerConfig): DownstreamTransport {
     if (server.transport === "stdio") {
       const cwd = resolveProjectBoundCwd({
         caplet: server,
@@ -799,13 +805,14 @@ export class DownstreamManager {
 
     throw new CapletsError("UNSUPPORTED_TRANSPORT", `Unsupported transport for ${server.server}`);
   }
-
   private oauthProvider(server: CapletServerConfig): FileOAuthProvider | undefined {
     if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
       return undefined;
     }
-    const bundle = readTokenBundle(server.server, this.options.authDir);
-    if (!bundle?.accessToken && !bundle?.refreshToken) {
+    const bundle = this.options.tokenStore
+      ? undefined
+      : readTokenBundle(server.server, this.options.authDir);
+    if (!this.options.tokenStore && !bundle?.accessToken && !bundle?.refreshToken) {
       throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
         server: server.server,
         authType: server.auth.type,
@@ -823,6 +830,7 @@ export class DownstreamManager {
         });
       },
       this.options.authDir,
+      this.options.tokenStore ? { tokenStore: this.options.tokenStore } : {},
     );
   }
 

@@ -3,17 +3,19 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { z } from "zod";
 import { version as packageJsonVersion } from "../../package.json";
 import type { NativeCapletTool, NativeCapletsService } from "../native/service";
+import type { RuntimeEpochLease } from "../storage/coordinator";
 
 export type NativeToolServer = Pick<McpServer, "registerTool" | "connect" | "close">;
-
 export type NativeCapletsMcpSessionOptions = {
   server?: NativeToolServer;
+  runtimeLease?: RuntimeEpochLease | undefined;
 };
 
 export class NativeCapletsMcpSession {
   readonly server: NativeToolServer;
   private readonly tools = new Map<string, RegisteredTool>();
   private readonly unsubscribe: () => void;
+  private readonly runtimeLease: RuntimeEpochLease | undefined;
   private closed = false;
 
   constructor(
@@ -26,6 +28,7 @@ export class NativeCapletsMcpSession {
         name: "caplets",
         version: packageJsonVersion,
       });
+    this.runtimeLease = options.runtimeLease;
     this.unsubscribe = service.onToolsChanged((tools) => this.reconcileTools(tools));
     this.reconcileTools(service.listTools());
   }
@@ -33,14 +36,20 @@ export class NativeCapletsMcpSession {
   async connect(transport: Transport): Promise<void> {
     await this.server.connect(transport);
   }
-
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     this.unsubscribe();
     this.tools.clear();
-    await this.server.close();
-    await this.service.close();
+    try {
+      await this.server.close();
+    } finally {
+      try {
+        await this.service.close();
+      } finally {
+        this.runtimeLease?.release();
+      }
+    }
   }
 
   private reconcileTools(next: NativeCapletTool[]): void {

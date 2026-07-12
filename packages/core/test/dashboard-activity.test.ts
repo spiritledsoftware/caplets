@@ -174,6 +174,30 @@ describe("dashboard activity and access actions", () => {
     });
     expect(secondPage.entries[0]?.metadata).not.toHaveProperty("secretValue");
   });
+
+  it("accepts every Current Host mutation action as durable success activity", () => {
+    const log = new DashboardActivityLog({ dir: tempDir("caplets-dashboard-mutation-activity-") });
+    const actions = [
+      "caplet_created",
+      "caplet_updated",
+      "caplet_deleted",
+      "settings_updated",
+      "setup_granted",
+      "setup_revoked",
+    ] as const;
+    for (const action of actions) {
+      expect(() =>
+        log.append({
+          actorClientId: "operator",
+          action,
+          target: { type: "runtime", id: "current-host" },
+        }),
+      ).not.toThrow();
+    }
+    expect(log.list({ limit: 20 }).entries.map((entry) => entry.action)).toEqual(
+      actions.slice().reverse(),
+    );
+  });
 });
 
 type Setup = Awaited<ReturnType<typeof authenticatedDashboard>>;

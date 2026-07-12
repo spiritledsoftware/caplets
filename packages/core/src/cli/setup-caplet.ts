@@ -1,10 +1,11 @@
-import type { CapletConfig } from "../config";
+import type { CapletConfig, CapletsConfig } from "../config";
 import { loadConfig, resolveConfigPath, resolveProjectConfigPath } from "../config";
 import { CapletsError } from "../errors";
 import { capletSetupContentHash } from "../setup/hash";
 import { LocalSetupStore } from "../setup/local-store";
 import { runCapletSetup, type SetupSpawn } from "../setup/runner";
 import type { SetupActor, SetupTargetKind } from "../setup/types";
+import type { CliAuthorityContext } from "./auth";
 
 export type CapletSetupCliOptions = {
   yes?: boolean;
@@ -12,7 +13,10 @@ export type CapletSetupCliOptions = {
   remote?: boolean;
   configPath?: string | undefined;
   projectConfigPath?: string | undefined;
+  config?: CapletsConfig | undefined;
   baseDir?: string | undefined;
+  store?: LocalSetupStore | undefined;
+  authority?: CliAuthorityContext | undefined;
   spawn?: SetupSpawn;
 };
 
@@ -27,10 +31,12 @@ export async function runCapletSetupCli(
       "Cloud setup runs through the Caplets Cloud API, not the local CLI runner",
     );
   }
-
   const configPath = options.configPath ?? resolveConfigPath();
   const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
-  const config = loadConfig(configPath, projectConfigPath);
+  const config =
+    options.config ??
+    options.authority?.config ??
+    loadSetupConfig(options, configPath, projectConfigPath);
   const caplet = Object.values({
     ...config.mcpServers,
     ...config.openapiEndpoints,
@@ -44,10 +50,12 @@ export async function runCapletSetupCli(
   if (!caplet.setup || (!caplet.setup.commands?.length && !caplet.setup.verify?.length)) {
     return `No setup metadata is defined for ${caplet.name} (${caplet.server}).\n`;
   }
-
   const contentHash = capletSetupContentHash(caplet as CapletConfig);
   const projectFingerprint = "default";
-  const store = new LocalSetupStore(options.baseDir ? { baseDir: options.baseDir } : {});
+  const store =
+    options.store ??
+    options.authority?.setupStore ??
+    new LocalSetupStore(options.baseDir ? { baseDir: options.baseDir } : {});
   const existingApproval = await store.getApproval(
     projectFingerprint,
     caplet.server,
@@ -116,4 +124,17 @@ function formatCommands(
   return commands.map(
     (command) => `  - ${command.label}: ${[command.command, ...(command.args ?? [])].join(" ")}`,
   );
+}
+function loadSetupConfig(
+  options: CapletSetupCliOptions,
+  configPath: string,
+  projectConfigPath: string,
+): CapletsConfig {
+  if (options.authority) {
+    throw new CapletsError(
+      "ASYNC_AUTHORITY_REQUIRED",
+      "Shared authority setup requires a prepared host config.",
+    );
+  }
+  return loadConfig(configPath, projectConfigPath);
 }

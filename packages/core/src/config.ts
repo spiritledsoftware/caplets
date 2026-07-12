@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { loadCapletFilesWithPaths, loadCapletFilesWithPathsBestEffort } from "./caplet-files";
 import {
+  defaultCapletsLockfilePath,
   defaultConfigPath,
   resolveCapletsRoot,
   resolveConfigPath,
@@ -362,6 +363,48 @@ export type CompletionConfig = {
   negativeCacheTtlMs: number;
 };
 
+export type AuthoritySecretResolver = (reference: string) => string | Uint8Array | undefined;
+
+export type ResolvedAuthoritySecrets = {
+  credential?: string | Uint8Array | undefined;
+  vaultKey?: string | Uint8Array | undefined;
+};
+
+type AuthorityBootstrapBase = {
+  authorityId: string;
+  namespace: string;
+  pollIntervalMs: number;
+  credentialRef?: string | undefined;
+  vaultKeyRef?: string | undefined;
+};
+
+export type AuthorityBootstrap =
+  | (AuthorityBootstrapBase & { provider: "filesystem" })
+  | (AuthorityBootstrapBase & { provider: "sqlite"; databasePath: string })
+  | (AuthorityBootstrapBase & { provider: "postgresql"; connectionRef: string })
+  | (AuthorityBootstrapBase & {
+      provider: "s3";
+      bucket: string;
+      region: string;
+      endpoint?: string | undefined;
+      forcePathStyle?: boolean | undefined;
+    });
+
+export type SourceOwner =
+  | "authority"
+  | "staged"
+  | "replica-local"
+  | "client-local"
+  | "migration-input";
+
+export type SourceInventoryEntry = { path: string; owner: SourceOwner };
+export type SourceInventory = { entries: SourceInventoryEntry[] };
+export type LoadedAuthorityBootstrap = {
+  bootstrap: AuthorityBootstrap;
+  inventory: SourceInventory;
+  secrets: ResolvedAuthoritySecrets;
+};
+
 export type CapletsConfig = {
   version: 1;
   telemetry?: boolean | undefined;
@@ -377,12 +420,25 @@ export type CapletsConfig = {
   capletSets: Record<string, CapletSetConfig>;
 };
 
-export type ConfigSourceKind = "global-config" | "global-file" | "project-config" | "project-file";
+export type ConfigSourceKind =
+  | "global-config"
+  | "global-file"
+  | "project-config"
+  | "project-file"
+  | "authority";
 
-export type ConfigSource = {
-  kind: ConfigSourceKind;
-  path: string;
-};
+export type ConfigSource =
+  | {
+      kind: Exclude<ConfigSourceKind, "authority">;
+      path: string;
+    }
+  | {
+      kind: "authority";
+      path: string;
+      authorityId: string;
+      recordId: string;
+      generationId: string;
+    };
 
 export type ConfigWithSources = {
   config: CapletsConfig;
@@ -1172,7 +1228,6 @@ const publicCapletSetSchema = z
       });
     }
   });
-
 const normalizedCapletSetSchema = publicCapletSetSchema.extend({
   body: z.string().optional(),
 });
@@ -1184,7 +1239,8 @@ type ConfigSchemaGraphQlEndpointValue = z.infer<typeof normalizedGraphQlEndpoint
 type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
-type ConfigInput = {
+export type ConfigInput = {
+  authority?: unknown;
   telemetry?: unknown;
   serve?: unknown;
   namespaceAliases?: unknown;
@@ -1268,6 +1324,57 @@ type MissingEnvReference = {
   path: string;
 };
 
+const authorityBootstrapSchema = z
+  .discriminatedUnion("provider", [
+    z
+      .object({
+        provider: z.literal("filesystem"),
+        authorityId: z.string().trim().min(1),
+        namespace: z.string().trim().min(1).default("default"),
+        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
+        credentialRef: z.string().trim().min(1).optional(),
+        vaultKeyRef: z.string().trim().min(1).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        provider: z.literal("sqlite"),
+        authorityId: z.string().trim().min(1),
+        namespace: z.string().trim().min(1).default("default"),
+        databasePath: z.string().trim().min(1),
+        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
+        credentialRef: z.string().trim().min(1).optional(),
+        vaultKeyRef: z.string().trim().min(1).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        provider: z.literal("postgresql"),
+        authorityId: z.string().trim().min(1),
+        namespace: z.string().trim().min(1).default("default"),
+        connectionRef: z.string().trim().min(1),
+        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
+        credentialRef: z.string().trim().min(1).optional(),
+        vaultKeyRef: z.string().trim().min(1).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        provider: z.literal("s3"),
+        authorityId: z.string().trim().min(1),
+        namespace: z.string().trim().min(1).default("default"),
+        bucket: z.string().trim().min(1),
+        region: z.string().trim().min(1),
+        endpoint: z.string().url().optional(),
+        forcePathStyle: z.boolean().optional(),
+        pollIntervalMs: z.number().int().positive().max(2_500).default(2_500),
+        credentialRef: z.string().trim().min(1).optional(),
+        vaultKeyRef: z.string().trim().min(1).optional(),
+      })
+      .strict(),
+  ])
+  .describe("Infrastructure-owned Writable Authority bootstrap settings.");
+
 function configSchemaFor(
   serverValueSchema: z.ZodTypeAny,
   openApiEndpointValueSchema: z.ZodTypeAny,
@@ -1281,6 +1388,9 @@ function configSchemaFor(
     .object({
       $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
       version: z.literal(1).default(1).describe("Caplets config schema version."),
+      authority: authorityBootstrapSchema
+        .optional()
+        .describe("Global-only Writable Authority bootstrap configuration."),
       defaultSearchLimit: z
         .number()
         .int()
@@ -1752,11 +1862,115 @@ export function configJsonSchema(): unknown {
   });
 }
 
+export function loadAuthorityBootstrap(
+  globalPath = resolveConfigPath(),
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  secretResolver: AuthoritySecretResolver = (reference) =>
+    env[reference.startsWith("env:") ? reference.slice("env:".length) : reference],
+  options: {
+    projectPath?: string;
+    stagedPaths?: string[];
+    replicaLocalPaths?: string[];
+    clientLocalPaths?: string[];
+    migrationInputPaths?: string[];
+  } = {},
+): LoadedAuthorityBootstrap {
+  if (!existsSync(globalPath)) {
+    throw new CapletsError("CONFIG_NOT_FOUND", `Caplets user config not found at ${globalPath}`);
+  }
+  const globalInput = readPublicConfigInput(globalPath);
+  const parsed = authorityBootstrapSchema.safeParse(
+    globalInput.authority ?? {
+      provider: "filesystem",
+      authorityId: "filesystem",
+      namespace: "default",
+    },
+  );
+  if (!parsed.success) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Writable Authority bootstrap is invalid",
+      parsed.error.issues,
+    );
+  }
+  const projectPath = options.projectPath ?? resolveProjectConfigPath();
+  if (existsSync(projectPath)) {
+    const projectInput = readPublicConfigInput(projectPath);
+    if (projectInput.authority !== undefined) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Project config at ${projectPath} must not define infrastructure-owned authority settings`,
+      );
+    }
+  }
+
+  const bootstrap = parsed.data as AuthorityBootstrap;
+  const entries: SourceInventoryEntry[] = [
+    { path: globalPath, owner: "authority" },
+    { path: resolveCapletsRoot(globalPath), owner: "authority" },
+    { path: defaultCapletsLockfilePath(env as NodeJS.ProcessEnv), owner: "authority" },
+    ...(
+      options.stagedPaths ??
+      [projectPath, resolveProjectCapletsRootForConfigPath(projectPath)].filter(
+        (path): path is string => Boolean(path),
+      )
+    ).map((path) => ({ path, owner: "staged" as const })),
+    ...(options.replicaLocalPaths ?? []).map((path) => ({ path, owner: "replica-local" as const })),
+    ...(options.clientLocalPaths ?? []).map((path) => ({ path, owner: "client-local" as const })),
+    ...(options.migrationInputPaths ?? []).map((path) => ({
+      path,
+      owner: "migration-input" as const,
+    })),
+  ];
+  const canonicalOwners = new Map<string, SourceOwner>();
+  for (const entry of entries) {
+    const canonicalPath = resolve(entry.path);
+    const existing = canonicalOwners.get(canonicalPath);
+    if (existing !== undefined) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Source path ${canonicalPath} has duplicate ownership (${existing}, ${entry.owner})`,
+      );
+    }
+    canonicalOwners.set(canonicalPath, entry.owner);
+    entry.path = canonicalPath;
+  }
+
+  return {
+    bootstrap,
+    inventory: { entries },
+    secrets: {
+      ...(bootstrap.credentialRef ? { credential: secretResolver(bootstrap.credentialRef) } : {}),
+      ...(bootstrap.vaultKeyRef ? { vaultKey: secretResolver(bootstrap.vaultKeyRef) } : {}),
+    },
+  };
+}
+
+function assertSynchronousAuthorityBootstrap(globalPath: string, projectPath: string): void {
+  if (!existsSync(globalPath)) return;
+  let loaded;
+  try {
+    loaded = loadAuthorityBootstrap(globalPath, process.env, undefined, { projectPath });
+  } catch {
+    return;
+  }
+  if (loaded.bootstrap.provider === "filesystem") return;
+  throw new CapletsError(
+    "ASYNC_AUTHORITY_REQUIRED",
+    `Authority provider ${loaded.bootstrap.provider} requires async host assembly before config loading`,
+    {
+      provider: loaded.bootstrap.provider,
+      guidance: "Use assembleCapletsHost or createAsyncCapletsRuntime.",
+    },
+  );
+}
+
 export function loadConfig(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
   options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): CapletsConfig {
+  assertSynchronousAuthorityBootstrap(path, projectPath);
   return loadConfigWithSources(path, projectPath, options).config;
 }
 
@@ -1765,6 +1979,7 @@ export function loadConfigWithSources(
   projectPath = resolveProjectConfigPath(),
   options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): ConfigWithSources {
+  assertSynchronousAuthorityBootstrap(path, projectPath);
   const hasUserConfig = existsSync(path);
   const hasProjectConfig = existsSync(projectPath);
   const userConfig = hasUserConfig ? readPublicConfigInput(path) : undefined;
@@ -1971,6 +2186,7 @@ export function loadLocalRuntimeConfig(
     writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined;
   } = {},
 ): CapletsConfig {
+  assertSynchronousAuthorityBootstrap(path, projectPath);
   const overlay = loadLocalOverlayConfigWithSources(path, projectPath, {
     vaultResolver: options.vaultResolver,
     vaultRecoveryTarget: options.vaultRecoveryTarget,
@@ -2006,7 +2222,7 @@ export function loadLocalRuntimeConfig(
 
 function readBestEffortConfigInput(
   path: string,
-  kind: ConfigSourceKind,
+  kind: Exclude<ConfigSourceKind, "authority">,
   warnings: LocalOverlayConfigWarning[],
   transform?: (input: ConfigInput) => ConfigInput,
   options: Pick<ConfigParseOptions, "vaultResolver" | "vaultRecoveryTarget"> = {},
@@ -2057,7 +2273,7 @@ function readBestEffortJsonConfigInput(path: string): ConfigInput {
 
 function quarantineUnresolvedReferenceCaplets(
   input: ConfigInput,
-  kind: ConfigSourceKind,
+  kind: Exclude<ConfigSourceKind, "authority">,
   sourcePath: string | ((id: string) => string),
   warnings: LocalOverlayConfigWarning[],
   options: Pick<ConfigParseOptions, "vaultResolver" | "vaultRecoveryTarget"> = {},
@@ -2229,7 +2445,7 @@ function unresolvedVaultReferencesInString(
 }
 
 function vaultQuarantineOutcome(
-  kind: ConfigSourceKind,
+  kind: Exclude<ConfigSourceKind, "authority">,
   path: string,
   capletId: string,
   issue: VaultReferenceIssue,
@@ -2313,7 +2529,7 @@ function vaultBootstrapPlaceholderValue(path: string): string {
 
 function loadBestEffortCapletFiles(
   root: string,
-  kind: ConfigSourceKind,
+  kind: Exclude<ConfigSourceKind, "authority">,
   warnings: LocalOverlayConfigWarning[],
   options: Pick<ConfigParseOptions, "vaultResolver" | "vaultRecoveryTarget"> = {},
 ): { config: ConfigInput; paths: Record<string, string> } | undefined {
@@ -2342,11 +2558,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-type ConfigSourceInput =
-  | { kind: ConfigSourceKind; path: string }
-  | { kind: ConfigSourceKind; path: Record<string, string> };
+export type ConfigSourceInput =
+  | { kind: Exclude<ConfigSourceKind, "authority">; path: string }
+  | { kind: Exclude<ConfigSourceKind, "authority">; path: Record<string, string> }
+  | {
+      kind: "authority";
+      path: string;
+      authorityId: string;
+      recordId: string;
+      generationId: string;
+    };
 
-type ConfigInputWithSource = {
+export type ConfigInputWithSource = {
   input: ConfigInput | undefined;
   source: ConfigSourceInput;
 };
@@ -2463,6 +2686,9 @@ function readPublicConfigInput(path: string): ConfigInput {
       redactSecrets(error),
     );
   }
+}
+export function readConfigInputForComposition(path: string): ConfigInput {
+  return readPublicConfigInput(path);
 }
 
 function readServeDefaultsInput(path: string): ServeConfig | undefined {
@@ -2615,6 +2841,12 @@ function normalizeLocalPath(value: unknown, baseDir: string): unknown {
 }
 
 function rejectProjectConfigExecutableBackendMaps(input: ConfigInput, path: string): ConfigInput {
+  if (input.authority !== undefined) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Project config at ${path} cannot define infrastructure-owned authority settings`,
+    );
+  }
   if (input.openapiEndpoints && Object.keys(input.openapiEndpoints).length > 0) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -2723,7 +2955,7 @@ function mergeNamespaceAliases(left: unknown, right: unknown): Record<string, un
   });
 }
 
-function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | undefined>): {
+export function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | undefined>): {
   input: ConfigInput;
   sources: Record<string, ConfigSource>;
   shadows: Record<string, ConfigSource[]>;
@@ -2822,10 +3054,17 @@ function capletIds(input: ConfigInput): string[] {
 }
 
 function sourceForId(source: ConfigSourceInput, id: string): ConfigSource {
-  return {
-    kind: source.kind,
-    path: typeof source.path === "string" ? source.path : (source.path[id] ?? ""),
-  };
+  const path = typeof source.path === "string" ? source.path : (source.path[id] ?? "");
+  if (source.kind === "authority") {
+    return {
+      kind: "authority",
+      path,
+      authorityId: source.authorityId,
+      recordId: source.recordId,
+      generationId: source.generationId,
+    };
+  }
+  return { kind: source.kind, path };
 }
 
 export function parseConfig(input: unknown, options: ConfigParseOptions = {}): CapletsConfig {

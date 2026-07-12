@@ -12,6 +12,7 @@ export const cliCommands = {
   cloud: "cloud",
   init: "init",
   setup: "setup",
+  currentHost: "current-host",
   doctor: "doctor",
   list: "list",
   install: "install",
@@ -34,6 +35,7 @@ export const cliCommands = {
   config: "config",
   auth: "auth",
   vault: "vault",
+  storage: "storage",
   telemetry: "telemetry",
 } as const;
 
@@ -47,6 +49,7 @@ export const topLevelCommandNames = [
   cliCommands.init,
   cliCommands.setup,
   cliCommands.doctor,
+  cliCommands.currentHost,
   cliCommands.list,
   cliCommands.install,
   cliCommands.update,
@@ -68,6 +71,7 @@ export const topLevelCommandNames = [
   cliCommands.config,
   cliCommands.auth,
   cliCommands.vault,
+  cliCommands.storage,
   cliCommands.telemetry,
   cliCommands.completion,
 ] as const;
@@ -82,16 +86,29 @@ export const cliSubcommands = {
   [cliCommands.config]: ["path", "paths"],
   [cliCommands.daemon]: ["install", "uninstall", "start", "restart", "stop", "status", "logs"],
   [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
+  [cliCommands.currentHost]: ["health", "caplets", "settings", "setup"],
+  [cliCommands.storage]: ["inventory", "migrate", "migration", "backup", "provider", "schema"],
   [cliCommands.telemetry]: ["status", "enable", "disable", "delete-id", "rotate-id", "debug"],
   [cliCommands.vault]: ["set", "get", "list", "delete", "access"],
 } as const satisfies Record<string, readonly string[]>;
 
 export const cliNestedSubcommands = {
+  [cliCommands.currentHost]: {
+    caplets: ["list", "create", "update", "delete"],
+    settings: ["get", "update"],
+    setup: ["grant", "revoke"],
+  },
   [cliCommands.remote]: {
     host: ["pair", "clients", "revoke"],
   },
   [cliCommands.vault]: {
     access: ["grant", "list", "revoke"],
+  },
+  [cliCommands.storage]: {
+    migration: ["dry-run", "apply"],
+    backup: ["create", "inspect-header", "restore"],
+    provider: ["schema"],
+    schema: ["status", "migrate"],
   },
 } as const satisfies Record<string, Record<string, readonly string[]>>;
 

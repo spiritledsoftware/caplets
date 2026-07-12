@@ -14,12 +14,21 @@ import { WebSocketServer } from "ws";
 import { fingerprintProjectRoot } from "../cloud/project-root";
 import {
   defaultCapletsLockfilePath,
+  loadAuthorityBootstrap,
   resolveCapletsRoot,
   resolveProjectCapletsRoot,
   vaultStoreForAuthDir,
 } from "../config";
+import { isAllowedRemoteUrl } from "../config/validation";
+import { AuthorityVaultStore, type VaultAdministrationStore } from "../vault";
 import { version as packageJsonVersion } from "../../package.json";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import {
+  assembleCapletsHost,
+  type PreparedRuntimeHost,
+  type PreparedRuntimeView,
+  type RuntimeEpochLease,
+} from "../storage/coordinator";
 import { CapletsError, toSafeError, type CapletsErrorCode } from "../errors";
 import {
   createCurrentHostOperations,
@@ -27,11 +36,18 @@ import {
   trustedDevelopmentOperatorPrincipal,
   type CurrentHostOperatorPrincipal,
 } from "../current-host/operations";
+import type { AuthorityCapletRecord } from "../storage/bundle-cache";
+import type { AuthorityGenerationIdentity } from "../storage/types";
+import type { CurrentHostSettingsPatch } from "../current-host/settings-operations";
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
-import { DashboardActivityLog, type DashboardActivityAction } from "../dashboard/activity-log";
-import { dashboardShell, dashboardStaticResponse } from "../dashboard/routes";
-import { DashboardSessionStore } from "../dashboard/session-store";
+import {
+  AuthorityDashboardActivityLog,
+  DashboardActivityLog,
+  type DashboardActivityAction,
+} from "../dashboard/activity-log";
+import { AuthorityDashboardSessionStore, DashboardSessionStore } from "../dashboard/session-store";
 import type { DashboardSessionView } from "../dashboard/types";
+import { dashboardShell, dashboardStaticResponse } from "../dashboard/routes";
 import {
   attachErrorResponse,
   buildAttachProjection,
@@ -57,32 +73,55 @@ import {
 } from "../remote-control/dispatch";
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
-import { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import {
+  AuthorityRemoteServerCredentialStore,
+  RemoteServerCredentialStore,
+} from "../remote/server-credential-store";
+import type { AuthorityDomainCodecOptions } from "../remote/authority-codec";
 import type { RemoteClientRole, ValidatedRemoteClient } from "../remote/server-credentials";
 import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
-
-type HttpServeIo = {
+export type HttpServeIo = {
   writeErr?: (value: string) => void;
   control?: Omit<RemoteControlDispatchContext, "writeErr">;
+  runtime?: PreparedRuntimeHost | undefined;
+  /** Shared-authority Vault facade, prepared and key-validated before listening. */
+  vaultStore?: VaultAdministrationStore | undefined;
   authFlowStore?: RemoteAuthFlowStore;
   sessionFactory?: HttpMcpSessionFactory;
   attachSessionFactory?: HttpAttachSessionFactory;
   defaultAttachSessionFactory?: HttpAttachSessionFactory;
   exposeAttach?: boolean;
   remoteCredentialStore?: RemoteServerCredentialStore;
+  remoteCredentialAuthorityStore?: AuthorityRemoteServerCredentialStore;
   dashboardSessionStore?: DashboardSessionStore;
+  dashboardAuthoritySessionStore?: AuthorityDashboardSessionStore;
+  dashboardActivityLog?: DashboardActivityLog;
+  dashboardAuthorityActivityLog?: AuthorityDashboardActivityLog;
   dashboardDistDir?: string;
   projectBindingWorkspaceStore?: ProjectBindingWorkspaceStore;
 };
+type RemoteCredentialService = RemoteServerCredentialStore | AuthorityRemoteServerCredentialStore;
 
 type HttpMcpSession = {
   connect(transport: StreamableHTTPTransport): Promise<void>;
   close(): Promise<void>;
 };
 
-export type HttpMcpSessionFactory = () => HttpMcpSession | Promise<HttpMcpSession>;
+export type HttpMcpSessionContext = {
+  readonly lease?: RuntimeEpochLease;
+  readonly view?: PreparedRuntimeView;
+};
+
+export type HttpMcpSessionFactory = (
+  context?: HttpMcpSessionContext,
+) => HttpMcpSession | Promise<HttpMcpSession>;
+type HttpSession = {
+  server: HttpMcpSession;
+  transport: StreamableHTTPTransport;
+  lease?: RuntimeEpochLease | undefined;
+};
 
 export const CAPLETS_STACK_CHAIN_HEADER = "caplets-stack-chain";
 
@@ -95,29 +134,23 @@ export type HttpAttachSession = {
 
 export type HttpAttachSessionContext = {
   stackChain: string[];
+  readonly lease?: RuntimeEpochLease;
+  readonly view?: PreparedRuntimeView;
 };
 
 export type HttpAttachSessionFactory = (
   metadata: AttachSessionMetadata,
   context: HttpAttachSessionContext,
 ) => HttpAttachSession | Promise<HttpAttachSession>;
-
-type HttpSession = {
-  server: HttpMcpSession;
-  transport: StreamableHTTPTransport;
-};
-
 export type CapletsHttpApp = Hono & {
   closeCapletsSessions: () => Promise<void>;
-};
-
-type AttachEventStream = {
-  close: () => void;
 };
 
 type AttachSessionRecord = {
   session: HttpAttachSession;
   lastUsedAt: number;
+  lease?: RuntimeEpochLease | undefined;
+  closing?: Promise<void> | undefined;
 };
 
 type ProjectBindingHttpRecord = {
@@ -129,6 +162,7 @@ type ProjectBindingHttpRecord = {
   serverWorkspaceFingerprint: string;
   serverProjectRoot: string;
   state: ProjectBindingState;
+  lease?: RuntimeEpochLease | undefined;
   syncState: ProjectBindingSyncState;
   updatedAt: string;
   expiresAt: string;
@@ -149,6 +183,10 @@ type ProjectBindingHttpRecord = {
     | undefined;
 };
 
+type AttachEventStream = {
+  close: () => void;
+};
+
 type AttachEventSource = {
   manifestRevision: () => Promise<string>;
   onManifestChanged: (listener: () => void) => () => void;
@@ -164,10 +202,13 @@ export function createHttpServeApp(
   io: HttpServeIo = {},
 ): CapletsHttpApp {
   const app = new Hono() as CapletsHttpApp;
+  const runtime = io.runtime;
+  const vaultStore = io.vaultStore ?? authorityVaultStoreForRuntime(runtime);
+  const requestLeases = new WeakMap<Request, RuntimeEpochLease>();
   const sessions = new Map<string, HttpSession>();
   const attachSessions = new Map<string, AttachSessionRecord>();
-  const defaultAttachSessions = new Map<string, HttpAttachSession>();
-  const defaultAttachSessionPromises = new Map<string, Promise<HttpAttachSession>>();
+  const defaultAttachSessions = new Map<string, AttachSessionRecord>();
+  const defaultAttachSessionPromises = new Map<string, Promise<AttachSessionRecord>>();
   const projectBindingSessions = new Map<string, ProjectBindingHttpRecord>();
   let projectBindingSessionsClosing = false;
   let projectBindingWorkspaceCleanup: Promise<unknown> | undefined;
@@ -183,15 +224,49 @@ export function createHttpServeApp(
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
+  const authorityStoresInjected =
+    io.remoteCredentialAuthorityStore !== undefined &&
+    io.dashboardAuthoritySessionStore !== undefined &&
+    io.dashboardAuthorityActivityLog !== undefined;
+  const authorityDomainOptions = authorityStoresInjected
+    ? undefined
+    : authorityDomainOptionsForRuntime(runtime);
+  const remoteCredentialAuthorityStore =
+    io.remoteCredentialAuthorityStore ??
+    (authorityDomainOptions
+      ? new AuthorityRemoteServerCredentialStore({
+          ...authorityDomainOptions,
+          ...(options.remoteCredentialStateDir ? { dir: options.remoteCredentialStateDir } : {}),
+        })
+      : undefined);
   const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  const remoteCredentialAdministrationStore =
+    remoteCredentialAuthorityStore ?? remoteCredentialStore;
+  const remoteCredentialService =
+    options.auth.type === "remote_credentials" ? remoteCredentialAdministrationStore : undefined;
   const dashboardStateDir =
     options.remoteCredentialStateDir ?? io.dashboardSessionStore?.dir ?? ".";
-  const dashboardSessionStore = new DashboardSessionStore({
-    dir: dashboardStateDir,
-  });
-  const dashboardActivityLog = new DashboardActivityLog({ dir: dashboardStateDir });
+  const dashboardSessionStore =
+    io.dashboardSessionStore ??
+    new DashboardSessionStore({
+      dir: dashboardStateDir,
+    });
+  const dashboardAuthoritySessionStore =
+    io.dashboardAuthoritySessionStore ??
+    (authorityDomainOptions
+      ? new AuthorityDashboardSessionStore(authorityDomainOptions)
+      : undefined);
+  const dashboardActivityLog =
+    io.dashboardActivityLog ?? new DashboardActivityLog({ dir: dashboardStateDir });
+  const dashboardAuthorityActivityLog =
+    io.dashboardAuthorityActivityLog ??
+    (authorityDomainOptions
+      ? new AuthorityDashboardActivityLog(authorityDomainOptions)
+      : undefined);
   const currentHostOperations = createCurrentHostOperations({
     engine,
+    ...(runtime ? { runtime } : {}),
+    ...(vaultStore ? { vaultStore } : {}),
     ...(io.control === undefined
       ? {}
       : {
@@ -201,10 +276,14 @@ export function createHttpServeApp(
             authDir: io.control.authDir,
             globalCapletsRoot: io.control.globalCapletsRoot,
             globalLockfilePath: io.control.globalLockfilePath,
+            ...(runtime?.coordinator.bootstrap.bootstrap.authorityId
+              ? { authorityId: runtime.coordinator.bootstrap.bootstrap.authorityId }
+              : {}),
+            ...(runtime ? { currentHostId: "http-current-host" } : {}),
           },
         }),
     activityLog: dashboardActivityLog,
-    remoteCredentialStore,
+    remoteCredentialStore: remoteCredentialAdministrationStore,
     version: packageJsonVersion,
   });
   const authenticatedRemoteClients = new WeakMap<Request, ValidatedRemoteClient>();
@@ -226,21 +305,21 @@ export function createHttpServeApp(
   }
   const authenticatedClientRouteAuth = routeAuth(
     options,
-    remoteCredentialStore,
+    remoteCredentialService,
     paths.base,
     undefined,
     retainAuthenticatedRemoteClient,
   );
   const accessRouteAuth = routeAuth(
     options,
-    remoteCredentialStore,
+    remoteCredentialService,
     paths.base,
     "access",
     retainAuthenticatedRemoteClient,
   );
   const operatorRouteAuth = routeAuth(
     options,
-    remoteCredentialStore,
+    remoteCredentialService,
     paths.base,
     "operator",
     retainAuthenticatedRemoteClient,
@@ -253,8 +332,55 @@ export function createHttpServeApp(
     }),
   );
 
+  app.use("*", async (c, next) => {
+    if (!runtime) {
+      await next();
+      return;
+    }
+    const pathname = new URL(c.req.url).pathname;
+    const attachSessionRequest =
+      pathname === paths.attachManifest ||
+      pathname === paths.attachEvents ||
+      pathname === paths.attachInvoke;
+    const longLivedSessionRequest =
+      pathname === paths.mcp ||
+      pathname === paths.attachSessions ||
+      pathname.startsWith(`${paths.projectBindings}/`) ||
+      (attachSessionRequest &&
+        (c.req.header(CAPLETS_ATTACH_SESSION_HEADER) !== undefined ||
+          io.defaultAttachSessionFactory !== undefined));
+    if (
+      pathname === paths.base ||
+      pathname === paths.version ||
+      pathname === paths.health ||
+      pathname === paths.control ||
+      pathname.startsWith(`${paths.control}/`) ||
+      pathname.startsWith(paths.dashboard) ||
+      longLivedSessionRequest
+    ) {
+      await next();
+      return;
+    }
+    let lease: RuntimeEpochLease;
+    try {
+      lease = runtime.retain();
+    } catch (error) {
+      const safe = toSafeError(error, "SERVER_UNAVAILABLE");
+      return c.json({ ok: false, error: safe }, 503);
+    }
+    requestLeases.set(c.req.raw, lease);
+    try {
+      await next();
+    } finally {
+      requestLeases.delete(c.req.raw);
+      lease.release();
+    }
+  });
+
+  const requestEngine = (request: Request): CapletsEngine =>
+    requestLeases.get(request)?.view.engine ?? engine;
   app.get(paths.base, (c) => {
-    const remote = remoteCredentialStore
+    const remote = remoteCredentialService
       ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
       : undefined;
     return c.json({
@@ -268,17 +394,19 @@ export function createHttpServeApp(
   });
 
   app.get(paths.version, (c) => {
-    const remote = remoteCredentialStore
+    const remote = remoteCredentialService
       ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
       : undefined;
     return c.json(versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote));
   });
 
-  app.get(paths.health, (c) =>
-    c.json({
-      status: "ok",
-    }),
-  );
+  app.get(paths.health, async (c) => {
+    if (!runtime) return c.json({ status: "ok" });
+    const health = await runtime.health();
+    const status = health.lifecycle;
+    const responseStatus = health.readiness === "failed" || health.readiness === "cold" ? 503 : 200;
+    return c.json({ status, health }, responseStatus);
+  });
 
   app.get(
     routePath(paths.base, "_astro/*"),
@@ -299,7 +427,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardLoginStart, attachHostProtection, async (c) => {
-    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    if (!remoteCredentialService) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
       const parsed = await parseJsonObject(c.req.json(), "Dashboard login start request");
       const clientLabel = optionalStringField(parsed, "clientLabel") ?? "Caplets Dashboard";
@@ -307,7 +435,7 @@ export function createHttpServeApp(
       const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
         c.req.header(name),
       );
-      const pending = remoteCredentialStore.createPendingLogin({
+      const pending = await remoteCredentialService.createPendingLogin({
         hostUrl,
         hostIdentity: hostUrl,
         requestedRole: "operator",
@@ -320,7 +448,7 @@ export function createHttpServeApp(
         requestedRole: "operator",
         approvalCommand: pendingLoginApprovalCommand(
           pending.operatorCode,
-          remoteCredentialStore.dir,
+          remoteCredentialService.dir,
         ),
       });
     } catch (error) {
@@ -329,11 +457,11 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardLoginPoll, attachHostProtection, async (c) => {
-    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    if (!remoteCredentialService) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
       const parsed = await parseJsonObject(c.req.json(), "Dashboard login poll request");
       return c.json(
-        remoteCredentialStore.pollPendingLogin({
+        remoteCredentialService.pollPendingLogin({
           flowId: stringField(parsed, "flowId"),
           pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
         }),
@@ -344,10 +472,10 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardLoginComplete, attachHostProtection, async (c) => {
-    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    if (!remoteCredentialService) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
       const parsed = await parseJsonObject(c.req.json(), "Dashboard login complete request");
-      const credentials = remoteCredentialStore.completePendingLogin({
+      const credentials = await remoteCredentialService.completePendingLogin({
         hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
           c.req.header(name),
         ),
@@ -355,12 +483,16 @@ export function createHttpServeApp(
         flowId: stringField(parsed, "flowId"),
         pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
       });
-      const created = dashboardSessionStore.create({ operatorClientId: credentials.clientId });
-      dashboardActivityLog.append({
-        actorClientId: credentials.clientId,
-        action: "dashboard_login_completed",
-        target: { type: "dashboard_session", id: created.session.sessionId },
-      });
+      const created = dashboardAuthoritySessionStore
+        ? await dashboardAuthoritySessionStore.create({ operatorClientId: credentials.clientId })
+        : dashboardSessionStore.create({ operatorClientId: credentials.clientId });
+      if (!dashboardAuthoritySessionStore) {
+        dashboardActivityLog.append({
+          actorClientId: credentials.clientId,
+          action: "dashboard_login_completed",
+          target: { type: "dashboard_session", id: created.session.sessionId },
+        });
+      }
       c.header(
         "set-cookie",
         dashboardSessionCookie(created.cookieValue, {
@@ -374,14 +506,14 @@ export function createHttpServeApp(
     }
   });
 
-  app.get(paths.dashboardSession, (c) => {
-    const session = dashboardSessionForRequest(c);
+  app.get(paths.dashboardSession, async (c) => {
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     return c.json({ authenticated: true, session: session.session });
   });
 
   app.get(paths.dashboardSummary, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const baseUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
@@ -403,7 +535,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardCaplets, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -416,9 +548,163 @@ export function createHttpServeApp(
       return currentHostErrorResponse(error);
     }
   });
+  app.post(paths.dashboardCapletCreate, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard Caplet create request");
+      const outcome = await currentHostOperations.execute(
+        dashboardPrincipalForSession(c, session.session),
+        {
+          kind: "caplet_create",
+          record: dashboardCapletRecord(parsed),
+          ...dashboardMutationFields(parsed),
+        },
+      );
+      return c.json(dashboardMutationResponse(outcome));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardCapletUpdate, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard Caplet update request");
+      const record = dashboardCapletRecord(parsed, true);
+      const outcome = await currentHostOperations.execute(
+        dashboardPrincipalForSession(c, session.session),
+        {
+          kind: "caplet_update",
+          id: optionalStringField(parsed, "id") ?? record.id,
+          record,
+          ...dashboardMutationFields(parsed),
+        },
+      );
+      return c.json(dashboardMutationResponse(outcome));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardCapletDelete, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard Caplet delete request");
+      assertDashboardKeys(
+        parsed,
+        ["id", "expectedGeneration", "idempotencyKey"],
+        "Dashboard Caplet delete request",
+      );
+      const outcome = await currentHostOperations.execute(
+        dashboardPrincipalForSession(c, session.session),
+        {
+          kind: "caplet_delete",
+          id: stringField(parsed, "id"),
+          ...dashboardMutationFields(parsed),
+        },
+      );
+      return c.json(dashboardMutationResponse(outcome));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardSettings, async (c) => {
+    const session = await dashboardSessionForRequest(c);
+    if (!session.ok) return session.response;
+    try {
+      const outcome = await currentHostOperations.execute(
+        dashboardPrincipalForSession(c, session.session),
+        { kind: "settings_get" },
+      );
+      return c.json({ settings: dashboardSafeSettings(outcome.settings) });
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  const dashboardSettingsUpdateHandler = async (c: Parameters<MiddlewareHandler>[0]) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard settings update request");
+      const outcome = await currentHostOperations.execute(
+        dashboardPrincipalForSession(c, session.session),
+        {
+          kind: "settings_update",
+          settings: dashboardSettingsPatch(parsed),
+          ...dashboardMutationFields(parsed),
+        },
+      );
+      return c.json(dashboardMutationResponse(outcome));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  };
+  app.post(paths.dashboardSettings, dashboardSettingsUpdateHandler);
+  app.post(paths.dashboardSettingsUpdate, dashboardSettingsUpdateHandler);
+
+  app.post(paths.dashboardSetupGrant, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard setup grant request");
+      const outcome = await currentHostOperations.execute(
+        dashboardPrincipalForSession(c, session.session),
+        {
+          kind: "setup_grant",
+          ...dashboardSetupMutation(parsed),
+          ...dashboardMutationFields(parsed),
+        },
+      );
+      return c.json(dashboardMutationResponse(outcome));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardSetupRevoke, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard setup revoke request");
+      const outcome = await currentHostOperations.execute(
+        dashboardPrincipalForSession(c, session.session),
+        {
+          kind: "setup_revoke",
+          ...dashboardSetupMutation(parsed),
+          ...dashboardMutationFields(parsed),
+        },
+      );
+      return c.json(dashboardMutationResponse(outcome));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
 
   app.get(paths.dashboardCatalogSearch, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
@@ -443,7 +729,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardCatalogDetail, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
@@ -467,7 +753,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardCatalogUpdates, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -482,7 +768,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardCatalogInstall, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -507,7 +793,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardCatalogUpdate, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -532,7 +818,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardAccessClients, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -547,7 +833,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardAccessPendingLogins, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -562,7 +848,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/approve"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -589,7 +875,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/deny"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -608,7 +894,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessClients, ":clientId/revoke"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -635,7 +921,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessClients, ":clientId/role"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -666,7 +952,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardActivity, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
@@ -687,7 +973,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardVault, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -702,7 +988,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultSet, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -726,7 +1012,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardVaultValues, ":key/delete"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -744,7 +1030,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultGrant, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -768,7 +1054,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultRevoke, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -792,7 +1078,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultReveal, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -802,6 +1088,12 @@ export function createHttpServeApp(
       const key = stringField(parsed, "key");
       if (stringField(parsed, "confirmation") !== `reveal ${key}`) {
         throw new CapletsError("REQUEST_INVALID", "Vault reveal confirmation is invalid.");
+      }
+      if (runtime || !isLoopbackHost(options.host)) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Raw Vault reveal is available only for a local filesystem Vault through a human-gated request.",
+        );
       }
       const value = vaultStoreForAuthDir(io.control?.authDir).resolveValue(key);
       dashboardActivityLog.append({
@@ -817,7 +1109,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardRuntime, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -839,7 +1131,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardRuntimeRestart, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -857,7 +1149,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardLogs, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -876,7 +1168,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardDiagnostics, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -888,6 +1180,7 @@ export function createHttpServeApp(
         status: outcome.status,
         diagnostics: outcome.diagnostics,
         checks: outcome.checks,
+        ...(outcome.health ? { health: outcome.health, storageHealth: outcome.health } : {}),
       });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -895,7 +1188,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardEvents, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -919,7 +1212,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardProjectBinding, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -933,18 +1226,30 @@ export function createHttpServeApp(
     }
   });
 
-  app.post(paths.dashboardLogout, (c) => {
-    const session = dashboardSessionForRequest(c, {
+  app.post(paths.dashboardLogout, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
     if (!session.ok) return session.response;
-    dashboardActivityLog.append({
-      actorClientId: session.session.operatorClientId,
-      action: "dashboard_logout",
-      target: { type: "dashboard_session", id: session.session.sessionId },
-    });
-    dashboardSessionStore.delete(c.req.header("cookie"));
+    if (dashboardAuthoritySessionStore) {
+      await dashboardAuthoritySessionStore.delete(c.req.header("cookie"));
+    } else {
+      if (dashboardAuthorityActivityLog) {
+        await dashboardAuthorityActivityLog.append({
+          actorClientId: session.session.operatorClientId,
+          action: "dashboard_logout",
+          target: { type: "dashboard_session", id: session.session.sessionId },
+        });
+      } else {
+        dashboardActivityLog.append({
+          actorClientId: session.session.operatorClientId,
+          action: "dashboard_logout",
+          target: { type: "dashboard_session", id: session.session.sessionId },
+        });
+      }
+      await dashboardSessionStore.delete(c.req.header("cookie"));
+    }
     c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
     return c.json({ ok: true });
   });
@@ -958,7 +1263,7 @@ export function createHttpServeApp(
       ) ?? c.notFound(),
   );
 
-  if (remoteCredentialStore) {
+  if (remoteCredentialService) {
     app.post(paths.remoteLoginStart, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login start request");
@@ -967,7 +1272,7 @@ export function createHttpServeApp(
         const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
           c.req.header(name),
         );
-        const pending = remoteCredentialStore.createPendingLogin({
+        const pending = await remoteCredentialService.createPendingLogin({
           hostUrl,
           hostIdentity: hostUrl,
           ...(clientLabel ? { clientLabel } : {}),
@@ -978,7 +1283,7 @@ export function createHttpServeApp(
           ...pending,
           approvalCommand: pendingLoginApprovalCommand(
             pending.operatorCode,
-            remoteCredentialStore.dir,
+            remoteCredentialService.dir,
           ),
         });
       } catch (error) {
@@ -990,7 +1295,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login poll request");
         return c.json(
-          remoteCredentialStore.pollPendingLogin({
+          await remoteCredentialService.pollPendingLogin({
             flowId: stringField(parsed, "flowId"),
             pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
           }),
@@ -1004,7 +1309,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login refresh request");
         return c.json(
-          remoteCredentialStore.refreshPendingLogin({
+          await remoteCredentialService.refreshPendingLogin({
             flowId: stringField(parsed, "flowId"),
             pendingRefreshSecret: stringField(parsed, "pendingRefreshSecret"),
             pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
@@ -1018,7 +1323,7 @@ export function createHttpServeApp(
     app.post(paths.remoteLoginComplete, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login complete request");
-        const credentials = remoteCredentialStore.completePendingLogin({
+        const credentials = await remoteCredentialService.completePendingLogin({
           hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
             c.req.header(name),
           ),
@@ -1035,7 +1340,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login cancel request");
         return c.json(
-          remoteCredentialStore.cancelPendingLogin({
+          await remoteCredentialService.cancelPendingLogin({
             flowId: stringField(parsed, "flowId"),
             pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
           }),
@@ -1053,7 +1358,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
         const refreshToken = stringField(parsed, "refreshToken");
-        const credentials = remoteCredentialStore.refreshClientCredentials({
+        const credentials = await remoteCredentialService.refreshClientCredentials({
           hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
             c.req.header(name),
           ),
@@ -1073,12 +1378,12 @@ export function createHttpServeApp(
       }
     });
 
-    app.delete(paths.remoteClient, authenticatedClientRouteAuth, (c) => {
+    app.delete(paths.remoteClient, authenticatedClientRouteAuth, async (c) => {
       const client = authenticatedRemoteClients.get(c.req.raw);
       if (!client) return c.text("Unauthorized", 401);
       try {
         return c.json({
-          revoked: remoteCredentialStore.revokeClient(client.clientId),
+          revoked: await remoteCredentialService.revokeClient(client.clientId),
           clientId: client.clientId,
         });
       } catch (error) {
@@ -1116,25 +1421,43 @@ export function createHttpServeApp(
     }
 
     const nextSessionId = randomUUID();
-    const session = await createHttpSession(
-      io.sessionFactory ?? (() => new CapletsMcpSession(engine)),
-      nextSessionId,
-      options,
-      async (closedSessionId) => {
-        const closed = sessions.get(closedSessionId);
-        sessions.delete(closedSessionId);
-        if (closed) {
-          await closed.server.close();
-        }
-      },
-    );
-    sessions.set(nextSessionId, session);
-    return session.transport.handleRequest(c);
+    let lease: RuntimeEpochLease | undefined;
+    try {
+      lease = runtime?.retain();
+      const session = await createHttpSession(
+        io.sessionFactory ??
+          ((context) =>
+            new CapletsMcpSession(
+              context?.view?.engine ?? requestEngine(c.req.raw),
+              context?.lease ? { runtimeLease: context.lease } : {},
+            )),
+        nextSessionId,
+        options,
+        async (closedSessionId) => {
+          const closed = sessions.get(closedSessionId);
+          sessions.delete(closedSessionId);
+          if (closed) {
+            try {
+              await closed.server.close();
+            } finally {
+              closed.lease?.release();
+            }
+          }
+        },
+        lease ? { lease, view: lease.view } : undefined,
+      );
+      sessions.set(nextSessionId, session);
+      return session.transport.handleRequest(c);
+    } catch (error) {
+      lease?.release();
+      throw error;
+    }
   });
 
   if (exposeAttach) {
     if (io.attachSessionFactory) {
       app.post(paths.attachSessions, attachHostProtection, accessRouteAuth, async (c) => {
+        let lease: RuntimeEpochLease | undefined;
         try {
           const parsed = await parseJsonObject(c.req.json(), "Attach session request");
           const metadata = parseAttachSessionMetadata(parsed, {
@@ -1142,13 +1465,16 @@ export function createHttpServeApp(
               c.req.header(name),
             ),
           });
-          const context = attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER));
+          const baseContext = attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER));
+          lease = runtime?.retain();
+          const context = lease ? { ...baseContext, lease, view: lease.view } : baseContext;
           const sessionId = randomUUID();
           const session = await io.attachSessionFactory!(metadata, context);
-          attachSessions.set(sessionId, { session, lastUsedAt: Date.now() });
+          attachSessions.set(sessionId, { session, lastUsedAt: Date.now(), lease });
           pruneIdleAttachSessions();
           return c.json({ sessionId }, 201);
         } catch (error) {
+          lease?.release();
           const response = attachErrorResponse(error);
           return c.json(response.body, response.status);
         }
@@ -1165,7 +1491,7 @@ export function createHttpServeApp(
           }
           const record = attachSessions.get(sessionId);
           attachSessions.delete(sessionId);
-          await record?.session.close();
+          if (record) await closeAttachSessionRecord(record);
           return c.json({ ok: true });
         },
       );
@@ -1180,7 +1506,7 @@ export function createHttpServeApp(
               attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
             );
         if (attachSession) return c.json(await attachSession.manifest());
-        const attachProjection = await buildAttachProjection(engine);
+        const attachProjection = await buildAttachProjection(requestEngine(c.req.raw));
         return c.json(attachProjection.manifest);
       } catch (error) {
         const response = attachErrorResponse(error);
@@ -1196,11 +1522,15 @@ export function createHttpServeApp(
           : await fallbackAttachSession(
               attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
             );
-        return attachEventsResponse(attachEventSource(engine, attachSession), attachEventStreams, {
-          onActivity: () => {
-            if (attachSessionId) touchAttachSession(attachSessionId);
+        return attachEventsResponse(
+          attachEventSource(requestEngine(c.req.raw), attachSession),
+          attachEventStreams,
+          {
+            onActivity: () => {
+              if (attachSessionId) touchAttachSession(attachSessionId);
+            },
           },
-        });
+        );
       } catch (error) {
         const response = attachErrorResponse(error);
         return c.json(response.body, response.status);
@@ -1219,8 +1549,12 @@ export function createHttpServeApp(
         if (attachSession) {
           return c.json({ ok: true, data: await attachSession.invoke(request) });
         }
-        const attachProjection = await buildAttachProjection(engine);
-        const result = await invokeAttachExport(engine, attachProjection, request);
+        const attachProjection = await buildAttachProjection(requestEngine(c.req.raw));
+        const result = await invokeAttachExport(
+          requestEngine(c.req.raw),
+          attachProjection,
+          request,
+        );
         return c.json({ ok: true, data: result });
       } catch (error) {
         const response = attachErrorResponse(error);
@@ -1246,23 +1580,43 @@ export function createHttpServeApp(
     if (!io.defaultAttachSessionFactory) return undefined;
     const key = context.stackChain.join("\0");
     const existing = defaultAttachSessions.get(key);
-    if (existing) return existing;
+    if (existing) return existing.session;
     let pending = defaultAttachSessionPromises.get(key);
     if (!pending) {
-      pending = Promise.resolve(io.defaultAttachSessionFactory({}, context)).then(
+      let lease: RuntimeEpochLease | undefined;
+      lease = runtime?.retain();
+      const factoryContext = lease ? { ...context, lease, view: lease.view } : context;
+      pending = Promise.resolve(io.defaultAttachSessionFactory({}, factoryContext)).then(
         (session) => {
-          defaultAttachSessions.set(key, session);
+          const record: AttachSessionRecord = {
+            session,
+            lastUsedAt: Date.now(),
+            lease,
+          };
+          defaultAttachSessions.set(key, record);
           defaultAttachSessionPromises.delete(key);
-          return session;
+          return record;
         },
         (error) => {
           defaultAttachSessionPromises.delete(key);
+          lease?.release();
           throw error;
         },
       );
       defaultAttachSessionPromises.set(key, pending);
     }
-    return await pending;
+    return (await pending).session;
+  }
+
+  async function closeAttachSessionRecord(record: AttachSessionRecord): Promise<void> {
+    record.closing ??= (async () => {
+      try {
+        await record.session.close();
+      } finally {
+        record.lease?.release();
+      }
+    })();
+    await record.closing;
   }
 
   function attachSessionContext(header: string | undefined): HttpAttachSessionContext {
@@ -1283,7 +1637,7 @@ export function createHttpServeApp(
     for (const [sessionId, record] of attachSessions) {
       if (record.lastUsedAt >= expiresBefore) continue;
       attachSessions.delete(sessionId);
-      void record.session.close().catch((error) => {
+      void closeAttachSessionRecord(record).catch((error) => {
         writeErr(`Could not close idle attach session: ${errorMessage(error)}\n`);
       });
     }
@@ -1435,10 +1789,12 @@ export function createHttpServeApp(
   );
 
   app.post(routePath(paths.projectBindings, "sessions"), accessRouteAuth, async (c) => {
+    let retainedLease: RuntimeEpochLease | undefined;
     try {
       if (projectBindingSessionsClosing) {
         return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
       }
+      retainedLease = runtime?.retain();
       const parsed = await parseJsonObject(c.req.json(), "Project Binding session request");
       const projectRoot = stringField(parsed, "projectRoot");
       const projectFingerprint =
@@ -1479,17 +1835,22 @@ export function createHttpServeApp(
         ownerlessCleanup: undefined,
         heartbeatInFlight: undefined,
         pendingHeartbeat: undefined,
+        lease: retainedLease,
       };
       await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
       if (projectBindingSessionsClosing) {
         await projectBindingWorkspaceStore.writeLease(
           projectBindingLease(terminalProjectBindingCandidate(record)),
         );
+        retainedLease?.release();
+        retainedLease = undefined;
         return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
       }
       projectBindingSessions.set(bindingId, record);
+      retainedLease = undefined;
       return c.json({ binding: projectBindingResponse(record), sessionId }, 201);
     } catch (error) {
+      retainedLease?.release();
       const safe = toSafeError(
         error,
         error instanceof CapletsError ? error.code : "REQUEST_INVALID",
@@ -1628,7 +1989,7 @@ export function createHttpServeApp(
     }
 
     const heartbeat = enqueueProjectBindingMutation(record, async () => {
-      if (!canMutateProjectBindingRecord(record, ownerKey)) {
+      if (!(await canMutateProjectBindingRecord(record, ownerKey))) {
         await terminalizeProjectBindingRecordInQueue(record);
         return false;
       }
@@ -1646,7 +2007,7 @@ export function createHttpServeApp(
       };
       await projectBindingWorkspaceStore.writeLease(projectBindingLease(candidate));
 
-      if (!canCommitProjectBindingHeartbeat(record, ownerKey, generation, expiresAt)) {
+      if (!(await canCommitProjectBindingHeartbeat(record, ownerKey, generation, expiresAt))) {
         await terminalizeProjectBindingRecordInQueue(record, candidate);
         return false;
       }
@@ -1693,42 +2054,41 @@ export function createHttpServeApp(
     return queued;
   }
 
-  function canMutateProjectBindingRecord(
+  async function canMutateProjectBindingRecord(
     record: ProjectBindingHttpRecord,
     ownerKey: string,
-  ): boolean {
+  ): Promise<boolean> {
     return (
       !projectBindingSessionsClosing &&
       projectBindingSessions.get(record.bindingId) === record &&
       record.active &&
       !record.terminal &&
       Date.parse(record.expiresAt) > Date.now() &&
-      isCurrentProjectBindingAccessOwner(record, ownerKey)
+      (await isCurrentProjectBindingAccessOwner(record, ownerKey))
     );
   }
 
-  function canCommitProjectBindingHeartbeat(
+  async function canCommitProjectBindingHeartbeat(
     record: ProjectBindingHttpRecord,
     ownerKey: string,
     generation: number,
     expiresAt: string,
-  ): boolean {
+  ): Promise<boolean> {
     return (
-      canMutateProjectBindingRecord(record, ownerKey) &&
+      (await canMutateProjectBindingRecord(record, ownerKey)) &&
       record.generation === generation &&
       record.expiresAt === expiresAt
     );
   }
 
-  function isCurrentProjectBindingAccessOwner(
+  async function isCurrentProjectBindingAccessOwner(
     record: ProjectBindingHttpRecord,
     ownerKey: string,
-  ): boolean {
+  ): Promise<boolean> {
     if (record.ownerKey !== ownerKey) return false;
-    if (!remoteCredentialStore) return ownerKey === "development_unauthenticated";
-    const client = remoteCredentialStore
-      .listClients()
-      .find((candidate) => candidate.clientId === ownerKey);
+    if (!remoteCredentialService) return ownerKey === "development_unauthenticated";
+    const clients = await Promise.resolve(remoteCredentialAdministrationStore?.listClients() ?? []);
+    const client = clients.find((candidate) => candidate.clientId === ownerKey);
     return client?.role === "access" && client.revokedAt === undefined;
   }
 
@@ -1740,7 +2100,11 @@ export function createHttpServeApp(
     const current = projectBindingSessions.get(record.bindingId) === record;
     const target = current ? record : candidate;
     if (!target) return;
-    if (current && !record.terminal) terminalizeProjectBindingRecord(record);
+    if (current && !record.terminal) {
+      terminalizeProjectBindingRecord(record);
+      record.lease?.release();
+      record.lease = undefined;
+    }
     const terminal = current ? record : terminalProjectBindingCandidate(target);
 
     await projectBindingWorkspaceStore.writeLease(projectBindingLease(terminal));
@@ -1817,7 +2181,7 @@ export function createHttpServeApp(
     return await enqueueProjectBindingMutation(record, async () => {
       const generation = record.generation;
       const expiresAt = record.expiresAt;
-      if (!canMutateProjectBindingRecord(record, ownerKey)) {
+      if (!(await canMutateProjectBindingRecord(record, ownerKey))) {
         await terminalizeProjectBindingRecordInQueue(record);
         return false;
       }
@@ -1830,7 +2194,7 @@ export function createHttpServeApp(
         record.generation === generation + 1 &&
         record.expiresAt === expiresAt &&
         Date.parse(expiresAt) > Date.now() &&
-        isCurrentProjectBindingAccessOwner(record, ownerKey);
+        (await isCurrentProjectBindingAccessOwner(record, ownerKey));
       if (projectBindingSessions.get(record.bindingId) === record) {
         projectBindingSessions.delete(record.bindingId);
       }
@@ -1839,7 +2203,7 @@ export function createHttpServeApp(
   }
 
   function projectBindingOwnerKey(c: Parameters<MiddlewareHandler>[0]): string {
-    if (!remoteCredentialStore) return "development_unauthenticated";
+    if (!remoteCredentialService) return "development_unauthenticated";
     const client = authenticatedRemoteClients.get(c.req.raw);
     if (!client) {
       throw new CapletsError("AUTH_FAILED", "Remote client credential is required.");
@@ -1924,11 +2288,11 @@ export function createHttpServeApp(
     return value as ProjectBindingState;
   }
 
-  function dashboardSessionForRequest(
+  async function dashboardSessionForRequest(
     c: Parameters<MiddlewareHandler>[0],
     csrf: { requireCsrf?: boolean; csrfToken?: string | undefined } = {},
-  ): { ok: true; session: DashboardSessionView } | { ok: false; response: Response } {
-    return validateDashboardSession(c.req.header("cookie"), csrf, c.req.url, (name) =>
+  ): Promise<{ ok: true; session: DashboardSessionView } | { ok: false; response: Response }> {
+    return await validateDashboardSession(c.req.header("cookie"), csrf, c.req.url, (name) =>
       c.req.header(name),
     );
   }
@@ -1982,13 +2346,13 @@ export function createHttpServeApp(
     );
   }
 
-  function validateDashboardSession(
+  async function validateDashboardSession(
     cookieHeader: string | undefined,
     csrf: { requireCsrf?: boolean; csrfToken?: string | undefined },
     requestUrl: string,
     header: (name: string) => string | undefined,
-  ): { ok: true; session: DashboardSessionView } | { ok: false; response: Response } {
-    if (!remoteCredentialStore && options.auth.type === "development_unauthenticated") {
+  ): Promise<{ ok: true; session: DashboardSessionView } | { ok: false; response: Response }> {
+    if (!remoteCredentialService && options.auth.type === "development_unauthenticated") {
       if (!isVerifiedLoopbackDevelopmentRequest(options, requestUrl, header)) {
         return { ok: false, response: new Response("Forbidden", { status: 403 }) };
       }
@@ -2009,21 +2373,24 @@ export function createHttpServeApp(
         },
       };
     }
-    if (!remoteCredentialStore) {
+    if (!remoteCredentialService) {
       return {
         ok: false,
         response: new Response(JSON.stringify({ error: "not_found" }), { status: 404 }),
       };
     }
     try {
-      return {
-        ok: true,
-        session: dashboardSessionStore.validate({
-          cookieHeader,
-          credentialStore: remoteCredentialStore,
-          ...csrf,
-        }),
-      };
+      const session = dashboardAuthoritySessionStore
+        ? await dashboardAuthoritySessionStore.validate({
+            cookieHeader,
+            ...csrf,
+          })
+        : await dashboardSessionStore.validate({
+            cookieHeader,
+            credentialStore: remoteCredentialStore!,
+            ...csrf,
+          });
+      return { ok: true, session };
     } catch (error) {
       if (error instanceof CapletsError && error.code === "REQUEST_INVALID") {
         return { ok: false, response: new Response("Forbidden", { status: 403 }) };
@@ -2081,13 +2448,22 @@ export function createHttpServeApp(
     }
     await Promise.allSettled(
       [...sessions.values()].map(async (session) => {
-        await session.server.close();
+        try {
+          await session.server.close();
+        } finally {
+          session.lease?.release();
+        }
       }),
     );
     sessions.clear();
-    await Promise.allSettled([...attachSessions.values()].map((record) => record.session.close()));
+    await Promise.allSettled(
+      [...attachSessions.values()].map((record) => closeAttachSessionRecord(record)),
+    );
     attachSessions.clear();
-    await Promise.allSettled([...defaultAttachSessions.values()].map((session) => session.close()));
+    await Promise.allSettled(defaultAttachSessionPromises.values());
+    await Promise.allSettled(
+      [...defaultAttachSessions.values()].map((record) => closeAttachSessionRecord(record)),
+    );
     defaultAttachSessions.clear();
     defaultAttachSessionPromises.clear();
     await Promise.all(
@@ -2125,6 +2501,7 @@ function controlContext(
       publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
     ).toString(),
     writeErr,
+    ...(io.runtime ? { runtime: io.runtime } : {}),
   };
 }
 
@@ -2556,9 +2933,20 @@ export async function serveHttp(
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
 ): Promise<void> {
   const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
-  const engine = new CapletsEngine(remoteEngineOptions);
-  const app = createHttpServeApp(options, engine, {
+  const prepared = await prepareHttpRuntime(remoteEngineOptions, options.remoteCredentialStateDir);
+  const app = createHttpServeApp(options, prepared.engine, {
     writeErr,
+    ...(prepared.runtime ? { runtime: prepared.runtime } : {}),
+    ...(prepared.vaultStore ? { vaultStore: prepared.vaultStore } : {}),
+    ...(prepared.remoteCredentialAuthorityStore
+      ? { remoteCredentialAuthorityStore: prepared.remoteCredentialAuthorityStore }
+      : {}),
+    ...(prepared.dashboardAuthoritySessionStore
+      ? { dashboardAuthoritySessionStore: prepared.dashboardAuthoritySessionStore }
+      : {}),
+    ...(prepared.dashboardAuthorityActivityLog
+      ? { dashboardAuthorityActivityLog: prepared.dashboardAuthorityActivityLog }
+      : {}),
     control: {
       ...remoteEngineOptions,
       projectCapletsRoot: projectCapletsRootForEngineOptions(remoteEngineOptions),
@@ -2586,7 +2974,7 @@ export async function serveHttp(
     },
   );
 
-  installHttpSignalHandlers(server, app, engine, writeErr);
+  installHttpSignalHandlers(server, app, prepared.engine, writeErr, prepared.runtime);
 }
 
 export async function serveHttpWithSessionFactory(
@@ -2600,9 +2988,20 @@ export async function serveHttpWithSessionFactory(
   engineOptions: CapletsEngineOptions = {},
 ): Promise<void> {
   const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
-  const engine = new CapletsEngine(remoteEngineOptions);
-  const app = createHttpServeApp(options, engine, {
+  const prepared = await prepareHttpRuntime(remoteEngineOptions, options.remoteCredentialStateDir);
+  const app = createHttpServeApp(options, prepared.engine, {
     writeErr,
+    ...(prepared.runtime ? { runtime: prepared.runtime } : {}),
+    ...(prepared.vaultStore ? { vaultStore: prepared.vaultStore } : {}),
+    ...(prepared.remoteCredentialAuthorityStore
+      ? { remoteCredentialAuthorityStore: prepared.remoteCredentialAuthorityStore }
+      : {}),
+    ...(prepared.dashboardAuthoritySessionStore
+      ? { dashboardAuthoritySessionStore: prepared.dashboardAuthoritySessionStore }
+      : {}),
+    ...(prepared.dashboardAuthorityActivityLog
+      ? { dashboardAuthorityActivityLog: prepared.dashboardAuthorityActivityLog }
+      : {}),
     exposeAttach: io.exposeAttach ?? false,
     sessionFactory: createSession,
     ...(io.attachSessionFactory ? { attachSessionFactory: io.attachSessionFactory } : {}),
@@ -2635,7 +3034,114 @@ export async function serveHttpWithSessionFactory(
     },
   );
 
-  installHttpSignalHandlers(server, app, engine, writeErr);
+  installHttpSignalHandlers(server, app, prepared.engine, writeErr, prepared.runtime);
+}
+async function prepareHttpRuntime(
+  engineOptions: CapletsEngineOptions,
+  remoteCredentialStateDir?: string,
+): Promise<{
+  engine: CapletsEngine;
+  runtime?: PreparedRuntimeHost | undefined;
+  vaultStore?: VaultAdministrationStore | undefined;
+  remoteCredentialAuthorityStore?: AuthorityRemoteServerCredentialStore | undefined;
+  dashboardAuthoritySessionStore?: AuthorityDashboardSessionStore | undefined;
+  dashboardAuthorityActivityLog?: AuthorityDashboardActivityLog | undefined;
+}> {
+  if (!configuredSharedAuthority(engineOptions)) {
+    return { engine: new CapletsEngine(engineOptions) };
+  }
+  const runtime = await assembleCapletsHost({
+    configPath: engineOptions.configPath,
+    projectConfigPath: engineOptions.projectConfigPath,
+    engineOptions: { ...engineOptions, watch: false },
+  });
+  const vaultStore = authorityVaultStoreForRuntime(runtime);
+  const authorityOptions = authorityDomainOptionsForRuntime(runtime);
+  if (!vaultStore || !authorityOptions) {
+    await runtime.close().catch(() => undefined);
+    throw new CapletsError("SERVER_UNAVAILABLE", "Shared authority stores are unavailable.");
+  }
+  try {
+    await vaultStore.listValues();
+  } catch (error) {
+    await runtime.close().catch(() => undefined);
+    throw error;
+  }
+  return {
+    engine: runtime.engine,
+    runtime,
+    vaultStore,
+    remoteCredentialAuthorityStore: new AuthorityRemoteServerCredentialStore({
+      ...authorityOptions,
+      principalId: "remote-credentials",
+      ...(remoteCredentialStateDir ? { dir: remoteCredentialStateDir } : {}),
+    }),
+    dashboardAuthoritySessionStore: new AuthorityDashboardSessionStore({
+      ...authorityOptions,
+      principalId: "dashboard-session",
+    }),
+    dashboardAuthorityActivityLog: new AuthorityDashboardActivityLog({
+      ...authorityOptions,
+      principalId: "dashboard-activity",
+    }),
+  };
+}
+
+function authorityDomainOptionsForRuntime(
+  runtime: PreparedRuntimeHost | undefined,
+): AuthorityDomainCodecOptions | undefined {
+  if (!runtime || !runtime.coordinator) return undefined;
+  const key = runtime.coordinator.bootstrap.secrets.vaultKey;
+  if (key === undefined) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Shared authority HTTP operations require a stable external vault key reference.",
+    );
+  }
+  const authority = runtime.coordinator.authority;
+  if (!authority) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Shared authority is unavailable for HTTP operations.",
+    );
+  }
+  return {
+    authority,
+    authorityId: runtime.coordinator.bootstrap.bootstrap.authorityId,
+    currentHostId: "http-current-host",
+    encryptionKey: key,
+  };
+}
+
+function authorityVaultStoreForRuntime(
+  runtime: PreparedRuntimeHost | undefined,
+): AuthorityVaultStore | undefined {
+  const authorityOptions = authorityDomainOptionsForRuntime(runtime);
+  if (!authorityOptions) return undefined;
+  return new AuthorityVaultStore({
+    authority: authorityOptions.authority,
+    authorityId: authorityOptions.authorityId,
+    currentHostId: authorityOptions.currentHostId,
+    principalId: "vault",
+    key: authorityOptions.encryptionKey,
+  });
+}
+
+function configuredSharedAuthority(engineOptions: CapletsEngineOptions): boolean {
+  try {
+    const loaded = loadAuthorityBootstrap(
+      engineOptions.configPath,
+      process.env,
+      undefined,
+      engineOptions.projectConfigPath === undefined
+        ? {}
+        : { projectPath: engineOptions.projectConfigPath },
+    );
+    return loaded.bootstrap.provider !== "filesystem";
+  } catch (error) {
+    if (error instanceof CapletsError && error.code === "CONFIG_NOT_FOUND") return false;
+    throw error;
+  }
 }
 
 export function sanitizeRemoteEngineOptions(
@@ -2692,6 +3198,13 @@ export function servicePaths(base: string): {
   dashboardLogout: string;
   dashboardSummary: string;
   dashboardCaplets: string;
+  dashboardCapletCreate: string;
+  dashboardCapletUpdate: string;
+  dashboardCapletDelete: string;
+  dashboardSettings: string;
+  dashboardSettingsUpdate: string;
+  dashboardSetupGrant: string;
+  dashboardSetupRevoke: string;
   dashboardCatalogSearch: string;
   dashboardCatalogDetail: string;
   dashboardCatalogInstall: string;
@@ -2747,6 +3260,13 @@ export function servicePaths(base: string): {
     dashboardLogout: routePath(dashboardApi, "logout"),
     dashboardSummary: routePath(dashboardApi, "summary"),
     dashboardCaplets: routePath(dashboardApi, "caplets"),
+    dashboardCapletCreate: routePath(dashboardApi, "caplets/create"),
+    dashboardCapletUpdate: routePath(dashboardApi, "caplets/update"),
+    dashboardCapletDelete: routePath(dashboardApi, "caplets/delete"),
+    dashboardSettings: routePath(dashboardApi, "settings"),
+    dashboardSettingsUpdate: routePath(dashboardApi, "settings/update"),
+    dashboardSetupGrant: routePath(dashboardApi, "setup/grant"),
+    dashboardSetupRevoke: routePath(dashboardApi, "setup/revoke"),
     dashboardCatalogSearch: routePath(dashboardApi, "catalog/search"),
     dashboardCatalogDetail: routePath(dashboardApi, "catalog/detail"),
     dashboardCatalogInstall: routePath(dashboardApi, "catalog/install"),
@@ -2776,15 +3296,21 @@ async function createHttpSession(
   sessionId: string,
   options: HttpServeOptions,
   onClose: (sessionId: string) => Promise<void>,
+  context?: HttpMcpSessionContext,
 ): Promise<HttpSession> {
   const transport = new StreamableHTTPTransport({
     sessionIdGenerator: () => sessionId,
     onsessionclosed: onClose,
     ...(options.loopback ? dnsRebindingOptions(options) : {}),
   });
-  const server = await createServer();
-  await server.connect(transport);
-  return { server, transport };
+  const server = await createServer(context);
+  try {
+    await server.connect(transport);
+  } catch (error) {
+    await server.close().catch(() => undefined);
+    throw error;
+  }
+  return { server, transport, lease: context?.lease };
 }
 
 function requiredQueryParam(params: URLSearchParams, key: string): string {
@@ -2837,6 +3363,12 @@ function isDashboardActivityAction(value: string): value is DashboardActivityAct
     value === "remote_client_role_changed" ||
     value === "catalog_installed" ||
     value === "catalog_updated" ||
+    value === "caplet_created" ||
+    value === "caplet_updated" ||
+    value === "caplet_deleted" ||
+    value === "settings_updated" ||
+    value === "setup_granted" ||
+    value === "setup_revoked" ||
     value === "vault_set" ||
     value === "vault_deleted" ||
     value === "vault_grant_added" ||
@@ -2846,9 +3378,373 @@ function isDashboardActivityAction(value: string): value is DashboardActivityAct
   );
 }
 
+type DashboardMutationResponse = Record<string, unknown>;
+
+function dashboardMutationResponse(outcome: unknown): DashboardMutationResponse {
+  if (!isRecord(outcome)) return {};
+  const response: DashboardMutationResponse = {
+    operation: outcome.kind,
+  };
+  for (const key of ["status", "activation", "replayed", "deleted"] as const) {
+    if (outcome[key] !== undefined) response[key] = outcome[key];
+  }
+  const generation = dashboardGenerationIdentity(outcome.generation);
+  const committedGeneration = dashboardGenerationIdentity(outcome.committedGeneration);
+  if (generation) response.generation = generation;
+  if (committedGeneration) response.committedGeneration = committedGeneration;
+  if (typeof outcome.idempotencyKey === "string") response.idempotencyKey = outcome.idempotencyKey;
+  if (isRecord(outcome.caplet)) response.caplet = outcome.caplet;
+  if (outcome.settings !== undefined) response.settings = dashboardSafeSettings(outcome.settings);
+  if (isRecord(outcome.approval)) {
+    response.approval = {
+      projectFingerprint:
+        typeof outcome.approval.projectFingerprint === "string"
+          ? outcome.approval.projectFingerprint
+          : "default",
+      capletId:
+        typeof outcome.approval.capletId === "string" ? outcome.approval.capletId : "caplet",
+      contentHash:
+        typeof outcome.approval.contentHash === "string" ? outcome.approval.contentHash : "unknown",
+      targetKind: outcome.approval.targetKind,
+      decision: outcome.approval.decision,
+      approvedAt: outcome.approval.approvedAt,
+    };
+  }
+  return response;
+}
+function dashboardSafeSettings(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const safe: Record<string, unknown> = {};
+  for (const key of ["telemetry", "defaultSearchLimit", "maxSearchLimit"] as const) {
+    if (typeof value[key] === "boolean" || typeof value[key] === "number") safe[key] = value[key];
+  }
+  const serve = isRecord(value.serve) ? value.serve : undefined;
+  if (serve) {
+    const safeServe: Record<string, unknown> = {};
+    if (typeof serve.port === "number") safeServe.port = serve.port;
+    if (typeof serve.trustProxy === "boolean") safeServe.trustProxy = serve.trustProxy;
+    if (Object.keys(safeServe).length) safe.serve = safeServe;
+  }
+  for (const [group, keys] of [
+    ["completion", ["discoveryTimeoutMs", "overallTimeoutMs", "cacheTtlMs", "negativeCacheTtlMs"]],
+    ["options", ["exposure", "exposureDiscoveryTimeoutMs", "exposureDiscoveryConcurrency"]],
+  ] as const) {
+    const source = isRecord(value[group]) ? value[group] : undefined;
+    if (!source) continue;
+    const safeGroup: Record<string, unknown> = {};
+    for (const key of keys) {
+      if (
+        typeof source[key] === "number" ||
+        (group === "options" && key === "exposure" && typeof source[key] === "string")
+      ) {
+        safeGroup[key] = source[key];
+      }
+    }
+    if (Object.keys(safeGroup).length) safe[group] = safeGroup;
+  }
+  return safe;
+}
+
+function dashboardMutationFields(input: Record<string, unknown>): {
+  expectedGeneration?: AuthorityGenerationIdentity | null;
+  idempotencyKey: string;
+} {
+  const expectedValue = input.expectedGeneration;
+  let expectedGeneration: AuthorityGenerationIdentity | null | undefined;
+  if (expectedValue === null) {
+    expectedGeneration = null;
+  } else if (expectedValue !== undefined) {
+    if (!isRecord(expectedValue)) {
+      throw new CapletsError("REQUEST_INVALID", "expectedGeneration is invalid.");
+    }
+    assertDashboardKeys(
+      expectedValue,
+      ["authorityId", "id", "sequence", "predecessorId"],
+      "expectedGeneration",
+    );
+    expectedGeneration = dashboardGenerationIdentity(expectedValue);
+    if (!expectedGeneration) {
+      throw new CapletsError("REQUEST_INVALID", "expectedGeneration is invalid.");
+    }
+  }
+  const rawIntent = input.idempotencyKey;
+  let idempotencyKey: string;
+  if (rawIntent === undefined) {
+    idempotencyKey = randomUUID();
+  } else if (
+    typeof rawIntent === "string" &&
+    rawIntent.trim().length > 0 &&
+    rawIntent.trim().length <= 128 &&
+    /^[A-Za-z0-9._:-]+$/u.test(rawIntent.trim())
+  ) {
+    idempotencyKey = rawIntent.trim();
+  } else {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "idempotencyKey must contain 1 to 128 safe intent characters.",
+    );
+  }
+  return {
+    ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
+    idempotencyKey,
+  };
+}
+
+function dashboardGenerationIdentity(value: unknown): AuthorityGenerationIdentity | null {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.authorityId !== "string" ||
+    value.authorityId.length < 1 ||
+    value.authorityId.length > 256 ||
+    typeof value.id !== "string" ||
+    value.id.length < 1 ||
+    value.id.length > 256 ||
+    typeof value.sequence !== "number" ||
+    !Number.isSafeInteger(value.sequence) ||
+    value.sequence < 0 ||
+    (value.predecessorId !== null && typeof value.predecessorId !== "string")
+  ) {
+    return null;
+  }
+  return {
+    authorityId: value.authorityId,
+    id: value.id,
+    sequence: value.sequence,
+    predecessorId: value.predecessorId,
+  };
+}
+
+function dashboardCapletRecord(
+  input: Record<string, unknown>,
+  allowTopLevelId = false,
+): AuthorityCapletRecord {
+  assertDashboardKeys(
+    input,
+    allowTopLevelId
+      ? ["record", "id", "expectedGeneration", "idempotencyKey"]
+      : ["record", "expectedGeneration", "idempotencyKey"],
+    "Caplet request",
+  );
+  const raw = input.record;
+  if (!isRecord(raw)) {
+    throw new CapletsError("REQUEST_INVALID", "record must be a structured Caplet object.");
+  }
+  assertDashboardKeys(raw, ["id", "name", "description", "backend"], "Caplet record");
+  const id = stringField(raw, "id");
+  const name = dashboardCapletText(raw, "name", 80);
+  const description = dashboardCapletText(raw, "description", 1_500);
+  const backend = dashboardCapletBackend(raw.backend);
+  return {
+    id,
+    name,
+    description,
+    config: {
+      version: 1,
+      mcpServers: {
+        [id]: {
+          name,
+          description,
+          ...backend,
+        },
+      },
+    },
+  };
+}
+
+function dashboardCapletText(
+  input: Record<string, unknown>,
+  key: string,
+  maxLength: number,
+): string {
+  const value = stringField(input, key);
+  if (value.length > maxLength) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be at most ${maxLength} characters.`);
+  }
+  if (key === "description" && value.trim().length < 10) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "description must contain at least 10 non-whitespace characters.",
+    );
+  }
+  return value;
+}
+
+function dashboardCapletBackend(value: unknown): {
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+} {
+  if (!isRecord(value)) {
+    throw new CapletsError("REQUEST_INVALID", "record.backend must be a structured MCP backend.");
+  }
+  assertDashboardKeys(value, ["transport", "command", "args", "url"], "record.backend");
+  const transport = stringField(value, "transport");
+  if (transport === "stdio") {
+    const command = stringField(value, "command");
+    const args = dashboardCapletArgs(value.args);
+    return { transport, command, ...(args ? { args } : {}) };
+  }
+  if (transport === "http") {
+    const url = stringField(value, "url");
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new CapletsError("REQUEST_INVALID", "record.backend.url must be a valid URL.");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new CapletsError("REQUEST_INVALID", "record.backend.url must use HTTP or HTTPS.");
+    }
+    if (parsed.username || parsed.password) {
+      throw new CapletsError("REQUEST_INVALID", "record.backend.url must not contain credentials.");
+    }
+    if (!isAllowedRemoteUrl(url)) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "record.backend.url must use HTTPS except loopback development URLs.",
+      );
+    }
+    return { transport, url };
+  }
+  throw new CapletsError("REQUEST_INVALID", "record.backend.transport must be stdio or http.");
+}
+
+function dashboardCapletArgs(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > 128 ||
+    value.some((entry) => typeof entry !== "string" || entry.length > 2_000)
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "record.backend.args must contain at most 128 short strings.",
+    );
+  }
+  return value as string[];
+}
+
+function dashboardJsonObject(
+  value: Record<string, unknown>,
+  label: string,
+): Record<string, unknown> {
+  const serialized = JSON.stringify(value);
+  if (serialized.length > 1_000_000) {
+    throw new CapletsError("REQUEST_INVALID", `${label} is too large.`);
+  }
+  const clone = JSON.parse(serialized) as unknown;
+  if (!isRecord(clone))
+    throw new CapletsError("REQUEST_INVALID", `${label} must be a JSON object.`);
+  return clone;
+}
+
+function dashboardSettingsPatch(input: Record<string, unknown>): CurrentHostSettingsPatch {
+  assertDashboardKeys(
+    input,
+    ["settings", "expectedGeneration", "idempotencyKey"],
+    "Settings request",
+  );
+  const value = input.settings;
+  if (!isRecord(value))
+    throw new CapletsError("REQUEST_INVALID", "settings must be a structured object.");
+  assertDashboardKeys(
+    value,
+    ["telemetry", "defaultSearchLimit", "maxSearchLimit", "serve", "completion", "options"],
+    "settings",
+  );
+  const settings = dashboardJsonObject(value, "settings") as CurrentHostSettingsPatch;
+  if (settings.serve !== undefined) {
+    if (!isRecord(settings.serve)) {
+      throw new CapletsError("REQUEST_INVALID", "settings.serve must be an object.");
+    }
+    assertDashboardKeys(settings.serve, ["port", "trustProxy"], "settings.serve");
+  }
+  if (settings.completion !== undefined) {
+    if (!isRecord(settings.completion))
+      throw new CapletsError("REQUEST_INVALID", "settings.completion must be an object.");
+    assertDashboardKeys(
+      settings.completion,
+      ["discoveryTimeoutMs", "overallTimeoutMs", "cacheTtlMs", "negativeCacheTtlMs"],
+      "settings.completion",
+    );
+  }
+  if (settings.options !== undefined) {
+    if (!isRecord(settings.options))
+      throw new CapletsError("REQUEST_INVALID", "settings.options must be an object.");
+    assertDashboardKeys(
+      settings.options,
+      ["exposure", "exposureDiscoveryTimeoutMs", "exposureDiscoveryConcurrency"],
+      "settings.options",
+    );
+  }
+  return settings;
+}
+
+function dashboardSetupMutation(input: Record<string, unknown>): {
+  capletId: string;
+  contentHash: string;
+  targetKind: "local_host" | "remote_host" | "hosted_sandbox";
+  projectFingerprint?: string;
+  actor?: "cli-interactive" | "cli-yes" | "ui" | "automation";
+} {
+  assertDashboardKeys(
+    input,
+    [
+      "capletId",
+      "contentHash",
+      "targetKind",
+      "projectFingerprint",
+      "actor",
+      "expectedGeneration",
+      "idempotencyKey",
+    ],
+    "Setup request",
+  );
+  const targetKind = stringField(input, "targetKind");
+  if (
+    targetKind !== "local_host" &&
+    targetKind !== "remote_host" &&
+    targetKind !== "hosted_sandbox"
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "targetKind is invalid.");
+  }
+  const actor = optionalStringField(input, "actor");
+  if (
+    actor !== undefined &&
+    actor !== "cli-interactive" &&
+    actor !== "cli-yes" &&
+    actor !== "ui" &&
+    actor !== "automation"
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "actor is invalid.");
+  }
+  const projectFingerprint = optionalStringField(input, "projectFingerprint");
+  return {
+    capletId: stringField(input, "capletId"),
+    contentHash: stringField(input, "contentHash"),
+    targetKind,
+    ...(projectFingerprint === undefined ? {} : { projectFingerprint }),
+    ...(actor === undefined ? {} : { actor }),
+  };
+}
+
+function assertDashboardKeys(
+  input: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(input)) {
+    if (!allowedSet.has(key)) {
+      throw new CapletsError("REQUEST_INVALID", `${label} field ${key} is not allowlisted.`);
+    }
+  }
+}
+
 function routeAuth(
   options: HttpServeOptions,
-  remoteCredentialStore: RemoteServerCredentialStore | undefined,
+  remoteCredentialService: RemoteCredentialService | undefined,
   basePath: string,
   requiredRole: RemoteClientRole | undefined,
   retainAuthenticatedClient:
@@ -2860,7 +3756,7 @@ function routeAuth(
       await next();
     };
   }
-  if (!remoteCredentialStore) {
+  if (!remoteCredentialService) {
     throw new CapletsError(
       "REQUEST_INVALID",
       "Remote credential auth requires a server credential store.",
@@ -2873,7 +3769,7 @@ function routeAuth(
       return c.text("Unauthorized", 401);
     }
     try {
-      const client = remoteCredentialStore.validateAccessToken({
+      const client = await remoteCredentialService.validateAccessToken({
         hostUrl: remoteCredentialHostUrl(c.req.url, basePath, options, (name) =>
           c.req.header(name),
         ),
@@ -3081,16 +3977,47 @@ function remoteCredentialErrorResponse(error: unknown): Response {
 
 function currentHostErrorResponse(error: unknown): Response {
   const safe = toCurrentHostSafeError(error);
+  const details = dashboardSafeErrorDetails(safe.details);
   return Response.json(
     {
       ok: false,
       error: {
         code: safe.code,
         message: safe.message,
+        ...(details ? { details } : {}),
       },
     },
-    { status: httpStatusForSafeError(safe.code) },
+    {
+      status:
+        details && isRecord(details) && details.kind === "conflict"
+          ? 409
+          : httpStatusForSafeError(safe.code),
+    },
   );
+}
+
+function dashboardSafeErrorDetails(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const generation = dashboardGenerationIdentity(value.activeGeneration);
+  if (value.kind === "conflict") {
+    return {
+      kind: "conflict",
+      activeGeneration: generation,
+      changedGeneration: generation,
+    };
+  }
+  if (value.staged === true && value.authority === false) {
+    const provenance =
+      isRecord(value.provenance) && typeof value.provenance.kind === "string"
+        ? { kind: value.provenance.kind }
+        : undefined;
+    return {
+      kind: "staged",
+      ...(typeof value.id === "string" ? { id: value.id } : {}),
+      ...(provenance ? { provenance } : {}),
+    };
+  }
+  return undefined;
 }
 
 function httpStatusForSafeError(code: CapletsErrorCode): number {
@@ -3176,6 +4103,7 @@ function installHttpSignalHandlers(
   app: CapletsHttpApp,
   engine: CapletsEngine,
   writeErr: (value: string) => void,
+  runtime?: PreparedRuntimeHost,
 ): void {
   let closing: Promise<void> | undefined;
   const close = async () => {
@@ -3183,7 +4111,8 @@ function installHttpSignalHandlers(
       await app.closeCapletsSessions();
       closeAllServerConnections(server);
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      await engine.close();
+      if (runtime) await runtime.close();
+      else await engine.close();
     })();
     return closing;
   };

@@ -1,9 +1,12 @@
 export {
   createNativeCapletsService,
+  createAsyncNativeCapletsService,
+  type AsyncNativeCapletsServiceOptions,
   type NativeCapletTool,
   type NativeCapletsService,
   type NativeCapletsServiceOptions,
   type NativeCapletsToolsChangedListener,
+  type PreparedNativeCapletsServiceHost,
 } from "./native/service";
 export {
   registerNativeCapletsProcessCleanup,

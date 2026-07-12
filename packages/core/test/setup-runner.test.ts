@@ -8,6 +8,7 @@ import { capletSetupContentHash } from "../src/setup/hash";
 import { LocalSetupStore } from "../src/setup/local-store";
 import { runCapletSetup, type SetupSpawn } from "../src/setup/runner";
 import type { SetupAttempt, SetupTargetKind } from "../src/setup/types";
+import { createFilesystemAuthority } from "../src/storage/filesystem-authority";
 
 describe("setup runner", () => {
   afterEach(() => {
@@ -182,6 +183,150 @@ describe("setup runner", () => {
         store.getApproval("project-a", "ast-grep", "hash", "local_host"),
       ).resolves.toBeUndefined();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("replicates setup grant, deny, and revoke through active authority generations", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-authority-"));
+    const authorityA = await createFilesystemAuthority({
+      root: dir,
+      authorityId: "host-a",
+      namespace: "setup",
+    });
+    const authorityB = await createFilesystemAuthority({
+      root: dir,
+      authorityId: "host-a",
+      namespace: "setup",
+    });
+    const storeA = new LocalSetupStore({
+      authority: authorityA,
+      authorityId: "host-a",
+      currentHostId: "host-a",
+      principalId: "operator-a",
+      baseDir: join(dir, "replica-a"),
+    });
+    const storeB = new LocalSetupStore({
+      authority: authorityB,
+      authorityId: "host-a",
+      currentHostId: "host-b",
+      principalId: "operator-b",
+      baseDir: join(dir, "replica-b"),
+    });
+    try {
+      const granted = await storeA.grant({
+        projectFingerprint: "project",
+        capletId: "ast-grep",
+        contentHash: "hash",
+        targetKind: "hosted_sandbox",
+        actor: "ui",
+      });
+      await expect(
+        storeB.getApproval("project", "ast-grep", "hash", "hosted_sandbox"),
+      ).resolves.toMatchObject({
+        decision: "grant",
+        generation: granted.generation,
+        contentHash: "hash",
+      });
+      await expect(
+        storeB.grant({
+          projectFingerprint: "project",
+          capletId: "ast-grep",
+          contentHash: "hash",
+          targetKind: "hosted_sandbox",
+          actor: "ui",
+          expectedGeneration: null,
+        }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+
+      const denied = await storeB.deny({
+        projectFingerprint: "project",
+        capletId: "ast-grep",
+        contentHash: "hash",
+        targetKind: "hosted_sandbox",
+        actor: "ui",
+        expectedGeneration: granted.generation,
+      });
+      await expect(
+        storeA.getApproval("project", "ast-grep", "hash", "hosted_sandbox"),
+      ).resolves.toMatchObject({
+        decision: "deny",
+        generation: denied.generation,
+      });
+
+      const revoked = await storeA.revoke({
+        projectFingerprint: "project",
+        capletId: "ast-grep",
+        contentHash: "hash",
+        targetKind: "hosted_sandbox",
+        actor: "ui",
+        expectedGeneration: denied.generation,
+      });
+      await expect(
+        storeB.getApproval("project", "ast-grep", "hash", "hosted_sandbox"),
+      ).resolves.toMatchObject({
+        decision: "revoke",
+        generation: revoked.generation,
+      });
+
+      const generation = await authorityA.readGeneration(revoked.generation!.id);
+      expect(generation.snapshot).toMatchObject({
+        setupApprovals: expect.any(Object),
+        setupActivity: expect.arrayContaining([
+          expect.objectContaining({ decision: "grant", contentHash: "hash" }),
+          expect.objectContaining({ decision: "deny", contentHash: "hash" }),
+          expect.objectContaining({ decision: "revoke", contentHash: "hash" }),
+        ]),
+      });
+      expect(generation.snapshot).not.toHaveProperty("snapshot");
+      await storeA.recordAttempt({ ...attempt(1), projectFingerprint: "project" });
+      expect(generation.snapshot).not.toHaveProperty("attempts");
+      expect(await storeB.listAttempts("project", "ast-grep")).toEqual([]);
+    } finally {
+      await authorityA.close();
+      await authorityB.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not authorize stale setup content hashes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-hash-"));
+    const authority = await createFilesystemAuthority({
+      root: dir,
+      authorityId: "host-a",
+      namespace: "setup",
+    });
+    const store = new LocalSetupStore({
+      authority,
+      authorityId: "host-a",
+      baseDir: join(dir, "replica"),
+    });
+    try {
+      await store.grant({
+        projectFingerprint: "project",
+        capletId: "ast-grep",
+        contentHash: "old-hash",
+        targetKind: "hosted_sandbox",
+        actor: "ui",
+      });
+      await expect(
+        store.getApproval("project", "ast-grep", "new-hash", "hosted_sandbox"),
+      ).resolves.toBeUndefined();
+      await expect(
+        runCapletSetup({
+          projectFingerprint: "project",
+          capletId: "ast-grep",
+          contentHash: "new-hash",
+          targetKind: "hosted_sandbox",
+          actor: "automation",
+          approved: true,
+          setup: { commands: [{ label: "must-not-run", command: "false" }] },
+          store,
+          spawn: vi.fn(successfulSpawn()),
+        }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    } finally {
+      await authority.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

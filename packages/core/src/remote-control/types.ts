@@ -2,6 +2,8 @@ import type { CapletsErrorCode } from "../errors";
 
 export type RemoteCliCommand =
   | "list"
+  | "status"
+  | "execute"
   | "inspect"
   | "check"
   | "tools"
@@ -20,6 +22,13 @@ export type RemoteCliCommand =
   | "add"
   | "install"
   | "update"
+  | "caplet_create"
+  | "caplet_update"
+  | "caplet_delete"
+  | "settings_get"
+  | "settings_update"
+  | "setup_grant"
+  | "setup_revoke"
   | "complete_cli"
   | "auth_login_start"
   | "auth_login_complete"

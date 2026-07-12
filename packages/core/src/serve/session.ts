@@ -26,6 +26,7 @@ import {
   emptyCodeModeRunMeta,
 } from "../code-mode/tool";
 import type { CapletsEngine, ResolvedExposureProjection } from "../engine";
+import type { RuntimeEpochLease } from "../storage/coordinator";
 import { CapletsError } from "../errors";
 import type {
   ExposureProjection,
@@ -51,10 +52,10 @@ const directToolSchemaCache = new WeakMap<Record<string, unknown>, z.ZodObject>(
 
 export type ToolServer = Pick<McpServer, "registerTool" | "connect" | "close"> &
   Partial<Pick<McpServer, "registerResource" | "registerPrompt">>;
-
 export type CapletsMcpSessionOptions = {
   server?: ToolServer;
   writeErr?: ((value: string) => void) | undefined;
+  runtimeLease?: RuntimeEpochLease | undefined;
 };
 
 type ToolRegistrationPlan = {
@@ -80,6 +81,7 @@ export class CapletsMcpSession {
   private projectionEpoch = 0;
   private reloadRefresh: Promise<void> = Promise.resolve();
   private closed = false;
+  private readonly runtimeLease: RuntimeEpochLease | undefined;
   private readonly writeErr: (value: string) => void;
 
   constructor(
@@ -92,6 +94,7 @@ export class CapletsMcpSession {
         name: "caplets",
         version: packageJsonVersion,
       });
+    this.runtimeLease = options.runtimeLease;
     this.writeErr =
       options.writeErr ??
       ((value) => {
@@ -153,7 +156,11 @@ export class CapletsMcpSession {
     this.unsubscribeReload();
     this.codeModeSessions.close();
     this.clearRegistrations();
-    await this.server.close();
+    try {
+      await this.server.close();
+    } finally {
+      this.runtimeLease?.release();
+    }
   }
 
   private reconcileFromProjection(

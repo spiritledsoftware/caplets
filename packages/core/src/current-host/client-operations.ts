@@ -1,5 +1,6 @@
 import { roleChangeMetadata } from "../dashboard/activity-log";
 import { CapletsError } from "../errors";
+import type { RemoteClientStatus, RemotePendingLoginStatus } from "../remote/server-credentials";
 import type {
   CurrentHostOperation,
   CurrentHostOperationOutcome,
@@ -29,48 +30,75 @@ type ClientChangeRoleOperation = Extract<CurrentHostOperation, { kind: "client_c
 type ClientChangeRoleOutcome = Extract<CurrentHostOperationOutcome, { kind: "client_change_role" }>;
 type SummaryOutcome = Extract<CurrentHostOperationOutcome, { kind: "summary" }>;
 
+export interface CurrentHostClientOperations {
+  summary(vaultCount: number, operation: SummaryOperation): Promise<SummaryOutcome>;
+  listClients(): Promise<ClientsListOutcome>;
+  listPendingLogins(): Promise<PendingLoginsListOutcome>;
+  approvePendingLogin(
+    principal: CurrentHostOperatorPrincipal,
+    operation: PendingLoginApproveOperation,
+  ): Promise<PendingLoginApproveOutcome>;
+  denyPendingLogin(
+    principal: CurrentHostOperatorPrincipal,
+    operation: PendingLoginDenyOperation,
+  ): Promise<PendingLoginDenyOutcome>;
+  revokeClient(
+    principal: CurrentHostOperatorPrincipal,
+    operation: ClientRevokeOperation,
+  ): Promise<ClientRevokeOutcome>;
+  changeClientRole(
+    principal: CurrentHostOperatorPrincipal,
+    operation: ClientChangeRoleOperation,
+  ): Promise<ClientChangeRoleOutcome>;
+}
+
 /** Current Host client and Pending Remote Login administration behind the facade. */
-export function createCurrentHostClientOperations(dependencies: CurrentHostOperationsDependencies) {
+export function createCurrentHostClientOperations(
+  dependencies: CurrentHostOperationsDependencies,
+): CurrentHostClientOperations {
   return {
-    summary: (vaultCount: number, operation: SummaryOperation): SummaryOutcome =>
-      summaryOutcome(dependencies, vaultCount, operation),
-    listClients: (): ClientsListOutcome => ({
+    summary: async (vaultCount: number, operation: SummaryOperation): Promise<SummaryOutcome> =>
+      await summaryOutcome(dependencies, vaultCount, operation),
+    listClients: async (): Promise<ClientsListOutcome> => ({
       kind: "clients_list",
-      clients: dependencies.remoteCredentialStore?.listClients() ?? [],
+      clients: await listClients(dependencies.remoteCredentialStore),
     }),
-    listPendingLogins: (): PendingLoginsListOutcome => ({
+    listPendingLogins: async (): Promise<PendingLoginsListOutcome> => ({
       kind: "pending_logins_list",
-      pendingLogins: (dependencies.remoteCredentialStore?.listPendingLogins() ?? []).filter(
+      pendingLogins: (await listPendingLogins(dependencies.remoteCredentialStore)).filter(
         (login) => login.status === "pending" || login.status === "approved",
       ),
     }),
-    approvePendingLogin: (
+    approvePendingLogin: async (
       principal: CurrentHostOperatorPrincipal,
       operation: PendingLoginApproveOperation,
-    ): PendingLoginApproveOutcome =>
-      pendingLoginApprovalOutcome(dependencies, principal, operation),
-    denyPendingLogin: (
+    ): Promise<PendingLoginApproveOutcome> =>
+      await pendingLoginApprovalOutcome(dependencies, principal, operation),
+    denyPendingLogin: async (
       principal: CurrentHostOperatorPrincipal,
       operation: PendingLoginDenyOperation,
-    ): PendingLoginDenyOutcome => pendingLoginDenialOutcome(dependencies, principal, operation),
-    revokeClient: (
+    ): Promise<PendingLoginDenyOutcome> =>
+      await pendingLoginDenialOutcome(dependencies, principal, operation),
+    revokeClient: async (
       principal: CurrentHostOperatorPrincipal,
       operation: ClientRevokeOperation,
-    ): ClientRevokeOutcome => clientRevokeOutcome(dependencies, principal, operation),
-    changeClientRole: (
+    ): Promise<ClientRevokeOutcome> =>
+      await clientRevokeOutcome(dependencies, principal, operation),
+    changeClientRole: async (
       principal: CurrentHostOperatorPrincipal,
       operation: ClientChangeRoleOperation,
-    ): ClientChangeRoleOutcome => clientRoleOutcome(dependencies, principal, operation),
+    ): Promise<ClientChangeRoleOutcome> =>
+      await clientRoleOutcome(dependencies, principal, operation),
   };
 }
 
-function summaryOutcome(
+async function summaryOutcome(
   dependencies: CurrentHostOperationsDependencies,
   vaultCount: number,
   operation: SummaryOperation,
-): SummaryOutcome {
-  const pendingLogins = dependencies.remoteCredentialStore?.listPendingLogins() ?? [];
-  const clients = dependencies.remoteCredentialStore?.listClients() ?? [];
+): Promise<SummaryOutcome> {
+  const pendingLogins = await listPendingLogins(dependencies.remoteCredentialStore);
+  const clients = await listClients(dependencies.remoteCredentialStore);
   const pending = pendingLogins.filter((login) => login.status === "pending");
   return {
     kind: "summary",
@@ -114,11 +142,23 @@ function summaryOutcome(
   };
 }
 
-function pendingLoginApprovalOutcome(
+async function listClients(
+  store: CurrentHostOperationsDependencies["remoteCredentialStore"],
+): Promise<RemoteClientStatus[]> {
+  return store ? await Promise.resolve(store.listClients()) : [];
+}
+
+async function listPendingLogins(
+  store: CurrentHostOperationsDependencies["remoteCredentialStore"],
+): Promise<RemotePendingLoginStatus[]> {
+  return store ? await Promise.resolve(store.listPendingLogins()) : [];
+}
+
+async function pendingLoginApprovalOutcome(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   operation: PendingLoginApproveOperation,
-): PendingLoginApproveOutcome {
+): Promise<PendingLoginApproveOutcome> {
   const flowId = requiredPendingLoginFlowId(operation.flowId);
   if (operation.grantedRole !== undefined) assertRemoteClientRole(operation.grantedRole);
   const store = dependencies.remoteCredentialStore;
@@ -130,10 +170,12 @@ function pendingLoginApprovalOutcome(
     return { kind: "pending_login_approve", status: "credential_store_unavailable" };
   }
   try {
-    const pendingLogin = store.approvePendingLoginFlow({
-      flowId,
-      ...(operation.grantedRole === undefined ? {} : { grantedRole: operation.grantedRole }),
-    });
+    const pendingLogin = await Promise.resolve(
+      store.approvePendingLoginFlow({
+        flowId,
+        ...(operation.grantedRole === undefined ? {} : { grantedRole: operation.grantedRole }),
+      }),
+    );
     dependencies.activityLog.append({
       actorClientId: principal.clientId,
       action: "pending_login_approved",
@@ -153,11 +195,11 @@ function pendingLoginApprovalOutcome(
   }
 }
 
-function pendingLoginDenialOutcome(
+async function pendingLoginDenialOutcome(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   operation: PendingLoginDenyOperation,
-): PendingLoginDenyOutcome {
+): Promise<PendingLoginDenyOutcome> {
   const flowId = requiredPendingLoginFlowId(operation.flowId);
   const store = dependencies.remoteCredentialStore;
   if (!store) {
@@ -168,7 +210,7 @@ function pendingLoginDenialOutcome(
     return { kind: "pending_login_deny", status: "credential_store_unavailable" };
   }
   try {
-    const pendingLogin = store.denyPendingLoginFlow({ flowId });
+    const pendingLogin = await Promise.resolve(store.denyPendingLoginFlow({ flowId }));
     dependencies.activityLog.append({
       actorClientId: principal.clientId,
       action: "pending_login_denied",
@@ -185,11 +227,11 @@ function pendingLoginDenialOutcome(
   }
 }
 
-function clientRevokeOutcome(
+async function clientRevokeOutcome(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   operation: ClientRevokeOperation,
-): ClientRevokeOutcome {
+): Promise<ClientRevokeOutcome> {
   const clientId = requiredRemoteClientId(operation.clientId);
   const store = dependencies.remoteCredentialStore;
   if (!store) {
@@ -200,8 +242,9 @@ function clientRevokeOutcome(
     return { kind: "client_revoke", status: "credential_store_unavailable", clientId };
   }
   try {
-    const client = store.listClients().find((candidate) => candidate.clientId === clientId);
-    const revoked = store.revokeClient(clientId);
+    const clients = await listClients(store);
+    const client = clients.find((candidate) => candidate.clientId === clientId);
+    const revoked = await Promise.resolve(store.revokeClient(clientId));
     if (revoked && !client?.revokedAt) {
       dependencies.activityLog.append({
         actorClientId: principal.clientId,
@@ -225,11 +268,11 @@ function clientRevokeOutcome(
   }
 }
 
-function clientRoleOutcome(
+async function clientRoleOutcome(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   operation: ClientChangeRoleOperation,
-): ClientChangeRoleOutcome {
+): Promise<ClientChangeRoleOutcome> {
   const clientId = requiredRemoteClientId(operation.clientId);
   assertRemoteClientRole(operation.role);
   const store = dependencies.remoteCredentialStore;
@@ -241,8 +284,9 @@ function clientRoleOutcome(
     return { kind: "client_change_role", status: "credential_store_unavailable", clientId };
   }
   try {
-    const before = store.listClients().find((candidate) => candidate.clientId === clientId);
-    const client = store.changeClientRole(clientId, operation.role);
+    const clients = await listClients(store);
+    const before = clients.find((candidate) => candidate.clientId === clientId);
+    const client = await Promise.resolve(store.changeClientRole(clientId, operation.role));
     if (!client) {
       return { kind: "client_change_role", status: "not_found", clientId, sessionEnded: false };
     }

@@ -15,6 +15,170 @@
       "type": "number",
       "const": 1
     },
+    "authority": {
+      "description": "Global-only Writable Authority bootstrap configuration.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "filesystem"
+            },
+            "authorityId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "namespace": {
+              "default": "default",
+              "type": "string",
+              "minLength": 1
+            },
+            "pollIntervalMs": {
+              "default": 2500,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 2500
+            },
+            "credentialRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "vaultKeyRef": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["provider", "authorityId"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "sqlite"
+            },
+            "authorityId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "namespace": {
+              "default": "default",
+              "type": "string",
+              "minLength": 1
+            },
+            "databasePath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pollIntervalMs": {
+              "default": 2500,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 2500
+            },
+            "credentialRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "vaultKeyRef": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["provider", "authorityId", "databasePath"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "postgresql"
+            },
+            "authorityId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "namespace": {
+              "default": "default",
+              "type": "string",
+              "minLength": 1
+            },
+            "connectionRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pollIntervalMs": {
+              "default": 2500,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 2500
+            },
+            "credentialRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "vaultKeyRef": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["provider", "authorityId", "connectionRef"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "s3"
+            },
+            "authorityId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "namespace": {
+              "default": "default",
+              "type": "string",
+              "minLength": 1
+            },
+            "bucket": {
+              "type": "string",
+              "minLength": 1
+            },
+            "region": {
+              "type": "string",
+              "minLength": 1
+            },
+            "endpoint": {
+              "type": "string",
+              "format": "uri"
+            },
+            "forcePathStyle": {
+              "type": "boolean"
+            },
+            "pollIntervalMs": {
+              "default": 2500,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 2500
+            },
+            "credentialRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "vaultKeyRef": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["provider", "authorityId", "bucket", "region"],
+          "additionalProperties": false
+        }
+      ]
+    },
     "defaultSearchLimit": {
       "default": 20,
       "description": "Default maximum number of same-server search results.",

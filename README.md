@@ -231,6 +231,18 @@ caplets vault access grant GH_TOKEN github --remote
 Vault values are not exposed through Code Mode, progressive tools, or native agent APIs. Unset or
 ungranted Vault references quarantine only the affected Caplet and appear in `caplets doctor`.
 
+## Self-hosted shared storage
+
+Self-hosted deployments choose exactly one Writable Authority—filesystem, local SQLite,
+PostgreSQL, or S3-compatible storage—while image- or mount-staged Caplets remain immutable
+read-only inputs. PostgreSQL is the networked SQL choice for replicas; SQLite is single-host.
+AWS S3 and Cloudflare R2 require credentialed live evidence before they should be called validated.
+
+See the [self-hosting storage guide](docs/product/self-hosting.md) for bootstrap examples,
+secret references, dashboard CRUD, health states, migration/backup/restore, and provider
+prerequisites. Embedding the runtime? Start with the
+[`@caplets/core` package API](packages/core/README.md).
+
 ## Anonymous Telemetry
 
 Caplets collects opt-out anonymous telemetry for product usage and reliability. The first eligible

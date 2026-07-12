@@ -1,7 +1,32 @@
 import { CAPLETS_ERROR_CODES, CapletsError, redactSecrets, toSafeError } from "../errors";
 import type { CapletsErrorCode } from "../errors";
 import { controlUrlForBase } from "../server/options";
+import type { AuthorityCapletRecord } from "../storage/bundle-cache";
+import type { AuthorityGenerationIdentity } from "../storage/types";
+import type {
+  CurrentHostAuthorityHealth,
+  CurrentHostSetupMutation,
+} from "../current-host/operations";
+import type { CurrentHostSettingsPatch } from "../current-host/settings-operations";
 import type { RemoteCliCommand, RemoteCliRequest, RemoteCliResponse } from "./types";
+
+export type RemoteCurrentHostMutationOptions = {
+  expectedGeneration?: AuthorityGenerationIdentity | null | undefined;
+  idempotencyKey?: string | undefined;
+};
+
+export type RemoteCurrentHostHealth = {
+  remote: true;
+  status: "ok" | "degraded" | "unavailable";
+  health?: CurrentHostAuthorityHealth | undefined;
+};
+
+export type RemoteCurrentHostCaplets = {
+  remote: true;
+  caplets: unknown[];
+};
+
+export type RemoteCurrentHostResult = Record<string, unknown> & { remote: true };
 
 export type RemoteControlClientOptions = {
   baseUrl: URL;
@@ -29,6 +54,86 @@ export class RemoteControlClient {
           });
   }
 
+  /** List server Caplets without creating a per-request engine. */
+  async list(args: RemoteCliRequest["arguments"] = {}): Promise<unknown> {
+    return await this.request("list", args);
+  }
+
+  /** Read redacted Current Host status and storage health. */
+  async status(): Promise<unknown> {
+    return await this.request("status", {});
+  }
+  /** Read Current Host caplets through the authenticated Operator control route. */
+  async currentHostCaplets(): Promise<RemoteCurrentHostCaplets> {
+    return (await this.request("list", {})) as RemoteCurrentHostCaplets;
+  }
+
+  /** Read Current Host authority and runtime health through the Operator control route. */
+  async currentHostHealth(): Promise<RemoteCurrentHostHealth> {
+    return (await this.request("status", {})) as RemoteCurrentHostHealth;
+  }
+
+  async currentHostCapletCreate(
+    record: AuthorityCapletRecord,
+    options: RemoteCurrentHostMutationOptions = {},
+  ): Promise<RemoteCurrentHostResult> {
+    return (await this.request("caplet_create", {
+      record,
+      ...currentHostMutationArguments(options),
+    })) as RemoteCurrentHostResult;
+  }
+
+  async currentHostCapletUpdate(
+    id: string,
+    record: AuthorityCapletRecord,
+    options: RemoteCurrentHostMutationOptions = {},
+  ): Promise<RemoteCurrentHostResult> {
+    return (await this.request("caplet_update", {
+      id,
+      record,
+      ...currentHostMutationArguments(options),
+    })) as RemoteCurrentHostResult;
+  }
+
+  async currentHostCapletDelete(
+    id: string,
+    options: RemoteCurrentHostMutationOptions = {},
+  ): Promise<RemoteCurrentHostResult> {
+    return (await this.request("caplet_delete", {
+      id,
+      ...currentHostMutationArguments(options),
+    })) as RemoteCurrentHostResult;
+  }
+
+  async currentHostSettingsGet(): Promise<RemoteCurrentHostResult> {
+    return (await this.request("settings_get", {})) as RemoteCurrentHostResult;
+  }
+
+  async currentHostSettingsUpdate(
+    settings: CurrentHostSettingsPatch,
+    options: RemoteCurrentHostMutationOptions = {},
+  ): Promise<RemoteCurrentHostResult> {
+    return (await this.request("settings_update", {
+      settings,
+      ...currentHostMutationArguments(options),
+    })) as RemoteCurrentHostResult;
+  }
+
+  async currentHostSetup(
+    command: "setup_grant" | "setup_revoke",
+    mutation: CurrentHostSetupMutation,
+    options: RemoteCurrentHostMutationOptions = {},
+  ): Promise<RemoteCurrentHostResult> {
+    return (await this.request(command, {
+      ...mutation,
+      ...currentHostMutationArguments(options),
+    })) as RemoteCurrentHostResult;
+  }
+
+  /** Execute one remote request against the retained server epoch. */
+  async execute(caplet: string, request: Record<string, unknown>): Promise<unknown> {
+    return await this.request("execute", { caplet, request });
+  }
   async request(command: RemoteCliCommand, args: RemoteCliRequest["arguments"]): Promise<unknown> {
     const resolved = await this.#resolve();
     const controlUrl = controlUrlForBase(resolved.baseUrl);
@@ -77,6 +182,16 @@ export class RemoteControlClient {
 
     return payload.result;
   }
+}
+function currentHostMutationArguments(
+  options: RemoteCurrentHostMutationOptions,
+): Record<string, unknown> {
+  return {
+    ...(options.expectedGeneration === undefined
+      ? {}
+      : { expectedGeneration: options.expectedGeneration }),
+    ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+  };
 }
 
 function mergeJsonHeaders(headers: ConstructorParameters<typeof Headers>[0] | undefined): Headers {

@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "1",
+      "when": 1783814400000,
+      "tag": "0000_initial",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "2",
+      "when": 1783814401000,
+      "tag": "0001_head_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "3",
+      "when": 1783814402000,
+      "tag": "0002_maintenance_lease",
+      "breakpoints": true
+    }
+  ]
+}

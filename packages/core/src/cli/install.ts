@@ -52,6 +52,12 @@ import {
   type CapletsLockEntry,
   type CapletsLockSource,
 } from "./lockfile";
+import type { CurrentHostCatalogOperations } from "../current-host/catalog-operations";
+import type {
+  CurrentHostOperation,
+  CurrentHostOperatorPrincipal,
+} from "../current-host/operations";
+import type { CliAuthorityContext } from "./auth";
 
 export type InstallableCaplet = {
   id: string;
@@ -64,6 +70,201 @@ export type InstallableCaplet = {
   catalogIndexing?: CatalogIndexingResult | undefined;
   vaultSetup?: unknown;
 };
+type CatalogInstallOperation = Extract<CurrentHostOperation, { kind: "catalog_install" }>;
+type CatalogUpdateOperation = Extract<CurrentHostOperation, { kind: "catalog_update" }>;
+
+export type CatalogCliResult = {
+  installed: InstallableCaplet[];
+  setupActions?: unknown[];
+  status?: string;
+  generation?: unknown;
+  committedGeneration?: unknown;
+  activation?: string;
+  idempotencyKey?: string;
+  replayed?: boolean;
+  operation?: string;
+};
+
+export type InstallCapletsCliOptions = {
+  capletIds?: string[];
+  destinationRoot?: string;
+  force?: boolean;
+  lockfilePath?: string | undefined;
+  now?: Date | undefined;
+  source?: string | undefined;
+  entryKey?: string | undefined;
+  disableCatalogIndexing?: boolean | undefined;
+  expectedGeneration?: CatalogInstallOperation["expectedGeneration"];
+  idempotencyKey?: string | undefined;
+  authority?: CliAuthorityContext | undefined;
+  catalog?: CurrentHostCatalogOperations | undefined;
+  principal?: CurrentHostOperatorPrincipal | undefined;
+};
+
+export type UpdateCapletsCliOptions = {
+  destinationRoot?: string;
+  lockfilePath: string;
+  force?: boolean;
+  allowRiskIncrease?: boolean;
+  capletIds?: string[] | undefined;
+  now?: Date | undefined;
+  disableCatalogIndexing?: boolean | undefined;
+  expectedGeneration?: CatalogUpdateOperation["expectedGeneration"];
+  idempotencyKey?: string | undefined;
+  authority?: CliAuthorityContext | undefined;
+  catalog?: CurrentHostCatalogOperations | undefined;
+  principal?: CurrentHostOperatorPrincipal | undefined;
+};
+
+/**
+ * Run an install through the resolved Current Host catalog facade when one is
+ * supplied. The shared branch requires a stable catalog identity and never
+ * falls back to filesystem installation.
+ */
+export async function installCapletsForCli(
+  repo: string | undefined,
+  options: InstallCapletsCliOptions = {},
+): Promise<CatalogCliResult> {
+  const catalog = options.catalog ?? options.authority?.catalog;
+  if (catalog || options.authority) {
+    if (!catalog) {
+      throw new CapletsError(
+        "ASYNC_AUTHORITY_REQUIRED",
+        "Shared authority catalog install requires the Current Host catalog facade.",
+      );
+    }
+    const principal = options.principal ?? options.authority?.principal;
+    if (!principal) {
+      throw new CapletsError(
+        "AUTH_FAILED",
+        "Shared authority catalog install requires an Operator principal.",
+      );
+    }
+    if (!options.source || !options.entryKey) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Shared authority catalog install requires a stable source and entryKey.",
+      );
+    }
+    const outcome = await catalog.install(principal, {
+      kind: "catalog_install",
+      source: options.source,
+      entryKey: options.entryKey,
+      ...(options.capletIds === undefined ? {} : { capletIds: options.capletIds }),
+      ...(options.force === undefined ? {} : { force: options.force }),
+      ...(options.disableCatalogIndexing === undefined
+        ? {}
+        : { disableCatalogIndexing: options.disableCatalogIndexing }),
+      ...(options.expectedGeneration === undefined
+        ? {}
+        : { expectedGeneration: options.expectedGeneration }),
+      ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+    });
+    return {
+      installed: outcome.installed as InstallableCaplet[],
+      ...(outcome.setupActions ? { setupActions: outcome.setupActions } : {}),
+      ...copyCatalogReceipt(outcome),
+    };
+  }
+  if (!repo) {
+    if (!options.lockfilePath) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Install requires a repository or lockfile source.",
+      );
+    }
+    return restoreCapletsFromLockfile({
+      ...(options.capletIds === undefined ? {} : { capletIds: options.capletIds }),
+      ...(options.force === undefined ? {} : { force: options.force }),
+      ...(options.destinationRoot === undefined
+        ? {}
+        : { destinationRoot: options.destinationRoot }),
+      lockfilePath: options.lockfilePath,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+  }
+  return installCaplets(repo, options);
+}
+
+/**
+ * Run an update through the resolved Current Host catalog facade when one is
+ * supplied. The shared branch performs one authority mutation and never writes
+ * a local lockfile or destination.
+ */
+export async function updateCapletsForCli(
+  options: UpdateCapletsCliOptions,
+): Promise<CatalogCliResult> {
+  const catalog = options.catalog ?? options.authority?.catalog;
+  if (catalog || options.authority) {
+    if (!catalog) {
+      throw new CapletsError(
+        "ASYNC_AUTHORITY_REQUIRED",
+        "Shared authority catalog update requires the Current Host catalog facade.",
+      );
+    }
+    const principal = options.principal ?? options.authority?.principal;
+    if (!principal) {
+      throw new CapletsError(
+        "AUTH_FAILED",
+        "Shared authority catalog update requires an Operator principal.",
+      );
+    }
+    const outcome = await catalog.update(principal, {
+      kind: "catalog_update",
+      ...(options.capletIds === undefined ? {} : { capletIds: options.capletIds }),
+      ...(options.force === undefined ? {} : { force: options.force }),
+      ...(options.allowRiskIncrease === undefined
+        ? {}
+        : { allowRiskIncrease: options.allowRiskIncrease }),
+      ...(options.disableCatalogIndexing === undefined
+        ? {}
+        : { disableCatalogIndexing: options.disableCatalogIndexing }),
+      ...(options.expectedGeneration === undefined
+        ? {}
+        : { expectedGeneration: options.expectedGeneration }),
+      ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+    });
+    return {
+      installed: outcome.installed as InstallableCaplet[],
+      ...(outcome.setupActions ? { setupActions: outcome.setupActions } : {}),
+      ...copyCatalogReceipt(outcome),
+    };
+  }
+  return updateCapletsFromLockfile(options);
+}
+
+function copyCatalogReceipt(
+  outcome: Partial<{
+    status: string | undefined;
+    generation: unknown;
+    committedGeneration: unknown;
+    activation: string | undefined;
+    idempotencyKey: string | undefined;
+    replayed: boolean | undefined;
+    operation: string | undefined;
+  }>,
+): Pick<
+  CatalogCliResult,
+  | "status"
+  | "generation"
+  | "committedGeneration"
+  | "activation"
+  | "idempotencyKey"
+  | "replayed"
+  | "operation"
+> {
+  return {
+    ...(outcome.status === undefined ? {} : { status: outcome.status }),
+    ...(outcome.generation === undefined ? {} : { generation: outcome.generation }),
+    ...(outcome.committedGeneration === undefined
+      ? {}
+      : { committedGeneration: outcome.committedGeneration }),
+    ...(outcome.activation === undefined ? {} : { activation: outcome.activation }),
+    ...(outcome.idempotencyKey === undefined ? {} : { idempotencyKey: outcome.idempotencyKey }),
+    ...(outcome.replayed === undefined ? {} : { replayed: outcome.replayed }),
+    ...(outcome.operation === undefined ? {} : { operation: outcome.operation }),
+  };
+}
 
 type InstallPlan = InstallableCaplet & {
   sourcePath: string;

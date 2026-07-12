@@ -60,6 +60,12 @@ Caplets Lockfiles let `caplets install`, no-argument install restore, and `caple
 
 Caplets Lockfiles are share-safe and integrity-aware. They strip credential-bearing source URLs, prefer project-relative paths where possible, verify recorded content before restore, and fail closed when local-source entries are unavailable or marked non-portable.
 
+### Caplet Source Overlay
+
+An ordered composition of Caplet storage sources within one runtime configuration. The v1 cloud overlay reads the global remote store first, then the global filesystem store, then the project filesystem store; a later same-ID definition becomes active while the earlier source remains recorded as shadow provenance.
+
+Caplet Source Overlay precedence is distinct from Namespace Shadowing Policy: an overlay selects one active definition by source priority, while namespace shadowing keeps colliding local and upstream Caplets separately addressable.
+
 ### Namespace Shadowing Policy
 
 A Caplet shadowing policy where a local/upstream ID collision exposes both Caplets under qualified namespace IDs and removes the ambiguous bare ID.
@@ -74,9 +80,27 @@ The Caplets Daemon is installed and updated through an install-time service cont
 
 ### Current Host
 
-The Caplets host that served the active dashboard session and owns the runtime state being administered in that session.
+The Caplets administration target that served the active dashboard session and owns the runtime state being administered in that session. It may be one host process or a logical deployment of replicas that share one Writable Authority.
 
-Current Host is a session-scoped administration target, not a product-wide singleton. The admin dashboard may initially operate only on the Current Host while preserving host-scoped terms for future multi-host enumeration and switching.
+Current Host is session-scoped, not a product-wide singleton. The admin dashboard operates on one Current Host while preserving host-scoped terms for future enumeration and switching.
+
+### Writable Authority
+
+The single storage provider that owns dashboard-managed mutable state for a Current Host. A deployment selects filesystem, SQLite, PostgreSQL, or S3-compatible object storage as its Writable Authority rather than assigning different writable providers to individual state domains.
+
+Immutable Staged Filesystem Sources can compose with any Writable Authority, but they do not become additional writable peers.
+
+### Staged Filesystem Source
+
+An immutable Caplet source supplied with each runtime replica through its image or a mounted path.
+
+A Staged Filesystem Source remains readable alongside authority-managed Caplets, reserves its Caplet IDs against dashboard mutation, and is not synchronized through Project Binding or the Writable Authority.
+
+### Authority Generation
+
+A committed revision of shared Current Host state exposed by a Writable Authority.
+
+Runtime replicas consume complete Authority Generations, reject conflicting writes based on stale state, and retain the last known-good generation when a later refresh fails.
 
 ### Caplets Admin Dashboard
 
@@ -94,7 +118,7 @@ Daemon-First Setup points MCP clients at `caplets attach <local-daemon-url>` and
 
 A runtime-owned encrypted string store whose values can be referenced from Caplets config with `$vault:NAME` or `${vault:NAME}`.
 
-Caplets Vault replaces fragile agent-harness environment propagation for secret-like config values. Each runtime owns its own Vault store; local Caplets do not read, mirror, or forward remote or Cloud Vault values.
+Caplets Vault replaces fragile agent-harness environment propagation for secret-like config values. Each Current Host owns its Vault state; replicas in one Current Host share that state, while separate local, remote, or Cloud Current Hosts do not read, mirror, or forward each other's Vault values.
 
 ### Raw Vault Reveal
 

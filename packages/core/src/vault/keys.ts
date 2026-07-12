@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { chmodSync, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { CapletsError } from "../errors";
 import { ensurePrivateDir, writePrivateFileAtomic } from "./store";
 import type { VaultKeySourceStatus } from "./types";
@@ -9,6 +9,39 @@ import type { VaultKeySourceStatus } from "./types";
 const VAULT_KEY_PATTERN = /^[A-Z_][A-Z0-9_]{0,127}$/;
 const KEY_FILE_PREFIX = "caplets-vault-key-v1.";
 const KEY_BYTES = 32;
+export const VAULT_ENCRYPTION_KEY_BYTES = KEY_BYTES;
+
+/**
+ * Resolve key material for an authority-backed store.
+ *
+ * Shared authorities must receive one deployment-stable key from bootstrap
+ * (or an equivalent secret manager). Unlike the filesystem adapter, this
+ * helper deliberately never creates or rotates a key.
+ */
+export function loadInjectedVaultKey(input: {
+  key: string | Uint8Array | undefined;
+  label?: string | undefined;
+}): Buffer {
+  const label = input.label ?? "Shared Vault encryption key";
+  if (input.key === undefined) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `${label} is required; automatic key generation is disabled for shared authorities.`,
+    );
+  }
+  if (typeof input.key === "string") {
+    return decodeExactKey(input.key, label);
+  }
+  const decoded = Buffer.from(input.key);
+  if (decoded.length !== KEY_BYTES) {
+    throw new CapletsError("REQUEST_INVALID", `${label} must be a base64url-encoded 32-byte key.`);
+  }
+  return decoded;
+}
+
+export function vaultKeyFingerprint(key: Uint8Array): string {
+  return createHash("sha256").update(key).digest("hex");
+}
 
 export function validateVaultKeyName(name: string): string {
   if (!VAULT_KEY_PATTERN.test(name)) {

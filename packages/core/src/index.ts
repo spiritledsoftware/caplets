@@ -1,6 +1,74 @@
-export { CapletsRuntime } from "./runtime";
+export {
+  CapletsRuntime,
+  createAsyncCapletsRuntime,
+  type AsyncCapletsRuntimeOptions,
+  type CapletsRuntimeOptions,
+  type PreparedCapletsRuntimeHost,
+} from "./runtime";
 export { runCli, createProgram } from "./cli";
+export { CapletsEngine } from "./engine";
+export type { CapletsEngineOptions, CapletsEngineReloadEvent } from "./engine";
 export { parseConfig, loadConfig } from "./config";
+export {
+  loadAuthorityBootstrap,
+  type AuthorityBootstrap,
+  type LoadedAuthorityBootstrap,
+  type SourceInventory,
+  type SourceInventoryEntry,
+  type SourceOwner,
+} from "./config";
+export * from "./storage/types";
+export {
+  authorityExportDigest,
+  authorityGenerationDigest,
+  createWritableAuthorityMigrationAdapter,
+  inventoryAuthority,
+  migrateAuthority,
+  runMigration,
+} from "./storage/migration";
+export type {
+  AuthorityInventory,
+  AuthorityInventoryDomain,
+  AuthorityInventoryExclusion,
+  AuthorityInventoryOptions,
+  MaintenanceFence,
+  MaintenanceFenceContext,
+  MaintenanceFenceLease,
+  MigrationApplyResult,
+  MigrationCutoverCoordinates,
+  MigrationDryRunResult,
+  MigrationOptions,
+  MigrationResult,
+  MigrationStage,
+  MigrationTargetAdapter,
+} from "./storage/migration";
+export {
+  createAuthorityBackup,
+  decodeAuthorityBackup,
+  readAuthorityBackupHeader,
+  restoreAuthorityBackup,
+} from "./storage/backup";
+export type {
+  AuthorityBackup,
+  AuthorityBackupHeader,
+  BackupKeyMaterial,
+  CreateAuthorityBackupOptions,
+  DecodedAuthorityBackup,
+  RestoreAuthorityBackupOptions,
+} from "./storage/backup";
+export * from "./storage/factory";
+export {
+  PreparedRuntimeView,
+  RuntimeEpochCoordinator,
+  assembleCapletsHost,
+  createAsyncCapletsEngine,
+  type PreparedRuntimeHost,
+  type PreparedRuntimeViewOptions,
+  type RuntimeCoordinatorHealth,
+  type RuntimeEpochCoordinatorOptions,
+  type RuntimeEpochLease,
+} from "./storage/coordinator";
+export * from "./storage/conformance";
 export { BundleCapletSource, parseCapletSource } from "./caplet-source";
 export { FilesystemCapletSource } from "./caplet-source/filesystem";
 export {

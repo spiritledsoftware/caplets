@@ -11,7 +11,10 @@ import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import type { CapletsEngineOptions } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
-import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import {
+  AuthorityRemoteServerCredentialStore,
+  RemoteServerCredentialStore,
+} from "../src/remote/server-credential-store";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import type { ProjectBindingLease } from "../src/project-binding";
 import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
@@ -25,6 +28,13 @@ import type { HttpAttachSessionFactory, HttpMcpSessionFactory } from "../src/ser
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import { buildManifestExposureProjection } from "../src/exposure/projection";
 import type { HttpServeOptions } from "../src/serve/options";
+import type {
+  PreparedRuntimeHost,
+  PreparedRuntimeView,
+  RuntimeEpochLease,
+} from "../src/storage/coordinator";
+import { createSqliteAuthority } from "../src/storage/sql/authority";
+import { migrateSqliteDatabase } from "../src/storage/sql/migrate";
 
 const dirs: string[] = [];
 
@@ -48,7 +58,259 @@ it("forces remote artifact paths off after caller engine options", () => {
     vaultRecoveryTarget: "remote",
   });
 });
+
+it("wires production HTTP entrypoints to shared authority auth and sessions", async () => {
+  const context = testContext();
+  const root = tempDir("caplets-http-shared-authority-");
+  const databasePath = join(root, "authority.sqlite");
+  const keyEnv = "CAPLETS_HTTP_TEST_VAULT_KEY";
+  const key = Buffer.alloc(32, 31);
+  const priorKey = process.env[keyEnv];
+  process.env[keyEnv] = key.toString("base64url");
+  writeFileSync(
+    context.configPath,
+    JSON.stringify({
+      version: 1,
+      authority: {
+        provider: "sqlite",
+        authorityId: "serve-http-shared",
+        namespace: "serve-http-test",
+        databasePath,
+        vaultKeyRef: keyEnv,
+      },
+      options: { exposure: "direct" },
+      httpApis: {},
+    }),
+  );
+  await migrateSqliteDatabase({
+    databasePath,
+    authorityId: "serve-http-shared",
+    namespace: "serve-http-test",
+  });
+  const approvalAuthority = await createSqliteAuthority<
+    Record<string, unknown>,
+    Record<string, unknown>
+  >({
+    databasePath,
+    authorityId: "serve-http-shared",
+    namespace: "serve-http-test",
+    initialSnapshot: {},
+    applyCommand: ({ command }) => {
+      const snapshot = command.snapshot;
+      return {
+        snapshot:
+          snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+            ? (snapshot as Record<string, unknown>)
+            : {},
+        result: command.result,
+      };
+    },
+  });
+  await approvalAuthority.commit({
+    authorityId: "serve-http-shared",
+    currentHostId: "seed",
+    principalId: "seed",
+    expectedGeneration: null,
+    idempotencyKey: "seed-generation",
+    requestDigest: "seed-generation",
+    command: { snapshot: {}, result: null },
+  });
+  const approvalStore = new AuthorityRemoteServerCredentialStore({
+    authority: approvalAuthority,
+    authorityId: "serve-http-shared",
+    currentHostId: "http-current-host",
+    principalId: "remote-credentials",
+    encryptionKey: key,
+  });
+  type CapturedServer = {
+    fetch: (request: Request) => Response | Promise<Response>;
+    close: (callback?: () => void) => void;
+  };
+  const servers: CapturedServer[] = [];
+  const signalHandlers: Array<() => void | Promise<void>> = [];
+  vi.resetModules();
+  vi.doMock("@hono/node-server", async () => {
+    // The module boundary is mocked so production serve entrypoints can be exercised without binding TCP ports.
+    const actual = (await vi.importActual("@hono/node-server")) as Record<string, unknown>;
+    return {
+      ...actual,
+      serve: vi.fn(
+        (
+          options: { fetch: (request: Request) => Response | Promise<Response> },
+          onListen?: () => void,
+        ) => {
+          const server: CapturedServer = {
+            fetch: options.fetch,
+            close: (callback) => callback?.(),
+          };
+          servers.push(server);
+          onListen?.();
+          return server;
+        },
+      ),
+    };
+  });
+  const processOnce = vi.spyOn(process, "once");
+  processOnce.mockImplementation(((
+    event: string | symbol,
+    listener: (...args: unknown[]) => void,
+  ) => {
+    if (event === "SIGTERM") signalHandlers.push(() => listener());
+    return process;
+  }) as typeof process.once);
+  const processExit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+  try {
+    // This dynamic import intentionally crosses the mocked server boundary.
+    const { serveHttp, serveHttpWithSessionFactory } = await import("../src/serve/http");
+    const engineOptions = {
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    };
+    const options = httpOptions({
+      auth: { type: "remote_credentials" },
+      remoteCredentialStateDir: tempDir("caplets-http-shared-state-"),
+    });
+    await serveHttp(options, engineOptions, () => {});
+    await serveHttpWithSessionFactory(
+      options,
+      async () => ({ connect: async () => undefined, close: async () => undefined }),
+      () => {},
+      { exposeAttach: true },
+      engineOptions,
+    );
+    expect(servers).toHaveLength(2);
+    const replicaA = servers[0]!;
+    const replicaB = servers[1]!;
+    const started = await replicaA.fetch(
+      new Request("http://127.0.0.1:5387/dashboard/api/login/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clientLabel: "Shared Browser" }),
+      }),
+    );
+    expect(started.status).toBe(200);
+    const pending = (await started.json()) as {
+      flowId: string;
+      pendingCompletionSecret: string;
+      operatorCode: string;
+    };
+    await approvalStore.approvePendingLogin({
+      operatorCode: pending.operatorCode,
+      idempotencyKey: "production-approval",
+    });
+    const completed = await replicaA.fetch(
+      new Request("http://127.0.0.1:5387/dashboard/api/login/complete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          flowId: pending.flowId,
+          pendingCompletionSecret: pending.pendingCompletionSecret,
+        }),
+      }),
+    );
+    expect(completed.status).toBe(200);
+    const cookie = completed.headers.get("set-cookie");
+    expect(cookie).toContain("caplets_dashboard_session=");
+    const completedBody = (await completed.json()) as {
+      session: { operatorClientId: string; role: string };
+    };
+    const sessionFromReplicaB = await replicaB.fetch(
+      new Request("http://127.0.0.1:5387/dashboard/api/session", {
+        headers: { cookie: cookie! },
+      }),
+    );
+    expect(sessionFromReplicaB.status).toBe(200);
+    await expect(sessionFromReplicaB.json()).resolves.toMatchObject({
+      authenticated: true,
+      session: { operatorClientId: completedBody.session.operatorClientId, role: "operator" },
+    });
+    const credentials = await approvalStore.completePendingLogin({
+      hostUrl: "http://127.0.0.1:5387/",
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      requiredRole: "operator",
+      idempotencyKey: "production-credential-replay",
+    });
+    await approvalStore.changeClientRole(
+      completedBody.session.operatorClientId,
+      "access",
+      new Date(),
+      { idempotencyKey: "production-role-change" },
+    );
+    const roleChangedSession = await replicaB.fetch(
+      new Request("http://127.0.0.1:5387/dashboard/api/session", {
+        headers: { cookie: cookie! },
+      }),
+    );
+    expect(roleChangedSession.status).toBe(401);
+    const accessBeforeRevoke = await replicaB.fetch(
+      new Request("http://127.0.0.1:5387/v1/attach/manifest", {
+        headers: { authorization: `Bearer ${credentials.accessToken}` },
+      }),
+    );
+    expect(accessBeforeRevoke.status).toBe(200);
+    await approvalStore.revokeClient(completedBody.session.operatorClientId, new Date(), {
+      idempotencyKey: "production-revoke",
+    });
+    const revoked = await replicaB.fetch(
+      new Request("http://127.0.0.1:5387/v1/attach/manifest", {
+        headers: { authorization: `Bearer ${credentials.accessToken}` },
+      }),
+    );
+    expect(revoked.status).toBe(401);
+  } finally {
+    for (const handler of signalHandlers) handler();
+    await vi.waitFor(() => expect(processExit).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+    processExit.mockRestore();
+    processOnce.mockRestore();
+    vi.doUnmock("@hono/node-server");
+    vi.resetModules();
+    await approvalAuthority.close();
+    if (priorKey === undefined) delete process.env[keyEnv];
+    else process.env[keyEnv] = priorKey;
+  }
+});
+
 describe("createHttpServeApp", () => {
+  it("retains the active runtime epoch for a direct request and releases it", async () => {
+    const { engine } = testEngine();
+    const release = vi.fn();
+    const lease = {
+      view: { engine } as unknown as PreparedRuntimeView,
+      release,
+    } as RuntimeEpochLease;
+    const runtime = {
+      retain: vi.fn(() => lease),
+      refresh: vi.fn(async () => false),
+      health: vi.fn(async () => ({
+        provider: "filesystem",
+        authorityId: "test",
+        connectivity: "healthy",
+        writable: true,
+        activeGeneration: null,
+        refresh: "current",
+        lifecycle: "ready",
+        readiness: "ready",
+        observedGeneration: null,
+        exposureGeneration: 0,
+        lag: null,
+      })),
+      close: vi.fn(async () => undefined),
+    } as unknown as PreparedRuntimeHost;
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      runtime,
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+
+    expect(response.status).toBe(200);
+    expect(runtime.retain).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
   it("serves root info and health without auth", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });

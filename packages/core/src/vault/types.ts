@@ -1,11 +1,8 @@
-import type { ConfigSourceKind } from "../config";
+import type { CapletProvenance } from "../storage/types";
 
 export const VAULT_MAX_VALUE_BYTES = 64 * 1024;
 
-export type VaultConfigOrigin = {
-  kind: ConfigSourceKind;
-  path: string;
-};
+export type VaultConfigOrigin = CapletProvenance;
 
 export type VaultKeySourceStatus =
   | { available: true; source: "env"; keyFile?: undefined }

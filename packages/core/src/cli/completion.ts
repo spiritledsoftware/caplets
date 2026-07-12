@@ -111,8 +111,8 @@ export async function completeCliWords(
       return prefixFilter(cliSubcommands[command as keyof typeof cliSubcommands], current);
     }
 
-    const nestedStaticSubcommands = nestedSubcommandsFor(command, subcommand);
-    if (normalized.length === 3 && nestedStaticSubcommands) {
+    const nestedStaticSubcommands = nestedSubcommandsFor(command, normalized.slice(1, -1));
+    if (normalized.length >= 3 && nestedStaticSubcommands) {
       return prefixFilter(nestedStaticSubcommands, current);
     }
 
@@ -189,9 +189,15 @@ function suggestionsForOptionValue(
   );
 }
 
-function nestedSubcommandsFor(command: string, subcommand: string): readonly string[] | undefined {
-  if (command !== cliCommands.remote || subcommand !== "host") return undefined;
-  return cliNestedSubcommands.remote.host;
+function nestedSubcommandsFor(command: string, path: string[]): readonly string[] | undefined {
+  let node: unknown = (cliNestedSubcommands as Record<string, unknown>)[command];
+  for (const segment of path) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[segment];
+  }
+  return Array.isArray(node) && node.every((value): value is string => typeof value === "string")
+    ? node
+    : undefined;
 }
 
 const promptResourceCommands = new Set<string>([

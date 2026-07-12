@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { CapletSetupCommandConfig, CapletSetupConfig } from "../config";
 import type { RuntimeFeature } from "../config-runtime";
 import { CapletsError } from "../errors";
-import type { LocalSetupStore } from "./local-store";
+import type { LocalSetupStore, StoredSetupApproval } from "./local-store";
 import {
   isSetupTargetKind,
   type SetupActor,
@@ -43,7 +43,14 @@ export type RunCapletSetupOptions = {
   setup: CapletSetupConfig;
   actor: SetupActor;
   approved: boolean;
-  store: Pick<LocalSetupStore, "recordAttempt" | "retention">;
+  store: Pick<LocalSetupStore, "recordAttempt" | "retention"> & {
+    getApproval?: (
+      projectFingerprint: string,
+      capletId: string,
+      contentHash: string,
+      targetKind: SetupTargetKind,
+    ) => Promise<StoredSetupApproval | undefined>;
+  };
   spawn?: SetupSpawn;
   now?: () => Date;
 };
@@ -53,7 +60,26 @@ const DEFAULT_MAX_OUTPUT_BYTES = 200_000;
 
 export async function runCapletSetup(options: RunCapletSetupOptions): Promise<SetupAttempt[]> {
   assertSetupTargetKind(options.targetKind);
-  if (!options.approved) {
+  const activeApproval = options.store.getApproval
+    ? await options.store.getApproval(
+        options.projectFingerprint ?? "default",
+        options.capletId,
+        options.contentHash,
+        options.targetKind,
+      )
+    : undefined;
+  if (options.store.getApproval) {
+    if (
+      !activeApproval ||
+      activeApproval.decision !== "grant" ||
+      activeApproval.projectFingerprint !== (options.projectFingerprint ?? "default") ||
+      activeApproval.capletId !== options.capletId ||
+      activeApproval.contentHash !== options.contentHash ||
+      activeApproval.targetKind !== options.targetKind
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Setup approval is required before commands run");
+    }
+  } else if (!options.approved) {
     throw new CapletsError("REQUEST_INVALID", "Setup approval is required before commands run");
   }
 

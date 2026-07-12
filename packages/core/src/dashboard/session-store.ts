@@ -12,6 +12,15 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { CapletsError } from "../errors";
+import {
+  AuthorityDomainCodec,
+  hashAuthoritySecret,
+  safeAuthorityHashEqual,
+  type AuthorityDomainCodecOptions,
+} from "../remote/authority-codec";
+import type { AuthorityGenerationIdentity } from "../storage/types";
+import type { VaultEncryptedRecord } from "../vault/crypto";
+import { createDashboardActivityEntry, type DashboardActivityEntry } from "./activity-log";
 import type { RemoteServerCredentialStore } from "../remote/server-credential-store";
 import {
   DASHBOARD_SESSION_COOKIE,
@@ -253,6 +262,346 @@ function sessionView(session: DashboardSessionRecord): DashboardSessionView {
   };
 }
 
+type AuthorityDashboardSessionRecord = {
+  sessionId: string;
+  secretHash: string;
+  operatorClientId: string;
+  role: "operator";
+  csrfTokenEncrypted: VaultEncryptedRecord;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string;
+};
+
+type AuthorityDashboardSessionState = {
+  version: 1;
+  sessions: AuthorityDashboardSessionRecord[];
+};
+
+export type AuthorityDashboardSessionStoreOptions = AuthorityDomainCodecOptions;
+
+type AuthoritySessionMutationOptions = {
+  idempotencyKey?: string | undefined;
+  principalId?: string | undefined;
+};
+
+export class AuthorityDashboardSessionStore {
+  private readonly codec: AuthorityDomainCodec;
+
+  constructor(options: AuthorityDashboardSessionStoreOptions) {
+    this.codec = new AuthorityDomainCodec(options);
+  }
+
+  async create(
+    input: { operatorClientId: string; now?: Date | undefined } & AuthoritySessionMutationOptions,
+  ): Promise<{ cookieValue: string; session: DashboardSessionView }> {
+    const now = input.now ?? new Date();
+    const read = await this.codec.read();
+    const root: Record<string, unknown> = { ...read.snapshot };
+    assertAuthorityOperator(root, input.operatorClientId);
+    const state = parseAuthorityDashboardSessionState(root.dashboardSessions);
+    const secret = `dash_secret_${randomToken(32)}`;
+    const csrfToken = `csrf_${randomToken(32)}`;
+    const record: AuthorityDashboardSessionRecord = {
+      sessionId: `dash_${randomToken(12)}`,
+      secretHash: hashAuthoritySecret(secret),
+      operatorClientId: input.operatorClientId,
+      role: "operator",
+      csrfTokenEncrypted: this.codec.encrypt(csrfToken, now),
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ABSOLUTE_TIMEOUT_MS).toISOString(),
+      lastUsedAt: now.toISOString(),
+    };
+    state.sessions.push(record);
+    const view = authoritySessionView(record, csrfToken);
+    const activity = createDashboardActivityEntry({
+      actorClientId: input.operatorClientId,
+      action: "dashboard_login_completed",
+      target: { type: "dashboard_session", id: record.sessionId },
+      now,
+    });
+    root.dashboardSessions = state;
+    root.dashboardActivity = appendAuthorityActivity(root.dashboardActivity, activity);
+    const committed = await this.codec.commit({
+      read,
+      domain: "dashboardSessions",
+      command: { kind: "create_dashboard_session" },
+      snapshot: root,
+      result: { cookieValue: `${record.sessionId}.${secret}`, session: view },
+      payload: { operatorClientId: input.operatorClientId },
+      idempotencyKey: input.idempotencyKey,
+      principalId: input.principalId,
+      now,
+    });
+    await this.seedTouch(record.sessionId, record.lastUsedAt, committed.generation);
+    return committed.result;
+  }
+
+  async validate(input: {
+    cookieHeader?: string | undefined;
+    csrfToken?: string | undefined;
+    requireCsrf?: boolean | undefined;
+    now?: Date | undefined;
+  }): Promise<DashboardSessionView> {
+    const now = input.now ?? new Date();
+    const read = await this.codec.read();
+    const parsed = parseDashboardCookie(input.cookieHeader);
+    if (!parsed) throw new CapletsError("AUTH_FAILED", "Dashboard session is required.");
+    const state = parseAuthorityDashboardSessionState(read.snapshot.dashboardSessions);
+    const session = state.sessions.find((candidate) => candidate.sessionId === parsed.sessionId);
+    if (
+      !session ||
+      !safeAuthorityHashEqual(hashAuthoritySecret(parsed.secret), session.secretHash)
+    ) {
+      throw new CapletsError("AUTH_FAILED", "Dashboard session is invalid.");
+    }
+    const expired = Date.parse(session.expiresAt) <= now.getTime();
+    const idleExpired = now.getTime() - Date.parse(session.lastUsedAt) > IDLE_TIMEOUT_MS;
+    if (expired || idleExpired) {
+      await this.removeSession(session.sessionId, input.now, "dashboard_session_expired");
+      throw new CapletsError("AUTH_FAILED", "Dashboard session has expired.");
+    }
+    assertAuthorityOperator(read.snapshot, session.operatorClientId);
+    const csrfToken = this.codec.decrypt<string>(session.csrfTokenEncrypted);
+    if (input.requireCsrf && input.csrfToken !== csrfToken) {
+      throw new CapletsError("REQUEST_INVALID", "Dashboard CSRF token is invalid.");
+    }
+    const auxiliary = await this.codec.readAuxiliary({
+      kind: "session_touch",
+      sessionId: session.sessionId,
+    });
+    const auxiliaryRecord =
+      auxiliary && typeof auxiliary === "object" && !Array.isArray(auxiliary)
+        ? (auxiliary as { revision?: unknown; revoked?: unknown })
+        : undefined;
+    if (auxiliaryRecord?.revoked === true) {
+      throw new CapletsError("AUTH_FAILED", "Dashboard session has expired.");
+    }
+    const touched = await this.codec.commitAuxiliary({
+      kind: "session_touch",
+      sessionId: session.sessionId,
+      lastUsedAt: now.toISOString(),
+      expectedRevision:
+        typeof auxiliaryRecord?.revision === "string" ? auxiliaryRecord.revision : "",
+      expectedGeneration: read.head,
+    });
+    if (touched.kind === "revoked" || touched.kind === "missing") {
+      throw new CapletsError("AUTH_FAILED", "Dashboard session is no longer active.");
+    }
+    return authoritySessionView(
+      session,
+      csrfToken,
+      touched.kind === "applied" ? now.toISOString() : session.lastUsedAt,
+    );
+  }
+
+  async delete(
+    cookieHeader?: string | undefined,
+    options: AuthoritySessionMutationOptions & { now?: Date | undefined } = {},
+  ): Promise<boolean> {
+    const parsed = parseDashboardCookie(cookieHeader);
+    if (!parsed) return false;
+    const read = await this.codec.read();
+    const state = parseAuthorityDashboardSessionState(
+      this.codec.domainSnapshot(read, "dashboardSessions"),
+    );
+    const session = state.sessions.find((candidate) => candidate.sessionId === parsed.sessionId);
+    if (!session) return false;
+    const nextState = {
+      version: 1 as const,
+      sessions: state.sessions.filter((candidate) => candidate.sessionId !== parsed.sessionId),
+    };
+    const root: Record<string, unknown> = { ...read.snapshot, dashboardSessions: nextState };
+    const now = options.now ?? new Date();
+    const activity = createDashboardActivityEntry({
+      actorClientId: session.operatorClientId,
+      action: "dashboard_logout",
+      target: { type: "dashboard_session", id: session.sessionId },
+      now,
+    });
+    root.dashboardActivity = appendAuthorityActivity(root.dashboardActivity, activity);
+    const committed = await this.codec.commit({
+      read,
+      domain: "dashboardSessions",
+      command: { kind: "delete_dashboard_session" },
+      snapshot: root,
+      result: true,
+      payload: { sessionId: session.sessionId },
+      idempotencyKey: options.idempotencyKey,
+      principalId: options.principalId,
+      now,
+    });
+    return committed.result;
+  }
+
+  async revokeClient(
+    clientId: string,
+    options: AuthoritySessionMutationOptions & { now?: Date | undefined } = {},
+  ): Promise<number> {
+    const read = await this.codec.read();
+    const state = parseAuthorityDashboardSessionState(read.snapshot.dashboardSessions);
+    const retained = state.sessions.filter((session) => session.operatorClientId !== clientId);
+    if (retained.length === state.sessions.length) return 0;
+    const now = options.now ?? new Date();
+    await this.codec.commit({
+      read,
+      domain: "dashboardSessions",
+      command: { kind: "revoke_dashboard_client_sessions" },
+      snapshot: { ...read.snapshot, dashboardSessions: { version: 1, sessions: retained } },
+      result: state.sessions.length - retained.length,
+      payload: { clientId },
+      idempotencyKey: options.idempotencyKey,
+      principalId: options.principalId,
+      now,
+    });
+    return state.sessions.length - retained.length;
+  }
+
+  async touch(
+    sessionId: string,
+    input: {
+      lastUsedAt: string;
+      expectedGeneration?: AuthorityGenerationIdentity | null;
+      expectedRevision?: string;
+    },
+  ): Promise<unknown> {
+    const read = await this.codec.read();
+    return await this.codec.commitAuxiliary({
+      kind: "session_touch",
+      sessionId,
+      lastUsedAt: input.lastUsedAt,
+      expectedGeneration:
+        input.expectedGeneration === undefined ? read.head : input.expectedGeneration,
+      expectedRevision: input.expectedRevision ?? "",
+    });
+  }
+
+  async dumpForTest(): Promise<AuthorityDashboardSessionState> {
+    const read = await this.codec.read();
+    return parseAuthorityDashboardSessionState(read.snapshot.dashboardSessions);
+  }
+
+  private async seedTouch(
+    sessionId: string,
+    lastUsedAt: string,
+    expectedGeneration: AuthorityGenerationIdentity | null,
+  ): Promise<void> {
+    await this.codec.commitAuxiliary({
+      kind: "session_touch",
+      sessionId,
+      lastUsedAt,
+      expectedRevision: "",
+      expectedGeneration,
+    });
+  }
+
+  private async removeSession(
+    sessionId: string,
+    nowInput: Date | undefined,
+    kind: string,
+  ): Promise<void> {
+    const read = await this.codec.read();
+    const state = parseAuthorityDashboardSessionState(read.snapshot.dashboardSessions);
+    const session = state.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (!session) return;
+    const now = nowInput ?? new Date();
+    await this.codec.commit({
+      read,
+      domain: "dashboardSessions",
+      command: { kind },
+      snapshot: {
+        ...read.snapshot,
+        dashboardSessions: {
+          version: 1,
+          sessions: state.sessions.filter((candidate) => candidate.sessionId !== sessionId),
+        },
+      },
+      result: true,
+      payload: { sessionId },
+      now,
+    });
+  }
+}
+
+function parseAuthorityDashboardSessionState(value: unknown): AuthorityDashboardSessionState {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return { version: 1, sessions: [] };
+  const record = value as Partial<AuthorityDashboardSessionState>;
+  return {
+    version: 1,
+    sessions: Array.isArray(record.sessions)
+      ? record.sessions.filter((session): session is AuthorityDashboardSessionRecord =>
+          isAuthorityDashboardSessionRecord(session),
+        )
+      : [],
+  };
+}
+
+function isAuthorityDashboardSessionRecord(
+  value: unknown,
+): value is AuthorityDashboardSessionRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Partial<AuthorityDashboardSessionRecord>;
+  return (
+    typeof record.sessionId === "string" &&
+    typeof record.secretHash === "string" &&
+    typeof record.operatorClientId === "string" &&
+    record.role === "operator" &&
+    typeof record.csrfTokenEncrypted === "object" &&
+    typeof record.createdAt === "string" &&
+    typeof record.expiresAt === "string" &&
+    typeof record.lastUsedAt === "string"
+  );
+}
+
+function authoritySessionView(
+  session: AuthorityDashboardSessionRecord,
+  csrfToken: string,
+  lastUsedAt = session.lastUsedAt,
+): DashboardSessionView {
+  return {
+    sessionId: session.sessionId,
+    operatorClientId: session.operatorClientId,
+    role: "operator",
+    csrfToken,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    lastUsedAt,
+  };
+}
+
+function assertAuthorityOperator(root: Record<string, unknown>, clientId: string): void {
+  const remote = root.remoteCredentials;
+  if (!remote || typeof remote !== "object" || Array.isArray(remote)) return;
+  const clients = (remote as { clients?: unknown }).clients;
+  if (!Array.isArray(clients)) return;
+  const client = clients.find(
+    (candidate) =>
+      candidate &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate) &&
+      (candidate as Record<string, unknown>).clientId === clientId,
+  );
+  if (
+    !client ||
+    (client as Record<string, unknown>).role !== "operator" ||
+    (client as Record<string, unknown>).revokedAt
+  ) {
+    throw new CapletsError("AUTH_FAILED", "Dashboard operator client is no longer authorized.");
+  }
+}
+
+function appendAuthorityActivity(
+  value: unknown,
+  entry: DashboardActivityEntry,
+): DashboardActivityEntry[] {
+  const entries = Array.isArray(value)
+    ? value.filter((candidate): candidate is DashboardActivityEntry =>
+        Boolean(candidate && typeof candidate === "object"),
+      )
+    : [];
+  return [...entries, entry].slice(-10_000);
+}
 export function parseDashboardCookie(
   cookieHeader: string | undefined,
 ): { sessionId: string; secret: string } | undefined {
