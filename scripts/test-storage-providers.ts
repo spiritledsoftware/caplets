@@ -888,6 +888,8 @@ async function runTwoProcessTrace(
   const readyA = `${barrier}.a`;
   const readyB = `${barrier}.b`;
   const go = `${barrier}.go`;
+  const raceReadyA = `${barrier}.race-ready-a`;
+  const raceReadyB = `${barrier}.race-ready-b`;
   const approvalReady = `${barrier}.approval-ready`;
   const approvalRead = `${barrier}.approval-read`;
   const approvalRevoked = `${barrier}.approval-revoked`;
@@ -911,6 +913,8 @@ async function runTwoProcessTrace(
     readyA,
     readyB,
     go,
+    raceReadyA,
+    raceReadyB,
     approvalReady,
     approvalRead,
     approvalRevoked,
@@ -1185,6 +1189,8 @@ async function runChild(args: string[]): Promise<void> {
     const refreshedGeneration = await authority.readGeneration(refreshedHead.id);
     trace.refreshedSnapshotParity =
       JSON.stringify(refreshedGeneration.snapshot) === JSON.stringify(hostSnapshot(host));
+    await writeFile(`${barrier}.race-ready-${role}`, "ready", { mode: 0o600 });
+    await waitForFile(`${barrier}.race-ready-${role === "a" ? "b" : "a"}`, CHILD_DEADLINE_MS);
 
     const setup = new LocalSetupStore({
       authority,

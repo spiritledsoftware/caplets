@@ -332,6 +332,22 @@ function isAmbiguousStatus(error: unknown): boolean {
   return status === 409 || status === 404 || status === undefined;
 }
 
+function isRetryableGetTransportError(error: unknown): boolean {
+  if (statusOf(error) !== undefined) return false;
+  const name = errorName(error);
+  const code = readProperty(error, "code");
+  const message = error instanceof Error ? error.message : "";
+  return (
+    name === "TimeoutError" ||
+    name === "NetworkingError" ||
+    code === "ECONNRESET" ||
+    code === "EPIPE" ||
+    code === "ETIMEDOUT" ||
+    code === "UND_ERR_SOCKET" ||
+    /socket hang up/u.test(message)
+  );
+}
+
 function safeJson(value: unknown, label: string): string {
   try {
     const encoded = stableJsonStringify(value);
@@ -3547,36 +3563,46 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
   }
 
   private async getObject(key: string, operation: string): Promise<ObjectRecord> {
-    try {
-      return await this.withClient(async (client, signal) => {
-        const output = await client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
-          abortSignal: signal,
-        });
-        const body = await bodyBytes(readProperty(output, "Body"));
-        const etag = readProperty(output, "ETag");
-        const metadata = readProperty(output, "Metadata");
-        const metadataRecord = asRecord(metadata);
-        const normalizedMetadata = metadataRecord
-          ? Object.fromEntries(
-              Object.entries(metadataRecord).filter(
-                (entry): entry is [string, string] => typeof entry[1] === "string",
-              ),
-            )
-          : {};
-        const expectedHash = normalizedMetadata["caplets-sha256"];
-        if (expectedHash && expectedHash !== createHash("sha256").update(body).digest("hex")) {
-          throw new CapletsError("CONFIG_INVALID", `S3 ${operation} object integrity check failed`);
-        }
-        return {
-          body,
-          etag: typeof etag === "string" ? etag : undefined,
-          metadata: normalizedMetadata,
-        };
-      }, operation);
-    } catch (error) {
-      if (error instanceof CapletsError || error instanceof S3RequestError) throw error;
-      throw new S3RequestError(operation, statusOf(error));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.withClient(async (client, signal) => {
+          const output = await client.send(
+            new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+            {
+              abortSignal: signal,
+            },
+          );
+          const body = await bodyBytes(readProperty(output, "Body"));
+          const etag = readProperty(output, "ETag");
+          const metadata = readProperty(output, "Metadata");
+          const metadataRecord = asRecord(metadata);
+          const normalizedMetadata = metadataRecord
+            ? Object.fromEntries(
+                Object.entries(metadataRecord).filter(
+                  (entry): entry is [string, string] => typeof entry[1] === "string",
+                ),
+              )
+            : {};
+          const expectedHash = normalizedMetadata["caplets-sha256"];
+          if (expectedHash && expectedHash !== createHash("sha256").update(body).digest("hex")) {
+            throw new CapletsError(
+              "CONFIG_INVALID",
+              `S3 ${operation} object integrity check failed`,
+            );
+          }
+          return {
+            body,
+            etag: typeof etag === "string" ? etag : undefined,
+            metadata: normalizedMetadata,
+          };
+        }, operation);
+      } catch (error) {
+        if (error instanceof CapletsError || error instanceof S3RequestError) throw error;
+        if (attempt === 0 && isRetryableGetTransportError(error)) continue;
+        throw new S3RequestError(operation, statusOf(error));
+      }
     }
+    throw new S3RequestError(operation, undefined);
   }
 
   private async tryGetObject(key: string, operation: string): Promise<ObjectRecord | null> {

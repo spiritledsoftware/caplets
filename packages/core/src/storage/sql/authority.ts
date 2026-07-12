@@ -714,7 +714,9 @@ function buildSqlExport(input: {
     receipts.push(receipt);
   }
   receipts.sort((left, right) =>
-    stableJsonStringify(left).localeCompare(stableJsonStringify(right)),
+    receiptKeyForSqlValues(left.currentHostId, left.principalId, left.idempotencyKey).localeCompare(
+      receiptKeyForSqlValues(right.currentHostId, right.principalId, right.idempotencyKey),
+    ),
   );
   const auxiliary: AuthorityAuxiliaryExport = {
     watermark: String(watermark),

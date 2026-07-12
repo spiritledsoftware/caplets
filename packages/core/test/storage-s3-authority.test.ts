@@ -220,6 +220,23 @@ describe("S3 authority bounded protocol", () => {
     await missingAuthority.close();
   });
 
+  it("retries one transient GET transport failure", async () => {
+    const client = new MemoryS3Client();
+    const authority = await createS3Authority(options(client));
+    await authority.commit(envelope(null, { idempotencyKey: "transient-get" }));
+    const before = client.requests.length;
+    client.faults.push({
+      operation: "GetObjectCommand",
+      fault: { name: "TimeoutError", message: "socket hang up" },
+    });
+
+    await expect(authority.readHead()).resolves.toMatchObject({ sequence: 1 });
+    expect(
+      client.requests.slice(before).filter(({ operation }) => operation === "GetObjectCommand"),
+    ).toHaveLength(3);
+    await authority.close();
+  });
+
   it("re-reads after ambiguous 409/404 and replays a lost successful response", async () => {
     const client = new MemoryS3Client();
     const authority = await createS3Authority(options(client));
