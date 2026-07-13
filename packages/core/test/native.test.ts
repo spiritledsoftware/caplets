@@ -796,6 +796,21 @@ describe("native Caplets service", () => {
       await initialReady;
       expect(configuredCapletIds(service.listTools())).toEqual(["alpha"]);
 
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              alpha: {
+                name: "Alpha",
+                description: "Search alpha project documents after reload.",
+                command: process.execPath,
+              },
+            },
+          }),
+        ),
+      );
+
       await expect(service.reload()).resolves.toBe(true);
       expect(service.listTools()).toEqual([]);
       await expect(service.execute("alpha", { operation: "inspect" })).rejects.toMatchObject({
@@ -1132,6 +1147,30 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("does not notify native tools when only a Caplet README changes", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const capletDir = join(dir, "user", "status");
+    const capletPath = join(capletDir, "CAPLET.md");
+    mkdirSync(capletDir, { recursive: true });
+    writeFileSync(capletPath, nativeReadmeCaplet("Initial operator notes."));
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    await waitForInitialProjection(service);
+    const before = service.listTools();
+    const events: string[][] = [];
+    service.onToolsChanged((tools) => events.push(configuredCapletIds(tools)));
+
+    try {
+      writeFileSync(capletPath, nativeReadmeCaplet("Updated troubleshooting notes."));
+
+      await expect(service.reload()).resolves.toBe(true);
+      expect(service.listTools()).toEqual(before);
+      expect(events).toEqual([]);
+    } finally {
+      await service.close();
+    }
+  });
+
   it("notifies native tool listeners only when config parses successfully", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
@@ -1367,6 +1406,22 @@ describe("native Caplets service", () => {
     return { dir, configPath, projectConfigPath };
   }
 });
+
+function nativeReadmeCaplet(readme: string): string {
+  return [
+    "---",
+    "name: Status",
+    "description: Read service status.",
+    "httpApi:",
+    "  baseUrl: http://127.0.0.1:1",
+    "  auth: { type: none }",
+    "  actions:",
+    "    check: { method: GET, path: /check }",
+    "---",
+    readme,
+    "",
+  ].join("\n");
+}
 
 async function waitForInitialProjection(service: NativeCapletsService): Promise<void> {
   await new Promise<void>((resolve) => {

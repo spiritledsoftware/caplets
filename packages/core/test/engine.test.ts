@@ -180,6 +180,211 @@ describe("CapletsEngine", () => {
     expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["gamma"]);
   });
 
+  it("treats a manual README-only reload as a successful lifecycle no-op", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const capletDir = join(dir, "user", "alpha");
+    const capletPath = join(capletDir, "CAPLET.md");
+    mkdirSync(capletDir, { recursive: true });
+    writeFileSync(capletPath, capletMarkdown("Initial operator notes."));
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+    const internal = engine as unknown as {
+      registry: unknown;
+      downstream: { updateRegistry: (registry: unknown) => void };
+      openapi: { updateRegistry: (registry: unknown) => void };
+      googleDiscovery: { updateRegistry: (registry: unknown) => void };
+      graphql: { updateRegistry: (registry: unknown) => void };
+      http: { updateRegistry: (registry: unknown) => void };
+      cli: { updateRegistry: (registry: unknown) => void };
+      capletSets: { updateRegistry: (registry: unknown) => void };
+    };
+    const initialRegistry = internal.registry;
+    const initialGeneration = engine.currentExposureGeneration();
+    const listener = vi.fn();
+    engine.onReload(listener);
+    const registryUpdates = [
+      vi.spyOn(internal.downstream, "updateRegistry"),
+      vi.spyOn(internal.openapi, "updateRegistry"),
+      vi.spyOn(internal.googleDiscovery, "updateRegistry"),
+      vi.spyOn(internal.graphql, "updateRegistry"),
+      vi.spyOn(internal.http, "updateRegistry"),
+      vi.spyOn(internal.cli, "updateRegistry"),
+      vi.spyOn(internal.capletSets, "updateRegistry"),
+    ];
+
+    writeFileSync(capletPath, capletMarkdown("Updated troubleshooting notes."));
+
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(internal.registry).toBe(initialRegistry);
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration);
+    expect(registryUpdates.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+    expect(listener).not.toHaveBeenCalled();
+
+    writeFileSync(
+      capletPath,
+      capletMarkdown("Updated troubleshooting notes.", "Search alpha repositories."),
+    );
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration + 1);
+    expect(registryUpdates.every((spy) => spy.mock.calls.length === 1)).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    writeConfig(configPath, { options: { exposure: "direct" } });
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration + 2);
+    expect(registryUpdates.every((spy) => spy.mock.calls.length === 2)).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles a watched README-only edit without emitting a runtime reload", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const capletDir = join(dir, "user", "alpha");
+    const capletPath = join(capletDir, "CAPLET.md");
+    mkdirSync(capletDir, { recursive: true });
+    writeFileSync(capletPath, capletMarkdown("Initial operator notes."));
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watchDebounceMs: 1 });
+    engines.push(engine);
+    const initialGeneration = engine.currentExposureGeneration();
+    const listener = vi.fn();
+    engine.onReload(listener);
+    const scheduled = Promise.withResolvers<void>();
+    const settled = Promise.withResolvers<boolean>();
+    const originalScheduleReload = engine.scheduleReload.bind(engine);
+    vi.spyOn(engine, "scheduleReload").mockImplementation(() => {
+      originalScheduleReload();
+      scheduled.resolve();
+    });
+    const internal = engine as unknown as {
+      reloadOnce: () => Promise<boolean>;
+      resetWatchers: () => void;
+    };
+    const resetWatchers = vi.spyOn(internal, "resetWatchers");
+    const originalReloadOnce = internal.reloadOnce.bind(engine);
+    vi.spyOn(internal, "reloadOnce").mockImplementation(async () => {
+      const result = await originalReloadOnce();
+      settled.resolve(result);
+      return result;
+    });
+
+    writeFileSync(capletPath, capletMarkdown("Watched troubleshooting notes."));
+
+    await scheduled.promise;
+    await expect(settled.promise).resolves.toBe(true);
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration);
+    expect(listener).not.toHaveBeenCalled();
+    expect(resetWatchers).not.toHaveBeenCalled();
+  });
+
+  it("fans out for declared runtime input changes, deletion, and restoration", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const capletDir = join(dir, "user", "weather");
+    const capletPath = join(capletDir, "CAPLET.md");
+    const specPath = join(capletDir, "openapi.yaml");
+    mkdirSync(capletDir, { recursive: true });
+    writeFileSync(capletPath, openapiCapletMarkdown());
+    writeFileSync(specPath, "openapi: 3.0.3\ninfo: { title: Weather, version: one }\npaths: {}\n");
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+    const listener = vi.fn();
+    engine.onReload(listener);
+    const initialGeneration = engine.currentExposureGeneration();
+
+    writeFileSync(specPath, "openapi: 3.0.3\ninfo: { title: Weather, version: two }\npaths: {}\n");
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration + 1);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    rmSync(specPath);
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration + 2);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    writeFileSync(
+      specPath,
+      "openapi: 3.0.3\ninfo: { title: Weather, version: three }\npaths: {}\n",
+    );
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration + 3);
+    expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  it("fans out when a resolved environment value changes under a stable template", async () => {
+    const variable = "CAPLETS_U3_RELOAD_TOKEN";
+    const original = process.env[variable];
+    process.env[variable] = "first-secret";
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+          env: { TOKEN: `$env:${variable}` },
+        },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+    const listener = vi.fn();
+    engine.onReload(listener);
+    const initialGeneration = engine.currentExposureGeneration();
+
+    try {
+      process.env[variable] = "second-secret";
+
+      await expect(engine.reload()).resolves.toBe(true);
+      expect(engine.currentConfig().mcpServers.alpha?.env).toEqual({ TOKEN: "second-secret" });
+      expect(engine.currentExposureGeneration()).toBe(initialGeneration + 1);
+      expect(listener).toHaveBeenCalledOnce();
+    } finally {
+      if (original === undefined) {
+        delete process.env[variable];
+      } else {
+        process.env[variable] = original;
+      }
+    }
+  });
+
+  it("fans out when a resolved Vault value changes under a stable template", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "GitHub access.",
+          command: process.execPath,
+          env: { GH_TOKEN: "$vault:GH_TOKEN" },
+        },
+      },
+    });
+    dirs.push(dir);
+    process.env.XDG_STATE_HOME = join(dir, "state");
+    const store = new FileVaultStore();
+    store.set("GH_TOKEN", "first-vault-secret");
+    store.grantAccess({
+      storedKey: "GH_TOKEN",
+      referenceName: "GH_TOKEN",
+      capletId: "github",
+      origin: { kind: "global-config", path: configPath },
+    });
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+    const listener = vi.fn();
+    engine.onReload(listener);
+    const initialGeneration = engine.currentExposureGeneration();
+
+    store.set("GH_TOKEN", "second-vault-secret", { force: true });
+
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(engine.currentConfig().mcpServers.github?.env).toEqual({
+      GH_TOKEN: "second-vault-secret",
+    });
+    expect(engine.currentExposureGeneration()).toBe(initialGeneration + 1);
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
   it("includes enabled Google Discovery API Caplets", () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       googleDiscoveryApis: {
@@ -252,6 +457,14 @@ describe("CapletsEngine", () => {
     engines.push(engine);
     const listener = vi.fn();
     engine.onReload(listener);
+    const internal = engine as unknown as {
+      registry: unknown;
+      stableHostConfigurationFingerprint: string;
+      resolvedExecutionFingerprint: string;
+    };
+    const initialRegistry = internal.registry;
+    const initialStableFingerprint = internal.stableHostConfigurationFingerprint;
+    const initialResolvedFingerprint = internal.resolvedExecutionFingerprint;
 
     writeFileSync(configPath, "{ invalid json");
 
@@ -259,6 +472,9 @@ describe("CapletsEngine", () => {
     expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["alpha"]);
     expect(listener).not.toHaveBeenCalled();
     expect(errors.join("")).toContain("Caplets config reload failed");
+    expect(internal.registry).toBe(initialRegistry);
+    expect(internal.stableHostConfigurationFingerprint).toBe(initialStableFingerprint);
+    expect(internal.resolvedExecutionFingerprint).toBe(initialResolvedFingerprint);
   });
 
   it("keeps last known-good config when config sources disappear", async () => {
@@ -461,6 +677,33 @@ describe("CapletsEngine", () => {
     return { dir, configPath, projectConfigPath };
   }
 });
+
+function capletMarkdown(readme: string, description = "Search alpha project documents."): string {
+  return [
+    "---",
+    "name: Alpha",
+    `description: ${description}`,
+    "mcpServer:",
+    `  command: ${JSON.stringify(process.execPath)}`,
+    "---",
+    readme,
+    "",
+  ].join("\n");
+}
+
+function openapiCapletMarkdown(): string {
+  return [
+    "---",
+    "name: Weather",
+    "description: Inspect weather forecasts.",
+    "openapiEndpoint:",
+    "  specPath: ./openapi.yaml",
+    "  auth: { type: none }",
+    "---",
+    "Operator notes.",
+    "",
+  ].join("\n");
+}
 
 function writeConfig(path: string, config: unknown): void {
   writeFileSync(path, JSON.stringify(config));

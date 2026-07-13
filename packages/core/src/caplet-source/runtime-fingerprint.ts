@@ -13,6 +13,7 @@ const ARTIFACT_DOMAIN = "caplets.runtime-fingerprint.artifact.v1";
 const HOST_DOMAIN = "caplets.runtime-fingerprint.host.v1";
 const INPUT_DOMAIN = "caplets.runtime-fingerprint.input.v1";
 const NESTED_INPUT_DOMAIN = "caplets.runtime-fingerprint.nested-input.v1";
+const RESOLVED_EXECUTION_DOMAIN = "caplets.runtime-fingerprint.resolved-execution.v1";
 
 export type DeclaredInputState =
   | { state: "present"; content: string; privateKey?: string | undefined }
@@ -98,6 +99,13 @@ export function createRuntimeFingerprintSnapshot(input: {
   reader: DeclaredInputReader;
 }): RuntimeFingerprintSnapshot {
   return createSnapshot(input, new Set());
+}
+
+export function resolvedExecutionFingerprintForConfig(config: CapletsConfig): string {
+  return domainHash(RESOLVED_EXECUTION_DOMAIN, {
+    version: FINGERPRINT_VERSION,
+    config,
+  });
 }
 
 export function createMemoryDeclaredInputReader(

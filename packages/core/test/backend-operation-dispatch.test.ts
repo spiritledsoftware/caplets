@@ -99,7 +99,7 @@ token: sk-secret-looking
     await runtime.operations.callTool(server, "echo", {});
 
     expect(server).not.toHaveProperty("body");
-    expect(managers.mcp.checkServer.mock.calls[0]?.[0]).not.toHaveProperty("body");
+    expect(managers.mcp.checkServer!.mock.calls[0]?.[0]).not.toHaveProperty("body");
     expect(managers.mcp.listTools.mock.calls[0]?.[0]).not.toHaveProperty("body");
     expect(managers.mcp.callTool.mock.calls[0]?.[0]).not.toHaveProperty("body");
   });
@@ -277,10 +277,10 @@ function managerBundle() {
 
 function manager(source: string, checkMethod: string) {
   return {
-    [checkMethod]: vi.fn(async () => ({ source })),
-    listTools: vi.fn(async () => [TOOL]),
-    getTool: vi.fn(async () => TOOL),
-    callTool: vi.fn(async () => ({ source })),
+    [checkMethod]: vi.fn(async (..._args: unknown[]) => ({ source })),
+    listTools: vi.fn(async (..._args: unknown[]) => [TOOL]),
+    getTool: vi.fn(async (..._args: unknown[]) => TOOL),
+    callTool: vi.fn(async (..._args: unknown[]) => ({ source })),
     compact: vi.fn(() => ({ name: TOOL.name })),
     search: vi.fn(() => [{ name: TOOL.name }]),
   };

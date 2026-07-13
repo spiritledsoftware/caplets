@@ -17,6 +17,7 @@ import { parseCapletSource } from "../src/caplet-source/parse";
 import {
   createMemoryDeclaredInputReader,
   createRuntimeFingerprintSnapshot,
+  resolvedExecutionFingerprintForConfig,
 } from "../src/caplet-source/runtime-fingerprint";
 import { runCapletSetupCli } from "../src/cli/setup-caplet";
 import { createCloudRuntimeAdapter } from "../src/cloud/runtime-adapter";
@@ -31,6 +32,50 @@ afterEach(() => {
 });
 
 describe("runtime fingerprints", () => {
+  it("domain-separates private resolved-execution equality from stable fingerprints", () => {
+    const config = parseConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+          env: { TOKEN: "first-secret" },
+        },
+      },
+    });
+    const same = parseConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+          env: { TOKEN: "first-secret" },
+        },
+      },
+    });
+    const rotated = parseConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+          env: { TOKEN: "second-secret" },
+        },
+      },
+    });
+    const stable = createRuntimeFingerprintSnapshot({
+      config,
+      provenance: {},
+      reader: createMemoryDeclaredInputReader({}),
+    });
+    const resolved = resolvedExecutionFingerprintForConfig(config);
+
+    expect(resolved).toBe(resolvedExecutionFingerprintForConfig(same));
+    expect(resolved).not.toBe(resolvedExecutionFingerprintForConfig(rotated));
+    expect(resolved).not.toBe(stable.hostConfigurationFingerprint);
+    expect(resolved).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
   it("is body-blind, semantic, source-root independent, and adapter-consistent", async () => {
     const first = [
       {

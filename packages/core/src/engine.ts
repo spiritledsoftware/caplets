@@ -15,9 +15,11 @@ import {
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectConfigPath,
+  runtimeFingerprintForConfig,
   vaultResolverForAuthDir,
 } from "./config";
 import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
+import { resolvedExecutionFingerprintForConfig } from "./caplet-source/runtime-fingerprint";
 import { DownstreamManager } from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
@@ -135,6 +137,8 @@ export class CapletsEngine {
   private reloading: Promise<boolean> | undefined;
   private pendingReload = false;
   private closed = false;
+  private stableHostConfigurationFingerprint: string;
+  private resolvedExecutionFingerprint: string;
 
   constructor(options: CapletsEngineOptions = {}) {
     this.paths = {
@@ -145,6 +149,9 @@ export class CapletsEngine {
     this.configLoader =
       options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
     const config = this.loadConfigWithWarnings();
+    this.stableHostConfigurationFingerprint =
+      runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
+    this.resolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(config);
     this.registry = new ServerRegistry(config);
     this.telemetry = createRuntimeTelemetryContext({
       config: this.registry.config,
@@ -545,15 +552,26 @@ export class CapletsEngine {
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
       return false;
     }
-
     if (this.closed) {
       return false;
+    }
+
+    const nextStableHostConfigurationFingerprint =
+      runtimeFingerprintForConfig(nextConfig).hostConfigurationFingerprint;
+    const nextResolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(nextConfig);
+    if (
+      nextStableHostConfigurationFingerprint === this.stableHostConfigurationFingerprint &&
+      nextResolvedExecutionFingerprint === this.resolvedExecutionFingerprint
+    ) {
+      return true;
     }
     const previousConfig = this.registry.config;
     const nextRegistry = new ServerRegistry(nextConfig);
     this.registry = nextRegistry;
     this.exposureGeneration += 1;
     this.telemetry.config = nextConfig;
+    this.stableHostConfigurationFingerprint = nextStableHostConfigurationFingerprint;
+    this.resolvedExecutionFingerprint = nextResolvedExecutionFingerprint;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
     this.googleDiscovery.updateRegistry(nextRegistry);
