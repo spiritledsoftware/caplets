@@ -127,7 +127,6 @@ export type CapletServerConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   transport: "stdio" | "http" | "sse";
   command?: string | undefined;
   args?: string[] | undefined;
@@ -158,7 +157,6 @@ export type OpenApiEndpointConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   specPath?: string | undefined;
   specUrl?: string | undefined;
   baseUrl?: string | undefined;
@@ -186,7 +184,6 @@ export type GraphQlEndpointConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   endpointUrl: string;
   schemaPath?: string | undefined;
   schemaUrl?: string | undefined;
@@ -221,7 +218,6 @@ export type HttpApiConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   baseUrl: string;
   auth: OpenApiAuthConfig;
   actions: Record<string, HttpActionConfig>;
@@ -241,7 +237,6 @@ export type GoogleDiscoveryApiConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   discoveryPath?: string | undefined;
   discoveryUrl?: string | undefined;
   baseUrl?: string | undefined;
@@ -289,7 +284,6 @@ export type CliToolsConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   actions: Record<string, CliToolActionConfig>;
   cwd?: string | undefined;
   env?: Record<string, string> | undefined;
@@ -309,7 +303,6 @@ export type CapletSetConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   configPath?: string | undefined;
   capletsRoot?: string | undefined;
   defaultSearchLimit: number;
@@ -445,7 +438,11 @@ export type ConfigParseOptions = {
   vaultRecoveryTarget?: "global" | "remote" | undefined;
 };
 
-const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
+const NON_INTERPOLATED_SERVER_FIELDS: Record<string, true> = {
+  name: true,
+  description: true,
+  tags: true,
+};
 const VAULT_BARE_REFERENCE = "[A-Za-z0-9_-]+";
 
 const remoteAuthSchema = z
@@ -712,9 +709,7 @@ const publicServerSchema = z
   })
   .strict();
 
-const normalizedServerSchema = publicServerSchema.extend({
-  body: z.string().optional(),
-});
+const normalizedServerSchema = publicServerSchema;
 
 const publicOpenApiEndpointSchema = z
   .object({
@@ -761,9 +756,7 @@ const publicOpenApiEndpointSchema = z
   })
   .strict();
 
-const normalizedOpenApiEndpointSchema = publicOpenApiEndpointSchema.extend({
-  body: z.string().optional(),
-});
+const normalizedOpenApiEndpointSchema = publicOpenApiEndpointSchema;
 
 const operationFilterSchema = z.array(z.string().trim().min(1).max(160));
 
@@ -821,9 +814,7 @@ const publicGoogleDiscoveryApiSchema = z
   })
   .strict();
 
-const normalizedGoogleDiscoveryApiSchema = publicGoogleDiscoveryApiSchema.extend({
-  body: z.string().optional(),
-});
+const normalizedGoogleDiscoveryApiSchema = publicGoogleDiscoveryApiSchema;
 
 const graphQlOperationSchema = z
   .object({
@@ -914,9 +905,7 @@ const publicGraphQlEndpointSchema = z
     }
   });
 
-const normalizedGraphQlEndpointSchema = publicGraphQlEndpointSchema.extend({
-  body: z.string().optional(),
-});
+const normalizedGraphQlEndpointSchema = publicGraphQlEndpointSchema;
 
 const httpScalarMappingSchema = z.record(
   z.string(),
@@ -1012,9 +1001,7 @@ const publicHttpApiSchema = z
   })
   .strict();
 
-const normalizedHttpApiSchema = publicHttpApiSchema.extend({
-  body: z.string().optional(),
-});
+const normalizedHttpApiSchema = publicHttpApiSchema;
 
 const cliToolOutputSchema = z
   .object({
@@ -1111,9 +1098,7 @@ const publicCliToolsSchema = z
   })
   .strict();
 
-const normalizedCliToolsSchema = publicCliToolsSchema.extend({
-  body: z.string().optional(),
-});
+const normalizedCliToolsSchema = publicCliToolsSchema;
 
 const publicCapletSetSchema = z
   .object({
@@ -1173,9 +1158,7 @@ const publicCapletSetSchema = z
     }
   });
 
-const normalizedCapletSetSchema = publicCapletSetSchema.extend({
-  body: z.string().optional(),
-});
+const normalizedCapletSetSchema = publicCapletSetSchema;
 
 type ConfigSchemaServerValue = z.infer<typeof normalizedServerSchema>;
 type ConfigSchemaOpenApiEndpointValue = z.infer<typeof normalizedOpenApiEndpointSchema>;
@@ -3006,7 +2989,7 @@ function isPublicMetadataPath(path: string[]): boolean {
   if (path.length < 3 || !CAPLET_BACKEND_KEY_SET.has(path[0] ?? "")) {
     return false;
   }
-  return NON_INTERPOLATED_SERVER_FIELDS.has(path[2] ?? "");
+  return NON_INTERPOLATED_SERVER_FIELDS[path[2] ?? ""] === true;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -24,14 +24,15 @@ openapiEndpoint:
     });
 
     expect(result?.paths).toEqual({ pypi: "pypi/CAPLET.md" });
-    expect(result?.config.openapiEndpoints?.pypi).toEqual(
+    const config = result?.config.openapiEndpoints?.pypi;
+    expect(config).toEqual(
       expect.objectContaining({
         name: "PyPI",
         description: "Query Python package metadata.",
         specPath: "pypi/openapi.yaml",
-        body: "\n# PyPI\n",
       }),
     );
+    expect(config).not.toHaveProperty("body");
   });
 
   it("loads top-level exposure from CAPLET.md frontmatter", () => {
@@ -243,7 +244,8 @@ googleDiscoveryApis:
         backend: "googleDiscovery",
       },
     });
-    expect(result?.config.googleDiscoveryApis?.["google-workspace__drive"]).toMatchObject({
+    const drive = result?.config.googleDiscoveryApis?.["google-workspace__drive"];
+    expect(drive).toMatchObject({
       name: "Google Drive",
       description: "Search and inspect Google Drive files.",
       tags: ["google", "workspace", "drive"],
@@ -261,8 +263,8 @@ googleDiscoveryApis:
         commands: [{ label: "Parent setup", command: "parent-setup" }],
         verify: [{ label: "Verify Drive", command: "drive-verify" }],
       },
-      body: "\n# Google Workspace\n",
     });
+    expect(drive).not.toHaveProperty("body");
     expect(result?.config.googleDiscoveryApis?.["google-workspace__gmail"]).toMatchObject({
       name: "Gmail",
       discoveryPath: "google-workspace/gmail.discovery.json",

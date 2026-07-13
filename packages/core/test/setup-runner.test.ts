@@ -63,6 +63,12 @@ describe("setup runner", () => {
     expect(capletSetupContentHash(first)).not.toBe(capletSetupContentHash(second));
   });
 
+  it("keeps setup content hashes independent of legacy README bodies", () => {
+    const first = { ...caplet("npm", ["install", "-g", "first"]), body: "# First README" };
+    const second = { ...first, body: "# Second README" };
+    expect(capletSetupContentHash(first)).toBe(capletSetupContentHash(second));
+  });
+
   it("requires approval before commands run", async () => {
     const store = memoryStore();
     await expect(

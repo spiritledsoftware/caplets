@@ -1278,16 +1278,15 @@ export function readCapletFileContent(
     );
   }
 
-  return capletToServerConfig(parsed.data, body, baseDir, normalizePath);
+  return capletToServerConfig(parsed.data, baseDir, normalizePath);
 }
 
 function capletToServerConfig(
   frontmatter: CapletFileFrontmatter,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): unknown {
-  const expanded = capletToExpandedServerConfigs(frontmatter, body, baseDir, normalizePath);
+  const expanded = capletToExpandedServerConfigs(frontmatter, baseDir, normalizePath);
   if (expanded.length > 0) {
     return {
       kind: "expanded-caplet-file",
@@ -1303,7 +1302,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1315,7 +1313,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1332,7 +1329,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1343,7 +1339,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1357,7 +1352,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1370,7 +1364,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1379,7 +1372,6 @@ function capletToServerConfig(
     name: frontmatter.name,
     description: frontmatter.description,
     ...sharedCapletFields(frontmatter),
-    body,
   };
 }
 
@@ -1411,7 +1403,6 @@ const CHILD_SHARED_FIELD_KEYS = new Set([
 
 function capletToExpandedServerConfigs(
   frontmatter: CapletFileFrontmatter,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): ExpandedCapletFileChild[] {
@@ -1424,7 +1415,6 @@ function capletToExpandedServerConfigs(
     frontmatter.mcpServers,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1434,7 +1424,6 @@ function capletToExpandedServerConfigs(
     frontmatter.openapiEndpoints,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1444,7 +1433,6 @@ function capletToExpandedServerConfigs(
     frontmatter.googleDiscoveryApis,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1454,7 +1442,6 @@ function capletToExpandedServerConfigs(
     frontmatter.graphqlEndpoints,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1464,7 +1451,6 @@ function capletToExpandedServerConfigs(
     frontmatter.httpApis,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1475,7 +1461,6 @@ function capletToExpandedServerConfigs(
       frontmatter.cliTools as Record<string, Record<string, unknown>>,
       frontmatter,
       parentShared,
-      body,
       baseDir,
       normalizePath,
     );
@@ -1486,7 +1471,6 @@ function capletToExpandedServerConfigs(
     frontmatter.capletSets,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1500,7 +1484,6 @@ function addExpandedChildren(
   childMap: Record<string, Record<string, unknown>> | undefined,
   frontmatter: CapletFileFrontmatter,
   parentShared: SharedCapletFields,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): void {
@@ -1525,7 +1508,6 @@ function addExpandedChildren(
         backend,
         validatedBackend,
         mergedShared,
-        body,
         baseDir,
         normalizePath,
       ),
@@ -1670,7 +1652,6 @@ function normalizeExpandedBackendConfig(
   backend: CapletFileBackendFamily,
   config: Record<string, unknown>,
   shared: SharedCapletFields,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): unknown {
@@ -1681,7 +1662,6 @@ function normalizeExpandedBackendConfig(
       specPath: normalizePath(config.specPath as string | undefined, baseDir),
       backend: "openapi",
       ...common,
-      body,
     };
   }
   if (backend === "googleDiscovery") {
@@ -1690,7 +1670,6 @@ function normalizeExpandedBackendConfig(
       discoveryPath: normalizePath(config.discoveryPath as string | undefined, baseDir),
       backend: "googleDiscovery",
       ...common,
-      body,
     };
   }
   if (backend === "graphql") {
@@ -1704,7 +1683,6 @@ function normalizeExpandedBackendConfig(
       ),
       backend: "graphql",
       ...common,
-      body,
     };
   }
   if (backend === "http") {
@@ -1712,7 +1690,6 @@ function normalizeExpandedBackendConfig(
       ...config,
       backend: "http",
       ...common,
-      body,
     };
   }
   if (backend === "cli") {
@@ -1726,7 +1703,6 @@ function normalizeExpandedBackendConfig(
       ),
       backend: "cli",
       ...common,
-      body,
     };
   }
   if (backend === "caplets") {
@@ -1736,13 +1712,11 @@ function normalizeExpandedBackendConfig(
       capletsRoot: normalizePath(config.capletsRoot as string | undefined, baseDir),
       backend: "caplets",
       ...common,
-      body,
     };
   }
   return {
     ...config,
     ...common,
-    body,
   };
 }
 

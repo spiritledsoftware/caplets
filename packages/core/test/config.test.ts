@@ -943,17 +943,16 @@ describe("config", () => {
       command: "user-github",
       env: { name: "secret-value" },
       tags: ["code", "$env:EXAMPLE_TOKEN"],
-      body: "# GitHub Card\nUse this for GitHub work with ${EXAMPLE_TOKEN} in prose.",
     });
+    expect(config.mcpServers.github).not.toHaveProperty("body");
     expect(config.mcpServers.github?.description).toContain("${EXAMPLE_TOKEN}");
     expect(config.mcpServers.github?.tags).toContain("$env:EXAMPLE_TOKEN");
-    expect(config.mcpServers.github?.body).toContain("${EXAMPLE_TOKEN}");
     expect(config.mcpServers.linear).toMatchObject({
       server: "linear",
       name: "Linear Project",
       command: "project-linear",
-      body: "# Project Linear",
     });
+    expect(config.mcpServers.linear).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2365,8 +2364,8 @@ describe("config", () => {
       backend: "openapi",
       specPath: "/tmp/users-openapi.json",
       auth: { type: "none" },
-      body: "# Users API",
     });
+    expect(config.openapiEndpoints.users).not.toHaveProperty("body");
     rmSync(root, { recursive: true, force: true });
 
     mkdirSync(root, { recursive: true });
@@ -2427,8 +2426,8 @@ describe("config", () => {
         scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
       },
       includeOperations: ["files.*"],
-      body: "# Drive API",
     });
+    expect(config.googleDiscoveryApis.drive).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2503,8 +2502,8 @@ describe("config", () => {
       server: "reviews",
       backend: "graphql",
       schemaPath: join(root, "reviews.graphql"),
-      body: "# Reviews GraphQL",
     });
+    expect(config.graphqlEndpoints.reviews).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2598,8 +2597,8 @@ describe("config", () => {
       backend: "http",
       auth: { type: "bearer", token: "secret-value" },
       description: "Manage support data through HTTP actions and ${EXAMPLE_TOKEN}.",
-      body: "# Support HTTP",
     });
+    expect(config.httpApis.support).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 

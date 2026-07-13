@@ -230,7 +230,6 @@ type CommonCapletConfig = AgentSelectionHintsConfig & {
   exposure?: CapletExposure | undefined;
   shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
-  body?: string | undefined;
   setup?: CapletSetupConfig | undefined;
   projectBinding?: ProjectBindingConfig | undefined;
   runtime?: RuntimeRequirementsConfig | undefined;
@@ -310,7 +309,6 @@ const commonSchema = {
   exposure: exposureSchema.optional(),
   shadowing: shadowingSchema,
   ...agentSelectionHintsSchema,
-  body: z.string().optional(),
   setup: setupSchema.optional(),
   projectBinding: projectBindingSchema.optional(),
   runtime: runtimeRequirementsSchema.optional(),

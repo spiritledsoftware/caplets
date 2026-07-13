@@ -18,7 +18,6 @@ function stableCapletForHash(caplet: CapletConfig): Record<string, unknown> {
     description: caplet.description,
     backend: caplet.backend,
     tags: caplet.tags,
-    body: caplet.body,
     setup: caplet.setup,
     backendConfig: Object.fromEntries(
       Object.entries(caplet).filter(
@@ -29,8 +28,8 @@ function stableCapletForHash(caplet: CapletConfig): Record<string, unknown> {
             "description",
             "backend",
             "tags",
-            "body",
             "setup",
+            "body",
             "disabled",
           ].includes(key),
       ),
