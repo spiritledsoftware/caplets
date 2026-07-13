@@ -1405,6 +1405,8 @@ describe("config", () => {
             name: "GitHub $vault:GH_TOKEN",
             description: "Literal ${vault:GH_TOKEN}",
             tags: ["$vault:GH_TOKEN"],
+            useWhen: "Use for $vault:GH_TOKEN repositories.",
+            avoidWhen: "Avoid for ${vault:GH_TOKEN} packages.",
             command: "github-mcp",
             env: {
               GH_TOKEN: "$vault:GH_TOKEN",
@@ -1422,6 +1424,8 @@ describe("config", () => {
     expect(config.mcpServers.github?.name).toBe("GitHub $vault:GH_TOKEN");
     expect(config.mcpServers.github?.description).toBe("Literal ${vault:GH_TOKEN}");
     expect(config.mcpServers.github?.tags).toEqual(["$vault:GH_TOKEN"]);
+    expect(config.mcpServers.github?.useWhen).toBe("Use for $vault:GH_TOKEN repositories.");
+    expect(config.mcpServers.github?.avoidWhen).toBe("Avoid for ${vault:GH_TOKEN} packages.");
     expect(config.mcpServers.github?.env).toEqual({
       GH_TOKEN: "resolved_vault_secret",
       GH_TOKEN_BRACED: "resolved_vault_secret",

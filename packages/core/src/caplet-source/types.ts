@@ -8,7 +8,7 @@ export type CapletSourceFile = {
 export type CapletSource = {
   listFiles(): Promise<CapletSourceFile[]>;
   readFile(path: string): Promise<CapletSourceFile | undefined>;
-  declaredInputReader(): DeclaredInputReader;
+  declaredInputReader?(): DeclaredInputReader;
 };
 
 export function normalizeCapletSourcePath(path: string): string | undefined {

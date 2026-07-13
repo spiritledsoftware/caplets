@@ -71,7 +71,7 @@ const outputs = new Map<string, string>([
         sourcePath: "schemas/caplet.schema.json",
         canonicalUrl: "https://caplets.dev/caplet.schema.json",
         intro:
-          "Caplet files are Markdown files with two independent projections. YAML frontmatter is the sole authority for runtime configuration and structured agent-selection metadata. The Markdown body is a human operator README rendered separately; it is never a runtime input, interpolation source, selection channel, Code Mode declaration, or agent context. Store a single-file Caplet as `osv.md`, or use a folder with `CAPLET.md` when frontmatter references nearby runtime assets.",
+          "Caplet files are Markdown files with two independent projections. YAML frontmatter is the sole authority for runtime configuration and structured agent-selection metadata. The Markdown body is a publishable human operator README rendered separately; it is never a runtime input, interpolation source, selection channel, Code Mode declaration, or agent context. Do not include secrets, credentials, private endpoints, customer data, or other sensitive operational material in the body. Store a single-file Caplet as `osv.md`, or use a folder with `CAPLET.md` when frontmatter references nearby runtime assets.",
       }),
     ),
   ],
@@ -349,7 +349,8 @@ function commonSchemaRecipes(sourcePath: string): string {
       "",
       "Runtime actions, paths, environment and authentication values, setup metadata, exposure,",
       "and agent-selection guidance belong in frontmatter. Use `useWhen` and `avoidWhen` for",
-      "selection; reserve the body for human prerequisites, safety, troubleshooting, and references.",
+      "selection. Treat the body as publishable content: reserve it for human prerequisites, safety,",
+      "troubleshooting, and references, and do not include secrets or sensitive operational material.",
       "",
       "Project-bound Caplet with setup:",
       "",

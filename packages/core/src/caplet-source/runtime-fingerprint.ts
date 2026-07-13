@@ -14,6 +14,15 @@ const HOST_DOMAIN = "caplets.runtime-fingerprint.host.v1";
 const INPUT_DOMAIN = "caplets.runtime-fingerprint.input.v1";
 const NESTED_INPUT_DOMAIN = "caplets.runtime-fingerprint.nested-input.v1";
 const RESOLVED_EXECUTION_DOMAIN = "caplets.runtime-fingerprint.resolved-execution.v1";
+const RUNTIME_BACKEND_KEYS = [
+  "mcpServers",
+  "openapiEndpoints",
+  "googleDiscoveryApis",
+  "graphqlEndpoints",
+  "httpApis",
+  "cliTools",
+  "capletSets",
+] as const;
 
 export type DeclaredInputState =
   | { state: "present"; content: string; privateKey?: string | undefined }
@@ -61,11 +70,13 @@ export type DeclaredInputSnapshot = {
 type DeclaredInputGraph = {
   inputs: DeclaredInputSnapshot[];
   persistenceEligible: boolean;
+  valid: boolean;
 };
 
 export type CapletRuntimeFingerprint = {
   fingerprint: string;
   persistenceEligible: boolean;
+  valid: boolean;
   declaredInputs: DeclaredInputSnapshot[];
 };
 
@@ -75,6 +86,7 @@ export type RuntimeFingerprintSnapshot = {
   artifactFingerprint: string;
   hostConfigurationFingerprint: string;
   persistenceEligible: boolean;
+  valid: boolean;
 };
 
 type FingerprintConfig = CapletsConfig & {
@@ -166,21 +178,15 @@ function createSnapshot(
     caplets[caplet.server] = fingerprintCaplet(caplet, provenance, input.reader, traversal);
   }
 
-  const artifactFingerprint = domainHash(
-    ARTIFACT_DOMAIN,
-    Object.fromEntries(
-      Object.entries(caplets)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([id, value]) => [id, value.fingerprint]),
-    ),
+  const sortedCapletFingerprints = Object.fromEntries(
+    Object.entries(caplets)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, value]) => [id, value.fingerprint]),
   );
+  const artifactFingerprint = domainHash(ARTIFACT_DOMAIN, sortedCapletFingerprints);
   const hostOptions = enumeratedHostOptions(input.config);
   const hostConfigurationFingerprint = domainHash(HOST_DOMAIN, {
-    caplets: Object.fromEntries(
-      Object.entries(caplets)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([id, value]) => [id, value.fingerprint]),
-    ),
+    caplets: sortedCapletFingerprints,
     options: transformPaths(hostOptions, []),
   });
   return {
@@ -191,6 +197,7 @@ function createSnapshot(
     persistenceEligible:
       Object.values(caplets).every((caplet) => caplet.persistenceEligible) &&
       persistenceEligible(hostOptions),
+    valid: Object.values(caplets).every((caplet) => caplet.valid),
   };
 }
 
@@ -215,6 +222,7 @@ function fingerprintCaplet(
       declaredInputs,
     }),
     persistenceEligible: persistenceEligible(caplet) && declaredInputGraph.persistenceEligible,
+    valid: declaredInputGraph.valid,
     declaredInputs,
   };
 }
@@ -245,13 +253,15 @@ function readDeclaredInputs(
   if (caplet.backend === "caplets") {
     return fingerprintNestedCapletSet(caplet, readerScope, references, reader, traversal);
   }
+  const inputs = references
+    .map(({ kind, path }) =>
+      fingerprintOrdinaryInput(caplet.server, readerScope, kind, path, reader),
+    )
+    .sort(compareDeclaredInputs);
   return {
-    inputs: references
-      .map(({ kind, path }) =>
-        fingerprintOrdinaryInput(caplet.server, readerScope, kind, path, reader),
-      )
-      .sort(compareDeclaredInputs),
+    inputs,
     persistenceEligible: true,
+    valid: inputs.every((input) => input.state === "present"),
   };
 }
 
@@ -290,6 +300,7 @@ function fingerprintNestedCapletSet(
   const nestedProvenance: Record<string, RuntimeFingerprintProvenance> = {};
   const inputs: DeclaredInputSnapshot[] = [];
   const traversalKeys: string[] = [];
+  let valid = true;
 
   for (const reference of references.sort((left, right) => left.kind.localeCompare(right.kind))) {
     const logicalPath = declaredLogicalPath(reference.path, reference.kind);
@@ -303,16 +314,24 @@ function fingerprintNestedCapletSet(
       const cycleKey = state.privateKey ?? `config:${logicalPath}`;
       if (state.state !== "present") {
         inputs.push({ kind: reference.kind, logicalPath, state: state.state });
+        valid = false;
         continue;
       }
       assertNoCycle(cycleKey, traversal);
       traversalKeys.push(cycleKey);
       try {
-        const parsed = JSON.parse(state.content) as Record<string, unknown>;
+        const parsed = JSON.parse(state.content) as unknown;
+        if (!isRecord(parsed)) {
+          throw new CapletsError(
+            "CONFIG_INVALID",
+            `Nested Caplet config ${logicalPath} must be an object`,
+          );
+        }
         configInput = normalizeNestedConfigPaths(
           parsed,
           logicalPath.split("/").slice(0, -1).join("/"),
         );
+        parseConfig({ version: 1, ...configInput });
         for (const id of capletIds(configInput)) {
           nestedProvenance[id] = { parentId: id, sourcePath: logicalPath, readerScope };
         }
@@ -328,6 +347,7 @@ function fingerprintNestedCapletSet(
     const cycleKey = state.privateKey ?? `root:${logicalPath}`;
     if (state.state !== "present") {
       inputs.push({ kind: reference.kind, logicalPath, state: state.state });
+      valid = false;
       continue;
     }
     assertNoCycle(cycleKey, traversal);
@@ -358,6 +378,7 @@ function fingerprintNestedCapletSet(
           files: inaccessible.map(({ path, state }) => ({ path, state: state.state })),
         }),
       });
+      valid = false;
       continue;
     }
     const files = fileStates.map(({ path, state }) => ({
@@ -385,7 +406,11 @@ function fingerprintNestedCapletSet(
   }
 
   if (!configInput && !capletInput) {
-    return { inputs: inputs.sort(compareDeclaredInputs), persistenceEligible: true };
+    return {
+      inputs: inputs.sort(compareDeclaredInputs),
+      persistenceEligible: true,
+      valid: references.length === 0 || valid,
+    };
   }
   const merged = mergeRuntimeInputs(configInput, capletInput, {
     version: 1,
@@ -407,6 +432,7 @@ function fingerprintNestedCapletSet(
       .map((input) => (input.state === "present" ? { ...input, digest } : input))
       .sort(compareDeclaredInputs),
     persistenceEligible: nested.persistenceEligible,
+    valid: valid && nested.valid,
   };
 }
 
@@ -550,15 +576,7 @@ function effectiveCapletRootPaths(paths: string[]): string[] {
 function mergeRuntimeInputs(
   ...inputs: Array<Record<string, unknown> | CapletFileConfig | undefined>
 ): Record<string, unknown> {
-  const backendKeys = [
-    "mcpServers",
-    "openapiEndpoints",
-    "googleDiscoveryApis",
-    "graphqlEndpoints",
-    "httpApis",
-    "cliTools",
-    "capletSets",
-  ];
+  const backendKeys = RUNTIME_BACKEND_KEYS;
   let merged: Record<string, unknown> = {};
   for (const input of inputs) {
     if (!input) continue;
@@ -571,6 +589,11 @@ function mergeRuntimeInputs(
     );
     merged = { ...previous, ...inputRecord };
     for (const key of backendKeys) {
+      if (!(key in inputRecord)) continue;
+      if (!isRecord(inputRecord[key])) {
+        merged[key] = inputRecord[key];
+        continue;
+      }
       const retained = Object.fromEntries(
         Object.entries(isRecord(previous[key]) ? previous[key] : {}).filter(
           ([id]) => !incomingIds.has(id),
@@ -578,13 +601,15 @@ function mergeRuntimeInputs(
       );
       merged[key] = {
         ...retained,
-        ...(isRecord(inputRecord[key]) ? inputRecord[key] : {}),
+        ...inputRecord[key],
       };
     }
-    merged.namespaceAliases = mergeNamespaceAliases(
-      previous.namespaceAliases,
-      inputRecord.namespaceAliases,
-    );
+    if ("namespaceAliases" in inputRecord && isRecord(inputRecord.namespaceAliases)) {
+      merged.namespaceAliases = mergeNamespaceAliases(
+        previous.namespaceAliases,
+        inputRecord.namespaceAliases,
+      );
+    }
   }
   return merged;
 }
@@ -602,27 +627,13 @@ function mergeNamespaceAliases(left: unknown, right: unknown): unknown {
 }
 
 function capletIds(input: Record<string, unknown>): string[] {
-  return [
-    "mcpServers",
-    "openapiEndpoints",
-    "googleDiscoveryApis",
-    "graphqlEndpoints",
-    "httpApis",
-    "cliTools",
-    "capletSets",
-  ].flatMap((key) => (isRecord(input[key]) ? Object.keys(input[key]) : []));
+  return RUNTIME_BACKEND_KEYS.flatMap((key) =>
+    isRecord(input[key]) ? Object.keys(input[key]) : [],
+  );
 }
 
 function allCaplets(config: CapletsConfig): CapletConfig[] {
-  return [
-    ...Object.values(config.mcpServers),
-    ...Object.values(config.openapiEndpoints),
-    ...Object.values(config.googleDiscoveryApis),
-    ...Object.values(config.graphqlEndpoints),
-    ...Object.values(config.httpApis),
-    ...Object.values(config.cliTools),
-    ...Object.values(config.capletSets),
-  ];
+  return RUNTIME_BACKEND_KEYS.flatMap((key) => Object.values(config[key]));
 }
 
 function enumeratedHostOptions(config: FingerprintConfig): unknown {
@@ -664,6 +675,7 @@ function enumeratedHostOptions(config: FingerprintConfig): unknown {
 function persistenceEligible(value: unknown, path: string[] = []): boolean {
   if (typeof value === "string") {
     if (isSecretCapablePath(path)) return hasTemplateReference(value);
+    if (isDynamicSetupExecutionPath(path) && hasTemplateReference(value)) return false;
     if (isHostPath(path, value)) return false;
     return true;
   }
@@ -677,12 +689,27 @@ function persistenceEligible(value: unknown, path: string[] = []): boolean {
 }
 
 function isSecretCapablePath(path: string[]): boolean {
-  const key = path.at(-1)?.toLowerCase();
+  const normalized = path.map((segment) => segment.toLowerCase());
+  const key = normalized.at(-1);
   if (!key) return false;
   if (key === "token" || key === "clientsecret") return true;
-  if (path.some((segment) => segment.toLowerCase() === "env")) return true;
-  if (path.some((segment) => segment.toLowerCase() === "headers")) return true;
+  if (normalized.includes("env") || normalized.includes("headers")) return true;
+  if (normalized.includes("query") || normalized.includes("jsonbody")) return true;
   return false;
+}
+
+function isDynamicSetupExecutionPath(path: string[]): boolean {
+  const normalized = path.map((segment) => segment.toLowerCase());
+  if (
+    !normalized.includes("setup") ||
+    (!normalized.includes("actions") &&
+      !normalized.includes("commands") &&
+      !normalized.includes("verify"))
+  ) {
+    return false;
+  }
+  const key = normalized.at(-1);
+  return key === "command" || key === "cwd" || normalized.includes("args");
 }
 
 function isHostPath(path: string[], value: string): boolean {

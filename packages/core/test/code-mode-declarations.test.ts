@@ -124,8 +124,26 @@ describe("generateCodeModeDeclarations", () => {
       ],
     });
 
-    expect(declaration).toContain(`${"A".repeat(177)}...`);
-    expect(declaration).not.toContain("A".repeat(181));
+    expect(declaration).toContain(`${"A".repeat(237)}...`);
+    expect(declaration).not.toContain("A".repeat(241));
+  });
+  it("preserves bounded selection markers after long descriptions", () => {
+    const declaration = generateCodeModeDeclarations({
+      caplets: [
+        {
+          id: "verbose",
+          name: "Verbose",
+          description: "D".repeat(500),
+          useWhen: "Use this capability for repository and issue operations. ".repeat(4),
+          avoidWhen: "Avoid this capability for package vulnerability lookups. ".repeat(4),
+        },
+      ],
+    });
+
+    expect(declaration).toContain("Use when:");
+    expect(declaration).toContain("Avoid when:");
+    const hint = declaration.match(/\/\*\*(.*?)\*\//u)?.[1];
+    expect(hint?.length).toBeLessThanOrEqual(240);
   });
 
   it("returns stable hashes for equivalent declaration content", () => {

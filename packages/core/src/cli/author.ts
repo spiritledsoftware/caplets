@@ -260,7 +260,7 @@ function renderCaplet(input: {
     "",
     `# ${input.name}`,
     "",
-    "This Markdown body is a human operator README. Keep runtime actions, paths, environment and authentication values, structured setup metadata, and agent-selection guidance in YAML frontmatter.",
+    "This Markdown body is a publishable human operator README. Keep runtime actions, paths, environment and authentication values, structured setup metadata, and agent-selection guidance in YAML frontmatter. Do not include secrets, credentials, private endpoints, customer data, or other sensitive operational material.",
     "",
     "## Prerequisites and setup context",
     "",

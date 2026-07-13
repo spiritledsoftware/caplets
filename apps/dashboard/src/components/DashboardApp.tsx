@@ -106,6 +106,10 @@ type CatalogMutationResult = {
     catalogIndexing?: { status?: string; reason?: string };
   }>;
 };
+type DashboardAction = (
+  label: string | ((result: unknown) => string),
+  callback: () => Promise<unknown>,
+) => Promise<void>;
 export function catalogMutationLabel(result: unknown): string {
   const status = (result as CatalogMutationResult | undefined)?.installed?.[0]?.status;
   if (status === "content_updated") return "Content updated";
@@ -451,10 +455,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     }
   }
 
-  async function action(
-    label: string | ((result: unknown) => string),
-    callback: () => Promise<unknown>,
-  ) {
+  const action: DashboardAction = async (label, callback) => {
     try {
       const result = await callback();
       if (result === ACTION_DISCARDED) return;
@@ -472,7 +473,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
       }
       toast.error(error instanceof Error ? error.message : String(error));
     }
-  }
+  };
 
   async function logout() {
     try {
@@ -780,10 +781,7 @@ function Page({
   data: DashboardData;
   loading: boolean;
   session: DashboardSession;
-  action: (
-    label: string | ((result: unknown) => string),
-    callback: () => Promise<unknown>,
-  ) => Promise<void>;
+  action: DashboardAction;
 }) {
   const { confirmTyped } = useActionConfirm();
   if (route === "access") return <AccessPage data={data} loading={loading} action={action} />;
@@ -1398,10 +1396,7 @@ function CapletsPage({
 }: {
   data: DashboardData;
   loading: boolean;
-  action: (
-    label: string | ((result: unknown) => string),
-    callback: () => Promise<unknown>,
-  ) => Promise<void>;
+  action: DashboardAction;
 }) {
   const { confirmTyped } = useActionConfirm();
   const caplets = data.caplets?.caplets ?? [];

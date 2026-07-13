@@ -402,13 +402,16 @@ export type ConfigWithSources = {
 
 const runtimeFingerprintByConfig = new WeakMap<CapletsConfig, RuntimeFingerprintSnapshot>();
 
-export function runtimeFingerprintForConfig(config: CapletsConfig): RuntimeFingerprintSnapshot {
+export function runtimeFingerprintForConfig(
+  config: CapletsConfig,
+  reader?: DeclaredInputReader,
+): RuntimeFingerprintSnapshot {
   const existing = runtimeFingerprintByConfig.get(config);
-  if (existing) return existing;
+  if (existing && (existing.valid || reader === undefined)) return existing;
   const fingerprint = createRuntimeFingerprintSnapshot({
     config,
     provenance: {},
-    reader: {
+    reader: reader ?? {
       read: () => ({ state: "missing" }),
       list: () => ({ state: "missing" }),
     },
@@ -476,6 +479,8 @@ const NON_INTERPOLATED_SERVER_FIELDS: Record<string, true> = {
   name: true,
   description: true,
   tags: true,
+  useWhen: true,
+  avoidWhen: true,
 };
 const VAULT_BARE_REFERENCE = "[A-Za-z0-9_-]+";
 

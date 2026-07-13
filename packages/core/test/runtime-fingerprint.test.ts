@@ -496,6 +496,8 @@ README
       { logicalPath: "graph/schema.graphql", state: "present" },
       { logicalPath: "graph/unreadable.graphql", state: "unreadable" },
     ]);
+    expect(snapshot.valid).toBe(false);
+    expect(snapshot.caplets.graph?.valid).toBe(false);
     expect(serialized).not.toContain("/private/root");
     expect(serialized).not.toContain("EACCES");
   });
@@ -612,6 +614,59 @@ README
     expect(JSON.stringify(snapshot)).not.toContain("/opt/private");
     expect(JSON.stringify(snapshot)).not.toContain("C:\\private");
     expect(JSON.stringify(retargeted)).not.toContain("/opt/private");
+  });
+
+  it("keeps static HTTP secrets and dynamic setup commands out of persisted identity", () => {
+    const config = parseConfig({
+      httpApis: {
+        unsafeHttp: {
+          name: "Unsafe HTTP",
+          description: "Contains literal request credentials.",
+          baseUrl: "https://api.example.com",
+          auth: { type: "none" },
+          actions: {
+            send: {
+              method: "POST",
+              path: "/send",
+              query: { tenant: "private-tenant" },
+              jsonBody: { token: "private-body-token" },
+            },
+          },
+        },
+      },
+      cliTools: {
+        unsafeSetup: {
+          name: "Unsafe setup",
+          description: "Resolves the setup executable dynamically.",
+          setup: {
+            commands: [
+              {
+                label: "Install",
+                command: "$env:SETUP_COMMAND",
+                args: ["$env:SETUP_ARGUMENT"],
+              },
+            ],
+          },
+          actions: {
+            run: {
+              description: "Run the installed tool.",
+              command: "tool",
+            },
+          },
+        },
+      },
+    });
+    const snapshot = createRuntimeFingerprintSnapshot({
+      config,
+      provenance: {},
+      reader: createMemoryDeclaredInputReader({}),
+    });
+
+    expect(snapshot.caplets.unsafeHttp?.persistenceEligible).toBe(false);
+    expect(snapshot.caplets.unsafeSetup?.persistenceEligible).toBe(false);
+    expect(snapshot.persistenceEligible).toBe(false);
+    expect(JSON.stringify(snapshot)).not.toContain("private-tenant");
+    expect(JSON.stringify(snapshot)).not.toContain("private-body-token");
   });
 
   it("keeps Vault resolution values outside stable and persistable snapshots", () => {
@@ -804,6 +859,8 @@ README
       }),
     ]);
     expect(JSON.stringify(snapshot)).not.toContain("/private/runtime");
+    expect(snapshot.valid).toBe(false);
+    expect(snapshot.caplets.workspace?.valid).toBe(false);
   });
 
   it("fingerprints effective nested Caplet-set config and Caplet-root discovery", () => {
@@ -888,6 +945,31 @@ README
     expect(effectiveChanged.caplets.workspace?.fingerprint).not.toBe(
       first.caplets.workspace?.fingerprint,
     );
+  });
+
+  it("rejects malformed nested backend maps before overlay merging", () => {
+    const config = parseConfig({
+      capletSets: {
+        workspace: {
+          name: "Workspace",
+          description: "Expose nested Caplets.",
+          configPath: "nested/config.json",
+          capletsRoot: "nested/caplets",
+        },
+      },
+    });
+
+    expect(() =>
+      createRuntimeFingerprintSnapshot({
+        config,
+        provenance: { workspace: { parentId: "workspace", sourcePath: "workspace/CAPLET.md" } },
+        reader: createMemoryDeclaredInputReader({
+          "nested/config.json": JSON.stringify({ mcpServers: "invalid" }),
+          "nested/caplets/tool.md":
+            "---\nname: Tool\ndescription: A nested tool.\nmcpServer:\n  command: tool\n---\nREADME\n",
+        }),
+      }),
+    ).toThrow(expect.objectContaining({ code: "CONFIG_INVALID" }));
   });
 
   it("propagates nested live-only taint to the owning Caplet set", () => {

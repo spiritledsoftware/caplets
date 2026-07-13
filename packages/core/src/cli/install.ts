@@ -3,11 +3,13 @@ import { createHash } from "node:crypto";
 import {
   accessSync,
   constants,
+  closeSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -129,15 +131,26 @@ type CandidateArtifact = {
   risk: CapletsLockEntry["risk"];
 };
 
+type InstallCapletsOptions = {
+  capletIds?: string[];
+  destinationRoot?: string;
+  force?: boolean;
+  lockfilePath?: string | undefined;
+  now?: Date | undefined;
+};
+
 export function installCaplets(
   repo: string,
-  options: {
-    capletIds?: string[];
-    destinationRoot?: string;
-    force?: boolean;
-    lockfilePath?: string | undefined;
-    now?: Date | undefined;
-  } = {},
+  options: InstallCapletsOptions = {},
+): { installed: InstallableCaplet[] } {
+  return options.lockfilePath
+    ? withLockfileTransaction(options.lockfilePath, () => installCapletsUnlocked(repo, options))
+    : installCapletsUnlocked(repo, options);
+}
+
+function installCapletsUnlocked(
+  repo: string,
+  options: InstallCapletsOptions = {},
 ): { installed: InstallableCaplet[] } {
   const source = resolveInstallSource(repo);
   try {
@@ -201,15 +214,58 @@ export function installCaplets(
   }
 }
 
+function withLockfileTransaction<T>(lockfilePath: string, operation: () => T): T {
+  const path = `${lockfilePath}.transaction.lock`;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, "wx", 0o600);
+    writeFileSync(
+      descriptor,
+      `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
+    );
+  } catch (error) {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+      rmSync(path, { force: true });
+    }
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Another Caplets install, restore, or update holds ${path}; if no operation is running, remove the lock and retry`,
+      toSafeError(error),
+    );
+  }
+  try {
+    return operation();
+  } finally {
+    try {
+      closeSync(descriptor);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  }
+}
+
+type RestoreCapletsOptions = {
+  destinationRoot?: string;
+  lockfilePath: string;
+  force?: boolean;
+  capletIds?: string[] | undefined;
+  now?: Date | undefined;
+};
+
 export function restoreCapletsFromLockfile(
-  options: {
-    destinationRoot?: string;
-    lockfilePath: string;
-    force?: boolean;
-    capletIds?: string[] | undefined;
-    now?: Date | undefined;
-  },
+  options: RestoreCapletsOptions,
   dependencies: InstallTransactionDependencies = {},
+): { installed: InstallableCaplet[] } {
+  return withLockfileTransaction(options.lockfilePath, () =>
+    restoreCapletsFromLockfileUnlocked(options, dependencies),
+  );
+}
+
+function restoreCapletsFromLockfileUnlocked(
+  options: RestoreCapletsOptions,
+  dependencies: InstallTransactionDependencies,
 ): { installed: InstallableCaplet[] } {
   const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
   recoverInterruptedCapletTransactions({
@@ -294,16 +350,27 @@ export function restoreCapletsFromLockfile(
   return { installed: results };
 }
 
+type UpdateCapletsOptions = {
+  destinationRoot?: string;
+  lockfilePath: string;
+  force?: boolean;
+  allowRiskIncrease?: boolean;
+  capletIds?: string[] | undefined;
+  now?: Date | undefined;
+};
+
 export function updateCapletsFromLockfile(
-  options: {
-    destinationRoot?: string;
-    lockfilePath: string;
-    force?: boolean;
-    allowRiskIncrease?: boolean;
-    capletIds?: string[] | undefined;
-    now?: Date | undefined;
-  },
+  options: UpdateCapletsOptions,
   dependencies: InstallTransactionDependencies = {},
+): { installed: InstallableCaplet[] } {
+  return withLockfileTransaction(options.lockfilePath, () =>
+    updateCapletsFromLockfileUnlocked(options, dependencies),
+  );
+}
+
+function updateCapletsFromLockfileUnlocked(
+  options: UpdateCapletsOptions,
+  dependencies: InstallTransactionDependencies,
 ): { installed: InstallableCaplet[] } {
   const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
   recoverInterruptedCapletTransactions({
@@ -356,11 +423,9 @@ export function updateCapletsFromLockfile(
       if (currentHash === entry.installedHash && candidate.artifactHash === entry.installedHash) {
         status = "noop";
       } else {
-        const installedFingerprint =
-          entry.runtimeFingerprint?.artifactFingerprint ??
-          (existing
-            ? fingerprintInstalledArtifact(entry, destination).artifactFingerprint
-            : undefined);
+        const installedFingerprint = existing
+          ? fingerprintInstalledArtifact(entry, destination).artifactFingerprint
+          : undefined;
         status =
           installedFingerprint !== undefined &&
           installedFingerprint === candidate.runtimeSnapshot.artifactFingerprint
@@ -553,7 +618,7 @@ function collectArtifactFiles(
 function runtimeFingerprintForPersistence(
   snapshot: RuntimeFingerprintSnapshot,
 ): CapletsLockRuntimeFingerprint | undefined {
-  return snapshot.persistenceEligible
+  return snapshot.valid && snapshot.persistenceEligible
     ? { version: 1, artifactFingerprint: snapshot.artifactFingerprint }
     : undefined;
 }
@@ -612,8 +677,10 @@ function persistTransactionPhase(
   phase: CapletTransactionPhase,
   dependencies: InstallTransactionDependencies,
 ): void {
-  const next = { ...journal, phase };
-  writeFileSync(paths.journalTemporaryPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  journal.phase = phase;
+  writeFileSync(paths.journalTemporaryPath, `${JSON.stringify(journal, null, 2)}\n`, {
+    mode: 0o600,
+  });
   renameSync(paths.journalTemporaryPath, paths.journalPath);
   if (dependencies.onTransactionPhase?.(phase) === "interrupt") {
     throw new CapletTransactionInterruption(`Interrupted after ${phase}`);
@@ -695,26 +762,78 @@ function rollbackCapletArtifactTransaction(
   paths: CapletTransactionPaths,
 ): void {
   const destination = input.candidate.plan.destination;
-  if (existsSync(paths.backupPath)) {
-    removeInstallPath(destination, `uncommitted Caplet ${journal.entryId}`, true);
-    renameSync(paths.backupPath, destination);
-  } else if (!journal.hadDestination) {
-    removeInstallPath(destination, `uncommitted Caplet ${journal.entryId}`, true);
-  }
+  const destinationHash = existsSync(destination) ? hashInstalledArtifact(destination) : undefined;
+  const backupHash = existsSync(paths.backupPath)
+    ? hashInstalledArtifact(paths.backupPath)
+    : undefined;
   const currentLockfile = readCapletsLockfile(input.lockfilePath);
   const current = currentLockfile.entries.find((entry) => entry.id === journal.entryId);
-  if (sameLockEntry(current, journal.afterEntry)) {
+  const lockIsBefore = sameLockEntry(current, journal.beforeEntry);
+  const lockIsAfter = sameLockEntry(current, journal.afterEntry);
+
+  if (
+    (backupHash !== undefined &&
+      !transactionPhaseMayHaveStarted(journal.phase, "backup_created")) ||
+    (destinationHash === journal.afterHash &&
+      !transactionPhaseMayHaveStarted(journal.phase, "destination_replaced") &&
+      !(
+        !journal.hadDestination && transactionPhaseMayHaveStarted(journal.phase, "backup_created")
+      )) ||
+    (lockIsAfter && !transactionPhaseMayHaveStarted(journal.phase, "lock_replaced"))
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplet transaction ${journal.entryId} reached an impossible rollback state`,
+    );
+  }
+
+  if (lockIsAfter && destinationHash === journal.afterHash) {
+    cleanupTransactionPaths(paths);
+    return;
+  }
+
+  if (backupHash === journal.beforeHash && journal.beforeHash !== undefined) {
+    removeInstallPath(destination, `uncommitted Caplet ${journal.entryId}`, true);
+    renameSync(paths.backupPath, destination);
+  } else if (
+    !journal.hadDestination &&
+    (destinationHash === undefined || destinationHash === journal.afterHash)
+  ) {
+    removeInstallPath(destination, `uncommitted Caplet ${journal.entryId}`, true);
+  } else if (destinationHash !== journal.beforeHash) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Artifact changed during rollback for ${journal.entryId}`,
+    );
+  }
+
+  if (lockIsAfter) {
     const entries = currentLockfile.entries.map((entry) =>
       entry.id === journal.entryId ? journal.beforeEntry : entry,
     );
     writeCapletsLockfileAtomically(input.lockfilePath, { version: 1, entries });
-  } else if (!sameLockEntry(current, journal.beforeEntry)) {
+  } else if (!lockIsBefore) {
     throw new CapletsError(
       "CONFIG_INVALID",
       `Lock entry changed during rollback for ${journal.entryId}`,
     );
   }
   cleanupTransactionPaths(paths);
+}
+
+function transactionPhaseMayHaveStarted(
+  persisted: CapletTransactionPhase,
+  target: CapletTransactionPhase,
+): boolean {
+  const phases: CapletTransactionPhase[] = [
+    "prepared",
+    "staged",
+    "backup_created",
+    "destination_replaced",
+    "lock_temporary_written",
+    "lock_replaced",
+  ];
+  return phases.indexOf(persisted) + 1 >= phases.indexOf(target);
 }
 
 function recoverInterruptedCapletTransactions(input: {

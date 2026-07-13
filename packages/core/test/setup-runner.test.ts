@@ -61,12 +61,21 @@ describe("setup runner", () => {
       capletSetupContentHash({
         fingerprint: "stable-runtime-fingerprint",
         persistenceEligible: true,
+        valid: true,
       }),
     ).toBe("stable-runtime-fingerprint");
     expect(
       capletSetupContentHash({
         fingerprint: "must-not-persist",
         persistenceEligible: false,
+        valid: true,
+      }),
+    ).toBe("live-only");
+    expect(
+      capletSetupContentHash({
+        fingerprint: "invalid-runtime-fingerprint",
+        persistenceEligible: true,
+        valid: false,
       }),
     ).toBe("live-only");
     expect(capletSetupContentHash(undefined)).toBe("live-only");

@@ -118,6 +118,22 @@ describe("CapletSource adapters", () => {
     await expect(source.readFile("../outside.yaml")).resolves.toBeUndefined();
   });
 
+  it("derives declared inputs from listed files for custom sources without a reader", async () => {
+    const files = await new BundleCapletSource(fixtureFiles).listFiles();
+    const source = {
+      listFiles: async () => files,
+      readFile: async (path: string) => files.find((file) => file.path === path),
+    };
+
+    const parsed = await parseCapletSource(source);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.runtimeFingerprint?.valid).toBe(true);
+    expect(parsed.runtimeFingerprint?.caplets.weather?.declaredInputs).toEqual([
+      expect.objectContaining({ logicalPath: "weather/openapi.yaml", state: "present" }),
+    ]);
+  });
+
   it("list and read normalized relative files for filesystems", async () => {
     const root = writeFixtureTree();
     const source = new FilesystemCapletSource(root);

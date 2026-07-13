@@ -14,7 +14,7 @@ deepened: 2026-07-13
 
 ## Goal Capsule
 
-- **Objective:** Make YAML frontmatter the sole source of Caplet runtime behavior and redefine the Markdown body as independently managed operator documentation.
+- **Objective:** Make YAML frontmatter and supported bundle files explicitly referenced from it the sole sources of Caplet runtime behavior, and redefine the Markdown body as independently managed operator documentation.
 - **Product authority:** The Code Mode-first direction in `STRATEGY.md`, canonical Caplet vocabulary in `CONTEXT.md` and `CONCEPTS.md`, and this Product Contract govern the cutover. This contract supersedes prior plan language that treats the Markdown body as agent-facing shared operating context.
 - **Execution profile:** Land six dependency-ordered units. Characterize the current parser, setup, reload, installer, and agent-surface contracts before replacing body-bearing runtime paths; complete the official content cutover only after the runtime boundary is enforced.
 - **Stop conditions:** Stop and re-plan if runtime change detection would need to hash arbitrary sibling files, if public catalog rendering would need to consume runtime configuration, if lock compatibility requires a version migration, or if implementation would introduce the deferred SQL store.
@@ -97,9 +97,9 @@ The body has no path to runtime or agent capability surfaces. Referenced bundle 
 **Artifact and authority**
 
 - R1. A Caplet Markdown file must remain a shareable artifact composed of fenced YAML frontmatter and a Markdown body with independently defined semantics.
-- R2. Frontmatter must be the sole source of runtime-affecting Caplet values, including backend configuration, authentication, exposure, runtime requirements, setup, project binding, and agent-visible selection metadata.
+- R2. Frontmatter and supported bundle files explicitly referenced from it must be the sole sources of runtime-affecting Caplet values, including backend configuration, authentication, exposure, runtime requirements, setup, project binding, and agent-visible selection metadata.
 - R3. Presentation-only frontmatter metadata may remain outside runtime backend configuration without weakening the rule that no runtime value originates in the body.
-- R4. The Markdown body must be retained as operator documentation for prerequisites, setup context, troubleshooting, safety considerations, and general Caplet-specific guidance.
+- R4. The Markdown body must be retained as publishable operator documentation for prerequisites, setup context, troubleshooting, safety considerations, and general Caplet-specific guidance; authors must not place secrets, credentials, private endpoints, customer data, or other sensitive operational material in it.
 - R5. Files within a Caplet bundle may remain runtime inputs only when frontmatter references them through a supported path or interpolation mechanism.
 - R6. The body must not define, interpolate, override, or implicitly reference runtime configuration.
 
@@ -175,7 +175,7 @@ The body has no path to runtime or agent capability surfaces. Referenced bundle 
 
 ### Product Contract Preservation
 
-Product Contract unchanged.
+Product Contract changed: R2 clarifies referenced bundle inputs already allowed by R5; R4 makes the existing shareable/catalog-rendered README boundary explicit by excluding sensitive operational material.
 
 ### Key Technical Decisions
 
@@ -435,7 +435,7 @@ flowchart TB
 
 **Test scenarios:**
 
-1. Reach the pure producer through filesystem loading, portable source parsing, setup identity construction, and install source/destination adapters; the same portable fixture yields identical logical inputs and digests.
+1. Reach the pure producer through filesystem loading, portable source parsing, and setup identity construction; the same portable fixture yields identical logical inputs and digests.
 2. Compute stable fingerprints for semantically identical frontmatter with different YAML comments, key order, formatting, and source roots; values match.
 3. Resolve the same `$env` and `$vault` templates to different secret values; stable fingerprints, setup approval, and persistence-safe lock payloads remain equal and contain no resolution-derived material.
 4. Use literal bearer/header/client-secret fields and absolute host paths; runtime differences are detectable by live comparison, but optional lock state, outputs, activities, and diagnostics contain no new digest or correlate.
@@ -520,6 +520,7 @@ flowchart TB
 **Approach:**
 
 - Run the existing installed-artifact drift check before source-update classification. A locally modified README remains a conflict unless the operator uses the existing force path.
+- Treat an upstream candidate as trusted for content-only classification only when it is resolved through the existing lock entry’s unchanged source identity and established provenance checks. An unverifiable or changed source identity cannot bypass the existing risk and confirmation path.
 - After the drift decision, acquire, parse, validate, and fingerprint the candidate without mutating destination bytes, lock baselines, timestamps, activity, or catalog state. `--force` cannot bypass this gate.
 - Preserve whole-artifact equality as `noop`. When artifact bytes differ, compare source and clean-installed artifact runtime fingerprints.
 - Add a machine-readable `content_updated` outcome for equal runtime fingerprints. Keep runtime-different updates on the existing `updated` risk and approval path.
@@ -541,18 +542,19 @@ flowchart TB
 **Test scenarios:**
 
 1. Install a directory Caplet, change only trusted upstream README text, and update; result is `content_updated`, artifact integrity changes, the artifact runtime fingerprint and approval eligibility stay equal, and catalog indexing runs after commit.
-2. Change frontmatter or a declared runtime input; result remains `updated` and follows existing risk/force behavior.
-3. Modify only the installed destination README locally; update fails closed without force even when the source runtime fingerprint is equal.
-4. Make the source disappear or make templates/fingerprint traversal invalid after lock read; normal and forced updates preserve destination bytes, lock fields, timestamps, activity, and indexing silence.
-5. Inject a lock-writer failure after staged replacement for content-only and runtime updates; the old destination and lock pair remain authoritative and no catalog request occurs.
-6. Simulate interruption at staging, destination swap, lock temporary write, and lock replacement boundaries; the next operation recovers or finalizes the pair before local-drift classification.
-7. Read a legacy v1 lock without runtime state, live-classify its first body-only update as content-only, and persist a safe optional baseline without changing lock version.
-8. Use a legacy entry with a literal secret or absolute host path; live classification succeeds, but lock JSON, output, activity, and diagnostics gain no optional runtime digest or correlate.
-9. Restore byte-identical pinned content for a missing destination with a legacy lock; restored status persists missing safe runtime state even though `installedHash` is unchanged. Repeat with force-over-drift and with a failed candidate.
-10. Preserve symlink-materialized directory no-op behavior and copying of non-runtime bundle files.
-11. Update two selected entries where the first commits and the second disappears, becomes invalid, or hits lock failure; established per-Caplet partial success remains recoverable and retry safely recognizes the first.
-12. Return `content_updated` consistently through local JSON, remote response, Current Host operation, activity entry, and dashboard rendering.
-13. Force endpoint failure and an indexer throw after a successful content-only commit; installed state and success activity remain, indexing reports unavailable, and a lock failure produces zero indexing calls.
+2. Reach the fingerprint producer through install source and destination adapters; equivalent portable source and clean-installed artifacts yield identical logical inputs and digests before update classification.
+3. Change frontmatter or a declared runtime input; result remains `updated` and follows existing risk/force behavior.
+4. Modify only the installed destination README locally; update fails closed without force even when the source runtime fingerprint is equal.
+5. Make the source disappear or make templates/fingerprint traversal invalid after lock read; normal and forced updates preserve destination bytes, lock fields, timestamps, activity, and indexing silence.
+6. Inject a lock-writer failure after staged replacement for content-only and runtime updates; the old destination and lock pair remain authoritative and no catalog request occurs.
+7. Simulate interruption at staging, destination swap, lock temporary write, and lock replacement boundaries; the next operation recovers or finalizes the pair before local-drift classification.
+8. Read a legacy v1 lock without runtime state, live-classify its first body-only update as content-only, and persist a safe optional baseline without changing lock version.
+9. Use a legacy entry with a literal secret or absolute host path; live classification succeeds, but lock JSON, output, activity, and diagnostics gain no optional runtime digest or correlate.
+10. Restore byte-identical pinned content for a missing destination with a legacy lock; restored status persists missing safe runtime state even though `installedHash` is unchanged. Repeat with force-over-drift and with a failed candidate.
+11. Preserve symlink-materialized directory no-op behavior and copying of non-runtime bundle files.
+12. Update two selected entries where the first commits and the second disappears, becomes invalid, or hits lock failure; established per-Caplet partial success remains recoverable and retry safely recognizes the first.
+13. Return `content_updated` consistently through local JSON, remote response, Current Host operation, activity entry, and dashboard rendering.
+14. Force endpoint failure and an indexer throw after a successful content-only commit; installed state and success activity remain, indexing reports unavailable, and a lock failure produces zero indexing calls.
 
 **Verification:** Trusted upstream content updates are committed and publishable but never runtime-risk updates; candidate and lock failures preserve a recoverable artifact-and-baseline pair; local drift remains fail-closed; every status, legacy-lock, restore, batch, and indexing path agrees.
 
@@ -580,6 +582,7 @@ flowchart TB
 **Approach:**
 
 - Change authoring templates and generated examples so body content addresses operators: prerequisites, setup context, troubleshooting, safety, and reference material.
+- Teach authors to treat README bodies as publishable catalog content and keep secrets, credentials, private endpoints, customer data, and other sensitive operational material out of them.
 - Audit every official body. Rewrite agent-directed workflows into operator guidance where useful; delete low-value instruction prose instead of preserving it for compatibility.
 - Move only compact guidance that remains necessary for agent selection into existing `description`, `useWhen`, or `avoidWhen` frontmatter. Do not add a free-form replacement field.
 - Keep runtime references explicit in frontmatter. Markdown links and path-like body text remain documentation only.
@@ -595,12 +598,12 @@ flowchart TB
 
 **Test scenarios:**
 
-1. Generate a new Caplet authoring template; it contains valid frontmatter and an operator-oriented README body without adding an instructions field.
+1. Generate a new Caplet authoring template; it contains valid frontmatter, an operator-oriented README body, and publishable-content safety guidance without adding an instructions field.
 2. Split official-style Markdown in the catalog helper; frontmatter rows and body Markdown remain independent, and the body remains renderable for humans.
 3. Build an official catalog entry from an updated Caplet; raw `contentMarkdown` includes its README while resolved runtime configuration has no body.
 4. Put path-like text, a Markdown link, and a vault-looking token in a body; none becomes a runtime reference or interpolation input.
 5. Confirm structured selection hints added during the prose audit survive registry and Code Mode projection tests from U1.
-6. Do not add assertions for exact headlines, workflows, or subjective body wording; review the official corpus manually against the operator README contract.
+6. Do not add assertions for exact headlines, workflows, or subjective body wording; review the official corpus manually against the operator README and sensitive-content contracts.
 
 **Verification:** Current authoring surfaces and official artifacts consistently teach and demonstrate operator README semantics; catalog rendering remains intact and no content migration recreates an agent instruction channel.
 
@@ -638,18 +641,18 @@ flowchart TB
 
 ## Verification Contract
 
-| Gate                                               | Applies to | Command                                                                                                                                                                                                                                                            | Required outcome                                                                                                                               |
-| -------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime projection and fingerprint tests           | U1-U2      | `pnpm --filter @caplets/core test -- test/caplet-files.test.ts test/config.test.ts test/caplet-source.test.ts test/setup-runner.test.ts test/backend-operation-dispatch.test.ts test/registry.test.ts test/code-mode-declarations.test.ts test/attach-api.test.ts` | Body is structurally absent, fingerprints classify declared semantics correctly, setup parity holds, and agent-facing structured hints remain. |
-| Reload and notification tests                      | U3         | `pnpm --filter @caplets/core test -- test/engine.test.ts test/native.test.ts test/serve-http.test.ts test/attach-api.test.ts`                                                                                                                                      | Content-only reloads are side-effect-free; runtime changes and invalid candidates preserve established lifecycle behavior.                     |
-| Installer, lock, Current Host, and dashboard tests | U4         | `pnpm --filter @caplets/core test -- test/cli.test.ts test/current-host-catalog-operations.test.ts test/dashboard-catalog.test.ts test/catalog-indexing.test.ts`                                                                                                   | Content-only classification, legacy v1 locks, restore/drift safety, status relays, and indexing outcomes agree.                                |
-| Authoring and official catalog tests               | U5         | `pnpm --filter @caplets/core test -- test/author-cli.test.ts test/catalog-official-index.test.ts`                                                                                                                                                                  | Author templates and official index generation preserve the two-projection contract.                                                           |
-| Catalog rendering tests                            | U5         | `pnpm --filter @caplets/catalog test -- markdown.test.ts`                                                                                                                                                                                                          | Frontmatter and README body remain independently rendered with existing sanitization.                                                          |
-| Generated documentation and catalog checks         | U5-U6      | `pnpm docs:generate`, `pnpm catalog:generate`, then `pnpm docs:check` and `pnpm catalog:check`                                                                                                                                                                     | Generated MDX and official catalog data match authoritative sources.                                                                           |
-| Public schema and Code Mode API checks             | U1-U6      | `pnpm schema:check` and `pnpm code-mode:check-api`                                                                                                                                                                                                                 | Frontmatter/public config schemas and Code Mode declarations remain source-consistent; no body field is introduced.                            |
-| Static and package verification                    | U1-U6      | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, and `pnpm build`                                                                                                                                                                                               | Source, exported types, apps, and package artifacts compile and conform.                                                                       |
-| Changeset validation                               | U6         | `pnpm changeset status --since=origin/main`                                                                                                                                                                                                                        | The published `@caplets/core` change has an accepted release entry.                                                                            |
-| Full repository gate                               | U6         | `pnpm verify`                                                                                                                                                                                                                                                      | Formatting, lint, generated APIs/schemas/docs, types, tests, benchmarks, and build all pass in repository order.                               |
+| Gate                                               | Applies to | Command                                                                                                                                                                                                                                                                                     | Required outcome                                                                                                                               |
+| -------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime projection and fingerprint tests           | U1-U2      | `pnpm --filter @caplets/core test -- test/caplet-files.test.ts test/config.test.ts test/caplet-source.test.ts test/caplet-sets.test.ts test/setup-runner.test.ts test/backend-operation-dispatch.test.ts test/registry.test.ts test/code-mode-declarations.test.ts test/attach-api.test.ts` | Body is structurally absent, fingerprints classify declared semantics correctly, setup parity holds, and agent-facing structured hints remain. |
+| Reload and notification tests                      | U3         | `pnpm --filter @caplets/core test -- test/engine.test.ts test/native.test.ts test/serve-http.test.ts test/attach-api.test.ts`                                                                                                                                                               | Content-only reloads are side-effect-free; runtime changes and invalid candidates preserve established lifecycle behavior.                     |
+| Installer, lock, Current Host, and dashboard tests | U4         | `pnpm --filter @caplets/core test -- test/cli.test.ts test/current-host-catalog-operations.test.ts test/dashboard-catalog.test.ts test/catalog-indexing.test.ts`                                                                                                                            | Content-only classification, legacy v1 locks, restore/drift safety, status relays, and indexing outcomes agree.                                |
+| Authoring and official catalog tests               | U5         | `pnpm --filter @caplets/core test -- test/author-cli.test.ts test/catalog-official-index.test.ts`                                                                                                                                                                                           | Author templates and official index generation preserve the two-projection contract.                                                           |
+| Catalog rendering tests                            | U5         | `pnpm --filter @caplets/catalog test -- markdown.test.ts`                                                                                                                                                                                                                                   | Frontmatter and README body remain independently rendered with existing sanitization.                                                          |
+| Generated documentation and catalog checks         | U5-U6      | `pnpm docs:generate`, `pnpm catalog:generate`, then `pnpm docs:check` and `pnpm catalog:check`                                                                                                                                                                                              | Generated MDX and official catalog data match authoritative sources.                                                                           |
+| Public schema and Code Mode API checks             | U1-U6      | `pnpm schema:check` and `pnpm code-mode:check-api`                                                                                                                                                                                                                                          | Frontmatter/public config schemas and Code Mode declarations remain source-consistent; no body field is introduced.                            |
+| Static and package verification                    | U1-U6      | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, and `pnpm build`                                                                                                                                                                                                                        | Source, exported types, apps, and package artifacts compile and conform.                                                                       |
+| Changeset validation                               | U6         | `pnpm changeset status --since=origin/main`                                                                                                                                                                                                                                                 | The published `@caplets/core` change has an accepted release entry.                                                                            |
+| Full repository gate                               | U6         | `pnpm verify`                                                                                                                                                                                                                                                                               | Formatting, lint, generated APIs/schemas/docs, types, tests, benchmarks, and build all pass in repository order.                               |
 
 Behavioral verification must include these cross-cutting invariants:
 

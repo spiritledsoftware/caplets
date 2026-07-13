@@ -2,6 +2,7 @@ import { loadCapletFilesFromMap } from "../caplet-files-bundle";
 import { parseConfig, type CapletConfig, type CapletsConfig } from "../config-runtime";
 import { planCapletRuntimeRoutes, type CapletRuntimePlan } from "../runtime-plan";
 import {
+  createMemoryDeclaredInputReader,
   createRuntimeFingerprintSnapshot,
   type RuntimeFingerprintSnapshot,
 } from "./runtime-fingerprint";
@@ -119,6 +120,7 @@ export async function parseCapletSource(source: CapletSource): Promise<CapletSou
 
   let runtimeFingerprint: RuntimeFingerprintSnapshot;
   try {
+    const declaredInputReader = source.declaredInputReader?.();
     runtimeFingerprint = createRuntimeFingerprintSnapshot({
       config,
       provenance: Object.fromEntries(
@@ -131,7 +133,11 @@ export async function parseCapletSource(source: CapletSource): Promise<CapletSou
           },
         ]),
       ),
-      reader: source.declaredInputReader(),
+      reader:
+        declaredInputReader ??
+        createMemoryDeclaredInputReader(
+          Object.fromEntries(files.map((file) => [file.path, file.content])),
+        ),
     });
   } catch (error) {
     return {

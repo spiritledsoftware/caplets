@@ -3073,6 +3073,42 @@ describe("cli init", () => {
     }
   });
 
+  it("classifies content-only updates from the installed artifact instead of stale lock metadata", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-stale-runtime-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      const staleLock = JSON.parse(readFileSync(lockfilePath, "utf8")) as {
+        entries: Array<{ runtimeFingerprint?: { version: 1; artifactFingerprint: string } }>;
+      };
+      staleLock.entries[0]!.runtimeFingerprint = {
+        version: 1,
+        artifactFingerprint: "0".repeat(64),
+      };
+      writeFileSync(lockfilePath, `${JSON.stringify(staleLock, null, 2)}\n`);
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "new operator README\n");
+
+      const result = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+      });
+
+      expect(result.installed[0]?.status).toBe("content_updated");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rolls back artifact bytes when the lock replacement fails synchronously", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-update-lock-rollback-"));
     const repo = join(dir, "repo");
@@ -3229,6 +3265,47 @@ describe("cli init", () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+  });
+  it("rejects overlapping writers for the same lockfile without disturbing the active update", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-concurrent-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "concurrent content\n");
+
+      const updated = updateCapletsFromLockfile(
+        { destinationRoot, lockfilePath, capletIds: ["github"] },
+        {
+          onTransactionPhase: (phase) => {
+            if (phase !== "prepared") return;
+            expect(() =>
+              updateCapletsFromLockfile({
+                destinationRoot,
+                lockfilePath,
+                capletIds: ["github"],
+              }),
+            ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+          },
+        },
+      );
+
+      expect(updated.installed[0]?.status).toBe("content_updated");
+      expect(readCapletsLockfile(lockfilePath).entries[0]?.installedHash).toBe(
+        updated.installed[0]?.hash,
+      );
+      expect(existsSync(`${lockfilePath}.transaction.lock`)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

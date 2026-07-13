@@ -76,9 +76,7 @@ export class FilesystemCapletSource implements CapletSource {
       }
       return {
         state: "present",
-        paths: walkFiles(this.root, absolute, realRoot, new Set())
-          .map((file) => file.path)
-          .sort(),
+        paths: walkFilePaths(this.root, absolute, realRoot, new Set()).sort(),
         privateKey: realPath,
       };
     } catch {
@@ -102,16 +100,16 @@ function walkSourceFiles(root: string, dir: string): CapletSourceFile[] {
   return files;
 }
 
-function walkFiles(
+function walkFilePaths(
   root: string,
   dir: string,
   realRoot: string,
   visitedDirectories: Set<string>,
-): CapletSourceFile[] {
+): string[] {
   const realDirectory = realpathSync(dir);
   if (!isWithinRoot(realRoot, realDirectory) || visitedDirectories.has(realDirectory)) return [];
   visitedDirectories.add(realDirectory);
-  const files: CapletSourceFile[] = [];
+  const paths: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort(compareDirents)) {
     const absolute = join(dir, entry.name);
     try {
@@ -119,17 +117,17 @@ function walkFiles(
       if (!isWithinRoot(realRoot, realPath)) continue;
       const stat = statSync(realPath);
       if (stat.isDirectory()) {
-        files.push(...walkFiles(root, absolute, realRoot, visitedDirectories));
+        paths.push(...walkFilePaths(root, absolute, realRoot, visitedDirectories));
         continue;
       }
       if (!stat.isFile()) continue;
       const normalized = normalizeCapletSourcePath(relative(root, absolute));
-      if (normalized) files.push({ path: normalized, content: readFileSync(realPath, "utf8") });
+      if (normalized) paths.push(normalized);
     } catch {
       continue;
     }
   }
-  return files;
+  return paths;
 }
 
 function compareDirents(left: Dirent, right: Dirent): number {

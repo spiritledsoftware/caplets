@@ -2,6 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createMemoryDeclaredInputReader } from "../src/caplet-source";
+import { parseConfig } from "../src/config-runtime";
 import { CapletsEngine } from "../src/engine";
 import { FileVaultStore } from "../src/vault";
 
@@ -434,6 +436,33 @@ describe("CapletsEngine", () => {
         projectBinding: expect.objectContaining({ reason: "missing_context" }),
       },
     });
+  });
+
+  it("requires custom loaders to provide readable declared inputs", () => {
+    const config = parseConfig({
+      openapiEndpoints: {
+        weather: {
+          name: "Weather",
+          description: "Query weather forecasts.",
+          specPath: "weather/openapi.yaml",
+          auth: { type: "none" },
+        },
+      },
+    });
+
+    expect(() => new CapletsEngine({ watch: false, configLoader: () => config })).toThrow(
+      expect.objectContaining({ code: "CONFIG_INVALID" }),
+    );
+
+    const engine = new CapletsEngine({
+      watch: false,
+      configLoader: () => config,
+      declaredInputReader: createMemoryDeclaredInputReader({
+        "weather/openapi.yaml": "openapi: 3.1.0\ninfo: { title: Weather, version: 1 }\npaths: {}\n",
+      }),
+    });
+    engines.push(engine);
+    expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["weather"]);
   });
 
   it("keeps last known-good config when reload validation fails", async () => {
