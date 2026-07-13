@@ -820,5 +820,7 @@ function stripUndefined(value: Record<string, unknown>): Record<string, unknown>
 }
 
 function hasEnvReference(value: string): boolean {
-  return /\$\{?[A-Z_][A-Z0-9_]*\}?|\$env:[A-Z_][A-Z0-9_]*/u.test(value);
+  return /(?:\$\{?[A-Z_][A-Z0-9_]*\}?|\$env:[A-Z_][A-Z0-9_]*|\$\{vault:[^}]+\}|\$vault:[A-Za-z0-9_-]+)/u.test(
+    value,
+  );
 }

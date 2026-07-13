@@ -1,6 +1,10 @@
 import { loadCapletFilesFromMap } from "../caplet-files-bundle";
 import { parseConfig, type CapletConfig, type CapletsConfig } from "../config-runtime";
 import { planCapletRuntimeRoutes, type CapletRuntimePlan } from "../runtime-plan";
+import {
+  createRuntimeFingerprintSnapshot,
+  type RuntimeFingerprintSnapshot,
+} from "./runtime-fingerprint";
 import type { CapletSource } from "./types";
 
 export type CapletSourceReference = {
@@ -35,6 +39,7 @@ export type CapletSourceParseMessage = {
 export type CapletSourceParseResult = {
   ok: boolean;
   config?: CapletsConfig | undefined;
+  runtimeFingerprint?: RuntimeFingerprintSnapshot | undefined;
   resolvedCaplets: ParsedCapletSourceCaplet[];
   warnings: CapletSourceParseMessage[];
   errors: CapletSourceParseMessage[];
@@ -112,24 +117,54 @@ export async function parseCapletSource(source: CapletSource): Promise<CapletSou
     };
   });
 
-  for (const caplet of caplets) {
-    for (const reference of caplet.localReferences) {
-      reference.exists = Boolean(await source.readFile(reference.path));
-    }
+  let runtimeFingerprint: RuntimeFingerprintSnapshot;
+  try {
+    runtimeFingerprint = createRuntimeFingerprintSnapshot({
+      config,
+      provenance: Object.fromEntries(
+        caplets.map((caplet) => [
+          caplet.id,
+          {
+            parentId: caplet.parentId,
+            ...(caplet.childId ? { childId: caplet.childId } : {}),
+            sourcePath: caplet.sourcePath,
+          },
+        ]),
+      ),
+      reader: source.declaredInputReader(),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      config,
+      resolvedCaplets: [],
+      warnings: [],
+      errors: [{ message: errorMessage(error) }],
+    };
   }
 
-  const errors = caplets.flatMap((caplet) =>
-    caplet.localReferences
-      .filter((reference) => !reference.exists)
-      .map((reference) => ({
+  const errors = caplets.flatMap((caplet) => {
+    const inputs = runtimeFingerprint.caplets[caplet.id]?.declaredInputs ?? [];
+    for (const reference of caplet.localReferences) {
+      reference.exists = inputs.some(
+        (input) => input.logicalPath === reference.path && input.state === "present",
+      );
+    }
+    return inputs
+      .filter((input) => input.state !== "present")
+      .map((input) => ({
         path: caplet.sourcePath,
-        message: `Referenced file ${reference.path} was not found.`,
-      })),
-  );
+        message:
+          input.state === "missing"
+            ? `Referenced file ${input.logicalPath} was not found.`
+            : `Referenced file ${input.logicalPath} is unreadable or outside the source root.`,
+      }));
+  });
 
   return {
     ok: errors.length === 0,
     config,
+    runtimeFingerprint,
     resolvedCaplets: errors.length === 0 ? caplets : [],
     warnings: [],
     errors,

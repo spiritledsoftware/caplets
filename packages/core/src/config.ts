@@ -1,7 +1,23 @@
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import { loadCapletFilesWithPaths, loadCapletFilesWithPathsBestEffort } from "./caplet-files";
+import {
+  loadCapletFilesFromMap,
+  loadCapletFilesWithPaths,
+  loadCapletFilesWithPathsBestEffort,
+} from "./caplet-files";
+import { FilesystemCapletSource } from "./caplet-source/filesystem";
+import {
+  createRuntimeFingerprintSnapshot,
+  type DeclaredInputReader,
+  type RuntimeFingerprintProvenance,
+  type RuntimeFingerprintSnapshot,
+} from "./caplet-source/runtime-fingerprint";
+import {
+  parseConfig as parseRuntimeTemplateConfig,
+  type CapletConfig as RuntimeTemplateCapletConfig,
+  type CapletsConfig as RuntimeTemplateConfig,
+} from "./config-runtime";
 import {
   defaultConfigPath,
   resolveCapletsRoot,
@@ -381,7 +397,25 @@ export type ConfigWithSources = {
   config: CapletsConfig;
   sources: Record<string, ConfigSource>;
   shadows: Record<string, ConfigSource[]>;
+  runtimeFingerprint?: RuntimeFingerprintSnapshot | undefined;
 };
+
+const runtimeFingerprintByConfig = new WeakMap<CapletsConfig, RuntimeFingerprintSnapshot>();
+
+export function runtimeFingerprintForConfig(config: CapletsConfig): RuntimeFingerprintSnapshot {
+  const existing = runtimeFingerprintByConfig.get(config);
+  if (existing) return existing;
+  const fingerprint = createRuntimeFingerprintSnapshot({
+    config,
+    provenance: {},
+    reader: {
+      read: () => ({ state: "missing" }),
+      list: () => ({ state: "missing" }),
+    },
+  });
+  runtimeFingerprintByConfig.set(config, fingerprint);
+  return fingerprint;
+}
 
 type GenericLocalOverlayConfigWarning = {
   type?: undefined;
@@ -1873,7 +1907,9 @@ function buildConfigWithSources(
     ) {
       throw new CapletsError("CONFIG_INVALID", emptyMessage);
     }
-    return { config, sources, shadows };
+    const runtimeFingerprint = createLoadedRuntimeFingerprint(input, sources);
+    runtimeFingerprintByConfig.set(config, runtimeFingerprint);
+    return { config, sources, shadows, runtimeFingerprint };
   } catch (error) {
     if (error instanceof CapletsError) {
       throw error;
@@ -1884,6 +1920,301 @@ function buildConfigWithSources(
       redactSecrets(error),
     );
   }
+}
+
+function createLoadedRuntimeFingerprint(
+  input: ConfigInput,
+  sources: Record<string, ConfigSource>,
+): RuntimeFingerprintSnapshot {
+  const runtimeInput = {
+    version: input.version,
+    defaultSearchLimit: input.defaultSearchLimit,
+    maxSearchLimit: input.maxSearchLimit,
+    completion: input.completion,
+    options: input.options,
+    namespaceAliases: input.namespaceAliases,
+    mcpServers: input.mcpServers,
+    openapiEndpoints: input.openapiEndpoints,
+    googleDiscoveryApis: input.googleDiscoveryApis,
+    graphqlEndpoints: input.graphqlEndpoints,
+    httpApis: input.httpApis,
+    cliTools: input.cliTools,
+    capletSets: input.capletSets,
+  };
+  const templateConfig = parseRuntimeTemplateConfig(runtimeInput);
+  const provenance: Record<string, RuntimeFingerprintProvenance> = {};
+  const readersByScope = new Map<string, DeclaredInputReader>();
+  const privateRootsByScope = new Map<string, Map<string, string>>();
+  for (const caplet of runtimeTemplateCaplets(templateConfig)) {
+    const source = sources[caplet.server];
+    const sourceInfo = fingerprintSourceInfo(source?.path, caplet.server);
+    provenance[caplet.server] = {
+      parentId: sourceInfo.parentId,
+      ...(sourceInfo.childId ? { childId: sourceInfo.childId } : {}),
+      sourcePath: sourceInfo.sourcePath,
+      readerScope: sourceInfo.scope,
+    };
+    readersByScope.set(
+      sourceInfo.scope,
+      new FilesystemCapletSource(sourceInfo.root).declaredInputReader(),
+    );
+    logicalizeRuntimeTemplatePaths(
+      caplet,
+      sourceInfo.root,
+      literalAbsoluteDeclaredInputValues(source?.path, caplet.server),
+    );
+  }
+  const privatePath = (
+    logicalPath: string,
+    context: Parameters<DeclaredInputReader["read"]>[1],
+  ): string | undefined => {
+    if (!context?.readerScope) return undefined;
+    if (context.privateReference) {
+      const logicalBase = logicalPath.split("/").slice(0, -1).join("/") || logicalPath;
+      const roots = privateRootsByScope.get(context.readerScope) ?? new Map<string, string>();
+      roots.set(logicalBase, dirname(context.privateReference));
+      privateRootsByScope.set(context.readerScope, roots);
+      return context.privateReference;
+    }
+    const roots = privateRootsByScope.get(context.readerScope);
+    if (!roots) return undefined;
+    const match = [...roots.entries()]
+      .filter(
+        ([logicalBase]) => logicalPath === logicalBase || logicalPath.startsWith(`${logicalBase}/`),
+      )
+      .sort(([left], [right]) => right.length - left.length)[0];
+    if (!match) return undefined;
+    const suffix = logicalPath.slice(match[0].length).replace(/^\//u, "");
+    return resolve(match[1], suffix);
+  };
+  const privateRoot = (
+    logicalRoot: string,
+    context: Parameters<DeclaredInputReader["list"]>[1],
+  ): string | undefined => {
+    if (!context?.readerScope) return undefined;
+    if (context.privateReference) {
+      const roots = privateRootsByScope.get(context.readerScope) ?? new Map<string, string>();
+      roots.set(logicalRoot, context.privateReference);
+      privateRootsByScope.set(context.readerScope, roots);
+      return context.privateReference;
+    }
+    return privatePath(logicalRoot, context);
+  };
+  const reader: DeclaredInputReader = {
+    read(logicalPath, context) {
+      const physicalPath = privatePath(logicalPath, context);
+      if (physicalPath) {
+        return new FilesystemCapletSource(dirname(physicalPath))
+          .declaredInputReader()
+          .read(basename(physicalPath), context);
+      }
+      return context?.readerScope
+        ? (readersByScope.get(context.readerScope)?.read(logicalPath, context) ?? {
+            state: "unreadable",
+          })
+        : { state: "unreadable" };
+    },
+    list(logicalRoot, context) {
+      const physicalRoot = privateRoot(logicalRoot, context);
+      if (physicalRoot) {
+        const listed = new FilesystemCapletSource(dirname(physicalRoot))
+          .declaredInputReader()
+          .list(basename(physicalRoot), context);
+        if (listed.state !== "present") return listed;
+        const physicalPrefix = `${basename(physicalRoot)}/`;
+        return {
+          ...listed,
+          paths: listed.paths.map((path) =>
+            path.startsWith(physicalPrefix)
+              ? `${logicalRoot}/${path.slice(physicalPrefix.length)}`
+              : logicalRoot,
+          ),
+        };
+      }
+      return context?.readerScope
+        ? (readersByScope.get(context.readerScope)?.list(logicalRoot, context) ?? {
+            state: "unreadable",
+          })
+        : { state: "unreadable" };
+    },
+  };
+  const hostConfig = Object.assign(templateConfig, {
+    ...(typeof input.telemetry === "boolean" ? { telemetry: input.telemetry } : {}),
+    ...(isPlainObject(input.serve) ? { serve: input.serve as ServeConfig } : {}),
+  });
+  return createRuntimeFingerprintSnapshot({
+    config: hostConfig,
+    provenance,
+    reader,
+  });
+}
+
+function runtimeTemplateCaplets(config: RuntimeTemplateConfig): RuntimeTemplateCapletConfig[] {
+  return [
+    ...Object.values(config.mcpServers),
+    ...Object.values(config.openapiEndpoints),
+    ...Object.values(config.googleDiscoveryApis),
+    ...Object.values(config.graphqlEndpoints),
+    ...Object.values(config.httpApis),
+    ...Object.values(config.cliTools),
+    ...Object.values(config.capletSets),
+  ];
+}
+
+function fingerprintSourceInfo(
+  path: string | undefined,
+  runtimeId: string,
+): {
+  root: string;
+  sourcePath: string;
+  scope: string;
+  parentId: string;
+  childId?: string | undefined;
+} {
+  const resolvedPath = resolve(path || `${runtimeId}.json`);
+  const fileName = basename(resolvedPath);
+  if (fileName === "CAPLET.md") {
+    const artifactDirectory = dirname(resolvedPath);
+    const parentId = basename(artifactDirectory);
+    return {
+      root: dirname(artifactDirectory),
+      sourcePath: `${parentId}/CAPLET.md`,
+      scope: `${runtimeId}:${resolvedPath}`,
+      parentId,
+      ...(runtimeId.startsWith(`${parentId}__`)
+        ? { childId: runtimeId.slice(parentId.length + 2) }
+        : {}),
+    };
+  }
+  const parentId = fileName.toLowerCase().endsWith(".md") ? fileName.slice(0, -3) : runtimeId;
+  return {
+    root: dirname(resolvedPath),
+    sourcePath: fileName,
+    scope: `${runtimeId}:${resolvedPath}`,
+    parentId,
+    ...(runtimeId.startsWith(`${parentId}__`)
+      ? { childId: runtimeId.slice(parentId.length + 2) }
+      : {}),
+  };
+}
+
+function logicalizeRuntimeTemplatePaths(
+  caplet: RuntimeTemplateCapletConfig,
+  sourceRoot: string,
+  literalAbsoluteValues: Set<string> | undefined,
+): void {
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof nested === "string" && RUNTIME_DECLARED_INPUT_PATH_KEYS[key]) {
+        if (
+          isAbsolute(nested) &&
+          literalAbsoluteValues !== undefined &&
+          !literalAbsoluteValues.has(nested) &&
+          isWithinFingerprintRoot(sourceRoot, nested)
+        ) {
+          (value as Record<string, unknown>)[key] = relative(sourceRoot, nested)
+            .split(sep)
+            .join("/");
+        }
+        continue;
+      }
+      visit(nested);
+    }
+  };
+  visit(caplet);
+}
+
+function literalAbsoluteDeclaredInputValues(
+  sourcePath: string | undefined,
+  runtimeId: string,
+): Set<string> | undefined {
+  if (!sourcePath) return undefined;
+  try {
+    let sourceConfig: unknown;
+    if (sourcePath.toLowerCase().endsWith(".md")) {
+      const fileName =
+        basename(sourcePath) === "CAPLET.md"
+          ? `${basename(dirname(sourcePath))}/CAPLET.md`
+          : basename(sourcePath);
+      const loaded = loadCapletFilesFromMap({
+        files: [{ path: fileName, content: readFileSync(sourcePath, "utf8") }],
+      });
+      sourceConfig = loaded
+        ? runtimeInputValue(loaded.config as Record<string, unknown>, runtimeId)
+        : undefined;
+    } else {
+      sourceConfig = runtimeInputValue(
+        JSON.parse(readFileSync(sourcePath, "utf8")) as Record<string, unknown>,
+        runtimeId,
+      );
+    }
+    if (!sourceConfig) return undefined;
+    const values = new Set<string>();
+    const visit = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+        if (
+          typeof nested === "string" &&
+          RUNTIME_DECLARED_INPUT_PATH_KEYS[key] &&
+          isCrossPlatformAbsolutePath(nested)
+        ) {
+          values.add(nested);
+          if (!isAbsolute(nested)) values.add(resolve(dirname(sourcePath), nested));
+        } else {
+          visit(nested);
+        }
+      }
+    };
+    visit(sourceConfig);
+    return values;
+  } catch {
+    return undefined;
+  }
+}
+
+function runtimeInputValue(input: Record<string, unknown>, runtimeId: string): unknown {
+  for (const key of [
+    "mcpServers",
+    "openapiEndpoints",
+    "googleDiscoveryApis",
+    "graphqlEndpoints",
+    "httpApis",
+    "cliTools",
+    "capletSets",
+  ]) {
+    const values = input[key];
+    if (isPlainObject(values)) {
+      if (values[runtimeId] !== undefined) return values[runtimeId];
+      const childId = runtimeId.includes("__") ? runtimeId.split("__").at(-1) : undefined;
+      if (childId && values[childId] !== undefined) return values[childId];
+    }
+  }
+  return undefined;
+}
+
+const RUNTIME_DECLARED_INPUT_PATH_KEYS: Record<string, true> = {
+  specPath: true,
+  discoveryPath: true,
+  schemaPath: true,
+  documentPath: true,
+  configPath: true,
+  capletsRoot: true,
+};
+
+function isWithinFingerprintRoot(root: string, path: string): boolean {
+  const nested = relative(resolve(root), resolve(path));
+  return (
+    nested === "" || (!nested.startsWith(`..${sep}`) && nested !== ".." && !isAbsolute(nested))
+  );
+}
+
+function isCrossPlatformAbsolutePath(path: string): boolean {
+  return isAbsolute(path) || /^[A-Za-z]:[\\/]/u.test(path);
 }
 
 export function loadLocalOverlayConfigWithSources(
@@ -1938,10 +2269,14 @@ export function loadLocalOverlayConfigWithSources(
       : undefined,
   );
 
+  const config = parseConfig(input, { sources, vaultResolver: parseOptions.vaultResolver });
+  const runtimeFingerprint = createLoadedRuntimeFingerprint(input, sources);
+  runtimeFingerprintByConfig.set(config, runtimeFingerprint);
   return {
-    config: parseConfig(input, { sources, vaultResolver: parseOptions.vaultResolver }),
+    config,
     sources,
     shadows,
+    runtimeFingerprint,
     warnings,
     sourceFound,
   };
@@ -2512,7 +2847,7 @@ function normalizeOpenApiPath(
 ): Record<string, unknown> {
   return {
     ...endpoint,
-    specPath: normalizeLocalPath(endpoint.specPath, baseDir),
+    specPath: normalizeDeclaredLocalPath(endpoint.specPath, baseDir),
   };
 }
 
@@ -2522,7 +2857,7 @@ function normalizeGoogleDiscoveryPath(
 ): Record<string, unknown> {
   return {
     ...endpoint,
-    discoveryPath: normalizeLocalPath(endpoint.discoveryPath, baseDir),
+    discoveryPath: normalizeDeclaredLocalPath(endpoint.discoveryPath, baseDir),
   };
 }
 
@@ -2537,7 +2872,7 @@ function normalizeGraphQlPath(
           isPlainObject(operation)
             ? {
                 ...operation,
-                documentPath: normalizeLocalPath(operation.documentPath, baseDir),
+                documentPath: normalizeDeclaredLocalPath(operation.documentPath, baseDir),
               }
             : operation,
         ]),
@@ -2545,7 +2880,7 @@ function normalizeGraphQlPath(
     : endpoint.operations;
   return {
     ...endpoint,
-    schemaPath: normalizeLocalPath(endpoint.schemaPath, baseDir),
+    schemaPath: normalizeDeclaredLocalPath(endpoint.schemaPath, baseDir),
     operations,
   };
 }
@@ -2580,8 +2915,8 @@ function normalizeCapletSetPaths(
 ): Record<string, unknown> {
   return {
     ...endpoint,
-    configPath: normalizeLocalPath(endpoint.configPath, baseDir),
-    capletsRoot: normalizeLocalPath(endpoint.capletsRoot, baseDir),
+    configPath: normalizeDeclaredLocalPath(endpoint.configPath, baseDir),
+    capletsRoot: normalizeDeclaredLocalPath(endpoint.capletsRoot, baseDir),
   };
 }
 
@@ -2595,6 +2930,18 @@ function normalizeLocalPath(value: unknown, baseDir: string): unknown {
     return value;
   }
   return join(baseDir, value);
+}
+
+function normalizeDeclaredLocalPath(value: unknown, baseDir: string): unknown {
+  if (
+    typeof value === "string" &&
+    !isAbsolute(value) &&
+    !hasInterpolationReference(value) &&
+    value.replace(/\\/gu, "/").split("/").includes("..")
+  ) {
+    throw new CapletsError("CONFIG_INVALID", "Declared input path traversal is not allowed");
+  }
+  return normalizeLocalPath(value, baseDir);
 }
 
 function rejectProjectConfigExecutableBackendMaps(input: ConfigInput, path: string): ConfigInput {

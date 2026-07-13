@@ -1,3 +1,5 @@
+import type { DeclaredInputReader } from "./runtime-fingerprint";
+
 export type CapletSourceFile = {
   path: string;
   content: string;
@@ -6,6 +8,7 @@ export type CapletSourceFile = {
 export type CapletSource = {
   listFiles(): Promise<CapletSourceFile[]>;
   readFile(path: string): Promise<CapletSourceFile | undefined>;
+  declaredInputReader(): DeclaredInputReader;
 };
 
 export function normalizeCapletSourcePath(path: string): string | undefined {

@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CapletConfig } from "../src/config";
 import { runInteractiveSetup, runSetup, type SetupMcpUpsertOptions } from "../src/cli/setup";
 import { capletSetupContentHash } from "../src/setup/hash";
 import { LocalSetupStore } from "../src/setup/local-store";
@@ -57,16 +56,20 @@ describe("setup runner", () => {
     },
   );
 
-  it("changes content hash when setup metadata changes", () => {
-    const first = caplet("npm", ["install", "-g", "first"]);
-    const second = caplet("npm", ["install", "-g", "second"]);
-    expect(capletSetupContentHash(first)).not.toBe(capletSetupContentHash(second));
-  });
-
-  it("keeps setup content hashes independent of legacy README bodies", () => {
-    const first = { ...caplet("npm", ["install", "-g", "first"]), body: "# First README" };
-    const second = { ...first, body: "# Second README" };
-    expect(capletSetupContentHash(first)).toBe(capletSetupContentHash(second));
+  it("uses only persistence-eligible producer fingerprints for setup identity", () => {
+    expect(
+      capletSetupContentHash({
+        fingerprint: "stable-runtime-fingerprint",
+        persistenceEligible: true,
+      }),
+    ).toBe("stable-runtime-fingerprint");
+    expect(
+      capletSetupContentHash({
+        fingerprint: "must-not-persist",
+        persistenceEligible: false,
+      }),
+    ).toBe("live-only");
+    expect(capletSetupContentHash(undefined)).toBe("live-only");
   });
 
   it("requires approval before commands run", async () => {
@@ -1181,22 +1184,6 @@ function daemonConfig(serve: {
       trustProxy: false,
       ...serve,
     },
-  };
-}
-
-function caplet(command: string, args: string[]): CapletConfig {
-  return {
-    server: "ast-grep",
-    backend: "mcp",
-    name: "ast-grep",
-    description: "Structural search",
-    transport: "stdio",
-    command: "ast-grep-mcp",
-    startupTimeoutMs: 10,
-    callTimeoutMs: 10,
-    toolCacheTtlMs: 10,
-    disabled: false,
-    setup: { commands: [{ label: "Install", command, args }] },
   };
 }
 

@@ -1231,8 +1231,8 @@ function discoverCapletFileMapCandidates(paths: string[]): Array<{ id: string; p
     if (!fileName) {
       continue;
     }
-    if (fileName === "CAPLET.md" && segments.length > 1) {
-      candidates.push({ id: segments.at(-2) ?? "CAPLET", path, isDirectoryCaplet: true });
+    if (fileName === "CAPLET.md" && segments.length === 2) {
+      candidates.push({ id: segments[0] ?? "CAPLET", path, isDirectoryCaplet: true });
       continue;
     }
     if (segments.length === 1 && extname(fileName).toLowerCase() === ".md") {
@@ -1813,24 +1813,21 @@ export function normalizeBundleLocalPath(
   if (!value || isMapAbsolutePath(value) || hasInterpolationReference(value)) {
     return value;
   }
-  const parts = [...(baseDir ? baseDir.split("/") : []), ...value.split("/")];
-  const normalized: string[] = [];
-  for (const part of parts) {
-    if (!part || part === ".") {
-      continue;
-    }
-    if (part === "..") {
-      normalized.pop();
-      continue;
-    }
-    normalized.push(part);
+  const referenceParts = value.replace(/\\/gu, "/").split("/");
+  if (referenceParts.includes("..")) {
+    throw new CapletsError("CONFIG_INVALID", "Declared input path traversal is not allowed");
   }
-  return normalized.join("/");
+  const parts = [...(baseDir ? baseDir.split("/") : []), ...referenceParts];
+  return parts.filter((part) => part && part !== ".").join("/");
 }
 
 export function normalizeMapPath(path: string): string {
   const normalized = path.trim().replace(/\\/g, "/").replace(/^\.\//u, "");
-  if (!normalized || normalized.startsWith("/") || normalized.includes("/../")) {
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    normalized.split("/").some((segment) => segment === "..")
+  ) {
     throw new CapletsError("CONFIG_INVALID", `Invalid Caplet file path ${path}`);
   }
   return normalized;
