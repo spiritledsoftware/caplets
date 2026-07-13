@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   accessSync,
   constants,
@@ -8,6 +8,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  linkSync,
   mkdtempSync,
   openSync,
   readdirSync,
@@ -125,6 +126,7 @@ type CapletArtifactTransactionJournal = {
 
 type CandidateArtifact = {
   plan: InstallPlan;
+  transactionPaths: CapletTransactionPaths;
   stagedPath: string;
   artifactHash: string;
   runtimeSnapshot: RuntimeFingerprintSnapshot;
@@ -214,16 +216,25 @@ function installCapletsUnlocked(
   }
 }
 
+type TransactionLockMetadata = {
+  pid: number;
+  acquiredAt: string;
+  ownerToken: string;
+};
+
 function withLockfileTransaction<T>(lockfilePath: string, operation: () => T): T {
   const path = `${lockfilePath}.transaction.lock`;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const owner: TransactionLockMetadata = {
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+    ownerToken: randomUUID(),
+  };
+  const recoveryPath = recoverDeadTransactionLock(path, owner);
   let descriptor: number | undefined;
   try {
     descriptor = openSync(path, "wx", 0o600);
-    writeFileSync(
-      descriptor,
-      `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
-    );
+    writeFileSync(descriptor, `${JSON.stringify(owner)}\n`);
   } catch (error) {
     if (descriptor !== undefined) {
       closeSync(descriptor);
@@ -234,15 +245,81 @@ function withLockfileTransaction<T>(lockfilePath: string, operation: () => T): T
       `Another Caplets install, restore, or update holds ${path}; if no operation is running, remove the lock and retry`,
       toSafeError(error),
     );
+  } finally {
+    if (recoveryPath) rmSync(recoveryPath, { force: true });
   }
   try {
     return operation();
   } finally {
-    try {
-      closeSync(descriptor);
-    } finally {
-      rmSync(path, { force: true });
+    closeSync(descriptor);
+    const currentOwner = readTransactionLockMetadata(path);
+    if (currentOwner?.ownerToken === owner.ownerToken) rmSync(path, { force: true });
+  }
+}
+
+function recoverDeadTransactionLock(
+  path: string,
+  recoveringOwner: TransactionLockMetadata,
+): string | undefined {
+  if (!existsSync(path)) return undefined;
+  const existingOwner = readTransactionLockMetadata(path);
+  if (!existingOwner || !isDeadProcess(existingOwner.pid)) return undefined;
+
+  const recoveryPath = `${path}.recovery`;
+  if (existsSync(recoveryPath)) {
+    const recoveryOwner = readTransactionLockMetadata(recoveryPath);
+    if (!recoveryOwner || !isDeadProcess(recoveryOwner.pid)) return undefined;
+    rmSync(recoveryPath, { force: true });
+  }
+
+  try {
+    linkSync(path, recoveryPath);
+  } catch {
+    return undefined;
+  }
+  try {
+    const claimedOwner = readTransactionLockMetadata(recoveryPath);
+    if (!claimedOwner || !isDeadProcess(claimedOwner.pid)) return undefined;
+    writeFileSync(recoveryPath, `${JSON.stringify(recoveringOwner)}\n`, { mode: 0o600 });
+    const lockStats = lstatSync(path);
+    const recoveryStats = lstatSync(recoveryPath);
+    if (lockStats.dev !== recoveryStats.dev || lockStats.ino !== recoveryStats.ino) {
+      return undefined;
     }
+    rmSync(path);
+    return recoveryPath;
+  } finally {
+    if (existsSync(path)) rmSync(recoveryPath, { force: true });
+  }
+}
+
+function readTransactionLockMetadata(path: string): TransactionLockMetadata | undefined {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (
+      !isRecord(value) ||
+      !Number.isSafeInteger(value.pid) ||
+      (value.pid as number) <= 0 ||
+      typeof value.acquiredAt !== "string"
+    ) {
+      return undefined;
+    }
+    return {
+      pid: value.pid as number,
+      acquiredAt: value.acquiredAt,
+      ownerToken: typeof value.ownerToken === "string" ? value.ownerToken : "",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isDeadProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
 }
 
@@ -294,7 +371,7 @@ function restoreCapletsFromLockfileUnlocked(
     let candidate: CandidateArtifact | undefined;
     try {
       const plan = lockedInstallPlan(entry, destination, lockedSource);
-      candidate = stageAndValidateCandidate(plan);
+      candidate = stageAndValidateCandidate(plan, options.lockfilePath);
       const runtimeFingerprint = runtimeFingerprintForPersistence(candidate.runtimeSnapshot);
       const prospective = {
         ...entry,
@@ -404,7 +481,7 @@ function updateCapletsFromLockfileUnlocked(
       }
       const nextSource = refreshedLockSource(entry.source, lockedSource);
       const plan = lockedInstallPlan(entry, destination, lockedSource);
-      candidate = stageAndValidateCandidate(plan);
+      candidate = stageAndValidateCandidate(plan, options.lockfilePath);
       const runtimeFingerprint = runtimeFingerprintForPersistence(candidate.runtimeSnapshot);
       const prospective = {
         ...entry,
@@ -520,24 +597,25 @@ function lockedInstallPlan(
   };
 }
 
-function stageAndValidateCandidate(plan: InstallPlan): CandidateArtifact {
+function stageAndValidateCandidate(plan: InstallPlan, lockfilePath: string): CandidateArtifact {
   rejectUnsafeInstallParents(plan.destination);
   makeInstallDirectory(dirname(plan.destination));
-  const stagedPath = transactionPaths("", plan.destination, plan.id).stagedPath;
-  removeInstallPath(stagedPath, `stale staged Caplet ${plan.id}`, true);
+  const paths = transactionPaths(lockfilePath, plan.destination, plan.id);
+  removeInstallPath(paths.stagedPath, `stale staged Caplet ${plan.id}`, true);
   try {
-    copyInstallPath(plan, stagedPath);
-    const runtimeSnapshot = fingerprintArtifact(plan.id, plan.kind, stagedPath);
-    const artifactHash = hashInstalledArtifact(stagedPath);
+    copyInstallPath(plan, paths.stagedPath);
+    const runtimeSnapshot = fingerprintArtifact(plan.id, plan.kind, paths.stagedPath);
+    const artifactHash = hashInstalledArtifact(paths.stagedPath);
     return {
       plan,
-      stagedPath,
+      transactionPaths: paths,
+      stagedPath: paths.stagedPath,
       artifactHash,
       runtimeSnapshot,
-      risk: riskSummaryForSourcePath(stagedPath),
+      risk: riskSummaryForSourcePath(paths.stagedPath),
     };
   } catch (error) {
-    removeInstallPath(stagedPath, `staged Caplet ${plan.id}`, true);
+    removeInstallPath(paths.stagedPath, `staged Caplet ${plan.id}`, true);
     if (error instanceof CapletsError) throw error;
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -688,11 +766,7 @@ function persistTransactionPhase(
 }
 
 function commitStagedCapletAndLock(input: CommitStagedCapletInput): void {
-  const paths = transactionPaths(
-    input.lockfilePath,
-    input.candidate.plan.destination,
-    input.afterEntry.id,
-  );
+  const paths = input.candidate.transactionPaths;
   const existing = lstatIfExists(input.candidate.plan.destination);
   const journal: CapletArtifactTransactionJournal = {
     version: 1,

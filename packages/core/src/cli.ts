@@ -3056,12 +3056,7 @@ export function createProgram(io: CliIO = {}): Command {
             return;
           }
           for (const caplet of result.installed) {
-            const action =
-              caplet.status === "noop"
-                ? "Already installed"
-                : caplet.status === "restored"
-                  ? "Restored"
-                  : "Installed";
+            const action = installStatusLabel(caplet.status, "Installed");
             writeOut(`${action} ${caplet.id} to remote ${caplet.destination}\n`);
             writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
           }
@@ -3087,7 +3082,7 @@ export function createProgram(io: CliIO = {}): Command {
           }
           for (const caplet of result.installed) {
             writeOut(
-              `${caplet.status === "noop" ? "Already installed" : "Restored"} ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+              `${installStatusLabel(caplet.status, "Restored")} ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
             );
             writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
             writeVaultSetupNotice(caplet.vaultSetup, writeOut);
@@ -4709,6 +4704,16 @@ function completionRefFromOptions(options: { prompt?: string; resourceTemplate?:
   if (options.prompt) return { type: "prompt", name: options.prompt };
   if (options.resourceTemplate) return { type: "resourceTemplate", uri: options.resourceTemplate };
   throw new CapletsError("REQUEST_INVALID", "complete requires --prompt or --resource-template");
+}
+
+function installStatusLabel(
+  status: string | undefined,
+  defaultLabel: "Installed" | "Restored",
+): string {
+  if (status === "noop") return "Already installed";
+  if (status === "content_updated") return "Content updated";
+  if (status === "restored") return "Restored";
+  return defaultLabel;
 }
 
 function updateStatusLabel(status: string | undefined): string {

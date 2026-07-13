@@ -1094,6 +1094,7 @@ ${body}
 
       expect(approvals[0]?.contentHash).toBe(expected);
       expect(hostedPlan.contentHash).toBe(expected);
+      expect(hostedPlan.persistenceEligible).toBe(true);
       expect(second.runtimeFingerprint?.caplets.tool?.fingerprint).toBe(expected);
       expect(JSON.stringify(first.runtimeFingerprint)).not.toContain("resolved-secret-one");
       expect(JSON.stringify(second.runtimeFingerprint)).not.toContain("resolved-secret-two");
@@ -1133,6 +1134,7 @@ ${body}
       await liveHosted.close();
       expect(liveHostedPlan.contentHash).toBe("live-only");
       expect(liveHostedPlan.approved).toBe(false);
+      expect(liveHostedPlan.persistenceEligible).toBe(false);
       expect(existsSync(join(liveHostedRoot, "approvals.json"))).toBe(false);
     } finally {
       if (previousToken === undefined) delete process.env.SETUP_RUNTIME_TOKEN;

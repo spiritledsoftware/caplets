@@ -106,6 +106,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
       targetKind,
       setup: caplet.setup ?? {},
       approved,
+      persistenceEligible: runtimeFingerprint?.persistenceEligible ?? true,
       commands: caplet.setup?.commands ?? [],
       verify: caplet.setup?.verify ?? [],
     };
@@ -116,9 +117,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     input: { approved: boolean; actor: SetupActor },
   ): Promise<SetupAttempt[]> {
     const plan = await this.setupPlan(capletId);
-    const persistenceEligible =
-      runtimeFingerprintForConfig(this.engine.currentConfig())?.caplets[capletId]
-        ?.persistenceEligible ?? true;
+    const persistenceEligible = plan.persistenceEligible;
     if (input.approved && !plan.approved && persistenceEligible) {
       await this.setupStore.approve({
         projectFingerprint: plan.projectFingerprint,

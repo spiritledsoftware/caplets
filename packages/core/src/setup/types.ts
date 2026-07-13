@@ -51,6 +51,7 @@ export type SetupPlan = {
   targetKind: SetupTargetKind;
   setup: CapletSetupConfig;
   approved: boolean;
+  persistenceEligible: boolean;
   commands: CapletSetupCommandConfig[];
   verify: CapletSetupCommandConfig[];
 };

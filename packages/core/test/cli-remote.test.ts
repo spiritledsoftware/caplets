@@ -1287,6 +1287,36 @@ describe("remote CLI routing", () => {
     );
   });
 
+  it("labels content-only remote installs as content updated", async () => {
+    const context = testContext("caplets-cli-remote-install-content-");
+    const out: string[] = [];
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        result: {
+          installed: [
+            {
+              id: "github",
+              destination: "/srv/caplets/.caplets/github",
+              status: "content_updated",
+            },
+          ],
+        },
+      }),
+    );
+
+    await runCli(["install", "spiritledsoftware/caplets", "github", "--remote"], {
+      env: {
+        ...remoteEnv(context),
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+      },
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toBe("Content updated github to remote /srv/caplets/.caplets/github\n");
+  });
+
   it("creates the project config by default in remote mode", async () => {
     const context = testContext("caplets-cli-remote-init-project-");
     const out: string[] = [];

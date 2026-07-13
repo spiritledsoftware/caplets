@@ -3309,6 +3309,123 @@ describe("cli init", () => {
     }
   });
 
+  it("uses one transaction path set for staging and commit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-transaction-paths-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, "custom-caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "path agreement content\n");
+      const stagedPath = join(destinationRoot, ".github.caplet-txn-github.stage");
+      const journalPath = join(projectRoot, ".custom-caplets.lock.json.caplet-txn-github.json");
+
+      const updated = updateCapletsFromLockfile(
+        { destinationRoot, lockfilePath, capletIds: ["github"] },
+        {
+          onTransactionPhase: (phase) => {
+            if (phase !== "prepared") return;
+            expect(existsSync(stagedPath)).toBe(true);
+            expect(existsSync(journalPath)).toBe(true);
+          },
+        },
+      );
+
+      expect(updated.installed[0]?.status).toBe("content_updated");
+      expect(readFileSync(join(destinationRoot, "github", "README.md"), "utf8")).toBe(
+        "path agreement content\n",
+      );
+      expect(existsSync(stagedPath)).toBe(false);
+      expect(existsSync(journalPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a transaction lock owned by a dead process", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-dead-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    const transactionLockPath = `${lockfilePath}.transaction.lock`;
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      const deadPid = Number(
+        execFileSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
+          encoding: "utf8",
+        }),
+      );
+      expect(() => process.kill(deadPid, 0)).toThrow();
+      writeFileSync(
+        transactionLockPath,
+        `${JSON.stringify({ pid: deadPid, acquiredAt: "2026-01-01T00:00:00.000Z" })}\n`,
+      );
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "recovered content\n");
+
+      const updated = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+      });
+
+      expect(updated.installed[0]?.status).toBe("content_updated");
+      expect(existsSync(transactionLockPath)).toBe(false);
+      expect(existsSync(`${transactionLockPath}.recovery`)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a transaction lock owned by a live process without removing it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-live-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    const transactionLockPath = `${lockfilePath}.transaction.lock`;
+    const lockContents = `${JSON.stringify({
+      pid: process.pid,
+      acquiredAt: "2026-01-01T00:00:00.000Z",
+      ownerToken: "external-live-owner",
+    })}\n`;
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      writeFileSync(transactionLockPath, lockContents);
+
+      expect(() =>
+        updateCapletsFromLockfile({
+          destinationRoot,
+          lockfilePath,
+          capletIds: ["github"],
+        }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(readFileSync(transactionLockPath, "utf8")).toBe(lockContents);
+      expect(existsSync(`${transactionLockPath}.recovery`)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports symlink-materialized directory Caplets as current when unchanged", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-update-symlink-noop-"));
     const repo = join(dir, "repo");
