@@ -3041,7 +3041,13 @@ export function createProgram(io: CliIO = {}): Command {
             installed: Array<{
               id: string;
               destination: string;
-              status?: "installed" | "restored" | "updated" | "noop" | undefined;
+              status?:
+                | "installed"
+                | "restored"
+                | "updated"
+                | "content_updated"
+                | "noop"
+                | undefined;
               catalogIndexing?: CatalogIndexingResult | undefined;
             }>;
           };
@@ -3147,7 +3153,7 @@ export function createProgram(io: CliIO = {}): Command {
           }
           for (const caplet of result.installed) {
             writeOut(
-              `${caplet.status === "noop" ? "Already current" : "Updated"} ${caplet.id} at remote ${caplet.destination}\n`,
+              `${updateStatusLabel(caplet.status)} ${caplet.id} at remote ${caplet.destination}\n`,
             );
             writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
           }
@@ -3176,7 +3182,7 @@ export function createProgram(io: CliIO = {}): Command {
         }
         for (const caplet of result.installed) {
           writeOut(
-            `${caplet.status === "noop" ? "Already current" : "Updated"} ${caplet.id} at ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+            `${updateStatusLabel(caplet.status)} ${caplet.id} at ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
           );
           writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
           writeVaultSetupNotice(caplet.vaultSetup, writeOut);
@@ -4298,11 +4304,17 @@ async function attachCatalogIndexingResults(
   }>,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
 ): Promise<void> {
-  const results = await indexInstalledCapletsFromLockfile(installed, {
-    disableCatalogIndexing: catalogIndexingDisabled(env),
-  });
-  for (const entry of installed) {
-    entry.catalogIndexing = results.get(entry.id);
+  try {
+    const results = await indexInstalledCapletsFromLockfile(installed, {
+      disableCatalogIndexing: catalogIndexingDisabled(env),
+    });
+    for (const entry of installed) {
+      entry.catalogIndexing = results.get(entry.id);
+    }
+  } catch {
+    for (const entry of installed) {
+      entry.catalogIndexing = { status: "unavailable", reason: "indexer_unavailable" };
+    }
   }
 }
 
@@ -4697,6 +4709,12 @@ function completionRefFromOptions(options: { prompt?: string; resourceTemplate?:
   if (options.prompt) return { type: "prompt", name: options.prompt };
   if (options.resourceTemplate) return { type: "resourceTemplate", uri: options.resourceTemplate };
   throw new CapletsError("REQUEST_INVALID", "complete requires --prompt or --resource-template");
+}
+
+function updateStatusLabel(status: string | undefined): string {
+  if (status === "noop") return "Already current";
+  if (status === "content_updated") return "Content updated";
+  return "Updated";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

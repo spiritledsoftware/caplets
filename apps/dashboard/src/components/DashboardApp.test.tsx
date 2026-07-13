@@ -10,6 +10,7 @@ const { dashboardApi, setDashboardSession, toast } = vi.hoisted(() => ({
   toast: {
     error: vi.fn(),
     success: vi.fn(),
+    warning: vi.fn(),
   },
 }));
 
@@ -22,7 +23,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/components/ui/sonner", () => ({ Toaster: () => null }));
 vi.mock("sonner", () => ({ toast }));
 
-import { DashboardApp } from "./DashboardApp";
+import { DashboardApp, catalogMutationLabel } from "./DashboardApp";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -143,6 +144,7 @@ beforeEach(() => {
   setDashboardSession.mockClear();
   toast.error.mockClear();
   toast.success.mockClear();
+  toast.warning.mockClear();
   window.history.replaceState({}, "", "/dashboard/vault");
   window.matchMedia = vi.fn().mockReturnValue({
     addEventListener: vi.fn(),
@@ -162,6 +164,16 @@ afterEach(async () => {
   root = undefined;
   container = undefined;
   vi.restoreAllMocks();
+});
+
+describe("catalog update presentation", () => {
+  it("distinguishes committed content, runtime, and no-op outcomes", () => {
+    expect(catalogMutationLabel({ installed: [{ status: "content_updated" }] })).toBe(
+      "Content updated",
+    );
+    expect(catalogMutationLabel({ installed: [{ status: "updated" }] })).toBe("Updated");
+    expect(catalogMutationLabel({ installed: [{ status: "noop" }] })).toBe("Already current");
+  });
 });
 
 describe("Vault reveal races", () => {

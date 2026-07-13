@@ -18,8 +18,8 @@ export class FilesystemCapletSource implements CapletSource {
   async listFiles(): Promise<CapletSourceFile[]> {
     try {
       if (!existsSync(this.root) || !statSync(this.root).isDirectory()) return [];
-      return walkFiles(this.root, this.root, realpathSync(this.root), new Set()).sort(
-        (left, right) => left.path.localeCompare(right.path),
+      return walkSourceFiles(this.root, this.root).sort((left, right) =>
+        left.path.localeCompare(right.path),
       );
     } catch {
       return [];
@@ -85,6 +85,21 @@ export class FilesystemCapletSource implements CapletSource {
       return { state: "unreadable", privateKey: normalized };
     }
   }
+}
+
+function walkSourceFiles(root: string, dir: string): CapletSourceFile[] {
+  const files: CapletSourceFile[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort(compareDirents)) {
+    const absolute = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...walkSourceFiles(root, absolute));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const normalized = normalizeCapletSourcePath(relative(root, absolute));
+    if (normalized) files.push({ path: normalized, content: readFileSync(absolute, "utf8") });
+  }
+  return files;
 }
 
 function walkFiles(

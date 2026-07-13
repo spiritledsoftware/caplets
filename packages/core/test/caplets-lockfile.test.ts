@@ -138,6 +138,41 @@ describe("caplets lockfile", () => {
     }
   });
 
+  it("round-trips optional v1 runtime fingerprints and rejects malformed present state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-lockfile-runtime-fingerprint-"));
+    const lockPath = join(dir, "caplets.lock.json");
+    try {
+      const persisted = lockEntry({
+        runtimeFingerprint: {
+          version: 1,
+          artifactFingerprint: "sha256:runtime",
+        },
+      });
+      writeCapletsLockfile(lockPath, { version: 1, entries: [persisted] });
+      expect(readCapletsLockfile(lockPath)).toMatchObject({ version: 1, entries: [persisted] });
+
+      for (const runtimeFingerprint of [
+        null,
+        {},
+        { version: 2, artifactFingerprint: "sha256:runtime" },
+        { version: 1, artifactFingerprint: "" },
+      ]) {
+        writeFileSync(
+          lockPath,
+          `${JSON.stringify({
+            version: 1,
+            entries: [{ ...lockEntry(), runtimeFingerprint }],
+          })}\n`,
+        );
+        expect(() => readCapletsLockfile(lockPath)).toThrow(
+          expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports missing lockfiles as not found instead of invalid JSON", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-lockfile-missing-"));
     const lockPath = join(dir, "caplets.lock.json");

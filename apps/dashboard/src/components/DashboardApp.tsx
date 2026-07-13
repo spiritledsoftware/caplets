@@ -98,6 +98,31 @@ import { CatalogPage } from "@/components/catalog/CatalogPage";
 const REVEAL_DURATION_SECONDS = EPHEMERAL_REVEAL_TTL_MS / 1_000;
 const ACTION_DISCARDED = Symbol("dashboard-action-discarded");
 
+type CatalogMutationStatus = "installed" | "restored" | "updated" | "content_updated" | "noop";
+
+type CatalogMutationResult = {
+  installed?: Array<{
+    status?: CatalogMutationStatus;
+    catalogIndexing?: { status?: string; reason?: string };
+  }>;
+};
+export function catalogMutationLabel(result: unknown): string {
+  const status = (result as CatalogMutationResult | undefined)?.installed?.[0]?.status;
+  if (status === "content_updated") return "Content updated";
+  if (status === "noop") return "Already current";
+  if (status === "restored") return "Restored";
+  if (status === "installed") return "Installed";
+  return "Updated";
+}
+
+function catalogIndexingUnavailable(result: unknown): boolean {
+  return Boolean(
+    (result as CatalogMutationResult | undefined)?.installed?.some(
+      (entry) => entry.catalogIndexing?.status === "unavailable",
+    ),
+  );
+}
+
 type RouteKey =
   | "overview"
   | "access"
@@ -426,12 +451,20 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     }
   }
 
-  async function action(label: string, callback: () => Promise<unknown>) {
+  async function action(
+    label: string | ((result: unknown) => string),
+    callback: () => Promise<unknown>,
+  ) {
     try {
       const result = await callback();
       if (result === ACTION_DISCARDED) return;
       const refreshed = await refresh();
-      if (refreshed) toast.success(label);
+      if (refreshed) {
+        toast.success(typeof label === "function" ? label(result) : label);
+        if (catalogIndexingUnavailable(result)) {
+          toast.warning("Catalog indexing unavailable; the committed update is still installed.");
+        }
+      }
     } catch (error) {
       if (isDashboardUnauthorized(error)) {
         endDashboardSession();
@@ -747,7 +780,10 @@ function Page({
   data: DashboardData;
   loading: boolean;
   session: DashboardSession;
-  action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  action: (
+    label: string | ((result: unknown) => string),
+    callback: () => Promise<unknown>,
+  ) => Promise<void>;
 }) {
   const { confirmTyped } = useActionConfirm();
   if (route === "access") return <AccessPage data={data} loading={loading} action={action} />;
@@ -1362,7 +1398,10 @@ function CapletsPage({
 }: {
   data: DashboardData;
   loading: boolean;
-  action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  action: (
+    label: string | ((result: unknown) => string),
+    callback: () => Promise<unknown>,
+  ) => Promise<void>;
 }) {
   const { confirmTyped } = useActionConfirm();
   const caplets = data.caplets?.caplets ?? [];
@@ -1399,8 +1438,8 @@ function CapletsPage({
                               ))
                             )
                               return;
-                            await action("Update requested", () =>
-                              dashboardApi("catalog/update", {
+                            await action(catalogMutationLabel, () =>
+                              dashboardApi<CatalogMutationResult>("catalog/update", {
                                 method: "POST",
                                 body: JSON.stringify({
                                   capletId,

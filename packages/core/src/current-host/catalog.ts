@@ -60,7 +60,7 @@ export type CurrentHostInstalledCatalogCaplet = {
   destination: string;
   kind: "file" | "directory";
   hash?: string | undefined;
-  status?: "installed" | "restored" | "updated" | "noop" | undefined;
+  status?: "installed" | "restored" | "updated" | "content_updated" | "noop" | undefined;
   lockfile?: string | undefined;
   catalogIndexing?: unknown;
 };
