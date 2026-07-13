@@ -8,6 +8,12 @@ Shared domain vocabulary for this project -- entities, named processes, and stat
 
 A configured capability surface that exposes a backend to agents through a stable handle, progressive wrapper tools, or direct tool operations.
 
+### Caplet File
+
+A portable Markdown artifact whose YAML frontmatter is the sole source of runtime-affecting Caplet configuration and whose body is an operator README for prerequisites, troubleshooting, safety, and Caplet-specific documentation.
+
+The frontmatter and body are independent projections with separate lifecycles: the body may be shared and rendered for humans but never enters runtime configuration or an agent capability surface. Other files in the Caplet bundle become runtime inputs only through explicit frontmatter references.
+
 ### Caplets Exposure Projection
 
 The shared adapter-neutral runtime view of which local and remote Caplets are exposed as Code Mode handles, progressive tools, direct downstream operations, or direct MCP surfaces, including non-callable diagnostic breadcrumbs for hidden Caplets.
