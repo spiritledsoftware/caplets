@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Gmail
 description: Search, read, label, draft, and send Gmail messages through the Gmail API Discovery document.
+avoidWhen: Prefer a task or calendar integration when follow-up tracking does not require email content.
 tags:
   - google
   - gmail
@@ -41,18 +42,12 @@ googleDiscoveryApi:
 
 # Gmail
 
-Use this Caplet when an agent needs Gmail context for support, scheduling, customer communication, or inbox triage.
+## Reading mail
 
-## First Workflow
+Use narrow searches by sender, subject, label, date range, or thread. Inspect message metadata and thread context before retrieving full bodies, and limit summaries to the information the operator needs.
 
-1. Start with narrow searches by sender, subject, label, date range, or thread when possible.
-2. Read message metadata and thread context before retrieving full message bodies.
-3. Summarize only the details needed for the user's task.
-4. Draft replies before sending, and ask for explicit user intent before modifying labels or sending.
+## Safe operation and limits
 
-## Operate Carefully
-
-- Email often contains private or regulated content. Keep queries narrow and summaries minimal.
-- Confirm recipients, thread IDs, labels, and draft contents before any write operation.
-- This Caplet does not expose Gmail settings, permanent deletion, trash/untrash, import/insert, watch, or forwarding operations; create a private variant if those are required.
-- Prefer a task or calendar integration when the work is only follow-up tracking and does not require email content.
+- Email can contain private or regulated content. Keep queries narrow and summaries minimal.
+- Before modifying labels or sending mail, confirm explicit operator intent, recipients, thread IDs, labels, and draft contents. Draft replies before sending.
+- This Caplet does not expose Gmail settings, permanent deletion, trash/untrash, import/insert, watch, or forwarding operations. Those operations require a private variant.

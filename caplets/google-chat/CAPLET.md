@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Chat
 description: Search spaces, read messages, send messages, and add reactions through the Google Chat API Discovery document.
+avoidWhen: Prefer Gmail for email-centric work or a task system for durable task tracking.
 tags:
   - google
   - chat
@@ -39,18 +40,12 @@ googleDiscoveryApi:
 
 # Google Chat
 
-Use this Caplet when an agent needs Google Chat context, space membership context, message history, or a deliberate outgoing Chat message.
+## Finding conversation context
 
-## First Workflow
+Locate the relevant space, direct message, or group chat first. Read recent history and membership context before preparing a summary or reply. Download media only when the attachment is necessary for the operator's task.
 
-1. Start by finding the relevant space, direct message, or group chat.
-2. Read recent message history and membership context before summarizing or drafting a reply.
-3. Download media only when the attachment is necessary for the user's task.
-4. Send messages or add reactions only when the target space, thread, recipients, and message content are explicit.
+## Safe operation and limits
 
-## Operate Carefully
-
-- Chat messages can contain sensitive internal discussion. Keep reads narrow and summarize only what the user needs.
-- Outgoing Chat messages are visible to real people. Draft first when intent or audience is ambiguous.
+- Chat messages can contain sensitive internal discussion. Keep reads narrow and summaries limited to what the operator needs.
+- Outgoing messages and reactions are visible to real people. Confirm the target space, thread, recipients, and content; prepare a draft first when intent or audience is ambiguous.
 - This Caplet does not expose message update/delete, space administration, custom emoji, availability, import, or organization-wide admin operations.
-- Prefer Gmail or a task system when the work is email-centric or durable task tracking rather than Chat collaboration.

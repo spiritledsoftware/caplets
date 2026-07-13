@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: npm Registry
 description: Query package metadata, versions, dist-tags, and search results from the public npm registry.
+avoidWhen: Avoid for security reviews or vulnerability lookups; use OSV for structured vulnerability data.
 tags:
   - openapi
   - npm
@@ -17,17 +18,15 @@ openapiEndpoint:
 
 # npm Registry
 
-Use this Caplet when the agent needs public npm package facts before choosing dependencies, checking versions, comparing package health, or validating registry metadata.
+## Package Lookups
 
-## First Workflow
+- `get_dist_tags` and `get_package_version` provide focused lookups when the package name and version are known.
+- `get_package` returns release history, maintainers, versions, and package metadata together.
+- `search_packages` supports discovery, but candidate packages should be inspected directly before selection.
+- Registry facts should be cross-checked with the local lockfile and test evidence before dependency changes.
 
-1. Use `get_dist_tags` or `get_package_version` when the package name and version are known.
-2. Use `get_package` when you need release history, maintainers, versions, and package metadata together.
-3. Use `search_packages` for discovery, then inspect exact packages before recommending one.
-4. Pair package facts with local lockfile and test evidence before changing dependencies.
+## Limits and Safety
 
-## Operate Carefully
-
-- Registry metadata can be stale relative to the local lockfile. Check the project dependency state before editing.
-- Package search ranking is not a safety signal. Inspect maintainers, versions, and vulnerability context before suggesting adoption.
-- Use OSV for vulnerability lookups; this Caplet provides package metadata, not a complete security review.
+- Registry metadata can be stale relative to the local lockfile, so the project's actual dependency state remains authoritative.
+- Package search ranking is not a safety signal. Maintainers, versions, and vulnerability context require separate inspection before adoption.
+- This Caplet provides package metadata, not a complete security review.

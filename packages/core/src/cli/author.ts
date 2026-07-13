@@ -255,7 +255,30 @@ function renderCaplet(input: {
       }
     }
   }
-  lines.push("---", "", `# ${input.name}`, "", input.description, "");
+  lines.push(
+    "---",
+    "",
+    `# ${input.name}`,
+    "",
+    "This Markdown body is a human operator README. Keep runtime actions, paths, environment and authentication values, structured setup metadata, and agent-selection guidance in YAML frontmatter.",
+    "",
+    "## Prerequisites and setup context",
+    "",
+    "Describe what an operator should have or understand before enabling this Caplet.",
+    "",
+    "## Safe operation and limits",
+    "",
+    "Record operator-visible risks, confirmation points, permission boundaries, and known capability limits.",
+    "",
+    "## Troubleshooting",
+    "",
+    "List common setup or operation failures and how an operator can diagnose them.",
+    "",
+    "## References",
+    "",
+    "Link provider documentation, runbooks, or related operator material. Body links and configuration-looking literals are documentation only, never runtime inputs.",
+    "",
+  );
   return `${lines.join("\n")}`;
 }
 

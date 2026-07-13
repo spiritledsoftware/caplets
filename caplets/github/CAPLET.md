@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: GitHub
 description: Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows.
+avoidWhen: Prefer local Git and project files when the task concerns workspace state rather than GitHub's remote state.
 tags:
   - code
   - github
@@ -19,18 +20,12 @@ mcpServer:
 
 # GitHub
 
-Use this Caplet when the agent needs live GitHub repository context or needs to act on issues, pull requests, branches, commits, or review feedback.
+## Targeting remote work
 
-## First Workflow
+Identify the repository and the relevant issue, pull request, branch, or commit before taking action. Narrow lookups by repository, PR number, issue number, branch, label, or author whenever possible. Review work should include the changed files and relevant discussion; issue drafts and updates should stay concise and grounded in current implementation evidence.
 
-1. Read the relevant repository, issue, pull request, branch, or commit before taking action.
-2. Narrow by repo, PR number, issue number, branch, label, or author whenever possible.
-3. For reviews, inspect changed files and relevant discussion before commenting.
-4. For issue creation or updates, draft concise content tied to the current implementation evidence.
+## Safe operation
 
-## Operate Carefully
-
-- Mutating operations can affect real repositories. Prefer read operations first.
-- Confirm target repository, branch, issue, or pull request before creating comments, labels, branches, or updates.
-- Do not expose token values, repository secrets, or private issue contents outside the intended conversation.
-- Prefer local Git and project files for workspace state; use GitHub for remote truth.
+- GitHub mutations affect real repositories. Read current remote state before writing.
+- Confirm the target repository, branch, issue, or pull request before creating comments, labels, branches, or updates.
+- Keep token values, repository secrets, and private issue contents within their intended access boundary.

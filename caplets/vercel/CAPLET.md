@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Vercel
 description: Inspect and manage Vercel teams, projects, deployments, logs, and documentation through Vercel's hosted MCP server.
+avoidWhen: Use local Next.js, frontend, or repository configuration when no live Vercel context is needed.
 tags:
   - vercel
   - deployments
@@ -18,17 +19,16 @@ mcpServer:
 
 # Vercel
 
-Use this Caplet when an agent needs live Vercel context for teams, projects, deployments, deployment logs, domains, environment configuration, or Vercel documentation.
+## Targeting
 
-## First Workflow
+Identify the Vercel team, project, deployment, branch, domain, or request ID before searching. Confirm the target team and project before changing domains, environment variables, deployment settings, or aliases.
 
-1. Start by identifying the Vercel team, project, deployment, branch, domain, or request ID before searching broadly.
-2. Inspect project and deployment state before using logs or docs to explain failures.
-3. Use deployment logs and build/runtime evidence to distinguish application errors from Vercel platform or configuration issues.
-4. Confirm the target team and project before changing domains, environment variables, deployment settings, or aliases.
+## Investigation
 
-## Operate Carefully
+Inspect project and deployment state before consulting logs or documentation. Deployment logs and build or runtime evidence can distinguish application failures from Vercel platform or configuration problems.
 
-- Vercel changes can affect production traffic, secrets, previews, and custom domains. Prefer read-only inspection before writes.
-- Treat environment variables and build logs as sensitive; summarize the relevant signal without exposing secret values.
-- Avoid this Caplet when the task only needs local Next.js, frontend, or repo configuration analysis.
+## Safe operation
+
+Vercel changes can affect production traffic, previews, secrets, and custom domains. Prefer read-only inspection before writes, and review the production target and expected traffic impact before mutation.
+
+Environment variables and build logs may contain sensitive data. Preserve only the relevant diagnostic signal and do not reproduce secret values.

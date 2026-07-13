@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Datadog
 description: Query Datadog logs, metrics, traces, dashboards, monitors, incidents, services, events, notebooks, and observability insights through Datadog's managed MCP server.
+avoidWhen: Prefer local tools when only local log files or application instrumentation code are needed.
 tags:
   - datadog
   - observability
@@ -20,18 +21,15 @@ mcpServer:
 
 # Datadog
 
-Use this Caplet when an agent needs live Datadog observability context for logs, metrics, traces, monitors, dashboards, incidents, hosts, services, events, notebooks, APM, or agent observability.
+## Targeting and Setup
 
-## First Workflow
+- Confirm the Datadog site, organization, service, environment, time window, tags, monitor, incident, trace ID, or dashboard target.
+- For non-US1 organizations, confirm the Datadog site and endpoint host before authentication.
+- The `toolsets` query parameter can be added after installation to expose only the required Datadog product areas.
 
-1. Start by confirming the Datadog site, organization, service, environment, time window, tags, monitor, incident, trace ID, or dashboard target.
-2. Query narrow time ranges and tags first, then widen only when the first pass misses relevant evidence.
-3. Correlate logs, metrics, traces, deployment events, monitor status, and incidents before naming a cause.
-4. Add a `toolsets` query parameter after install when the workflow should expose only specific Datadog product areas.
+## Investigation and Safety
 
-## Operate Carefully
-
-- Datadog evidence can include production telemetry, customer identifiers, incident details, and security signals. Summarize the signal without leaking sensitive payloads.
-- Confirm the Datadog site and endpoint host for non-US1 organizations before authenticating.
-- Prefer read-only investigation before changing monitors, dashboards, notebooks, incident state, or platform configuration.
-- Avoid this Caplet when the task only needs local log files or application instrumentation code.
+- Begin with narrow time ranges and tags, widening only when the first pass misses relevant evidence.
+- Logs, metrics, traces, deployment events, monitor status, and incidents provide complementary evidence and should be correlated before a cause is assigned.
+- Production telemetry can include customer identifiers, incident details, and security signals. Summaries should omit sensitive payloads.
+- Keep investigation read-only until changes to monitors, dashboards, notebooks, incident state, or platform configuration are necessary.

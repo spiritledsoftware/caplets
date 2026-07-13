@@ -38,6 +38,24 @@ cliTools:
 
 # Repository CLI
 
-Use this Caplet to expose a small, typed set of local repository commands without giving an agent arbitrary shell access.
+## Prerequisites
 
-Project Binding is required because every command is meant to run against the attached repository. The bound root prevents the agent from accidentally treating an unrelated working directory as the target project.
+Repository CLI requires Project Binding. Every command runs from the bound repository root so that an unrelated working directory cannot become the target project.
+
+The bound environment must provide Git and pnpm. The repository must also define the pnpm `test` script used by `package_test`.
+
+## Available commands
+
+- `git_status` reports the concise working-tree status.
+- `git_current_branch` prints the current branch name.
+- `package_test` runs the repository's pnpm test script with a two-minute timeout.
+
+## Safety boundary
+
+This Caplet exposes only the commands and fixed arguments declared in frontmatter; it is not arbitrary shell access. The Git commands are read-only. The test command may execute repository-defined scripts, so operators should review the bound project's test configuration and account for any services, credentials, or files those tests use.
+
+To add or change a command, update the curated `cliTools.actions` declaration and keep its arguments, timeout, and read-only annotation explicit.
+
+## Troubleshooting
+
+If a command targets the wrong directory, correct the Project Binding rather than adding path arguments. If a command is unavailable, verify the required executable and repository script in the bound environment.

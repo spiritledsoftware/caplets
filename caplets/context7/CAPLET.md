@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Context7
 description: Fetch current library and framework documentation through Context7 before using version-sensitive APIs.
+avoidWhen: Do not substitute documentation lookup for available local source, lockfiles, generated types, or failing tests.
 tags:
   - docs
   - libraries
@@ -17,17 +18,13 @@ mcpServer:
 
 # Context7
 
-Use this Caplet when the agent needs current library, SDK, framework, CLI, or cloud-service documentation before writing code or giving technical instructions.
+## Documentation Lookup
 
-## First Workflow
+- Results are most precise when the package, framework, SDK, service, and relevant version are identified.
+- A known API symbol supports a narrower lookup than a broad documentation search.
+- Current API, configuration, migration, and example material should be checked against the project's local versions, types, and tests.
 
-1. Name the package, framework, SDK, or service as specifically as possible.
-2. Ask for the current API, config, migration, or example relevant to the task.
-3. Cross-check returned guidance against project-local versions, types, and tests before editing code.
-4. Cite or summarize only the documentation details needed for the implementation decision.
+## Source Quality
 
-## Operate Carefully
-
-- Prefer primary docs and version-specific examples over generic snippets when implementation risk is high.
-- Do not use documentation lookup as a substitute for reading the local codebase, lockfile, generated types, or failing tests.
-- Avoid broad documentation searches when a package name, version, or API symbol is already known.
+- Prefer primary documentation and version-specific examples over generic snippets when implementation risk is high.
+- Keep citations or summaries limited to the details that support the implementation decision.

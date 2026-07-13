@@ -2,6 +2,7 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Drive
 description: Search, read, download, upload, and manage Google Drive files through the Drive API Discovery document.
+avoidWhen: Prefer repository files when the task concerns local project state.
 tags:
   - google
   - drive
@@ -31,18 +32,12 @@ googleDiscoveryApi:
 
 # Google Drive
 
-Use this Caplet when an agent needs Drive files as context or needs to create/update files with explicit user direction.
+## File discovery
 
-## First Workflow
+Search accessible metadata first by name, owner, MIME type, folder, modified time, or shared-drive context. Confirm the exact file ID before reading, downloading, updating, moving, trashing, or deleting. Read or download only the files needed for the operator's task, and consider creating a new file or draft copy before overwriting an existing shared document.
 
-1. Search accessible file metadata first by name, owner, MIME type, folder, modified time, or shared-drive context.
-2. Confirm the exact file ID before reading, downloading, updating, moving, trashing, or deleting.
-3. Read or download only the files needed for the task.
-4. Prefer creating a new file or draft copy before overwriting an existing shared document.
+## Access boundary and limits
 
-## Operate Carefully
-
-- Drive files may contain private, shared, or regulated information. Keep reads narrow and summarize only what is needed.
-- This Caplet uses the restricted `drive.file` scope, so it is intended for files the app created or files the user explicitly opens or grants to the app.
-- It does not expose Drive-wide sharing, permissions, comments, approvals, shared-drive administration, or trash-emptying operations; create a private variant if those are required.
-- Prefer repository files when the user is asking about local project state.
+- Drive files can contain private, shared, or regulated information. Keep reads narrow and summaries limited to what is needed.
+- The restricted `drive.file` OAuth scope covers files the app created and files the user explicitly opens or grants to the app; it does not provide unrestricted Drive-wide access.
+- This Caplet does not expose Drive-wide sharing, permissions, comments, approvals, shared-drive administration, or trash-emptying operations. Those operations require a private variant.

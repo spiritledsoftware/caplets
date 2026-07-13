@@ -17,15 +17,14 @@ mcpServer:
 
 # Sentry
 
-Use this Caplet when an agent needs live Sentry context while debugging production errors, investigating traces, or checking release health.
+## Investigation scope
 
-## First Workflow
+Identify the organization, project, environment, release, issue, trace, and time window that bound the investigation. Narrow targets reduce noise and limit exposure of event data.
 
-1. Narrow by organization, project, environment, release, issue, trace, or time window before querying.
-2. Inspect issue frequency, recent events, stack traces, tags, breadcrumbs, and suspect commits before proposing fixes.
-3. Correlate deploys or releases with new errors when a regression is suspected.
-4. Bring back the smallest evidence set needed to guide code changes or triage.
+## Evidence and diagnosis
 
-## Operate Carefully
+Inspect issue frequency, recent events, stack traces, tags, breadcrumbs, and suspect commits before deciding on a fix. When a regression is suspected, correlate new errors with deployments or releases. Retain only the smallest evidence set needed for code changes or incident triage.
 
-Sentry data can contain user, request, and environment details. Ask for narrow projects and time windows, summarize only the needed debugging context, and review any mutating tool calls before applying changes to Sentry state.
+## Safe operation
+
+Sentry events can contain user, request, and environment details. Keep project and time-window access narrow, and summarize relevant debugging signals without reproducing unnecessary sensitive data. Review mutating operations and their target state before applying changes in Sentry.
