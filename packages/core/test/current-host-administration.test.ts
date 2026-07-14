@@ -3,9 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  allocateCurrentHostOperationBinding,
+  createCurrentHostOperationIndeterminateOutcome,
   createCurrentHostOperations,
+  recoverCurrentHostOperation,
+  reserveCurrentHostOperationLookup,
   toCurrentHostSafeError,
+  validateCurrentHostConfirmation,
   type CurrentHostOperationOutcome,
+  type CurrentHostOperationReservationState,
   type CurrentHostPrincipal,
 } from "../src/current-host/operations";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
@@ -538,6 +544,187 @@ describe("Current Host administration operations", () => {
     } finally {
       await setup.engine.close();
     }
+  });
+  it("retains the caller-known binding and returns a committed receipt without redispatch", async () => {
+    const binding = allocateCurrentHostOperationBinding(
+      {
+        target: "remote",
+        logicalHostId: "host_01J00000000000000000000000",
+        storeId: "store_01J00000000000000000000000",
+        operationNamespace: "operations_01J00000000000000000000000",
+        actorId: "rcli_abcdefghijklmnop",
+        requestIdentity: "request-sha256",
+        operationClass: "logical-state",
+      },
+      () => "operation_01J00000000000000000000000",
+    );
+    const receipt = {
+      status: "committed" as const,
+      binding,
+      aggregateVersion: 7,
+      authorityToken: { authorityGeneration: 2, effectiveGeneration: 5 },
+      localApplication: "applied" as const,
+      convergence: { kind: "single-node" as const },
+    };
+    const lookedUp: string[] = [];
+    const recovered = await recoverCurrentHostOperation(
+      createCurrentHostOperationIndeterminateOutcome(binding),
+      {
+        lookupOrReserveNotCommitted(original) {
+          lookedUp.push(original.operationId);
+          return Promise.resolve({ status: "committed", receipt });
+        },
+      },
+      () => {
+        throw new Error("committed lookup must not allocate or redispatch");
+      },
+    );
+
+    expect(lookedUp).toEqual([binding.operationId]);
+    expect(recovered).toEqual({ kind: "return-receipt", receipt });
+  });
+
+  it.each(["unknown", "unavailable", "stale_namespace"] as const)(
+    "keeps a %s lookup outcome non-retryable under the original operation ID",
+    async (status) => {
+      const binding = allocateCurrentHostOperationBinding(
+        {
+          target: "global",
+          logicalHostId: "host_01J00000000000000000000000",
+          storeId: "store_01J00000000000000000000000",
+          operationNamespace: "operations_01J00000000000000000000000",
+          actorId: "local-owner",
+          requestIdentity: "request-sha256",
+          operationClass: "logical-state",
+        },
+        () => "operation_01J00000000000000000000000",
+      );
+      let allocated = false;
+      const recovered = await recoverCurrentHostOperation(
+        createCurrentHostOperationIndeterminateOutcome(binding),
+        {
+          lookupOrReserveNotCommitted() {
+            return Promise.resolve({ status, binding });
+          },
+        },
+        () => {
+          allocated = true;
+          return "operation_01J11111111111111111111111";
+        },
+      );
+
+      expect(recovered).toEqual({ kind: "not-retryable", outcome: { status, binding } });
+      expect(allocated).toBe(false);
+    },
+  );
+
+  it("permits a new caller-known ID only after an atomic not-committed reservation", async () => {
+    const binding = allocateCurrentHostOperationBinding(
+      {
+        target: "global",
+        logicalHostId: "host_01J00000000000000000000000",
+        storeId: "store_01J00000000000000000000000",
+        operationNamespace: "operations_01J00000000000000000000000",
+        actorId: "local-owner",
+        requestIdentity: "request-sha256",
+        operationClass: "logical-state",
+      },
+      () => "operation_01J00000000000000000000000",
+    );
+    const recovered = await recoverCurrentHostOperation(
+      createCurrentHostOperationIndeterminateOutcome(binding),
+      {
+        lookupOrReserveNotCommitted() {
+          return Promise.resolve({
+            status: "not_committed",
+            binding,
+            retryReservationId: "reservation_01J00000000000000000000000",
+          });
+        },
+      },
+      () => "operation_01J11111111111111111111111",
+    );
+
+    expect(recovered).toEqual({
+      kind: "resubmit",
+      priorOperationId: binding.operationId,
+      retryReservationId: "reservation_01J00000000000000000000000",
+      binding: {
+        ...binding,
+        operationId: "operation_01J11111111111111111111111",
+      },
+    });
+  });
+
+  it("atomically makes a lookup win against a paused dispatch and preserves committed restore results", () => {
+    const binding = allocateCurrentHostOperationBinding(
+      {
+        target: "global",
+        logicalHostId: "host_01J00000000000000000000000",
+        storeId: "store_01J00000000000000000000000",
+        operationNamespace: "operations_01J00000000000000000000000",
+        actorId: "local-owner",
+        requestIdentity: "request-sha256",
+        operationClass: "logical-state",
+      },
+      () => "operation_01J00000000000000000000000",
+    );
+    const inFlight: CurrentHostOperationReservationState = { status: "in_flight", binding };
+    const lookupWon = reserveCurrentHostOperationLookup(
+      inFlight,
+      () => "reservation_01J00000000000000000000000",
+    );
+    expect(lookupWon.outcome.status).toBe("not_committed");
+    expect(lookupWon.state.status).toBe("retry_reserved");
+    expect(lookupWon.state.status === "retry_reserved" && lookupWon.state.canOriginalCommit).toBe(
+      false,
+    );
+
+    const committed: CurrentHostOperationReservationState = {
+      status: "committed",
+      receipt: {
+        status: "committed",
+        binding,
+        aggregateVersion: 1,
+        authorityToken: { authorityGeneration: 1, effectiveGeneration: 1 },
+        localApplication: "applied",
+        convergence: { kind: "single-node" },
+      },
+    };
+    expect(reserveCurrentHostOperationLookup(committed, () => "unused")).toEqual({
+      state: committed,
+      outcome: { status: "committed", receipt: committed.receipt },
+    });
+  });
+
+  it("rejects stale or mismatched irreversible-action confirmation without consuming it", () => {
+    const confirmation = {
+      version: 1 as const,
+      tokenId: "confirmation_01J00000000000000000000000",
+      action: "key-retirement",
+      logicalHostId: "host_01J00000000000000000000000",
+      storeId: "store_01J00000000000000000000000",
+      authorityToken: { authorityGeneration: 2, effectiveGeneration: 5 },
+      affectedVersions: ["key-v1"],
+      expiresAt: "2026-07-14T12:05:00.000Z",
+      consequences: ["Retired keys cannot decrypt active records."],
+      consumed: false as const,
+    };
+
+    expect(() =>
+      validateCurrentHostConfirmation(
+        confirmation,
+        {
+          action: "key-retirement",
+          logicalHostId: confirmation.logicalHostId,
+          storeId: confirmation.storeId,
+          authorityToken: confirmation.authorityToken,
+          affectedVersions: ["key-v2"],
+        },
+        new Date("2026-07-14T12:00:00.000Z"),
+      ),
+    ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+    expect(confirmation.consumed).toBe(false);
   });
 });
 

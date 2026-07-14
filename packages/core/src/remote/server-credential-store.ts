@@ -15,13 +15,14 @@ import { CapletsError } from "../errors";
 import { decryptVaultValue, encryptVaultValue, type VaultEncryptedRecord } from "../vault/crypto";
 import { normalizeRemoteProfileHostUrl } from "./options";
 import { createPairingCode, parsePairingCode, randomToken } from "./pairing";
-import type {
-  IssuedRemoteClientCredentials,
-  RemoteClientRole,
-  RemoteClientStatus,
-  RemotePendingLoginStatus,
-  RemotePendingLoginState,
-  ValidatedRemoteClient,
+import {
+  roleAllows,
+  type IssuedRemoteClientCredentials,
+  type RemoteClientRole,
+  type RemoteClientStatus,
+  type RemotePendingLoginStatus,
+  type RemotePendingLoginState,
+  type ValidatedRemoteClient,
 } from "./server-credentials";
 
 export type RemoteServerCredentialStoreOptions = {
@@ -484,7 +485,7 @@ export class RemoteServerCredentialStore {
       }
 
       const role = flow.grantedRole ?? flow.requestedRole;
-      if (input.requiredRole !== undefined && role !== input.requiredRole) {
+      if (input.requiredRole !== undefined && !roleAllows(role, input.requiredRole)) {
         throw new CapletsError("AUTH_FAILED", `${input.requiredRole} role is required.`);
       }
 
@@ -644,17 +645,22 @@ export class RemoteServerCredentialStore {
   }
 
   validateAccessToken(input: ValidateAccessTokenInput): ValidatedRemoteClient {
-    const now = input.now ?? new Date();
-    const state = this.loadState();
-    const accessTokenHash = hashSecret(input.accessToken);
-    const client = state.clients.find((candidate) =>
-      safeHashEqual(accessTokenHash, candidate.accessTokenHash),
-    );
-    if (!client) {
-      throw new CapletsError("AUTH_FAILED", "Remote client credential is invalid.");
+    try {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      const accessTokenHash = hashSecret(input.accessToken);
+      const client = state.clients.find((candidate) =>
+        safeHashEqual(accessTokenHash, candidate.accessTokenHash),
+      );
+      if (!client) {
+        throw new CapletsError("AUTH_FAILED", "Remote client credential is invalid.");
+      }
+      validateClient(client, normalizeRemoteProfileHostUrl(input.hostUrl), now);
+      return { ...clientStatus(client), tokenType: "Bearer" };
+    } catch (error) {
+      if (error instanceof CapletsError) throw error;
+      throw new CapletsError("SERVER_UNAVAILABLE", "Remote credential state is unavailable.");
     }
-    validateClient(client, normalizeRemoteProfileHostUrl(input.hostUrl), now);
-    return { ...clientStatus(client), tokenType: "Bearer" };
   }
 
   refreshClientCredentials(input: RefreshClientCredentialsInput): IssuedRemoteClientCredentials {

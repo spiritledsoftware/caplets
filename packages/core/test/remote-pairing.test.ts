@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CapletsError } from "../src/errors";
 import { createPairingCodeVerifier, isPairingCodeFormat } from "../src/remote/pairing";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { roleAllows } from "../src/remote/server-credentials";
 
 const dirs: string[] = [];
 
@@ -21,6 +22,33 @@ afterEach(() => {
 });
 
 describe("self-hosted remote pairing", () => {
+  it("treats Operator as an Access superset without granting Access administration", () => {
+    expect(roleAllows("operator", "access")).toBe(true);
+    expect(roleAllows("operator", "operator")).toBe(true);
+    expect(roleAllows("access", "access")).toBe(true);
+    expect(roleAllows("access", "operator")).toBe(false);
+  });
+
+  it("classifies unreadable credential state as unavailable without deleting it", () => {
+    const dir = tempDir();
+    const path = join(dir, "remote-server-credentials.json");
+    const store = new RemoteServerCredentialStore({ dir });
+    const issued = store.createPairingCode({ hostUrl: "https://caplets.example.com/" });
+    const credentials = store.exchangePairingCode({
+      hostUrl: "https://caplets.example.com/",
+      code: issued.code,
+    });
+    writeFileSync(path, "{malformed", { mode: 0o600 });
+
+    expect(() =>
+      store.validateAccessToken({
+        hostUrl: "https://caplets.example.com/",
+        accessToken: credentials.accessToken,
+      }),
+    ).toThrow(expect.objectContaining({ code: "SERVER_UNAVAILABLE" }) as CapletsError);
+    expect(readFileSync(path, "utf8")).toBe("{malformed");
+  });
+
   it("persists requested and granted remote client roles for pending login flows", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
 
@@ -54,6 +82,7 @@ describe("self-hosted remote pairing", () => {
       flowId: operatorPending.flowId,
       pendingCompletionSecret: operatorPending.pendingCompletionSecret,
       now: new Date("2026-06-19T12:03:00.000Z"),
+      requiredRole: "access",
     });
     expect(operatorCredentials.role).toBe("operator");
     expect(store.listClients()).toContainEqual(

@@ -58,7 +58,11 @@ import {
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
-import type { RemoteClientRole, ValidatedRemoteClient } from "../remote/server-credentials";
+import {
+  roleAllows,
+  type RemoteClientRole,
+  type ValidatedRemoteClient,
+} from "../remote/server-credentials";
 import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
@@ -1729,7 +1733,9 @@ export function createHttpServeApp(
     const client = remoteCredentialStore
       .listClients()
       .find((candidate) => candidate.clientId === ownerKey);
-    return client?.role === "access" && client.revokedAt === undefined;
+    return (
+      client !== undefined && roleAllows(client.role, "access") && client.revokedAt === undefined
+    );
   }
 
   async function terminalizeProjectBindingRecordInQueue(
@@ -2879,11 +2885,14 @@ function routeAuth(
         ),
         accessToken: token,
       });
-      if (requiredRole !== undefined && client.role !== requiredRole) {
+      if (requiredRole !== undefined && !roleAllows(client.role, requiredRole)) {
         return c.text(`Forbidden: ${requiredRole} role required`, 403);
       }
       retainAuthenticatedClient?.(c.req.raw, client);
-    } catch {
+    } catch (error) {
+      if (error instanceof CapletsError && error.code === "SERVER_UNAVAILABLE") {
+        return c.text("Service Unavailable", 503);
+      }
       return c.text("Unauthorized", 401);
     }
     await next();

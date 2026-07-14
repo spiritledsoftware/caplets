@@ -2578,7 +2578,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--remote", "create the remote Caplets config")
     .option("--force", "overwrite an existing config file")
     .action(async (options: MutationTargetOptions & { force?: boolean }) => {
-      const target = parseMutationTarget(options);
+      const target = resolveMutationTarget(options);
       if (target === "remote") {
         const remote = requireRemoteClientForTarget(io);
         const result = (await remote.request("init", {
@@ -2592,7 +2592,7 @@ export function createProgram(io: CliIO = {}): Command {
           target === "global" ? resolveConfigPath(currentConfigPath()) : envProjectConfigPath(env),
         force: Boolean(options.force),
       });
-      writeOut(`Created ${localMutationTargetLabel(target, io)}Caplets config at ${path}\n`);
+      writeOut(`Created ${localMutationTargetLabel(target)}Caplets config at ${path}\n`);
     });
 
   program
@@ -2692,7 +2692,10 @@ export function createProgram(io: CliIO = {}): Command {
           json?: boolean;
         },
       ) => {
-        const target = parseVaultTarget(options);
+        const target = resolveMutationTarget(options, {
+          allowedTargets: ["global", "remote"],
+          defaultTarget: "global",
+        });
         if (target === "remote") {
           const value = await readVaultValue(io);
           assertVaultTransportValueSize(value);
@@ -2761,7 +2764,10 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .action(
       async (name: string, options: VaultTargetOptions & { show?: boolean; json?: boolean }) => {
-        const target = parseVaultTarget(options);
+        const target = resolveMutationTarget(options, {
+          allowedTargets: ["global", "remote"],
+          defaultTarget: "global",
+        });
         if (target === "remote") {
           const result = await remoteVaultGet(io, { name, reveal: Boolean(options.show) });
           if (options.show) {
@@ -2799,7 +2805,10 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--remote", "target the selected remote Vault")
     .option("--json", "print JSON output")
     .action(async (options: VaultTargetOptions & { json?: boolean }) => {
-      const target = parseVaultTarget(options);
+      const target = resolveMutationTarget(options, {
+        allowedTargets: ["global", "remote"],
+        defaultTarget: "global",
+      });
       if (target === "remote") {
         const result = await remoteVaultList(io);
         writeOut(
@@ -2823,7 +2832,10 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--remote", "target the selected remote Vault")
     .option("--json", "print JSON output")
     .action(async (name: string, options: VaultTargetOptions & { json?: boolean }) => {
-      const target = parseVaultTarget(options);
+      const target = resolveMutationTarget(options, {
+        allowedTargets: ["global", "remote"],
+        defaultTarget: "global",
+      });
       if (target === "remote") {
         const result = await remoteVaultDelete(io, name);
         writeOut(
@@ -2856,7 +2868,10 @@ export function createProgram(io: CliIO = {}): Command {
         capletId: string,
         options: VaultTargetOptions & { as?: string; json?: boolean },
       ) => {
-        const target = parseVaultTarget(options);
+        const target = resolveMutationTarget(options, {
+          allowedTargets: ["global", "remote"],
+          defaultTarget: "global",
+        });
         if (target === "remote") {
           const grant = await remoteVaultAccessGrant(io, {
             name,
@@ -2904,7 +2919,10 @@ export function createProgram(io: CliIO = {}): Command {
           );
         }
         const capletFilter = options.caplet ?? capletId;
-        const target = parseVaultTarget(options);
+        const target = resolveMutationTarget(options, {
+          allowedTargets: ["global", "remote"],
+          defaultTarget: "global",
+        });
         if (target === "remote") {
           const grants = await remoteVaultAccessList(io, {
             ...(name ? { name } : {}),
@@ -2942,7 +2960,10 @@ export function createProgram(io: CliIO = {}): Command {
         capletId: string,
         options: VaultTargetOptions & { as?: string; json?: boolean },
       ) => {
-        const target = parseVaultTarget(options);
+        const target = resolveMutationTarget(options, {
+          allowedTargets: ["global", "remote"],
+          defaultTarget: "global",
+        });
         if (target === "remote") {
           const revoked = await remoteVaultAccessRevoke(io, {
             name,
@@ -3013,8 +3034,8 @@ export function createProgram(io: CliIO = {}): Command {
         capletIds: string[],
         options: MutationTargetOptions & { force?: boolean; json?: boolean },
       ) => {
+        const target = resolveMutationTarget(options);
         printTelemetryNotice("cli");
-        const target = parseCatalogLifecycleTarget(options);
         const localLockfilePath =
           target === "remote"
             ? undefined
@@ -3052,7 +3073,7 @@ export function createProgram(io: CliIO = {}): Command {
             }>;
           };
           if (options.json) {
-            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            writeOut(`${JSON.stringify(installJsonResult(result.installed, target), null, 2)}\n`);
             return;
           }
           for (const caplet of result.installed) {
@@ -3077,12 +3098,12 @@ export function createProgram(io: CliIO = {}): Command {
           await attachCatalogIndexingResults(result.installed, env);
           attachVaultSetupResults(result.installed, io);
           if (options.json) {
-            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            writeOut(`${JSON.stringify(installJsonResult(result.installed, target), null, 2)}\n`);
             return;
           }
           for (const caplet of result.installed) {
             writeOut(
-              `${installStatusLabel(caplet.status, "Restored")} ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+              `${installStatusLabel(caplet.status, "Restored")} ${caplet.id} to ${localMutationTargetLabel(target)}${caplet.destination}\n`,
             );
             writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
             writeVaultSetupNotice(caplet.vaultSetup, writeOut);
@@ -3098,12 +3119,12 @@ export function createProgram(io: CliIO = {}): Command {
         await attachCatalogIndexingResults(result.installed, env);
         attachVaultSetupResults(result.installed, io);
         if (options.json) {
-          writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+          writeOut(`${JSON.stringify(installJsonResult(result.installed, target), null, 2)}\n`);
           return;
         }
         for (const caplet of result.installed) {
           writeOut(
-            `Installed ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+            `Installed ${caplet.id} to ${localMutationTargetLabel(target)}${caplet.destination}\n`,
           );
           writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
           writeVaultSetupNotice(caplet.vaultSetup, writeOut);
@@ -3125,8 +3146,8 @@ export function createProgram(io: CliIO = {}): Command {
         capletIds: string[],
         options: MutationTargetOptions & { force?: boolean; json?: boolean },
       ) => {
+        const target = resolveMutationTarget(options);
         printTelemetryNotice("cli");
-        const target = parseCatalogLifecycleTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = (await remote.request("update", {
@@ -3143,7 +3164,7 @@ export function createProgram(io: CliIO = {}): Command {
             }>;
           };
           if (options.json) {
-            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            writeOut(`${JSON.stringify(installJsonResult(result.installed, target), null, 2)}\n`);
             return;
           }
           for (const caplet of result.installed) {
@@ -3172,12 +3193,12 @@ export function createProgram(io: CliIO = {}): Command {
         await attachCatalogIndexingResults(result.installed, env);
         attachVaultSetupResults(result.installed, io);
         if (options.json) {
-          writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+          writeOut(`${JSON.stringify(installJsonResult(result.installed, target), null, 2)}\n`);
           return;
         }
         for (const caplet of result.installed) {
           writeOut(
-            `${updateStatusLabel(caplet.status)} ${caplet.id} at ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+            `${updateStatusLabel(caplet.status)} ${caplet.id} at ${localMutationTargetLabel(target)}${caplet.destination}\n`,
           );
           writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
           writeVaultSetupNotice(caplet.vaultSetup, writeOut);
@@ -3215,7 +3236,7 @@ export function createProgram(io: CliIO = {}): Command {
           remote?: boolean;
         },
       ) => {
-        const target = parseMutationTarget(options);
+        const target = resolveMutationTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
@@ -3234,7 +3255,7 @@ export function createProgram(io: CliIO = {}): Command {
               : envProjectCapletsRoot(env),
         });
         if (result.path) {
-          writeOut(`Wrote ${localMutationTargetLabel(target, io)}CLI Caplet to ${result.path}\n`);
+          writeOut(`Wrote ${localMutationTargetLabel(target)}CLI Caplet to ${result.path}\n`);
           return;
         }
         writeOut(result.text);
@@ -3271,7 +3292,7 @@ export function createProgram(io: CliIO = {}): Command {
           tokenEnv?: string;
         },
       ) => {
-        const target = parseMutationTarget(options);
+        const target = resolveMutationTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
@@ -3286,7 +3307,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}MCP`, result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target)}MCP`, result);
       },
     );
 
@@ -3308,7 +3329,7 @@ export function createProgram(io: CliIO = {}): Command {
         id: string,
         options: AddBackendCliOptions & { spec?: string; baseUrl?: string; tokenEnv?: string },
       ) => {
-        const target = parseMutationTarget(options);
+        const target = resolveMutationTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
@@ -3323,7 +3344,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}OpenAPI`, result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target)}OpenAPI`, result);
       },
     );
 
@@ -3351,7 +3372,7 @@ export function createProgram(io: CliIO = {}): Command {
           tokenEnv?: string;
         },
       ) => {
-        const target = parseMutationTarget(options);
+        const target = resolveMutationTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
@@ -3366,7 +3387,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}Google Discovery`, result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target)}Google Discovery`, result);
       },
     );
 
@@ -3394,7 +3415,7 @@ export function createProgram(io: CliIO = {}): Command {
           tokenEnv?: string;
         },
       ) => {
-        const target = parseMutationTarget(options);
+        const target = resolveMutationTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
@@ -3409,7 +3430,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}GraphQL`, result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target)}GraphQL`, result);
       },
     );
 
@@ -3431,7 +3452,7 @@ export function createProgram(io: CliIO = {}): Command {
         id: string,
         options: AddBackendCliOptions & { baseUrl?: string; action?: string[]; tokenEnv?: string },
       ) => {
-        const target = parseMutationTarget(options);
+        const target = resolveMutationTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
@@ -3446,7 +3467,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}HTTP`, result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target)}HTTP`, result);
       },
     );
 
@@ -3965,8 +3986,6 @@ type MutationTargetOptions = {
 
 type AuthTargetOptions = MutationTargetOptions;
 
-type VaultTarget = "global" | "remote";
-
 type VaultTargetOptions = {
   global?: boolean;
   remote?: boolean;
@@ -4001,39 +4020,44 @@ function remoteAddOptions<T extends Record<string, unknown>>(
   return remoteOptions;
 }
 
-function parseMutationTarget(options: MutationTargetOptions): MutationTarget {
-  const selected = [
-    options.project ? "--project" : undefined,
-    options.global ? "--global" : undefined,
-    options.remote ? "--remote" : undefined,
-  ].filter((value): value is string => value !== undefined);
+function resolveMutationTarget(options: MutationTargetOptions): MutationTarget;
+function resolveMutationTarget<T extends MutationTarget>(
+  options: MutationTargetOptions,
+  policy: {
+    allowedTargets: readonly T[];
+    defaultTarget: T;
+    requireExplicit?: boolean | undefined;
+  },
+): T;
+function resolveMutationTarget(
+  options: MutationTargetOptions,
+  policy: {
+    allowedTargets: readonly MutationTarget[];
+    defaultTarget: MutationTarget;
+    requireExplicit?: boolean | undefined;
+  } = {
+    allowedTargets: ["project", "global", "remote"],
+    defaultTarget: "project",
+  },
+): MutationTarget {
+  const selected: Array<{ flag: string; target: MutationTarget }> = [];
+  if (options.project) selected.push({ flag: "--project", target: "project" });
+  if (options.global) selected.push({ flag: "--global", target: "global" });
+  if (options.remote) selected.push({ flag: "--remote", target: "remote" });
   if (selected.length > 1) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      `Cannot combine mutation target flags: ${selected.join(", ")}`,
+      `Cannot combine mutation target flags: ${selected.map(({ flag }) => flag).join(", ")}`,
     );
   }
-  if (options.global) return "global";
-  if (options.remote) return "remote";
-  return "project";
-}
-
-function parseCatalogLifecycleTarget(options: MutationTargetOptions): MutationTarget {
-  const selected = [
-    options.project ? "--project" : undefined,
-    options.global ? "--global" : undefined,
-    options.remote ? "--remote" : undefined,
-  ].filter((value): value is string => value !== undefined);
-  const allowedRemoteGlobal = options.remote && options.global && !options.project;
-  if (selected.length > 1 && !allowedRemoteGlobal) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      `Cannot combine mutation target flags: ${selected.join(", ")}`,
-    );
+  const target = selected[0]?.target ?? policy.defaultTarget;
+  if (policy.requireExplicit === true && selected.length === 0) {
+    throw new CapletsError("REQUEST_INVALID", "This mutation requires an explicit target.");
   }
-  if (options.remote) return "remote";
-  if (options.global) return "global";
-  return "project";
+  if (!policy.allowedTargets.includes(target)) {
+    throw new CapletsError("REQUEST_INVALID", `Mutation target ${target} is not supported.`);
+  }
+  return target;
 }
 
 function isInstallSourceArgument(
@@ -4062,21 +4086,6 @@ function lockfileContainsCapletId(path: string | undefined, capletId: string): b
   } catch {
     return false;
   }
-}
-
-function parseVaultTarget(options: VaultTargetOptions): VaultTarget {
-  const selected = [
-    options.global ? "--global" : undefined,
-    options.remote ? "--remote" : undefined,
-  ].filter((value): value is string => value !== undefined);
-  if (selected.length > 1) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      `Cannot combine Vault target flags: ${selected.join(", ")}`,
-    );
-  }
-  if (options.remote) return "remote";
-  return "global";
 }
 
 async function resolveVaultRemoteTarget(io: CliIO): Promise<VaultRemoteTarget> {
@@ -4255,8 +4264,8 @@ function vaultAccessFilter(
   };
 }
 
-function localMutationTargetLabel(target: Exclude<MutationTarget, "remote">, io: CliIO): string {
-  return remoteClientForCli(io) ? `${target} ` : "";
+function localMutationTargetLabel(target: Exclude<MutationTarget, "remote">): string {
+  return `${target} `;
 }
 
 function installJsonResult(
@@ -4270,8 +4279,10 @@ function installJsonResult(
     catalogIndexing?: CatalogIndexingResult | undefined;
     vaultSetup?: unknown;
   }>,
+  target: MutationTarget,
 ) {
   return {
+    target,
     entries: installed.map((entry) => ({
       id: entry.id,
       status: entry.status ?? "installed",

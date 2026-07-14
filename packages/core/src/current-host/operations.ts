@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { CatalogCompactEntry, CatalogEntry } from "../catalog";
 import {
   DashboardActivityLog,
@@ -86,6 +88,234 @@ export type CurrentHostControlContext = {
   globalCapletsRoot?: string | undefined;
   globalLockfilePath?: string | undefined;
 };
+
+export type CurrentHostMutationTarget = "project" | "global" | "remote";
+
+export type CurrentHostOperationClass = "logical-state" | "security-authority" | "external-effect";
+
+export type CurrentHostOperationBinding = {
+  operationId: string;
+  target: CurrentHostMutationTarget;
+  logicalHostId: string;
+  storeId: string;
+  operationNamespace: string;
+  actorId: string;
+  requestIdentity: string;
+  operationClass: CurrentHostOperationClass;
+};
+
+export type CurrentHostAuthorityToken = {
+  authorityGeneration: number;
+  effectiveGeneration: number;
+};
+
+export type CurrentHostOperationReceipt = {
+  status: "committed";
+  binding: CurrentHostOperationBinding;
+  aggregateVersion: number;
+  authorityToken: CurrentHostAuthorityToken;
+  localApplication: "applied" | "pending" | "not-applicable";
+  convergence:
+    | { kind: "single-node" }
+    | { kind: "pending"; deadline: string }
+    | { kind: "converged"; appliedNodes: number };
+};
+
+export type CurrentHostOperationLookupOutcome =
+  | { status: "committed"; receipt: CurrentHostOperationReceipt }
+  | {
+      status: "not_committed";
+      binding: CurrentHostOperationBinding;
+      retryReservationId: string;
+    }
+  | {
+      status: "unknown" | "unavailable" | "wrong_target" | "stale_namespace";
+      binding: CurrentHostOperationBinding;
+    };
+
+export type CurrentHostOperationIndeterminateOutcome = {
+  status: "indeterminate";
+  binding: CurrentHostOperationBinding;
+};
+
+export type CurrentHostOperationRecovery =
+  | { kind: "return-receipt"; receipt: CurrentHostOperationReceipt }
+  | {
+      kind: "resubmit";
+      priorOperationId: string;
+      retryReservationId: string;
+      binding: CurrentHostOperationBinding;
+    }
+  | {
+      kind: "not-retryable";
+      outcome: Exclude<
+        CurrentHostOperationLookupOutcome,
+        { status: "committed" | "not_committed" }
+      >;
+    };
+
+/**
+ * The implementation must serialize this operation with dispatch commit: returning not_committed
+ * durably reserves the original identity so an already-running dispatch can no longer commit.
+ */
+export interface CurrentHostOperationLookupPort {
+  lookupOrReserveNotCommitted(
+    binding: CurrentHostOperationBinding,
+  ): CurrentHostOperationLookupOutcome | Promise<CurrentHostOperationLookupOutcome>;
+}
+
+export type CurrentHostOperationReservationState =
+  | { status: "in_flight"; binding: CurrentHostOperationBinding }
+  | { status: "committed"; receipt: CurrentHostOperationReceipt }
+  | {
+      status: "retry_reserved";
+      binding: CurrentHostOperationBinding;
+      retryReservationId: string;
+      canOriginalCommit: false;
+    }
+  | { status: "unknown"; binding: CurrentHostOperationBinding }
+  | { status: "stale_namespace"; binding: CurrentHostOperationBinding };
+
+export type CurrentHostIrreversibleActionPreview = {
+  version: 1;
+  action: string;
+  logicalHostId: string;
+  storeId: string;
+  authorityToken: CurrentHostAuthorityToken;
+  affectedVersions: string[];
+  expiresAt: string;
+  consequences: string[];
+};
+
+export type CurrentHostConfirmationToken = CurrentHostIrreversibleActionPreview & {
+  tokenId: string;
+  consumed: false;
+};
+
+export type CurrentHostConfirmationExpectation = Pick<
+  CurrentHostConfirmationToken,
+  "action" | "logicalHostId" | "storeId" | "authorityToken" | "affectedVersions"
+>;
+
+export function allocateCurrentHostOperationBinding(
+  input: Omit<CurrentHostOperationBinding, "operationId">,
+  allocateOperationId: () => string = () => `operation_${randomUUID()}`,
+): CurrentHostOperationBinding {
+  const operationId = allocateOperationId();
+  if (operationId.length === 0) {
+    throw new CapletsError("REQUEST_INVALID", "Current Host operation ID is required.");
+  }
+  return { operationId, ...input };
+}
+
+export function createCurrentHostOperationIndeterminateOutcome(
+  binding: CurrentHostOperationBinding,
+): CurrentHostOperationIndeterminateOutcome {
+  return { status: "indeterminate", binding };
+}
+
+export async function recoverCurrentHostOperation(
+  indeterminate: CurrentHostOperationIndeterminateOutcome,
+  port: CurrentHostOperationLookupPort,
+  allocateOperationId: () => string = () => `operation_${randomUUID()}`,
+): Promise<CurrentHostOperationRecovery> {
+  const outcome = await port.lookupOrReserveNotCommitted(indeterminate.binding);
+  const outcomeBinding = outcome.status === "committed" ? outcome.receipt.binding : outcome.binding;
+  if (!isDeepStrictEqual(outcomeBinding, indeterminate.binding)) {
+    return {
+      kind: "not-retryable",
+      outcome: { status: "wrong_target", binding: indeterminate.binding },
+    };
+  }
+  if (outcome.status === "committed") {
+    return { kind: "return-receipt", receipt: outcome.receipt };
+  }
+  if (outcome.status === "not_committed") {
+    return {
+      kind: "resubmit",
+      priorOperationId: indeterminate.binding.operationId,
+      retryReservationId: outcome.retryReservationId,
+      binding: allocateCurrentHostOperationBinding(
+        {
+          target: indeterminate.binding.target,
+          logicalHostId: indeterminate.binding.logicalHostId,
+          storeId: indeterminate.binding.storeId,
+          operationNamespace: indeterminate.binding.operationNamespace,
+          actorId: indeterminate.binding.actorId,
+          requestIdentity: indeterminate.binding.requestIdentity,
+          operationClass: indeterminate.binding.operationClass,
+        },
+        allocateOperationId,
+      ),
+    };
+  }
+  return { kind: "not-retryable", outcome };
+}
+
+export function reserveCurrentHostOperationLookup(
+  state: CurrentHostOperationReservationState,
+  allocateReservationId: () => string,
+): {
+  state: CurrentHostOperationReservationState;
+  outcome: CurrentHostOperationLookupOutcome;
+} {
+  switch (state.status) {
+    case "committed":
+      return { state, outcome: { status: "committed", receipt: state.receipt } };
+    case "in_flight": {
+      const retryReservationId = allocateReservationId();
+      const reserved: CurrentHostOperationReservationState = {
+        status: "retry_reserved",
+        binding: state.binding,
+        retryReservationId,
+        canOriginalCommit: false,
+      };
+      return {
+        state: reserved,
+        outcome: { status: "not_committed", binding: state.binding, retryReservationId },
+      };
+    }
+    case "retry_reserved":
+      return {
+        state,
+        outcome: {
+          status: "not_committed",
+          binding: state.binding,
+          retryReservationId: state.retryReservationId,
+        },
+      };
+    case "unknown":
+    case "stale_namespace":
+      return { state, outcome: { status: state.status, binding: state.binding } };
+  }
+}
+
+export function validateCurrentHostConfirmation(
+  confirmation: CurrentHostConfirmationToken,
+  expected: CurrentHostConfirmationExpectation,
+  now = new Date(),
+): CurrentHostConfirmationToken {
+  const matches =
+    confirmation.version === 1 &&
+    confirmation.consumed === false &&
+    confirmation.action === expected.action &&
+    confirmation.logicalHostId === expected.logicalHostId &&
+    confirmation.storeId === expected.storeId &&
+    isDeepStrictEqual(confirmation.authorityToken, expected.authorityToken) &&
+    isDeepStrictEqual(
+      [...confirmation.affectedVersions].sort(),
+      [...expected.affectedVersions].sort(),
+    ) &&
+    Number.isFinite(Date.parse(confirmation.expiresAt)) &&
+    Date.parse(confirmation.expiresAt) > now.getTime();
+  if (!matches) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Current Host confirmation is absent, stale, consumed, or mismatched.",
+    );
+  }
+  return confirmation;
+}
 
 export type CurrentHostOperation =
   | {

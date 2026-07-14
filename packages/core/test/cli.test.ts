@@ -132,7 +132,7 @@ describe("cli init", () => {
       await runCli(["init"], { writeOut: (value) => out.push(value) });
 
       expect(existsSync(projectConfigPath)).toBe(true);
-      expect(out.join("")).toBe(`Created Caplets config at ${expectedConfigPath}\n`);
+      expect(out.join("")).toBe(`Created project Caplets config at ${expectedConfigPath}\n`);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -149,7 +149,7 @@ describe("cli init", () => {
       await runCli(["init", "--global"], { writeOut: (value) => out.push(value) });
 
       expect(existsSync(path)).toBe(true);
-      expect(out.join("")).toBe(`Created Caplets config at ${path}\n`);
+      expect(out.join("")).toBe(`Created global Caplets config at ${path}\n`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1434,8 +1434,8 @@ describe("cli init", () => {
       expect(readFileSync(join(projectRoot, ".caplets", "github", "CAPLET.md"), "utf8")).toContain(
         "name: GitHub",
       );
-      expect(out.join("")).toContain("Installed filesystem");
-      expect(out.join("")).toContain("Installed github");
+      expect(out.join("")).toContain("Installed filesystem to project ");
+      expect(out.join("")).toContain("Installed github to project ");
       const lock = JSON.parse(readFileSync(join(projectRoot, ".caplets.lock.json"), "utf8"));
       expect(lock).toMatchObject({
         version: 1,
@@ -1488,9 +1488,9 @@ describe("cli init", () => {
       expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
       expect(existsSync(join(dir, "state", "caplets", "caplets.lock.json"))).toBe(true);
       expect(out.join("")).toContain(
-        `Installed filesystem to ${join(dir, "user", "filesystem.md")}`,
+        `Installed filesystem to global ${join(dir, "user", "filesystem.md")}`,
       );
-      expect(out.join("")).toContain(`Installed github to ${join(dir, "user", "github")}`);
+      expect(out.join("")).toContain(`Installed github to global ${join(dir, "user", "github")}`);
     } finally {
       if (originalXdgStateHome === undefined) {
         delete process.env.XDG_STATE_HOME;
@@ -1520,7 +1520,7 @@ describe("cli init", () => {
 
       const output = join(projectRoot, ".caplets", "repo-tools.md");
       expect(readFileSync(output, "utf8")).toContain("package_test:");
-      expect(out.join("")).toBe(`Wrote CLI Caplet to ${expectedOutput}\n`);
+      expect(out.join("")).toBe(`Wrote project CLI Caplet to ${expectedOutput}\n`);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -2164,7 +2164,7 @@ describe("cli init", () => {
 
       expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
       expect(existsSync(join(projectRoot, ".caplets", "filesystem.md"))).toBe(false);
-      expect(out.join("")).toBe(`Installed github to ${expectedDestination}\n`);
+      expect(out.join("")).toBe(`Installed github to project ${expectedDestination}\n`);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -2797,27 +2797,44 @@ describe("cli init", () => {
     }
   });
 
-  it("accepts remote global lockfile restore through install --global --remote", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-install-remote-global-"));
+  it("rejects every multi-target catalog mutation before remote work", async () => {
+    const fetchMock = vi.fn();
+    const invalidCommands = [
+      ["install", "--project", "--global"],
+      ["install", "--project", "--remote"],
+      ["install", "--global", "--remote"],
+      ["install", "--project", "--global", "--remote"],
+      ["update", "--project", "--global"],
+      ["update", "--project", "--remote"],
+      ["update", "--global", "--remote"],
+      ["update", "--project", "--global", "--remote"],
+    ];
+
+    for (const command of invalidCommands) {
+      await expect(runCli(command, { fetch: fetchMock, writeOut: () => {} })).rejects.toMatchObject(
+        { code: "REQUEST_INVALID" } satisfies Partial<CapletsError>,
+      );
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns the selected remote target after an authenticated mutation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-remote-"));
     const authDir = join(dir, "auth");
-    const requests: unknown[] = [];
     const out: string[] = [];
-    const fetchMock = vi.fn(
-      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-        requests.push(JSON.parse(String(init?.body)));
-        return Response.json({
-          ok: true,
-          result: {
-            installed: [
-              {
-                id: "github",
-                destination: "/remote/global/github",
-                status: "restored",
-              },
-            ],
-          },
-        });
-      },
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        result: {
+          installed: [
+            {
+              id: "github",
+              destination: "/remote/global/github",
+              status: "restored",
+            },
+          ],
+        },
+      }),
     );
     try {
       await new FileRemoteProfileStore({
@@ -2834,7 +2851,7 @@ describe("cli init", () => {
         },
       });
 
-      await runCli(["install", "--global", "--remote", "--json"], {
+      await runCli(["install", "--remote", "--json"], {
         env: {
           CAPLETS_MODE: "remote",
           CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
@@ -2846,23 +2863,10 @@ describe("cli init", () => {
         writeOut: (value) => out.push(value),
       });
 
-      expect(requests).toEqual([
-        {
-          command: "install",
-          arguments: {
-            capletIds: [],
-            force: false,
-          },
-        },
-      ]);
+      expect(fetchMock).toHaveBeenCalledOnce();
       expect(JSON.parse(out.join(""))).toMatchObject({
-        entries: [
-          {
-            id: "github",
-            status: "restored",
-            destination: "/remote/global/github",
-          },
-        ],
+        target: "remote",
+        entries: [{ id: "github", destination: "/remote/global/github" }],
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
