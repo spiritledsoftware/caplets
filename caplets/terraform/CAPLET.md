@@ -32,18 +32,16 @@ mcpServer:
 
 # Terraform
 
-Use this Caplet when an agent needs Terraform Registry context for providers, modules, policies, or HCP Terraform and Terraform Enterprise workspace context exposed to the server.
+## Prerequisites
 
-## First Workflow
+Docker must be available for the catalog runtime. Before relying on results, confirm the Terraform version, provider or module source, workspace, organization, and backend assumptions.
 
-1. Start with read-only Registry lookups for provider, module, resource, data source, and policy documentation.
-2. Confirm Terraform version, provider source, module source, workspace, organization, and backend assumptions before proposing changes.
-3. Use HCP Terraform or Terraform Enterprise operations only when the server runtime has been configured with the intended token and address.
-4. Review generated Terraform recommendations against project policy, security, cost, and compliance requirements before implementation.
+The default catalog entry starts the public Registry-capable Docker server without checked-in HCP Terraform credentials. HCP Terraform or Terraform Enterprise access requires the runtime to be configured with the intended address and a least-privilege token scoped to the required organization or workspace.
 
-## Operate Carefully
+## Registry and workspace use
 
-- Terraform recommendations can affect infrastructure, cost, data access, and compliance once applied. Treat generated plans as suggestions until reviewed against the project.
-- HCP Terraform and Terraform Enterprise tokens should be least-privilege and scoped to the intended organization or workspace.
-- The default catalog entry starts the public Registry-capable Docker server without checked-in HCP credentials.
-- Avoid this Caplet when the task only needs to edit local Terraform files without external provider, module, or workspace context.
+Begin with read-only Registry lookups for provider, module, resource, data source, and policy documentation. Treat generated Terraform recommendations and plans as review material rather than approved changes.
+
+## Safe operation
+
+Terraform changes can affect infrastructure, cost, data access, security, and compliance. Review recommendations and plans against project policy and the exact workspace before implementation or apply.

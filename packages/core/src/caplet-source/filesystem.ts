@@ -1,5 +1,10 @@
-import { Dirent, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { Dirent, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type {
+  DeclaredInputListState,
+  DeclaredInputReader,
+  DeclaredInputState,
+} from "./runtime-fingerprint";
 import type { CapletSource, CapletSourceFile } from "./types";
 import { normalizeCapletSourcePath } from "./types";
 
@@ -11,48 +16,118 @@ export class FilesystemCapletSource implements CapletSource {
   }
 
   async listFiles(): Promise<CapletSourceFile[]> {
-    if (!existsSync(this.root) || !statSync(this.root).isDirectory()) {
+    try {
+      if (!existsSync(this.root) || !statSync(this.root).isDirectory()) return [];
+      return walkSourceFiles(this.root, this.root).sort((left, right) =>
+        left.path.localeCompare(right.path),
+      );
+    } catch {
       return [];
     }
-    return walkFiles(this.root, this.root).sort((left, right) =>
-      left.path.localeCompare(right.path),
-    );
   }
 
   async readFile(path: string): Promise<CapletSourceFile | undefined> {
+    const state = this.readDeclaredInput(path);
+    if (state.state !== "present") return undefined;
     const normalized = normalizeCapletSourcePath(path);
-    if (!normalized) {
-      return undefined;
-    }
+    return normalized ? { path: normalized, content: state.content } : undefined;
+  }
+
+  declaredInputReader(): DeclaredInputReader {
+    return {
+      read: (path) => this.readDeclaredInput(path),
+      list: (root) => this.listDeclaredInputs(root),
+    };
+  }
+
+  private readDeclaredInput(path: string): DeclaredInputState {
+    const normalized = normalizeCapletSourcePath(path);
+    if (!normalized) return { state: "unreadable" };
     const absolute = resolve(this.root, normalized);
-    if (
-      !isWithinRoot(this.root, absolute) ||
-      !existsSync(absolute) ||
-      !statSync(absolute).isFile()
-    ) {
-      return undefined;
+    if (!isWithinRoot(this.root, absolute)) return { state: "unreadable" };
+    if (!existsSync(absolute)) return { state: "missing", privateKey: normalized };
+    try {
+      const realRoot = realpathSync(this.root);
+      const realPath = realpathSync(absolute);
+      if (!isWithinRoot(realRoot, realPath) || !statSync(realPath).isFile()) {
+        return { state: "unreadable", privateKey: realPath };
+      }
+      return {
+        state: "present",
+        content: readFileSync(realPath, "utf8"),
+        privateKey: realPath,
+      };
+    } catch {
+      return { state: "unreadable", privateKey: normalized };
     }
-    return { path: normalized, content: readFileSync(absolute, "utf8") };
+  }
+
+  private listDeclaredInputs(root: string): DeclaredInputListState {
+    const normalized = normalizeCapletSourcePath(root);
+    if (!normalized) return { state: "unreadable" };
+    const absolute = resolve(this.root, normalized);
+    if (!isWithinRoot(this.root, absolute)) return { state: "unreadable" };
+    if (!existsSync(absolute)) return { state: "missing", privateKey: normalized };
+    try {
+      const realRoot = realpathSync(this.root);
+      const realPath = realpathSync(absolute);
+      if (!isWithinRoot(realRoot, realPath) || !statSync(realPath).isDirectory()) {
+        return { state: "unreadable", privateKey: realPath };
+      }
+      return {
+        state: "present",
+        paths: walkFilePaths(this.root, absolute, realRoot, new Set()).sort(),
+        privateKey: realPath,
+      };
+    } catch {
+      return { state: "unreadable", privateKey: normalized };
+    }
   }
 }
 
-function walkFiles(root: string, dir: string): CapletSourceFile[] {
+function walkSourceFiles(root: string, dir: string): CapletSourceFile[] {
   const files: CapletSourceFile[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort(compareDirents)) {
     const absolute = join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...walkFiles(root, absolute));
+      files.push(...walkSourceFiles(root, absolute));
       continue;
     }
-    if (!entry.isFile()) {
-      continue;
-    }
+    if (!entry.isFile()) continue;
     const normalized = normalizeCapletSourcePath(relative(root, absolute));
-    if (normalized) {
-      files.push({ path: normalized, content: readFileSync(absolute, "utf8") });
-    }
+    if (normalized) files.push({ path: normalized, content: readFileSync(absolute, "utf8") });
   }
   return files;
+}
+
+function walkFilePaths(
+  root: string,
+  dir: string,
+  realRoot: string,
+  visitedDirectories: Set<string>,
+): string[] {
+  const realDirectory = realpathSync(dir);
+  if (!isWithinRoot(realRoot, realDirectory) || visitedDirectories.has(realDirectory)) return [];
+  visitedDirectories.add(realDirectory);
+  const paths: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort(compareDirents)) {
+    const absolute = join(dir, entry.name);
+    try {
+      const realPath = realpathSync(absolute);
+      if (!isWithinRoot(realRoot, realPath)) continue;
+      const stat = statSync(realPath);
+      if (stat.isDirectory()) {
+        paths.push(...walkFilePaths(root, absolute, realRoot, visitedDirectories));
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      const normalized = normalizeCapletSourcePath(relative(root, absolute));
+      if (normalized) paths.push(normalized);
+    } catch {
+      continue;
+    }
+  }
+  return paths;
 }
 
 function compareDirents(left: Dirent, right: Dirent): number {

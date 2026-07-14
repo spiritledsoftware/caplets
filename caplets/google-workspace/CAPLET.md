@@ -10,8 +10,6 @@ tags:
   - files
 catalog:
   icon: https://workspace.google.com/favicon.ico
-useWhen: Coordinate work across Google mail, files, documents, spreadsheets, presentations, and tasks.
-avoidWhen: Use a focused Google Caplet when the task only needs one Workspace surface.
 googleDiscoveryApis:
   gmail:
     name: Gmail
@@ -148,22 +146,19 @@ googleDiscoveryApis:
 
 # Google Workspace
 
-Use this Caplet when an agent needs to coordinate work across Gmail, Drive, Docs, Sheets, Slides, and Tasks from one installable Workspace capability.
+## Suite operation
 
-## First Workflow
+Identify which Workspace surface owns the source of truth: mail, file metadata, document content, spreadsheet data, deck content, or task state. Search or inspect metadata before reading large content bodies.
 
-1. Start by identifying which Workspace surface owns the source of truth: mail, file metadata, document content, spreadsheet data, deck content, or task state.
-2. Search or inspect metadata before reading large content bodies.
-3. Use the child runtime handles deliberately: `google-workspace__gmail`, `google-workspace__drive`, `google-workspace__docs`, `google-workspace__sheets`, `google-workspace__slides`, or `google-workspace__tasks`.
-4. Prefer read-only inspection before creating, updating, sending, deleting, clearing, or completing anything.
-5. Confirm file IDs, document IDs, spreadsheet ranges, slide/page element IDs, message/thread IDs, labels, recipients, tasklists, and task IDs before mutating live state.
+The suite exposes separate child handles: `google-workspace__gmail`, `google-workspace__drive`, `google-workspace__docs`, `google-workspace__sheets`, `google-workspace__slides`, and `google-workspace__tasks`. These names are operator reference; the frontmatter backend map remains the runtime authority.
 
-## Operate Carefully
+Before changing live state, inspect the current resource and confirm the relevant file or document ID, spreadsheet range, slide or page element ID, message or thread ID, label, recipient, tasklist, or task ID.
 
-- Workspace data often contains private, customer, employee, legal, financial, or regulated information. Keep reads narrow and summaries minimal.
-- Child auth scopes are intentionally separate so a private fork can remove surfaces or narrow scopes without changing the suite shape.
-- Drive, Sheets, and Slides use `drive.file`, so they are intended for files the app created or files the user explicitly opens or grants to the app.
-- Gmail write operations can label, draft, modify, or send messages. Draft first and confirm recipients and content before sending.
-- Docs, Sheets, and Slides update operations change live files. Inspect current structure and plan changes before issuing batch updates.
-- Tasks are user-visible workflow state. Do not infer deadlines or completion state from vague conversation.
-- Avoid this Caplet when the task only needs one focused Google surface; the individual Gmail, Drive, Docs, Sheets, Slides, and Tasks Caplets are simpler for single-surface work.
+## Safety and access boundaries
+
+- Workspace data can contain private customer, employee, legal, financial, or regulated information. Keep reads narrow and summaries minimal.
+- Child OAuth scopes are intentionally separate so a private fork can remove surfaces or narrow scopes without changing the suite shape.
+- Drive, Sheets, and Slides use the restricted `drive.file` scope. They cover files the app created and files the user explicitly opens or grants to the app.
+- Gmail operations can label, draft, modify, or send messages. Confirm recipients and content before sending.
+- Docs, Sheets, and Slides batch updates change live files. Inspect current structure and plan changes before updating.
+- Tasks are user-visible workflow state. Do not infer deadlines or completion from ambiguous conversation.

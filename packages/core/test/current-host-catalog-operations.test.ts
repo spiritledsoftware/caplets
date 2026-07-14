@@ -10,6 +10,8 @@ import type {
 const mocks = vi.hoisted(() => ({
   detail: vi.fn(),
   install: vi.fn(),
+  update: vi.fn(),
+  index: vi.fn(),
 }));
 
 vi.mock("../src/current-host/catalog", async (importOriginal) => ({
@@ -20,6 +22,8 @@ vi.mock("../src/current-host/catalog", async (importOriginal) => ({
 vi.mock("../src/cli/install", async (importOriginal) => ({
   ...(await importOriginal<typeof InstallModule>()),
   installCaplets: mocks.install,
+  updateCapletsFromLockfile: mocks.update,
+  indexInstalledCapletsFromLockfile: mocks.index,
 }));
 
 const principal: CurrentHostOperatorPrincipal = {
@@ -69,6 +73,10 @@ describe("Current Host official catalog installs", () => {
     mocks.detail.mockReset();
     mocks.install.mockReset();
     mocks.install.mockReturnValue({ installed: [{ id: "github", kind: "caplet" }] });
+    mocks.update.mockReset();
+    mocks.index.mockReset();
+    mocks.index.mockResolvedValue(new Map());
+    vi.mocked(dependencies.activityLog.append).mockReset();
   });
 
   it.each([
@@ -112,6 +120,65 @@ describe("Current Host official catalog installs", () => {
     expect(mocks.install).toHaveBeenCalledWith(
       "spiritledsoftware/caplets#abc123",
       expect.objectContaining({ capletIds: ["github"] }),
+    );
+  });
+
+  it("relays content updates and keeps committed activity when indexing throws", async () => {
+    mocks.update.mockReturnValue({
+      installed: [
+        {
+          id: "github",
+          source: "repo",
+          destination: "/tmp/caplets/github",
+          kind: "directory",
+          status: "content_updated",
+        },
+      ],
+    });
+    mocks.index.mockRejectedValue(new Error("indexer unavailable"));
+    const operations = createCurrentHostCatalogOperations(dependencies);
+
+    const result = await operations.update(principal, {
+      kind: "catalog_update",
+      capletIds: ["github"],
+    });
+
+    expect(result).toMatchObject({
+      kind: "catalog_update",
+      installed: [
+        {
+          status: "content_updated",
+          catalogIndexing: { status: "unavailable", reason: "indexer_unavailable" },
+        },
+      ],
+    });
+    expect(dependencies.activityLog.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "catalog_updated",
+        metadata: expect.objectContaining({ status: "content_updated" }),
+      }),
+    );
+  });
+
+  it("does not index or append success activity when an update is uncommitted", async () => {
+    mocks.update.mockImplementation(() => {
+      throw new Error("lock write failed");
+    });
+    const operations = createCurrentHostCatalogOperations(dependencies);
+
+    await expect(
+      operations.update(principal, {
+        kind: "catalog_update",
+        capletIds: ["github"],
+      }),
+    ).rejects.toThrow("lock write failed");
+
+    expect(mocks.index).not.toHaveBeenCalled();
+    expect(dependencies.activityLog.append).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "catalog_updated",
+        metadata: expect.objectContaining({ status: expect.anything() }),
+      }),
     );
   });
 });

@@ -1,4 +1,4 @@
-import type { CapletConfig } from "../config";
+import { runtimeFingerprintForConfig, type CapletConfig } from "../config";
 import { CapletsEngine } from "../engine";
 import { CapletsError } from "../errors";
 import { capletSetupContentHash } from "../setup/hash";
@@ -81,12 +81,23 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
 
   async setupPlan(capletId: string): Promise<SetupPlan> {
     const caplet = this.requireCaplet(capletId);
-    const contentHash = capletSetupContentHash(caplet);
+    const runtimeFingerprint = runtimeFingerprintForConfig(this.engine.currentConfig())?.caplets[
+      capletId
+    ];
+    const contentHash = capletSetupContentHash(runtimeFingerprint);
     const projectFingerprint = "hosted";
     const targetKind = "hosted_sandbox";
-    const approved = Boolean(
-      await this.setupStore.getApproval(projectFingerprint, capletId, contentHash, targetKind),
-    );
+    const approved =
+      runtimeFingerprint?.persistenceEligible === false
+        ? false
+        : Boolean(
+            await this.setupStore.getApproval(
+              projectFingerprint,
+              capletId,
+              contentHash,
+              targetKind,
+            ),
+          );
     return {
       projectFingerprint,
       capletId,
@@ -95,6 +106,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
       targetKind,
       setup: caplet.setup ?? {},
       approved,
+      persistenceEligible: runtimeFingerprint?.persistenceEligible ?? true,
       commands: caplet.setup?.commands ?? [],
       verify: caplet.setup?.verify ?? [],
     };
@@ -105,7 +117,8 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     input: { approved: boolean; actor: SetupActor },
   ): Promise<SetupAttempt[]> {
     const plan = await this.setupPlan(capletId);
-    if (input.approved && !plan.approved) {
+    const persistenceEligible = plan.persistenceEligible;
+    if (input.approved && !plan.approved && persistenceEligible) {
       await this.setupStore.approve({
         projectFingerprint: plan.projectFingerprint,
         capletId,

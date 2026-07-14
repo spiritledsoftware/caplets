@@ -18,21 +18,16 @@ mcpServer:
 
 # Linear
 
-Use this Caplet when the agent needs live product planning context from Linear or needs to keep implementation work synchronized with issues, projects, and team workflows.
+## Lookup and Updates
 
-## First Workflow
+Narrow lookups by issue ID, team key, project, cycle, label, or assignee avoid noisy results. Before an update, review the current issue, linked project, comments, and workflow state. Issue breakdowns and status comments should reflect concrete implementation evidence, and the target issue and intended team-visible effect should be confirmed before writing.
 
-1. Search by issue ID, team key, project, cycle, label, or assignee before using broad queries.
-2. Read the current issue, linked project, comments, and workflow state before planning or updating.
-3. Draft issue breakdowns or status comments from concrete implementation evidence.
-4. Write updates only after confirming the target issue and the intended team-visible effect.
+## Reference
 
-## Reference Files
+- [Workflows](./workflows.md): lookup, planning, status update, and triage documentation.
 
-- [Workflows](./workflows.md): recommended lookup, planning, status update, and triage flows.
+## Safe Operation
 
-## Operate Carefully
-
-- Linear issue updates are visible to teammates. Read first, then write deliberately.
-- Keep issue titles and comments concise; use links to detailed implementation artifacts when useful.
-- Avoid broad, noisy searches when a team key, issue ID, project, or label is available.
+- Linear issue updates are visible to teammates. Read the current state before writing deliberately.
+- Concise issue titles and comments are easier to follow; detailed implementation artifacts can remain linked.
+- Prefer a team key, issue ID, project, or label over a broad search when one is available.

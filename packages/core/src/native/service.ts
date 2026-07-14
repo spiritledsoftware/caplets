@@ -496,8 +496,6 @@ function progressiveNativeTool(entry: ExposureProjectionProgressiveCaplet): Nati
     toolName,
     title: entry.title ?? entry.id,
     description: projectionNativeDescription(toolName, entry),
-    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     promptGuidance: projectionNativePromptGuidance(toolName, entry),
     ...(inputSchema ? { inputSchema } : {}),
     ...(entry.operationNames ? { operationNames: [...entry.operationNames] } : {}),
@@ -513,8 +511,6 @@ function codeModeCapletDescriptor(entry: ExposureProjectionCodeModeCaplet): Nati
     toolName,
     title: entry.title ?? entry.id,
     description: projectionNativeDescription(toolName, entry),
-    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     promptGuidance: projectionNativePromptGuidance(toolName, entry),
     shadowing: entry.shadowing,
   };
@@ -555,21 +551,15 @@ function nativeProjectionMetadata(
   capletId: string,
   projection: ExposureProjection,
 ): {
-  useWhen?: string;
-  avoidWhen?: string;
   shadowing: CapletShadowingPolicy;
 } {
   const entries = projection.entries.filter((entry) => entry.capletId === capletId);
-  const useWhen = entries.find((entry) => entry.useWhen)?.useWhen;
-  const avoidWhen = entries.find((entry) => entry.avoidWhen)?.avoidWhen;
   const shadowing = entries.some((entry) => entry.shadowing === "forbid")
     ? "forbid"
     : entries.some((entry) => entry.shadowing === "namespace")
       ? "namespace"
       : "allow";
   return {
-    ...(useWhen ? { useWhen } : {}),
-    ...(avoidWhen ? { avoidWhen } : {}),
     shadowing,
   };
 }
@@ -711,8 +701,6 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     name: tool.title,
     description: tool.description,
     ...(tool.shadowing ? { shadowing: tool.shadowing } : {}),
-    ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
-    ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
   }));
   const declaration = generateCodeModeDeclarations({
     caplets: codeModeCaplets,
@@ -756,8 +744,6 @@ function codeModeCallableNativeTools(
       title: caplet.name,
       description: caplet.description,
       ...(caplet.shadowing ? { shadowing: caplet.shadowing } : {}),
-      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
-      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
       promptGuidance: tool?.promptGuidance ?? [],
     };
   });

@@ -2,7 +2,7 @@ import type { CodeModeDeclarationInput } from "./types";
 import { CODE_MODE_RUNTIME_API_DECLARATION } from "./runtime-api.generated";
 
 const JS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
-const MAX_JSDOC_CHARS = 180;
+const MAX_JSDOC_CHARS = 240;
 const CODE_MODE_REPL_GUIDANCE =
   "REPL reuse: omit `sessionId` to start a fresh reusable Code Mode session; after a successful run, keep `meta.sessionId` and pass it as `sessionId` on later calls when you want to reuse live state. Reused sessions preserve successful top-level `var` bindings, function declarations, and runtime state only while the live session remains available and compatible. A supplied `sessionId` that is unknown or no longer available fails before executing your code instead of starting an empty context. Use `meta.recoveryRef` with `caplets.debug.readRecovery({ recoveryRef })` for audit and manual reconstruction; do not automatically replay recovery history.";
 
@@ -38,13 +38,10 @@ export function generateCodeModeRunToolDescription(declaration: string): string 
 }
 
 function capletHintText(caplet: CodeModeDeclarationInput["caplets"][number]): string {
-  return [
-    caplet.description || caplet.name || caplet.id,
-    caplet.useWhen ? `Use when: ${caplet.useWhen}` : undefined,
-    caplet.avoidWhen ? `Avoid when: ${caplet.avoidWhen}` : undefined,
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join(" ");
+  return boundedSummary(
+    compactCapletField(caplet.description || caplet.name || caplet.id),
+    MAX_JSDOC_CHARS,
+  );
 }
 
 export function minifyCodeModeDeclarationText(value: string): string {
@@ -92,6 +89,10 @@ function sanitizeJsDoc(value: string): string {
 }
 
 function compactJsDoc(value: string): string {
+  return boundedSummary(compactCapletField(value), MAX_JSDOC_CHARS) || "Caplet.";
+}
+
+function compactCapletField(value: string): string {
   const cleaned = sanitizeJsDoc(value);
   const markers = [
     " Use inspect for details when needed;",
@@ -102,11 +103,14 @@ function compactJsDoc(value: string): string {
     .map((marker) => cleaned.indexOf(marker))
     .filter((index) => index >= 0)
     .sort((left, right) => left - right)[0];
-  const summary = (cutoff === undefined ? cleaned : cleaned.slice(0, cutoff).trim()) || "Caplet.";
-  if (summary.length <= MAX_JSDOC_CHARS) return summary;
-  const sentenceEnd = summary.lastIndexOf(".", MAX_JSDOC_CHARS);
-  if (sentenceEnd >= 40) return summary.slice(0, sentenceEnd + 1);
-  return `${summary.slice(0, MAX_JSDOC_CHARS - 3).trimEnd()}...`;
+  return (cutoff === undefined ? cleaned : cleaned.slice(0, cutoff).trim()) || "Caplet.";
+}
+
+function boundedSummary(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const sentenceEnd = value.lastIndexOf(".", limit);
+  if (sentenceEnd >= Math.min(40, limit / 2)) return value.slice(0, sentenceEnd + 1);
+  return `${value.slice(0, limit - 3).trimEnd()}...`;
 }
 
 function fnv1a32(value: string, seed: number): number {

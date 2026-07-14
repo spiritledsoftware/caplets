@@ -35,17 +35,11 @@ mcpServer:
 
 # Playwright
 
-Use this Caplet when the agent needs an isolated browser automation surface for frontend debugging, accessibility checks, visual inspection, or end-to-end testing workflows.
+## Test Workflow
 
-## First Workflow
+A local or preview URL is the starting point for an isolated browser session. Visible state, the accessibility tree, console errors, network behavior, and screenshots provide evidence before interaction. The smallest reproducible user flow should prove or disprove the issue, with concise evidence retained for the resulting change or review.
 
-1. Open the target local or preview URL and wait for the page to settle.
-2. Inspect visible state, accessibility tree, console errors, network behavior, or screenshots before acting.
-3. Reproduce the smallest user flow that proves or disproves the issue.
-4. Capture concise evidence for the code change or review.
+## Safe Operation
 
-## Operate Carefully
-
-- This Caplet runs a browser runtime. Keep tests scoped to the target app and avoid unrelated browsing.
-- Prefer this over Browser Use for isolated test flows; use Browser Use only when the user's real signed-in browser context matters.
-- If browser setup is missing, treat the Caplet as unavailable until setup verification succeeds rather than improvising shell installs.
+- This Caplet runs an isolated browser runtime. Tests should remain scoped to the target application and avoid unrelated browsing.
+- If browser setup is missing, the Caplet remains unavailable until setup verification succeeds; operators should use the declared setup rather than improvising shell installation.

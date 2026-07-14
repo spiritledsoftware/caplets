@@ -17,15 +17,10 @@ mcpServer:
 
 # PostHog
 
-Use this Caplet when an agent needs product analytics or feature-flag context from PostHog before planning, debugging, or validating a change.
+## Analysis Scope
 
-## First Workflow
+A concrete product question, feature flag, experiment, event, or time window keeps analysis bounded. Trends, funnels, retention, and HogQL results provide evidence before conclusions are drawn. Feature flags, experiments, and rollout state should be inspected before dependent code changes. Session replay and event details should be limited to the debugging context needed.
 
-1. Start from a concrete product question, feature flag, experiment, event, or time window.
-2. Read trends, funnels, retention, or HogQL results before drawing conclusions.
-3. Inspect feature flags, experiments, and rollout state before changing code that depends on them.
-4. Use session replay or event details only for the minimal debugging context needed.
+## Safe Operation
 
-## Operate Carefully
-
-PostHog MCP includes mutating tools for flags, insights, dashboards, and other project state. Prefer read-only inspection first, review planned mutations, and keep OAuth access scoped to the PostHog organization and project you intend to expose.
+PostHog MCP includes mutating tools for flags, insights, dashboards, and other project state. Read-only inspection should precede mutation, planned changes should be reviewed, and OAuth access should remain scoped to the intended PostHog organization and project.

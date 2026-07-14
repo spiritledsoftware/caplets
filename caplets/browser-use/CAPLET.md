@@ -18,17 +18,13 @@ mcpServer:
 
 # Browser Use
 
-Use this Caplet when the agent needs the user's real local browser context: signed-in web apps, current tabs, extension-backed inspection, or browser workflows that a headless test browser cannot reproduce.
+## Targeting and Observation
 
-## First Workflow
+- The operator should identify the target page, tab, and intended outcome before interaction.
+- Navigation state, screenshots, accessibility snapshots, and DOM inspection provide an observation-first view of the page.
+- Initial interactions should remain minimal and reversible, with evidence collection bounded to the task.
 
-1. Identify the target page, tab, or workflow before interacting.
-2. Read page state with navigation, screenshots, accessibility snapshots, or DOM inspection first.
-3. Keep interactions minimal and reversible until the user asks for a concrete action.
-4. Capture the evidence needed for the coding or debugging task, then stop.
+## Safe Operation
 
-## Operate Carefully
-
-- Browser actions can sign in, submit forms, trigger purchases, or change account data in the user's real browser.
-- Do not enter credentials, approve payments, submit destructive forms, or change account settings without explicit user direction.
-- Prefer Playwright for isolated frontend testing; use this Caplet when the real browser environment matters.
+- Actions occur in the user's real browser and can sign in, submit forms, trigger purchases, or change account data.
+- Credential entry, payment approval, destructive form submission, and account-setting changes require explicit user direction.

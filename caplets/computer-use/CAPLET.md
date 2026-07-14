@@ -16,17 +16,14 @@ mcpServer:
 
 # Computer Use
 
-Use this Caplet only when an agent needs explicit access to the local desktop, application windows, or GUI workflows that cannot be completed through APIs or CLI tools.
+## Targeting and Observation
 
-## First Workflow
+- The operator should identify the target application, window, and intended outcome before interaction.
+- Screen observation should precede state changes, with the proposed next action made clear.
+- Menu, navigation, and read actions provide a safer starting point than typing, submitting, or changing settings.
+- Automation should stop once the requested narrow GUI operation is complete.
 
-1. Identify the target application, window, and desired outcome before interacting.
-2. Observe the screen and report the intended next action before changing state.
-3. Prefer menu/navigation/read actions before typing, clicking submit buttons, or changing settings.
-4. Stop after completing the narrow GUI step the user requested.
+## Safe Operation
 
-## Operate Carefully
-
-- This is a high-risk local-control Caplet. It can operate real applications and expose private screen content.
-- Do not use it for credential entry, payment flows, destructive file operations, account settings, or irreversible actions without direct user instruction.
-- Prefer provider APIs, CLI tools, or browser automation when those can complete the task with a smaller control surface.
+- This is a high-risk local-control capability that can operate real applications and expose private screen content.
+- Credential entry, payment flows, destructive file operations, account-setting changes, and other irreversible actions require direct user instruction.

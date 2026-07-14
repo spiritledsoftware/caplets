@@ -113,17 +113,15 @@ httpApi:
 
 # OSV Vulnerabilities
 
-Use this Caplet when the agent needs known vulnerability data for package versions, package URLs, source commits, or vulnerability identifiers.
+## Query Reference
 
-## First Workflow
+- An exact ecosystem, package name, and version provides the most specific dependency check.
+- Package URLs (purls) are suitable when dependency tooling has already produced normalized identifiers.
+- Related dependency checks can be submitted as a batch.
+- An OSV, CVE, or GHSA identifier can be used to retrieve the full vulnerability record and remediation context.
 
-1. Prefer exact ecosystem, package name, and version when checking a dependency.
-2. Use purls when dependency tooling already produced normalized package URLs.
-3. Batch related dependency checks instead of issuing many single-package calls.
-4. Fetch the vulnerability record when an OSV, CVE, or GHSA ID needs explanation or remediation context.
-
-## Operate Carefully
+## Limits
 
 - OSV results are read-only and public, but absence of a result is not proof that a dependency is safe.
-- Match ecosystem names exactly, such as `npm`, `PyPI`, `Maven`, `Go`, `crates.io`, `Packagist`, `RubyGems`, `NuGet`, `Debian`, `Alpine`, or `OSS-Fuzz`.
-- Use package registry Caplets for release metadata and local project tooling for the actual installed version.
+- Ecosystem names must match OSV exactly, including `npm`, `PyPI`, `Maven`, `Go`, `crates.io`, `Packagist`, `RubyGems`, `NuGet`, `Debian`, `Alpine`, and `OSS-Fuzz`.
+- The actual installed version should be verified with local project tooling.

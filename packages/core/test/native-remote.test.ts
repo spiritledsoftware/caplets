@@ -698,8 +698,6 @@ describe("RemoteNativeCapletsService", () => {
               name: "Remote",
               title: "Remote",
               description: "Remote Code Mode handle.",
-              useWhen: "Use for remote repository work.",
-              avoidWhen: "Avoid for local-only operations.",
               inputSchema: { type: "object", additionalProperties: true },
               schemaHash: "hash-code-mode",
               capletId: "remote",
@@ -724,8 +722,6 @@ describe("RemoteNativeCapletsService", () => {
         codeModeCaplets: [
           expect.objectContaining({
             capletId: "remote",
-            useWhen: "Use for remote repository work.",
-            avoidWhen: "Avoid for local-only operations.",
           }),
         ],
       }),

@@ -214,8 +214,6 @@ async function listCodeModeCallableCaplets(
           name: entry.title ?? entry.id,
           description: entry.description ?? "",
           shadowing: entry.shadowing,
-          ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-          ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
         },
       ];
     })

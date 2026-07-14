@@ -22,6 +22,7 @@ import {
   readHiddenInputForTest,
   runCli,
 } from "../src/cli";
+import { updateCapletsFromLockfile, type CapletTransactionPhase } from "../src/cli/install";
 import { loadConfig, parseConfig, type VaultQuarantineOutcome } from "../src/config";
 import * as configModule from "../src/config";
 import type { CapletsError } from "../src/errors";
@@ -2531,6 +2532,8 @@ describe("cli init", () => {
       process.chdir(projectRoot);
 
       await runCli(["install", repo, "github"], { writeOut: () => {} });
+      const beforeRestore = readCapletsLockfile(join(projectRoot, ".caplets.lock.json")).entries[0];
+      expect(beforeRestore?.runtimeFingerprint).toBeUndefined();
       rmSync(join(projectRoot, ".caplets", "github"), { recursive: true, force: true });
 
       await runCli(["install", "--json"], { writeOut: (value) => out.push(value) });
@@ -2544,6 +2547,13 @@ describe("cli init", () => {
             hash: expect.stringMatching(/^sha256:/),
           }),
         ],
+      });
+      const afterRestore = readCapletsLockfile(join(projectRoot, ".caplets.lock.json")).entries[0];
+      expect(afterRestore?.installedAt).toBe(beforeRestore?.installedAt);
+      expect(afterRestore?.updatedAt).not.toBe(beforeRestore?.updatedAt);
+      expect(afterRestore?.runtimeFingerprint).toEqual({
+        version: 1,
+        artifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       });
     } finally {
       process.chdir(cwd);
@@ -2627,10 +2637,12 @@ describe("cli init", () => {
       await runCli(["install", repo], { writeOut: () => {} });
       const lockfilePath = join(projectRoot, ".caplets.lock.json");
       const lockfile = JSON.parse(readFileSync(lockfilePath, "utf8"));
-      for (const entry of lockfile.entries) {
-        entry.installedHash = "sha256:stale";
-      }
-      writeFileSync(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+      const initialHashes = Object.fromEntries(
+        lockfile.entries.map((entry: { id: string; installedHash: string }) => [
+          entry.id,
+          entry.installedHash,
+        ]),
+      );
       rmSync(join(projectRoot, ".caplets", "github"), { recursive: true, force: true });
       rmSync(join(projectRoot, ".caplets", "filesystem.md"), { force: true });
 
@@ -2641,11 +2653,13 @@ describe("cli init", () => {
         expect.arrayContaining([
           expect.objectContaining({
             id: "filesystem",
-            installedHash: expect.stringMatching(/^sha256:(?!stale$)/),
+            installedHash: initialHashes.filesystem,
+            runtimeFingerprint: expect.objectContaining({ version: 1 }),
           }),
           expect.objectContaining({
             id: "github",
-            installedHash: expect.stringMatching(/^sha256:(?!stale$)/),
+            installedHash: initialHashes.github,
+            runtimeFingerprint: expect.objectContaining({ version: 1 }),
           }),
         ]),
       );
@@ -2655,7 +2669,7 @@ describe("cli init", () => {
     }
   });
 
-  it("persists restored lockfile hash changes before a later restore fails", async () => {
+  it("persists an earlier restore before a later restore fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-partial-"));
     const repo = join(dir, "repo");
     const projectRoot = join(dir, "project");
@@ -2675,7 +2689,7 @@ describe("cli init", () => {
         (entry: { id: string }) => entry.id === "filesystem",
       );
       const github = lockfile.entries.find((entry: { id: string }) => entry.id === "github");
-      filesystem.installedHash = "sha256:stale";
+      const filesystemHash = filesystem.installedHash;
       github.source.path = join(repo, "caplets", "missing-github");
       writeFileSync(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
       rmSync(join(projectRoot, ".caplets", "filesystem.md"), { force: true });
@@ -2689,8 +2703,43 @@ describe("cli init", () => {
       const restoredFilesystem = restored.entries.find(
         (entry: { id: string }) => entry.id === "filesystem",
       );
-      expect(restoredFilesystem.installedHash).toMatch(/^sha256:/);
-      expect(restoredFilesystem.installedHash).not.toBe("sha256:stale");
+      expect(restoredFilesystem.installedHash).toBe(filesystemHash);
+      expect(restoredFilesystem.runtimeFingerprint).toEqual({
+        version: 1,
+        artifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects explicitly selected top-level file Caplet symlinks that escape the source", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-source-file-symlink-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const outside = join(dir, "outside.md");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      const sourcePath = join(repo, "caplets", "filesystem.md");
+      const outsideContent = readFileSync(sourcePath, "utf8");
+      writeFileSync(outside, outsideContent);
+      rmSync(sourcePath);
+      symlinkSync(outside, sourcePath);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await expect(
+        runCli(["install", repo, "filesystem"], { writeOut: () => {} }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+        message: expect.stringContaining("must not be a symbolic link"),
+      } satisfies Partial<CapletsError>);
+
+      expect(readFileSync(outside, "utf8")).toBe(outsideContent);
+      expect(existsSync(join(projectRoot, ".caplets", "filesystem.md"))).toBe(false);
+      expect(existsSync(join(projectRoot, ".caplets.lock.json"))).toBe(false);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -2820,6 +2869,71 @@ describe("cli init", () => {
     }
   });
 
+  it("relays content-updated status through remote update text output", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-remote-content-"));
+    const authDir = join(dir, "auth");
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return Response.json({
+          ok: true,
+          result: {
+            installed: [
+              {
+                id: "github",
+                destination: "/remote/global/github",
+                status: "content_updated",
+              },
+            ],
+          },
+        });
+      },
+    );
+    try {
+      await new FileRemoteProfileStore({
+        root: join(authDir, "remote-profiles"),
+      }).saveSelfHostedProfile({
+        hostUrl: "https://remote.caplets.test/caplets",
+        clientId: "rcli_update_test",
+        clientLabel: "Remote Update Test",
+        credentials: {
+          accessToken: "remote-profile-access-token",
+          refreshToken: "remote-profile-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+      });
+
+      await runCli(["update", "github", "--remote"], {
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
+          CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
+          CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+        },
+        authDir,
+        fetch: fetchMock,
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(requests).toEqual([
+        {
+          command: "update",
+          arguments: {
+            capletIds: ["github"],
+            force: false,
+            allowRiskIncrease: false,
+          },
+        },
+      ]);
+      expect(out.join("")).toContain("Content updated github at remote /remote/global/github");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects project-scoped remote catalog lifecycle targets", async () => {
     await expect(
       runCli(["install", "--project", "--remote"], { writeOut: () => {} }),
@@ -2834,6 +2948,50 @@ describe("cli init", () => {
       code: "REQUEST_INVALID",
       message: "Cannot combine mutation target flags: --project, --remote",
     } satisfies Partial<CapletsError>);
+  });
+
+  it("rejects locked-source drift during restore even with force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-source-drift-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      const lockfilePath = join(projectRoot, ".caplets.lock.json");
+      const destination = join(projectRoot, ".caplets", "github");
+      const destinationReadme = join(destination, "README.md");
+      const lockedState = readFileSync(lockfilePath, "utf8");
+      const installedReadme = readFileSync(destinationReadme, "utf8");
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "changed locked source\n");
+
+      await expect(runCli(["install"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+        message: "Locked source for github has changed; run caplets update to accept it",
+      } satisfies Partial<CapletsError>);
+      expect(readFileSync(destinationReadme, "utf8")).toBe(installedReadme);
+      expect(readFileSync(lockfilePath, "utf8")).toBe(lockedState);
+      expect(
+        readdirSync(join(projectRoot, ".caplets")).some((name) => name.includes("caplet-txn")),
+      ).toBe(false);
+
+      writeFileSync(destinationReadme, "local edit\n");
+      await expect(runCli(["install", "--force"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+        message: "Locked source for github has changed; run caplets update to accept it",
+      } satisfies Partial<CapletsError>);
+      expect(readFileSync(destinationReadme, "utf8")).toBe("local edit\n");
+      expect(readFileSync(lockfilePath, "utf8")).toBe(lockedState);
+      expect(
+        readdirSync(join(projectRoot, ".caplets")).some((name) => name.includes("caplet-txn")),
+      ).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses to restore over local modifications without force", async () => {
@@ -2875,26 +3033,481 @@ describe("cli init", () => {
       process.chdir(projectRoot);
 
       await runCli(["install", repo, "github"], { writeOut: () => {} });
-      writeFileSync(join(repo, "caplets", "github", "README.md"), "updated upstream\n");
-
+      const lockfilePath = join(projectRoot, ".caplets.lock.json");
+      const initialEntry = readCapletsLockfile(lockfilePath).entries[0]!;
+      const sourceCapletPath = join(repo, "caplets", "github", "CAPLET.md");
+      writeFileSync(
+        sourceCapletPath,
+        readFileSync(sourceCapletPath, "utf8").replace(
+          "# GitHub",
+          "# GitHub\n\nUpdated operator README.",
+        ),
+      );
       await runCli(["update", "github", "--json"], { writeOut: (value) => out.push(value) });
 
-      expect(readFileSync(join(projectRoot, ".caplets", "github", "README.md"), "utf8")).toBe(
-        "updated upstream\n",
+      expect(readFileSync(join(projectRoot, ".caplets", "github", "CAPLET.md"), "utf8")).toContain(
+        "Updated operator README.",
       );
-      expect(JSON.parse(out.join(""))).toMatchObject({
+      const updateResult = JSON.parse(out.join(""));
+      expect(updateResult).toMatchObject({
         entries: [
           {
             id: "github",
-            status: "updated",
+            status: "content_updated",
             destination: join(projectRoot, ".caplets", "github"),
             lockfile: join(projectRoot, ".caplets.lock.json"),
             hash: expect.stringMatching(/^sha256:/),
           },
         ],
       });
+      expect(updateResult.entries[0]?.hash).not.toBe(initialEntry.installedHash);
+      const updatedLock = readCapletsLockfile(lockfilePath);
+      expect(updatedLock.version).toBe(1);
+      expect(updatedLock.entries[0]?.installedHash).not.toBe(initialEntry.installedHash);
+      expect(updatedLock.entries[0]?.runtimeFingerprint).toEqual({
+        version: 1,
+        artifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      writeFileSync(
+        sourceCapletPath,
+        readFileSync(sourceCapletPath, "utf8").replace(
+          "Updated operator README.",
+          "Another operator README update.",
+        ),
+      );
+      out.length = 0;
+      await runCli(["update", "github"], { writeOut: (value) => out.push(value) });
+      expect(out.join("")).toContain("Content updated github");
+      const finalLock = readCapletsLockfile(lockfilePath);
+      expect(finalLock.entries[0]?.installedHash).not.toBe(updatedLock.entries[0]?.installedHash);
+      expect(finalLock.entries[0]?.runtimeFingerprint).toEqual(
+        updatedLock.entries[0]?.runtimeFingerprint,
+      );
     } finally {
       process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("live-classifies content updates without persisting literal secret correlates", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-live-only-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    const literalSecret = "literal-secret-that-must-not-persist";
+    try {
+      writeInstallableRepo(repo);
+      const capletPath = join(repo, "caplets", "github", "CAPLET.md");
+      writeFileSync(
+        capletPath,
+        readFileSync(capletPath, "utf8").replace(
+          "  command: npx",
+          `  command: npx\n  env:\n    TOKEN: ${literalSecret}`,
+        ),
+      );
+      installCaplets(repo, { capletIds: ["github"], destinationRoot, lockfilePath });
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "live-only content update\n");
+
+      const result = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+      });
+
+      expect(result.installed[0]?.status).toBe("content_updated");
+      const lockText = readFileSync(lockfilePath, "utf8");
+      expect(lockText).not.toContain("runtimeFingerprint");
+      expect(lockText).not.toContain(literalSecret);
+      expect(JSON.stringify(result)).not.toContain(literalSecret);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies content-only updates from the installed artifact instead of stale lock metadata", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-stale-runtime-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      const staleLock = JSON.parse(readFileSync(lockfilePath, "utf8")) as {
+        entries: Array<{ runtimeFingerprint?: { version: 1; artifactFingerprint: string } }>;
+      };
+      staleLock.entries[0]!.runtimeFingerprint = {
+        version: 1,
+        artifactFingerprint: "0".repeat(64),
+      };
+      writeFileSync(lockfilePath, `${JSON.stringify(staleLock, null, 2)}\n`);
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "new operator README\n");
+
+      const result = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+      });
+
+      expect(result.installed[0]?.status).toBe("content_updated");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("force-updates an installed directory with a missing CAPLET.md as a runtime update", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-missing-installed-caplet-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      const installedCapletPath = join(destinationRoot, "github", "CAPLET.md");
+      rmSync(installedCapletPath);
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "new upstream content\n");
+
+      const result = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+        force: true,
+      });
+
+      expect(result.installed[0]?.status).toBe("updated");
+      expect(readFileSync(installedCapletPath, "utf8")).toContain("name: GitHub");
+      expect(readFileSync(join(destinationRoot, "github", "README.md"), "utf8")).toBe(
+        "new upstream content\n",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back artifact bytes when the lock replacement fails synchronously", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-lock-rollback-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      const destination = join(destinationRoot, "github", "README.md");
+      const beforeArtifact = readFileSync(destination, "utf8");
+      const beforeLock = readFileSync(lockfilePath, "utf8");
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "new upstream content\n");
+
+      expect(() =>
+        updateCapletsFromLockfile(
+          { destinationRoot, lockfilePath, capletIds: ["github"] },
+          {
+            replaceLockfileTemporary: () => {
+              throw new Error("injected lock failure");
+            },
+          },
+        ),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError);
+      expect(readFileSync(destination, "utf8")).toBe(beforeArtifact);
+      expect(readFileSync(lockfilePath, "utf8")).toBe(beforeLock);
+      writeFileSync(join(repo, "caplets", "github", "CAPLET.md"), "not valid frontmatter\n");
+      expect(() =>
+        updateCapletsFromLockfile({
+          destinationRoot,
+          lockfilePath,
+          capletIds: ["github"],
+          force: true,
+        }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError);
+      expect(readFileSync(destination, "utf8")).toBe(beforeArtifact);
+      expect(readFileSync(lockfilePath, "utf8")).toBe(beforeLock);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("keeps the committed artifact and lock when post-commit cleanup fails", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-cleanup-failure-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "committed content\n");
+
+      const updated = updateCapletsFromLockfile(
+        { destinationRoot, lockfilePath, capletIds: ["github"] },
+        {
+          cleanupTransaction: () => {
+            throw new Error("injected cleanup failure");
+          },
+        },
+      );
+
+      expect(updated.installed[0]?.status).toBe("content_updated");
+      expect(readFileSync(join(destinationRoot, "github", "README.md"), "utf8")).toBe(
+        "committed content\n",
+      );
+      expect(readCapletsLockfile(lockfilePath).entries[0]?.installedHash).toBe(
+        updated.installed[0]?.hash,
+      );
+      expect(readdirSync(projectRoot).some((name) => name.includes(".caplet-txn-github"))).toBe(
+        true,
+      );
+
+      const recovered = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+      });
+      expect(recovered.installed[0]?.status).toBe("noop");
+      expect(readdirSync(projectRoot).filter((name) => name.includes(".caplet-txn-"))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers every persisted per-entry transaction phase before drift classification", () => {
+    const phases: CapletTransactionPhase[] = [
+      "prepared",
+      "staged",
+      "backup_created",
+      "destination_replaced",
+      "lock_temporary_written",
+      "lock_replaced",
+    ];
+    for (const phase of phases) {
+      const dir = mkdtempSync(join(tmpdir(), `caplets-update-interrupt-${phase}-`));
+      const repo = join(dir, "repo");
+      const projectRoot = join(dir, "project");
+      const destinationRoot = join(projectRoot, ".caplets");
+      const lockfilePath = join(projectRoot, ".caplets.lock.json");
+      try {
+        writeInstallableRepo(repo);
+        mkdirSync(projectRoot, { recursive: true });
+        installCaplets(repo, {
+          capletIds: ["github"],
+          destinationRoot,
+          lockfilePath,
+        });
+        writeFileSync(join(repo, "caplets", "github", "README.md"), `content after ${phase}\n`);
+
+        expect(() =>
+          updateCapletsFromLockfile(
+            { destinationRoot, lockfilePath, capletIds: ["github"] },
+            {
+              onTransactionPhase: (persisted) => {
+                if (persisted === "lock_temporary_written") {
+                  const lockTemporaries = readdirSync(projectRoot).filter((name) =>
+                    name.endsWith(".caplet-txn-github.lock.tmp"),
+                  );
+                  expect(lockTemporaries).toHaveLength(1);
+                  expect(
+                    JSON.parse(readFileSync(join(projectRoot, lockTemporaries[0]!), "utf8")),
+                  ).toMatchObject({ entries: [{ id: "github" }] });
+                }
+                return persisted === phase ? "interrupt" : undefined;
+              },
+            },
+          ),
+        ).toThrow(`Interrupted after ${phase}`);
+
+        const recovered = updateCapletsFromLockfile({
+          destinationRoot,
+          lockfilePath,
+          capletIds: ["github"],
+        });
+        expect(["content_updated", "noop"]).toContain(recovered.installed[0]?.status);
+        expect(readFileSync(join(destinationRoot, "github", "README.md"), "utf8")).toBe(
+          `content after ${phase}\n`,
+        );
+        const entry = readCapletsLockfile(lockfilePath).entries[0];
+        expect(entry?.installedHash).toBe(recovered.installed[0]?.hash);
+        expect(readdirSync(projectRoot).filter((name) => name.includes(".caplet-txn-"))).toEqual(
+          [],
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+  it("rejects overlapping writers for the same lockfile without disturbing the active update", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-concurrent-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "concurrent content\n");
+
+      const updated = updateCapletsFromLockfile(
+        { destinationRoot, lockfilePath, capletIds: ["github"] },
+        {
+          onTransactionPhase: (phase) => {
+            if (phase !== "prepared") return;
+            expect(() =>
+              updateCapletsFromLockfile({
+                destinationRoot,
+                lockfilePath,
+                capletIds: ["github"],
+              }),
+            ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+          },
+        },
+      );
+
+      expect(updated.installed[0]?.status).toBe("content_updated");
+      expect(readCapletsLockfile(lockfilePath).entries[0]?.installedHash).toBe(
+        updated.installed[0]?.hash,
+      );
+      expect(existsSync(`${lockfilePath}.transaction.lock`)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses one transaction path set for staging and commit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-transaction-paths-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, "custom-caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "path agreement content\n");
+      const stagedPath = join(destinationRoot, ".github.caplet-txn-github.stage");
+      const journalPath = join(projectRoot, ".custom-caplets.lock.json.caplet-txn-github.json");
+
+      const updated = updateCapletsFromLockfile(
+        { destinationRoot, lockfilePath, capletIds: ["github"] },
+        {
+          onTransactionPhase: (phase) => {
+            if (phase !== "prepared") return;
+            expect(existsSync(stagedPath)).toBe(true);
+            expect(existsSync(journalPath)).toBe(true);
+          },
+        },
+      );
+
+      expect(updated.installed[0]?.status).toBe("content_updated");
+      expect(readFileSync(join(destinationRoot, "github", "README.md"), "utf8")).toBe(
+        "path agreement content\n",
+      );
+      expect(existsSync(stagedPath)).toBe(false);
+      expect(existsSync(journalPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a transaction lock owned by a dead process", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-dead-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    const transactionLockPath = `${lockfilePath}.transaction.lock`;
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      const deadPid = Number(
+        execFileSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
+          encoding: "utf8",
+        }),
+      );
+      expect(() => process.kill(deadPid, 0)).toThrow();
+      writeFileSync(
+        transactionLockPath,
+        `${JSON.stringify({ pid: deadPid, acquiredAt: "2026-01-01T00:00:00.000Z" })}\n`,
+      );
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "recovered content\n");
+
+      const updated = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+      });
+
+      expect(updated.installed[0]?.status).toBe("content_updated");
+      expect(existsSync(transactionLockPath)).toBe(false);
+      expect(existsSync(`${transactionLockPath}.recovery`)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a transaction lock owned by a live process without removing it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-live-lock-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    const transactionLockPath = `${lockfilePath}.transaction.lock`;
+    const lockContents = `${JSON.stringify({
+      pid: process.pid,
+      acquiredAt: "2026-01-01T00:00:00.000Z",
+      ownerToken: "external-live-owner",
+    })}\n`;
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      writeFileSync(transactionLockPath, lockContents);
+
+      expect(() =>
+        updateCapletsFromLockfile({
+          destinationRoot,
+          lockfilePath,
+          capletIds: ["github"],
+        }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(readFileSync(transactionLockPath, "utf8")).toBe(lockContents);
+      expect(existsSync(`${transactionLockPath}.recovery`)).toBe(false);
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -3243,6 +3856,11 @@ describe("cli init", () => {
       expect(readFileSync(join(projectRoot, ".caplets", "filesystem.md"), "utf8")).toContain(
         "Updated Files",
       );
+      const retryOut: string[] = [];
+      await runCli(["update", "filesystem", "--json"], {
+        writeOut: (value) => retryOut.push(value),
+      });
+      expect(JSON.parse(retryOut.join("")).entries[0].status).toBe("noop");
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -3323,7 +3941,6 @@ describe("cli init", () => {
           "description: Work with GitHub repositories and pull requests.",
           "projectBinding:",
           "  required: true",
-          "  description: Requires the current repository to resolve issue references.",
           "mcpServer:",
           "  command: npx",
           "  args:",
@@ -3337,8 +3954,12 @@ describe("cli init", () => {
       await expect(runCli(["update", "github"], { writeOut: () => {} })).rejects.toMatchObject({
         code: "REQUEST_INVALID",
       } satisfies Partial<CapletsError>);
+      const out: string[] = [];
 
-      await runCli(["update", "github", "--force"], { writeOut: () => {} });
+      await runCli(["update", "github", "--force", "--json"], {
+        writeOut: (value) => out.push(value),
+      });
+      expect(JSON.parse(out.join("")).entries[0].status).toBe("updated");
       expect(readFileSync(join(projectRoot, ".caplets", "github", "CAPLET.md"), "utf8")).toContain(
         "projectBinding:",
       );

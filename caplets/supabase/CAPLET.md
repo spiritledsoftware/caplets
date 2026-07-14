@@ -18,19 +18,16 @@ mcpServer:
 
 # Supabase
 
-Use this Caplet when an agent needs Supabase project, database, schema, branch, storage, edge function, auth, or documentation context.
+## Prerequisites and scope
 
-## First Workflow
+Confirm the Supabase organization, project reference, branch, and environment before accessing project state. After installation, the `project_ref` query parameter can scope access to a specific project. For investigation-only access, configure `read_only=true` or feature-group filtering on the MCP URL.
 
-1. Start by confirming the Supabase organization, project reference, branch, and environment before querying project state.
-2. Prefer read-only discovery of schemas, tables, policies, migrations, functions, and storage buckets before making changes.
-3. Scope high-risk work to a specific project with the `project_ref` query parameter after install when possible.
-4. Use `read_only=true` or feature-group filtering on the MCP URL for investigation-only workflows.
-5. Summarize intended SQL, policy, migration, storage, or function changes before executing them.
+## Safe operation
 
-## Operate Carefully
+Inspect schemas, tables, policies, migrations, functions, and storage buckets before making changes. Review intended SQL, RLS policy effects, generated migrations, storage operations, function changes, and branch targets before execution.
 
-- Supabase's own guidance treats MCP access as best suited for development and testing. Do not connect production projects unless the operator has explicitly accepted the risk.
-- Database and auth policy changes can expose data or break applications. Review SQL, RLS policy effects, generated migrations, and branch targets carefully.
-- Avoid handling PII or secrets through agent-visible prompts and logs.
-- Avoid this Caplet when the task only needs local migration files or application code without live Supabase state.
+Supabase recommends MCP access primarily for development and testing. Connect a production project only after the operator has explicitly accepted the risk. Database and authentication policy changes can expose data or break applications.
+
+## Sensitive data
+
+Keep PII and secrets out of captured prompts and logs. Use narrow project, feature, and read-only scopes to reduce unnecessary data exposure.

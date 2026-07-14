@@ -26,8 +26,6 @@ describe("generateCodeModeDeclarations", () => {
           id: "github",
           name: "GitHub",
           description: "GitHub repo, issue, PR, workflow ops.",
-          useWhen: "Use for repository issue, PR, and workflow tasks.",
-          avoidWhen: "Avoid for package vulnerability lookup.",
         },
         {
           id: "build-system",
@@ -39,9 +37,7 @@ describe("generateCodeModeDeclarations", () => {
 
     expect(declaration).toContain('github:CapletHandle<"github">;');
     expect(declaration).toContain('"build-system":CapletHandle<"build-system">;');
-    expect(declaration).toContain(
-      "/**GitHub repo, issue, PR, workflow ops. Use when: Use for repository issue, PR, and workflow tasks. Avoid when: Avoid for package vulnerability lookup.*/",
-    );
+    expect(declaration).toContain("/**GitHub repo, issue, PR, workflow ops.*/");
     expect(declaration).not.toContain("\n\n");
     expect(declaration).not.toContain(" = ");
   });
@@ -124,8 +120,8 @@ describe("generateCodeModeDeclarations", () => {
       ],
     });
 
-    expect(declaration).toContain(`${"A".repeat(177)}...`);
-    expect(declaration).not.toContain("A".repeat(181));
+    expect(declaration).toContain(`${"A".repeat(237)}...`);
+    expect(declaration).not.toContain("A".repeat(241));
   });
 
   it("returns stable hashes for equivalent declaration content", () => {

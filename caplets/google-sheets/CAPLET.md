@@ -35,18 +35,13 @@ googleDiscoveryApi:
 
 # Google Sheets
 
-Use this Caplet when an agent needs to inspect spreadsheet structure, read bounded ranges, append tabular data, or make explicit updates to a known Google Sheet.
+## Spreadsheet prerequisites
 
-## First Workflow
+Start with a spreadsheet ID, spreadsheet URL, or newly created spreadsheet. Inspect sheet names, grid properties, named ranges, and developer metadata before reading large ranges. Retrieve only needed ranges with `values.get`, `values.batchGet`, or data filters.
 
-1. Start from a spreadsheet ID, spreadsheet URL, or newly created spreadsheet.
-2. Inspect sheet names, grid properties, named ranges, and developer metadata before reading large ranges.
-3. Read only the ranges needed for the task, using `values.get`, `values.batchGet`, or data filters.
-4. Confirm target sheet, range, value shape, and whether formulas should be preserved before updating, appending, or clearing cells.
+## Safe updates and access
 
-## Operate Carefully
-
-- Spreadsheets often contain private business data. Prefer narrow ranges and summaries over full-sheet reads.
-- `batchUpdate`, value updates, appends, and clears change live spreadsheet state. Treat clearing cells as destructive.
-- This Caplet uses the restricted `drive.file` scope, so it is intended for Sheets the app created or files the user explicitly opens or grants to the app.
-- Use Google Drive for locating, sharing, copying, moving, trashing, or deleting spreadsheet files.
+- Confirm the target sheet, range, value shape, and whether formulas must be preserved before updating, appending, or clearing cells.
+- Spreadsheets often contain private business data. Prefer bounded ranges and summaries over full-sheet reads.
+- `batchUpdate`, value updates, appends, and clears change live spreadsheet state. Clearing cells is destructive.
+- The restricted `drive.file` OAuth scope covers Sheets the app created and files the user explicitly opens or grants to the app.

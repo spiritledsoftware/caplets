@@ -10,6 +10,7 @@ import {
   type BackendOperationManagers,
   type McpOperationAdapter,
 } from "../src/index";
+import { loadCapletFilesFromMap } from "../src/caplet-files";
 import { DownstreamManager } from "../src/downstream";
 import type { CapletConfig } from "../src/config";
 import { testBackendOperationRuntime } from "./backend-operation-runtime";
@@ -69,6 +70,39 @@ describe("backend operation dispatch", () => {
     },
   );
 
+  it("dispatches body-free Caplet file configurations to backend managers", async () => {
+    const loaded = loadCapletFilesFromMap({
+      files: [
+        {
+          path: "operator/CAPLET.md",
+          content: `---
+name: Operator
+description: Exercise backend manager isolation.
+mcpServer:
+  command: operator-mcp
+---
+# README_SENTINEL
+backend: fake
+path: ../../secret
+token: sk-secret-looking
+`,
+        },
+      ],
+    });
+    const config = parseConfig(loaded!.config);
+    const server = config.mcpServers.operator!;
+    const managers = managerBundle();
+    const runtime = createBackendOperationRuntime(managers as unknown as BackendOperationManagers);
+
+    await runtime.operations.check(server);
+    await runtime.operations.listTools(server);
+    await runtime.operations.callTool(server, "echo", {});
+
+    expect(server).not.toHaveProperty("body");
+    expect(managers.mcp.checkServer!.mock.calls[0]?.[0]).not.toHaveProperty("body");
+    expect(managers.mcp.listTools.mock.calls[0]?.[0]).not.toHaveProperty("body");
+    expect(managers.mcp.callTool.mock.calls[0]?.[0]).not.toHaveProperty("body");
+  });
   it("retains the exact MCP manager as the separately named MCP capability", () => {
     const managers = managerBundle();
     const runtime = createBackendOperationRuntime(managers as unknown as BackendOperationManagers);
@@ -243,10 +277,10 @@ function managerBundle() {
 
 function manager(source: string, checkMethod: string) {
   return {
-    [checkMethod]: vi.fn(async () => ({ source })),
-    listTools: vi.fn(async () => [TOOL]),
-    getTool: vi.fn(async () => TOOL),
-    callTool: vi.fn(async () => ({ source })),
+    [checkMethod]: vi.fn(async (..._args: unknown[]) => ({ source })),
+    listTools: vi.fn(async (..._args: unknown[]) => [TOOL]),
+    getTool: vi.fn(async (..._args: unknown[]) => TOOL),
+    callTool: vi.fn(async (..._args: unknown[]) => ({ source })),
     compact: vi.fn(() => ({ name: TOOL.name })),
     search: vi.fn(() => [{ name: TOOL.name }]),
   };

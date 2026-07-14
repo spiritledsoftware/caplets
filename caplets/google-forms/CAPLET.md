@@ -28,18 +28,14 @@ googleDiscoveryApi:
 
 # Google Forms
 
-Use this Caplet when an agent needs to inspect a form, create or revise form questions, or summarize submitted responses from a known Google Form.
+## Form prerequisites
 
-## First Workflow
+Start with a form ID, form URL, or a newly created form. Read the form structure before changing titles, descriptions, questions, grading, or navigation. For response analysis, retrieve only the required responses and fields.
 
-1. Start from a form ID, form URL, or newly created form.
-2. Read the form structure before changing titles, descriptions, questions, grading, or navigation.
-3. List responses only when response data is required, and narrow analysis to the fields relevant to the task.
-4. Confirm question IDs, item locations, and response-safety expectations before using `forms.batchUpdate`.
+## Safe updates and limits
 
-## Operate Carefully
-
-- Forms and responses may contain private, educational, health, or customer information. Keep response reads and summaries minimal.
-- `forms.batchUpdate` can alter live collection instruments. Avoid casual edits to published forms.
-- This Caplet uses the restricted `drive.file` scope, so it is intended for Forms the app created or files the user explicitly opens or grants to the app.
-- It does not expose publish settings, watches, or deletion workflows; create a private variant if those are required.
+- Confirm question IDs, item locations, and response-safety expectations before using `forms.batchUpdate`.
+- Forms and responses can contain private educational, health, or customer information. Keep response reads and summaries minimal.
+- `forms.batchUpdate` can alter a live collection instrument; published forms should only receive deliberate, reviewed changes.
+- The restricted `drive.file` OAuth scope covers Forms the app created and files the user explicitly opens or grants to the app.
+- This Caplet does not expose publish settings, watches, or deletion workflows. Those operations require a private variant.

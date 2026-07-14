@@ -14,16 +14,12 @@ capletSet:
 
 # Coding Agent Toolkit
 
-Use this CapletSet when the agent needs a compact default toolkit for coding work rather than a large bespoke integration list.
+## Bundle Contents
 
-## First Workflow
+The set combines repository and code-intelligence capabilities with package, vulnerability, documentation, and browser tooling. Child availability depends on installation scope, setup state, and Project Binding state; not every child is necessarily available at runtime.
 
-1. Use repository and code-intelligence Caplets for local facts before making implementation claims.
-2. Use package, vulnerability, and documentation Caplets to verify external dependency assumptions.
-3. Use browser automation only when rendered behavior or live web context is part of the task.
+## Setup and Safety
 
-## Operate Carefully
-
-- This set is a convenience bundle; prefer a narrower individual Caplet when the user asks for a specific provider or capability.
-- Some child Caplets require Project Binding, setup, or local-control awareness. Inspect the child Caplet before using high-risk or project-bound capabilities.
-- Do not assume every child is available at runtime; availability depends on installation scope, setup state, and binding state.
+- Some child Caplets require Project Binding, additional setup, or awareness of local-control risks.
+- Operators should review a child's own README and frontmatter before enabling project-bound or high-risk capabilities.
+- Browser children can interact with rendered or live web contexts and should be enabled only with the control surface appropriate to the installation.

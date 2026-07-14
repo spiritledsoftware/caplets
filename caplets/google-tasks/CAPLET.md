@@ -33,18 +33,12 @@ googleDiscoveryApi:
 
 # Google Tasks
 
-Use this Caplet when an agent needs to inspect or manage Google Tasks during planning, follow-up, or personal workflow coordination.
+## Task and tasklist handling
 
-## First Workflow
+List tasklists before choosing a destination. Search existing tasks before creating one to avoid duplicates. Before creating or moving a task, confirm its title, notes, due date, parent task, and tasklist.
 
-1. List tasklists before choosing where work belongs.
-2. Search or list existing tasks before creating new ones to avoid duplicates.
-3. Confirm task title, notes, due date, parent task, and tasklist before creating or moving.
-4. Mark tasks complete only when the user or current workflow clearly confirms completion.
+## Safe operation and limits
 
-## Operate Carefully
-
-- Task changes are user-visible workflow state. Read first and keep writes specific.
-- Do not infer deadlines or completion state from vague conversation.
-- This Caplet does not expose task deletion, tasklist deletion, or clear-completed operations; create a private variant if deletion workflows are required.
-- Prefer Linear or GitHub Issues for team-owned engineering work.
+- Task changes are user-visible workflow state. Read current state first and keep writes specific.
+- Do not infer deadlines or completion from ambiguous conversation. Mark a task complete only after the operator or the current workflow clearly confirms completion.
+- This Caplet does not expose task deletion, tasklist deletion, or clear-completed operations. Those operations require a private variant.

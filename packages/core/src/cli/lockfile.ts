@@ -43,6 +43,11 @@ export type CapletsLockRiskSummary = {
   referenceHash?: string | undefined;
 };
 
+export type CapletsLockRuntimeFingerprint = {
+  version: 1;
+  artifactFingerprint: string;
+};
+
 export type CapletsLockEntry = {
   id: string;
   destination: string;
@@ -52,6 +57,7 @@ export type CapletsLockEntry = {
   installedAt: string;
   updatedAt: string;
   risk: CapletsLockRiskSummary;
+  runtimeFingerprint?: CapletsLockRuntimeFingerprint | undefined;
 };
 
 export type CapletsLockfile = {
@@ -95,18 +101,20 @@ function isErrorCode(error: unknown, code: string): boolean {
 }
 
 export function writeCapletsLockfile(path: string, lockfile: CapletsLockfile): void {
-  const validated = parseCapletsLockfile(lockfile, path);
-  const stable: CapletsLockfile = {
-    version: CAPLETS_LOCKFILE_VERSION,
-    entries: [...validated.entries].sort((left, right) => left.id.localeCompare(right.id)),
-  };
+  writeCapletsLockfileAtomically(path, lockfile);
+}
+
+export function writeCapletsLockfileAtomically(
+  path: string,
+  lockfile: CapletsLockfile,
+  temporaryPath?: string,
+): void {
   const parent = dirname(path);
   const basename = path.split(/[\\/]/).at(-1) ?? "caplets.lock.json";
-  const temporary = join(parent, `.${basename}.tmp-${process.pid}-${Date.now()}`);
+  const temporary = temporaryPath ?? join(parent, `.${basename}.tmp-${process.pid}-${Date.now()}`);
   try {
-    mkdirSync(parent, { recursive: true, mode: 0o700 });
-    writeFileSync(temporary, `${JSON.stringify(stable, null, 2)}\n`, { mode: 0o600 });
-    renameSync(temporary, path);
+    writeCapletsLockfileTemporary(path, lockfile, temporary);
+    replaceCapletsLockfileTemporary(path, temporary);
   } catch (error) {
     try {
       rmSync(temporary, { force: true });
@@ -117,6 +125,24 @@ export function writeCapletsLockfile(path: string, lockfile: CapletsLockfile): v
       cause: toSafeError(error),
     });
   }
+}
+
+export function writeCapletsLockfileTemporary(
+  path: string,
+  lockfile: CapletsLockfile,
+  temporaryPath: string,
+): void {
+  const validated = parseCapletsLockfile(lockfile, path);
+  const stable: CapletsLockfile = {
+    version: CAPLETS_LOCKFILE_VERSION,
+    entries: [...validated.entries].sort((left, right) => left.id.localeCompare(right.id)),
+  };
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(temporaryPath, `${JSON.stringify(stable, null, 2)}\n`, { mode: 0o600 });
+}
+
+export function replaceCapletsLockfileTemporary(path: string, temporaryPath: string): void {
+  renameSync(temporaryPath, path);
 }
 
 export function parseCapletsLockfile(value: unknown, path = "Caplets lockfile"): CapletsLockfile {
@@ -181,10 +207,35 @@ function parseLockEntry(value: unknown, label: string): CapletsLockEntry {
   const installedAt = requireString(value.installedAt, `${label}.installedAt`);
   const updatedAt = requireString(value.updatedAt, `${label}.updatedAt`);
   const risk = parseRiskSummary(value.risk, `${label}.risk`);
+  const runtimeFingerprint =
+    value.runtimeFingerprint === undefined
+      ? undefined
+      : parseRuntimeFingerprint(value.runtimeFingerprint, `${label}.runtimeFingerprint`);
   if (isAbsolute(destination) || destination.split(/[\\/]/).includes("..")) {
     throw new CapletsError("CONFIG_INVALID", `${label}.destination must be a safe relative path`);
   }
-  return { id, destination, kind, source, installedHash, installedAt, updatedAt, risk };
+  return {
+    id,
+    destination,
+    kind,
+    source,
+    installedHash,
+    installedAt,
+    updatedAt,
+    risk,
+    ...(runtimeFingerprint ? { runtimeFingerprint } : {}),
+  };
+}
+
+function parseRuntimeFingerprint(value: unknown, label: string): CapletsLockRuntimeFingerprint {
+  if (!isRecord(value)) throw new CapletsError("CONFIG_INVALID", `${label} must be an object`);
+  if (value.version !== 1) {
+    throw new CapletsError("CONFIG_INVALID", `${label}.version must be 1`);
+  }
+  return {
+    version: 1,
+    artifactFingerprint: requireString(value.artifactFingerprint, `${label}.artifactFingerprint`),
+  };
 }
 
 function parseLockSource(value: unknown, label: string): CapletsLockSource {

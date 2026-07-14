@@ -60,7 +60,7 @@ export type CurrentHostInstalledCatalogCaplet = {
   destination: string;
   kind: "file" | "directory";
   hash?: string | undefined;
-  status?: "installed" | "restored" | "updated" | "noop" | undefined;
+  status?: "installed" | "restored" | "updated" | "content_updated" | "noop" | undefined;
   lockfile?: string | undefined;
   catalogIndexing?: unknown;
 };
@@ -225,8 +225,6 @@ async function catalogEntriesFromSource(sourceInput: string): Promise<CatalogEnt
           trustLevel: resolvedSource.trustLevel,
         }),
         tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
-        useWhen: catalogStringFromFrontmatter(frontmatter.useWhen),
-        avoidWhen: catalogStringFromFrontmatter(frontmatter.avoidWhen),
         setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
         authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
         projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),
@@ -411,8 +409,6 @@ function isCatalogEntryBase(value: unknown): value is CatalogEntry {
     Array.isArray(value.tags) &&
     value.tags.length <= 100 &&
     value.tags.every((tag) => boundedString(tag, 256)) &&
-    boundedString(value.intendedTask, 4096) &&
-    optionalBoundedString(value.avoidWhen, 4096) &&
     typeof value.setupReadiness === "string" &&
     value.setupReadiness in readinessValues &&
     typeof value.authReadiness === "string" &&

@@ -108,21 +108,6 @@ const capletRuntimeRequirementsSchema = z
   })
   .strict()
   .describe("Runtime feature and resource requirements for hosted execution.");
-const capletAgentSelectionHintSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(500)
-  .describe("Optional author-supplied hint for agent tool/caplet selection.");
-
-const capletAgentSelectionHintsSchema = {
-  useWhen: capletAgentSelectionHintSchema
-    .optional()
-    .describe("When agents should prefer this Caplet or configured action."),
-  avoidWhen: capletAgentSelectionHintSchema
-    .optional()
-    .describe("When agents should avoid this Caplet or configured action."),
-};
 
 const capletExposureSchema = z
   .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
@@ -413,7 +398,6 @@ const capletGraphQlOperationSchema = z
     documentPath: z.string().min(1).optional().describe("Path to a GraphQL operation document."),
     operationName: z.string().min(1).optional().describe("Operation name to execute."),
     description: z.string().min(1).optional().describe("Operation capability description."),
-    ...capletAgentSelectionHintsSchema,
   })
   .strict()
   .superRefine((operation, ctx) => {
@@ -523,7 +507,6 @@ const capletHttpActionSchema = z
       .refine((value) => !value.startsWith("//"), "HTTP action path must not start with //")
       .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
     description: z.string().min(1).optional().describe("Action capability description."),
-    ...capletAgentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -619,7 +602,6 @@ const capletCliToolAnnotationsSchema = z
 const capletCliToolActionSchema = z
   .object({
     description: z.string().min(1).optional().describe("Action capability description."),
-    ...capletAgentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -721,7 +703,6 @@ const capletFileChildSharedFields = {
   tags: z.array(z.string().trim().min(1).max(80)).optional(),
   exposure: capletExposureSchema.optional(),
   shadowing: capletShadowingSchema.optional(),
-  ...capletAgentSelectionHintsSchema,
   setup: capletSetupSchema.optional(),
   projectBinding: capletProjectBindingSchema.optional(),
   runtime: capletRuntimeRequirementsSchema.optional(),
@@ -816,7 +797,6 @@ export const capletFileSchema = z
       .describe("Optional tags for grouping or searching Caplets."),
     exposure: capletExposureSchema.optional(),
     shadowing: capletShadowingSchema.optional(),
-    ...capletAgentSelectionHintsSchema,
     setup: capletSetupSchema.optional(),
     projectBinding: capletProjectBindingSchema.optional(),
     runtime: capletRuntimeRequirementsSchema.optional(),
@@ -1231,8 +1211,8 @@ function discoverCapletFileMapCandidates(paths: string[]): Array<{ id: string; p
     if (!fileName) {
       continue;
     }
-    if (fileName === "CAPLET.md" && segments.length > 1) {
-      candidates.push({ id: segments.at(-2) ?? "CAPLET", path, isDirectoryCaplet: true });
+    if (fileName === "CAPLET.md" && segments.length === 2) {
+      candidates.push({ id: segments[0] ?? "CAPLET", path, isDirectoryCaplet: true });
       continue;
     }
     if (segments.length === 1 && extname(fileName).toLowerCase() === ".md") {
@@ -1278,16 +1258,15 @@ export function readCapletFileContent(
     );
   }
 
-  return capletToServerConfig(parsed.data, body, baseDir, normalizePath);
+  return capletToServerConfig(parsed.data, baseDir, normalizePath);
 }
 
 function capletToServerConfig(
   frontmatter: CapletFileFrontmatter,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): unknown {
-  const expanded = capletToExpandedServerConfigs(frontmatter, body, baseDir, normalizePath);
+  const expanded = capletToExpandedServerConfigs(frontmatter, baseDir, normalizePath);
   if (expanded.length > 0) {
     return {
       kind: "expanded-caplet-file",
@@ -1303,7 +1282,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1315,7 +1293,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1332,7 +1309,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1343,7 +1319,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1357,7 +1332,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1370,7 +1344,6 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),
-      body,
     };
   }
 
@@ -1379,7 +1352,6 @@ function capletToServerConfig(
     name: frontmatter.name,
     description: frontmatter.description,
     ...sharedCapletFields(frontmatter),
-    body,
   };
 }
 
@@ -1389,8 +1361,6 @@ type SharedCapletFields = {
   tags?: string[] | undefined;
   exposure?: z.infer<typeof capletExposureSchema> | undefined;
   shadowing?: z.infer<typeof capletShadowingSchema> | undefined;
-  useWhen?: string | undefined;
-  avoidWhen?: string | undefined;
   setup?: z.infer<typeof capletSetupSchema> | undefined;
   projectBinding?: z.infer<typeof capletProjectBindingSchema> | undefined;
   runtime?: z.infer<typeof capletRuntimeRequirementsSchema> | undefined;
@@ -1402,8 +1372,6 @@ const CHILD_SHARED_FIELD_KEYS = new Set([
   "tags",
   "exposure",
   "shadowing",
-  "useWhen",
-  "avoidWhen",
   "setup",
   "projectBinding",
   "runtime",
@@ -1411,7 +1379,6 @@ const CHILD_SHARED_FIELD_KEYS = new Set([
 
 function capletToExpandedServerConfigs(
   frontmatter: CapletFileFrontmatter,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): ExpandedCapletFileChild[] {
@@ -1424,7 +1391,6 @@ function capletToExpandedServerConfigs(
     frontmatter.mcpServers,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1434,7 +1400,6 @@ function capletToExpandedServerConfigs(
     frontmatter.openapiEndpoints,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1444,7 +1409,6 @@ function capletToExpandedServerConfigs(
     frontmatter.googleDiscoveryApis,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1454,7 +1418,6 @@ function capletToExpandedServerConfigs(
     frontmatter.graphqlEndpoints,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1464,7 +1427,6 @@ function capletToExpandedServerConfigs(
     frontmatter.httpApis,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1475,7 +1437,6 @@ function capletToExpandedServerConfigs(
       frontmatter.cliTools as Record<string, Record<string, unknown>>,
       frontmatter,
       parentShared,
-      body,
       baseDir,
       normalizePath,
     );
@@ -1486,7 +1447,6 @@ function capletToExpandedServerConfigs(
     frontmatter.capletSets,
     frontmatter,
     parentShared,
-    body,
     baseDir,
     normalizePath,
   );
@@ -1500,7 +1460,6 @@ function addExpandedChildren(
   childMap: Record<string, Record<string, unknown>> | undefined,
   frontmatter: CapletFileFrontmatter,
   parentShared: SharedCapletFields,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): void {
@@ -1525,7 +1484,6 @@ function addExpandedChildren(
         backend,
         validatedBackend,
         mergedShared,
-        body,
         baseDir,
         normalizePath,
       ),
@@ -1564,8 +1522,6 @@ function parentSharedFields(frontmatter: CapletFileFrontmatter): SharedCapletFie
     tags: frontmatter.tags,
     exposure: frontmatter.exposure,
     shadowing: frontmatter.shadowing,
-    useWhen: frontmatter.useWhen,
-    avoidWhen: frontmatter.avoidWhen,
     setup: frontmatter.setup,
     projectBinding: frontmatter.projectBinding,
     runtime: frontmatter.runtime,
@@ -1582,8 +1538,6 @@ function mergeSharedCapletFields(
     tags: mergeTags(parent.tags, child.tags),
     exposure: child.exposure ?? parent.exposure,
     shadowing: child.shadowing ?? parent.shadowing,
-    useWhen: child.useWhen ?? parent.useWhen,
-    avoidWhen: child.avoidWhen ?? parent.avoidWhen,
     setup: mergeSetup(parent.setup, child.setup),
     projectBinding: child.projectBinding ?? parent.projectBinding,
     runtime: mergeRuntime(parent.runtime, child.runtime),
@@ -1670,7 +1624,6 @@ function normalizeExpandedBackendConfig(
   backend: CapletFileBackendFamily,
   config: Record<string, unknown>,
   shared: SharedCapletFields,
-  body: string,
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): unknown {
@@ -1681,7 +1634,6 @@ function normalizeExpandedBackendConfig(
       specPath: normalizePath(config.specPath as string | undefined, baseDir),
       backend: "openapi",
       ...common,
-      body,
     };
   }
   if (backend === "googleDiscovery") {
@@ -1690,7 +1642,6 @@ function normalizeExpandedBackendConfig(
       discoveryPath: normalizePath(config.discoveryPath as string | undefined, baseDir),
       backend: "googleDiscovery",
       ...common,
-      body,
     };
   }
   if (backend === "graphql") {
@@ -1704,7 +1655,6 @@ function normalizeExpandedBackendConfig(
       ),
       backend: "graphql",
       ...common,
-      body,
     };
   }
   if (backend === "http") {
@@ -1712,7 +1662,6 @@ function normalizeExpandedBackendConfig(
       ...config,
       backend: "http",
       ...common,
-      body,
     };
   }
   if (backend === "cli") {
@@ -1726,7 +1675,6 @@ function normalizeExpandedBackendConfig(
       ),
       backend: "cli",
       ...common,
-      body,
     };
   }
   if (backend === "caplets") {
@@ -1736,13 +1684,11 @@ function normalizeExpandedBackendConfig(
       capletsRoot: normalizePath(config.capletsRoot as string | undefined, baseDir),
       backend: "caplets",
       ...common,
-      body,
     };
   }
   return {
     ...config,
     ...common,
-    body,
   };
 }
 
@@ -1753,8 +1699,6 @@ function normalizedSharedOutput(shared: SharedCapletFields): Record<string, unkn
     ...(shared.tags ? { tags: shared.tags } : {}),
     ...(shared.exposure ? { exposure: shared.exposure } : {}),
     ...(shared.shadowing ? { shadowing: shared.shadowing } : {}),
-    ...(shared.useWhen ? { useWhen: shared.useWhen } : {}),
-    ...(shared.avoidWhen ? { avoidWhen: shared.avoidWhen } : {}),
     ...(shared.setup ? { setup: shared.setup } : {}),
     ...(shared.projectBinding ? { projectBinding: shared.projectBinding } : {}),
     ...(shared.runtime ? { runtime: shared.runtime } : {}),
@@ -1789,8 +1733,6 @@ function sharedCapletFields(frontmatter: CapletFileFrontmatter): Record<string, 
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
     ...(frontmatter.exposure ? { exposure: frontmatter.exposure } : {}),
     ...(frontmatter.shadowing ? { shadowing: frontmatter.shadowing } : {}),
-    ...(frontmatter.useWhen ? { useWhen: frontmatter.useWhen } : {}),
-    ...(frontmatter.avoidWhen ? { avoidWhen: frontmatter.avoidWhen } : {}),
     ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
     ...(frontmatter.projectBinding ? { projectBinding: frontmatter.projectBinding } : {}),
     ...(frontmatter.runtime ? { runtime: frontmatter.runtime } : {}),
@@ -1839,24 +1781,21 @@ export function normalizeBundleLocalPath(
   if (!value || isMapAbsolutePath(value) || hasInterpolationReference(value)) {
     return value;
   }
-  const parts = [...(baseDir ? baseDir.split("/") : []), ...value.split("/")];
-  const normalized: string[] = [];
-  for (const part of parts) {
-    if (!part || part === ".") {
-      continue;
-    }
-    if (part === "..") {
-      normalized.pop();
-      continue;
-    }
-    normalized.push(part);
+  const referenceParts = value.replace(/\\/gu, "/").split("/");
+  if (referenceParts.includes("..")) {
+    throw new CapletsError("CONFIG_INVALID", "Declared input path traversal is not allowed");
   }
-  return normalized.join("/");
+  const parts = [...(baseDir ? baseDir.split("/") : []), ...referenceParts];
+  return parts.filter((part) => part && part !== ".").join("/");
 }
 
 export function normalizeMapPath(path: string): string {
   const normalized = path.trim().replace(/\\/g, "/").replace(/^\.\//u, "");
-  if (!normalized || normalized.startsWith("/") || normalized.includes("/../")) {
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    normalized.split("/").some((segment) => segment === "..")
+  ) {
     throw new CapletsError("CONFIG_INVALID", `Invalid Caplet file path ${path}`);
   }
   return normalized;

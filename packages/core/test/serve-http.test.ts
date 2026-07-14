@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { serve, type WebSocketServerLike } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
@@ -2949,6 +2949,31 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("keeps the HTTP Attach revision stable after a README-only reload", async () => {
+    const context = testContext();
+    const capletDir = join(dirname(context.configPath), "status");
+    const capletPath = join(capletDir, "CAPLET.md");
+    mkdirSync(capletDir, { recursive: true });
+    writeFileSync(capletPath, httpReadmeCaplet("Initial operator notes."));
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+    const initialResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const initial = (await initialResponse.json()) as AttachManifest;
+
+    writeFileSync(capletPath, httpReadmeCaplet("Updated troubleshooting notes."));
+
+    await expect(engine.reload()).resolves.toBe(true);
+    const nextResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const next = (await nextResponse.json()) as AttachManifest;
+    expect(next.revision).toBe(initial.revision);
+    expect({ ...next, generatedAt: initial.generatedAt }).toEqual(initial);
+    await engine.close();
+  });
+
   it("rejects an old HTTP Attach export after reload hides its Caplet", async () => {
     const config = {
       options: { exposure: "direct" },
@@ -4397,6 +4422,22 @@ function pairedClient(
     flowId: pending.flowId,
     pendingCompletionSecret: pending.pendingCompletionSecret,
   });
+}
+
+function httpReadmeCaplet(readme: string): string {
+  return [
+    "---",
+    "name: Status",
+    "description: Read service status.",
+    "httpApi:",
+    "  baseUrl: http://127.0.0.1:1",
+    "  auth: { type: none }",
+    "  actions:",
+    "    check: { method: GET, path: /check }",
+    "---",
+    readme,
+    "",
+  ].join("\n");
 }
 
 function tempDir(prefix: string): string {

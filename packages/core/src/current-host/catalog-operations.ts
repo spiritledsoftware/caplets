@@ -209,8 +209,14 @@ async function attachCatalogIndexing(
   }>,
   disableCatalogIndexing: boolean,
 ): Promise<void> {
-  const indexed = await indexInstalledCapletsFromLockfile(installed, { disableCatalogIndexing });
-  for (const entry of installed) entry.catalogIndexing = indexed.get(entry.id);
+  try {
+    const indexed = await indexInstalledCapletsFromLockfile(installed, { disableCatalogIndexing });
+    for (const entry of installed) entry.catalogIndexing = indexed.get(entry.id);
+  } catch {
+    for (const entry of installed) {
+      entry.catalogIndexing = { status: "unavailable", reason: "indexer_unavailable" };
+    }
+  }
 }
 
 function requireControlContext(

@@ -32,21 +32,21 @@ mcpServer:
 
 # AWS
 
-Use this Caplet when an agent needs live AWS account, Region, service, resource, IAM, operational, or AWS documentation context through the managed AWS MCP Server.
+## Targeting and Prerequisites
 
-## First Workflow
+- Confirm the intended account, Region, profile, service, and resource identifiers before inspecting broad AWS state.
+- Documentation, skill, list, and describe operations can narrow ambiguous service behavior or resource matches.
+- For multi-account installations, named profiles are exposed through `AWS_MCP_PROXY_PROFILES`; select the intended profile on calls that support it.
+- Use explicit Region names when the target Region matters, especially when the runtime was not started with `AWS_REGION`.
 
-1. Start by confirming the intended account, Region, profile, service, and resource identifiers before querying broad AWS state.
-2. Use documentation, skill, list, and describe operations to narrow ambiguous service behavior or resource matches before changing anything.
-3. Inspect existing resource state, IAM context, dependencies, tags, and CloudTrail or service evidence before proposing operational changes.
-4. For multi-account work, prefer named AWS profiles exposed through `AWS_MCP_PROXY_PROFILES`, and pass the intended profile on calls that support profile selection.
-5. Use explicit Region names in requests when the target Region matters, especially if the runtime was not started with `AWS_REGION`.
-6. Summarize the target account, Region, resource, and expected production effect before mutating resources.
+## Safe Operation
 
-## Operate Carefully
-
-- AWS operations can affect production infrastructure, data, security boundaries, billing, and compliance posture. Prefer read-only inspection before writes.
+- Inspect existing resource state, IAM context, dependencies, tags, and CloudTrail or service evidence before operational changes.
+- AWS operations can affect production infrastructure, data, security boundaries, billing, and compliance posture. Keep access read-only until a write is necessary.
 - Use least-privilege IAM roles, permission boundaries, and AWS MCP Server IAM condition keys where available.
+- Review the target account, Region, resource, and expected production effect before a mutation.
 - Confirm destructive or high-impact targets before deleting, replacing, scaling, deploying, rotating credentials, changing IAM, modifying network policy, or changing data stores.
-- If credentials are missing or expired, refresh AWS CLI credentials and rerun the setup verification before retrying.
-- Avoid this Caplet when the task only needs local IaC or application files; use the project workspace and deployment tooling for local configuration state.
+
+## Troubleshooting
+
+If credentials are missing or expired, refresh the AWS CLI credentials and rerun the setup verification before retrying.

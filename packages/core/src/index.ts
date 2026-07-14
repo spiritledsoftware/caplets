@@ -92,7 +92,8 @@ export type {
   ToolCallResult,
 } from "./code-mode/types";
 export type { CapletSetupCommandConfig, CapletSetupConfig } from "./config";
-export { capletSetupContentHash, stableJson } from "./setup/hash";
+export { capletSetupContentHash } from "./setup/hash";
+export { stableJsonStringify as stableJson } from "./stable-json";
 export { LocalSetupStore } from "./setup/local-store";
 export { runCapletSetup } from "./setup/runner";
 export { CloudAuthClient } from "./cloud-auth/client";

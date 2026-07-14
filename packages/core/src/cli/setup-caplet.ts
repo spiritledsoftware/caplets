@@ -1,5 +1,4 @@
-import type { CapletConfig } from "../config";
-import { loadConfig, resolveConfigPath, resolveProjectConfigPath } from "../config";
+import { loadConfigWithSources, resolveConfigPath, resolveProjectConfigPath } from "../config";
 import { CapletsError } from "../errors";
 import { capletSetupContentHash } from "../setup/hash";
 import { LocalSetupStore } from "../setup/local-store";
@@ -30,7 +29,8 @@ export async function runCapletSetupCli(
 
   const configPath = options.configPath ?? resolveConfigPath();
   const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
-  const config = loadConfig(configPath, projectConfigPath);
+  const loaded = loadConfigWithSources(configPath, projectConfigPath);
+  const config = loaded.config;
   const caplet = Object.values({
     ...config.mcpServers,
     ...config.openapiEndpoints,
@@ -45,15 +45,14 @@ export async function runCapletSetupCli(
     return `No setup metadata is defined for ${caplet.name} (${caplet.server}).\n`;
   }
 
-  const contentHash = capletSetupContentHash(caplet as CapletConfig);
+  const runtimeFingerprint = loaded.runtimeFingerprint?.caplets[caplet.server];
+  const contentHash = capletSetupContentHash(runtimeFingerprint);
   const projectFingerprint = "default";
   const store = new LocalSetupStore(options.baseDir ? { baseDir: options.baseDir } : {});
-  const existingApproval = await store.getApproval(
-    projectFingerprint,
-    caplet.server,
-    contentHash,
-    targetKind,
-  );
+  const existingApproval =
+    runtimeFingerprint?.persistenceEligible === false
+      ? undefined
+      : await store.getApproval(projectFingerprint, caplet.server, contentHash, targetKind);
   const actor: SetupActor = options.yes ? "cli-yes" : "cli-interactive";
   if (!existingApproval && !options.yes) {
     return [
@@ -71,7 +70,7 @@ export async function runCapletSetupCli(
     ].join("\n");
   }
 
-  if (options.yes && !existingApproval) {
+  if (options.yes && !existingApproval && runtimeFingerprint?.persistenceEligible !== false) {
     await store.approve({
       projectFingerprint,
       capletId: caplet.server,

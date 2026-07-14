@@ -1,4 +1,5 @@
 import { CapletsError } from "../errors";
+import type { DeclaredInputReader } from "./runtime-fingerprint";
 import type { CapletSource, CapletSourceFile } from "./types";
 import { normalizeCapletSourcePath } from "./types";
 
@@ -29,5 +30,27 @@ export class BundleCapletSource implements CapletSource {
       return undefined;
     }
     return this.files.get(normalized);
+  }
+
+  declaredInputReader(): DeclaredInputReader {
+    return {
+      read: (path) => {
+        const normalized = normalizeCapletSourcePath(path);
+        if (!normalized) return { state: "unreadable" };
+        const file = this.files.get(normalized);
+        return file
+          ? { state: "present", content: file.content, privateKey: normalized }
+          : { state: "missing", privateKey: normalized };
+      },
+      list: (root) => {
+        const normalized = normalizeCapletSourcePath(root);
+        if (!normalized) return { state: "unreadable" };
+        const prefix = `${normalized}/`;
+        const paths = [...this.files.keys()].filter((path) => path.startsWith(prefix)).sort();
+        return paths.length > 0
+          ? { state: "present", paths, privateKey: normalized }
+          : { state: "missing", privateKey: normalized };
+      },
+    };
   }
 }

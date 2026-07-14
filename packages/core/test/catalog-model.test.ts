@@ -106,7 +106,7 @@ describe("catalog model", () => {
     expect(first).toBe(second);
   });
 
-  it("derives readiness, workflow, task, warnings, and low-count display from existing data", () => {
+  it("derives readiness, workflow, warnings, and low-count display from existing data", () => {
     const source = normalizeCatalogSourceIdentity("community/tools");
     if (!source.eligible) throw new Error("expected source to be eligible");
 
@@ -119,7 +119,6 @@ describe("catalog model", () => {
       trustLevel: "community",
       contentMarkdown: "# Deploy\n\nUse this to deploy.",
       tags: ["Deploy", "deploy", "ci"],
-      useWhen: "Deploy the current project.",
       setupRequired: true,
       authRequired: true,
       projectBindingRequired: true,
@@ -136,7 +135,6 @@ describe("catalog model", () => {
     expect(entry.projectBindingReadiness).toBe("required");
     expect(entry.workflow).toEqual({ kind: "code_mode", label: "Code Mode" });
     expect(entry.children ?? []).toEqual([]);
-    expect(entry.intendedTask).toBe("Deploy the current project.");
     expect(entry.installCommand).toEqual({
       text: "caplets install community/tools deploy",
       copyable: false,

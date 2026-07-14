@@ -18,17 +18,14 @@ openapiEndpoint:
 
 # PyPI Registry
 
-Use this Caplet when the agent needs public PyPI package facts before choosing dependencies, checking versions, inspecting release files, or validating package metadata.
+## Package lookup
 
-## First Workflow
+- `get_project` returns current project metadata, release history, project URLs, and vulnerability records included by PyPI.
+- `get_release` provides details for an exact project version.
+- `get_simple_project` provides Simple API file links and hashes for dependency tooling.
 
-1. Use `get_project` for current project metadata, release history, URLs, and vulnerability records included by PyPI.
-2. Use `get_release` when an exact version matters.
-3. Use `get_simple_project` when dependency tooling needs Simple API file links and hashes.
-4. Pair registry facts with the local lockfile, Python environment, and tests before changing dependencies.
+Cross-check registry results against the repository lockfile, the active Python environment, and tests before changing dependencies.
 
-## Operate Carefully
+## Limits
 
-- PyPI metadata is read-only but not a full supply-chain assessment.
-- Use OSV for cross-ecosystem vulnerability checks and local tooling for the actually installed version.
-- Deprecated XML-RPC APIs are intentionally excluded; use these JSON endpoints for agent workflows.
+PyPI metadata is read-only, can become stale, and is not a complete supply-chain assessment. Verify the version that is actually installed locally. Deprecated XML-RPC APIs are intentionally excluded; the supported operations use PyPI's JSON and Simple API endpoints.

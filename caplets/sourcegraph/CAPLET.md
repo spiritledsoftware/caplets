@@ -16,17 +16,14 @@ mcpServer:
 
 # Sourcegraph
 
-Use this Caplet when the agent needs broad code search, repository navigation, or cross-repository context from Sourcegraph.
+## Search scope
 
-## First Workflow
+Build queries around a precise symbol, file path, package name, migration pattern, or repository filter. Inspect representative matches before drawing conclusions across repositories, and retain enough surrounding source context for review.
 
-1. Start with a precise symbol, file path, package name, migration pattern, or repository filter.
-2. Inspect representative matches before generalizing across repositories.
-3. Use references and examples to guide local implementation, then verify against the target repo.
-4. Bring back code-search evidence with enough source context for review or planning.
+## Using search evidence
 
-## Operate Carefully
+Sourcegraph references and examples can inform local implementation or planning, but they should be verified against the target repository. Results are only as current as the indexed revision.
 
-- Sourcegraph answers are only as current as the indexed repositories.
-- Do not use broad search as a substitute for reading the local repository when it is available.
-- For self-managed Sourcegraph, make sure the runtime is pointed at the intended host before using private code search.
+## Host and privacy boundary
+
+For self-managed Sourcegraph, configure the runtime for the intended host before searching private code. Confirm that the connected instance and repository scope are appropriate for the code being investigated.

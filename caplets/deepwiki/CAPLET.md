@@ -14,16 +14,10 @@ mcpServer:
 
 # DeepWiki
 
-Use this Caplet when the agent needs repository-level explanations or architecture context for an unfamiliar codebase before making implementation decisions.
+## Research guidance
 
-## First Workflow
+DeepWiki is most useful for a specific repository, subsystem, file, or concept. Focused questions produce more actionable architecture facts, terminology, and code pointers than broad requests about an entire project.
 
-1. Ask about a specific repository, subsystem, file, or concept rather than the whole project.
-2. Use DeepWiki to build orientation, then verify critical claims against source code or official docs.
-3. Bring back concise architecture facts, terminology, and code pointers that affect the task.
+## Verification
 
-## Operate Carefully
-
-- Treat DeepWiki as a research and orientation source, not final proof for code changes.
-- Do not use it when the local repository is already available and direct code search or tests can answer the question.
-- Re-check version-sensitive details against the current upstream repository when correctness matters.
+DeepWiki provides orientation rather than final proof for code changes. Verify critical claims against source code or official documentation, and re-check version-sensitive details against the current upstream repository when correctness matters.

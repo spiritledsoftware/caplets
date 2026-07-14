@@ -40,18 +40,12 @@ googleDiscoveryApi:
 
 # Google Meet
 
-Use this Caplet when an agent needs to create an app-managed Meet space or inspect meeting records, participants, recordings, transcripts, or smart notes.
+## Meeting prerequisites
 
-## First Workflow
+Start with a Meet space, conference record, meeting code, or newly created space. Inspect the conference record and participant list before accessing recordings, transcripts, or smart notes. Limit transcript entries and smart notes to the time range and topic the operator needs.
 
-1. Start from a Meet space, conference record, meeting code, or newly created space.
-2. Inspect the conference record and participant list before reading recordings, transcripts, or smart notes.
-3. Read transcript entries or smart notes only for the time range and topic needed by the user.
-4. Patch or end an active conference only for app-created spaces and only when the user intent is explicit.
-
-## Operate Carefully
+## Safe operation and limits
 
 - Meeting records, transcripts, recordings, and smart notes can contain sensitive personal and business information. Keep reads narrow.
-- Creating, patching, or ending Meet spaces changes live collaboration state. Confirm meeting ownership and timing before mutating.
-- This Caplet avoids organization-wide Meet settings and only exposes app-created space management plus read-only meeting record inspection.
-- Prefer Calendar when the user needs scheduling, invites, guest lists, or event lifecycle management.
+- Creating, patching, or ending Meet spaces changes live collaboration state. Confirm meeting ownership, timing, and operator intent before a mutation.
+- Space mutations are limited to app-created spaces. The exposed meeting-record operations are read-only, and organization-wide Meet settings are not available.

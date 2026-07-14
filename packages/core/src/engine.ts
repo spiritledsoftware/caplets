@@ -15,9 +15,14 @@ import {
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectConfigPath,
+  runtimeFingerprintForConfig,
   vaultResolverForAuthDir,
 } from "./config";
 import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
+import {
+  resolvedExecutionFingerprintForConfig,
+  type DeclaredInputReader,
+} from "./caplet-source/runtime-fingerprint";
 import { DownstreamManager } from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
@@ -74,6 +79,7 @@ export type CapletsEngineOptions = {
     projectConfigPath: string,
     options?: { writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined },
   ) => CapletsConfig;
+  declaredInputReader?: DeclaredInputReader | undefined;
   observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
   observedOutputShapeScope?: ObservedOutputShapeKey["scope"] | undefined;
   observedOutputShapeCacheDir?: string | undefined;
@@ -121,6 +127,8 @@ export class CapletsEngine {
   private readonly watchEnabled: boolean;
   private readonly writeErr: (value: string) => void;
   private readonly configLoader: NonNullable<CapletsEngineOptions["configLoader"]>;
+  private readonly declaredInputReader: DeclaredInputReader | undefined;
+  private readonly requireValidCustomFingerprint: boolean;
   private readonly observedOutputShapeStore: ObservedOutputShapeStore | undefined;
   private readonly observedOutputShapeScope: ObservedOutputShapeKey["scope"];
   private readonly projectFingerprint: string | undefined;
@@ -135,6 +143,8 @@ export class CapletsEngine {
   private reloading: Promise<boolean> | undefined;
   private pendingReload = false;
   private closed = false;
+  private stableHostConfigurationFingerprint: string;
+  private resolvedExecutionFingerprint: string;
 
   constructor(options: CapletsEngineOptions = {}) {
     this.paths = {
@@ -144,7 +154,12 @@ export class CapletsEngine {
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
     this.configLoader =
       options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
+    this.declaredInputReader = options.declaredInputReader;
+    this.requireValidCustomFingerprint = options.configLoader !== undefined;
     const config = this.loadConfigWithWarnings();
+    this.stableHostConfigurationFingerprint =
+      runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
+    this.resolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(config);
     this.registry = new ServerRegistry(config);
     this.telemetry = createRuntimeTelemetryContext({
       config: this.registry.config,
@@ -545,15 +560,26 @@ export class CapletsEngine {
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
       return false;
     }
-
     if (this.closed) {
       return false;
+    }
+
+    const nextStableHostConfigurationFingerprint =
+      runtimeFingerprintForConfig(nextConfig).hostConfigurationFingerprint;
+    const nextResolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(nextConfig);
+    if (
+      nextStableHostConfigurationFingerprint === this.stableHostConfigurationFingerprint &&
+      nextResolvedExecutionFingerprint === this.resolvedExecutionFingerprint
+    ) {
+      return true;
     }
     const previousConfig = this.registry.config;
     const nextRegistry = new ServerRegistry(nextConfig);
     this.registry = nextRegistry;
     this.exposureGeneration += 1;
     this.telemetry.config = nextConfig;
+    this.stableHostConfigurationFingerprint = nextStableHostConfigurationFingerprint;
+    this.resolvedExecutionFingerprint = nextResolvedExecutionFingerprint;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
     this.googleDiscovery.updateRegistry(nextRegistry);
@@ -581,11 +607,19 @@ export class CapletsEngine {
   }
 
   private loadConfigWithWarnings(): CapletsConfig {
-    return this.configLoader(this.paths.configPath, this.paths.projectConfigPath, {
+    const config = this.configLoader(this.paths.configPath, this.paths.projectConfigPath, {
       writeWarning: (warning) => {
         this.writeErr(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
       },
     });
+    const runtimeFingerprint = runtimeFingerprintForConfig(config, this.declaredInputReader);
+    if (this.requireValidCustomFingerprint && !runtimeFingerprint.valid) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "Caplets runtime references must be present and readable.",
+      );
+    }
+    return config;
   }
 
   private async reloadUntilSettled(): Promise<boolean> {

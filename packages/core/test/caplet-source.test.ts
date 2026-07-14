@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -118,6 +118,22 @@ describe("CapletSource adapters", () => {
     await expect(source.readFile("../outside.yaml")).resolves.toBeUndefined();
   });
 
+  it("derives declared inputs from listed files for custom sources without a reader", async () => {
+    const files = await new BundleCapletSource(fixtureFiles).listFiles();
+    const source = {
+      listFiles: async () => files,
+      readFile: async (path: string) => files.find((file) => file.path === path),
+    };
+
+    const parsed = await parseCapletSource(source);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.runtimeFingerprint?.valid).toBe(true);
+    expect(parsed.runtimeFingerprint?.caplets.weather?.declaredInputs).toEqual([
+      expect.objectContaining({ logicalPath: "weather/openapi.yaml", state: "present" }),
+    ]);
+  });
+
   it("list and read normalized relative files for filesystems", async () => {
     const root = writeFixtureTree();
     const source = new FilesystemCapletSource(root);
@@ -135,6 +151,35 @@ describe("CapletSource adapters", () => {
       content: fixtureFiles[5]!.content,
     });
     await expect(source.readFile("/absolute.js")).resolves.toBeUndefined();
+  });
+
+  it("does not replace source paths with directory-symlink aliases", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-source-symlink-"));
+    tempDirs.push(root);
+    mkdirSync(join(root, "sourcegraph"), { recursive: true });
+    mkdirSync(join(root, "toolkit", "caplets"), { recursive: true });
+    writeFileSync(
+      join(root, "sourcegraph", "CAPLET.md"),
+      "---\nname: Sourcegraph\ndescription: Search source code.\nmcpServer:\n  url: https://example.com/mcp\n---\n",
+    );
+    writeFileSync(
+      join(root, "toolkit", "CAPLET.md"),
+      "---\nname: Toolkit\ndescription: Group source tools.\ncapletSet:\n  capletsRoot: ./caplets\n---\n",
+    );
+    symlinkSync(join(root, "sourcegraph"), join(root, "toolkit", "caplets", "sourcegraph"), "dir");
+
+    const source = new FilesystemCapletSource(root);
+
+    await expect(source.listFiles()).resolves.toEqual([
+      expect.objectContaining({ path: "sourcegraph/CAPLET.md" }),
+      expect.objectContaining({ path: "toolkit/CAPLET.md" }),
+    ]);
+    expect(source.declaredInputReader().list("toolkit/caplets")).toEqual(
+      expect.objectContaining({
+        state: "present",
+        paths: ["toolkit/caplets/sourcegraph/CAPLET.md"],
+      }),
+    );
   });
 
   it("parses equivalent bundle and filesystem multi-file Caplets identically", async () => {

@@ -100,8 +100,6 @@ export type CatalogEntryInput = {
   contentMarkdown?: string | undefined;
   icon?: CatalogIcon | undefined;
   tags?: string[] | undefined;
-  useWhen?: string | undefined;
-  avoidWhen?: string | undefined;
   setupRequired?: boolean | undefined;
   authRequired?: boolean | undefined;
   projectBindingRequired?: boolean | undefined;
@@ -132,8 +130,6 @@ export type CatalogEntry = {
   contentMarkdown?: string | undefined;
   icon?: CatalogIcon | undefined;
   tags: string[];
-  intendedTask: string | "unknown";
-  avoidWhen?: string | undefined;
   setupReadiness: CatalogReadiness;
   authReadiness: CatalogReadiness;
   projectBindingReadiness: CatalogReadiness;

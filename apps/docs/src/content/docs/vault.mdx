@@ -39,9 +39,13 @@ $vault:GH_TOKEN
 ${vault:GH_TOKEN}
 ```
 
-Vault interpolation applies where runtime config values are resolved. Public metadata such
-as Caplet names, descriptions, tags, and Markdown body text keeps the literal reference
-text instead of resolving to a secret.
+Vault interpolation applies only where supported runtime frontmatter or configuration values
+are resolved. Presentation fields such as names, descriptions, and tags keep vault-looking
+text literal.
+
+The Markdown body is a separately rendered human operator README, not runtime configuration
+or agent context. Vault-looking text, paths, links, and other configuration-like literals in
+the body are never interpolated and cannot define or override runtime values.
 
 ## Set a local value
 

@@ -34,18 +34,13 @@ mcpServer:
 
 # MongoDB
 
-Use this Caplet when an agent needs MongoDB database, collection, schema, index, query, sample document, or Atlas operational context.
+## Query Scope
 
-## First Workflow
+Before querying data, establish the cluster, database, collection, Atlas project, environment, and read-only intent. Schema samples, indexes, query plans, and collection metadata provide context for proposed query or index changes. Small result windows and projections limited to necessary fields reduce exposure.
 
-1. Start by confirming the cluster, database, collection, Atlas project, environment, and read-only intent before querying data.
-2. Inspect schema samples, indexes, query plans, and collection metadata before recommending query or index changes.
-3. Keep result windows small and project only the fields needed to answer the question.
-4. Summarize proposed writes, index changes, Atlas actions, or migration steps before removing `--readOnly` or changing credentials.
-
-## Operate Carefully
+## Safe Operation
 
 - The catalog entry starts MongoDB MCP with `--readOnly` and a Vault-backed connection string by default.
-- MongoDB data can contain production records, PII, secrets, and customer information. Avoid broad scans and redact sensitive fields in summaries.
-- For Atlas API workflows, configure the upstream server with least-privilege Atlas service account credentials instead of a database connection string.
-- Avoid this Caplet when the task only needs local ODM models, migrations, or application code.
+- Removing `--readOnly`, changing credentials, writing data, changing indexes, or performing Atlas actions requires review of the proposed target and effect.
+- MongoDB data can contain production records, PII, secrets, and customer information. Broad scans should be avoided, and sensitive fields should be redacted from summaries.
+- Atlas API access should use least-privilege Atlas service account credentials instead of a database connection string.

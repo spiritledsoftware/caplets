@@ -1,28 +1,42 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   accessSync,
   constants,
+  closeSync,
   copyFileSync,
-  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  linkSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
+  writeFileSync,
   type Stats,
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { discoverCapletFiles, loadCapletFilesWithPaths, validateCapletFile } from "../caplet-files";
+import {
+  discoverCapletFiles,
+  loadCapletFilesFromMap,
+  loadCapletFilesWithPaths,
+  validateCapletFile,
+} from "../caplet-files";
 import type { CapletFileConfig } from "../caplet-files";
+import {
+  createMemoryDeclaredInputReader,
+  createRuntimeFingerprintSnapshot,
+  type RuntimeFingerprintSnapshot,
+} from "../caplet-source";
+import { parseConfig } from "../config-runtime";
 import { resolveProjectCapletsRoot } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import { CapletsError, toSafeError } from "../errors";
@@ -46,11 +60,17 @@ import {
   type CatalogWorkflowSummary,
 } from "../catalog";
 import {
+  replaceCapletsLockfileTemporary,
+  parseCapletsLockfile,
   readCapletsLockfile,
   validateLockfileDestination,
   writeCapletsLockfile,
+  writeCapletsLockfileAtomically,
+  writeCapletsLockfileTemporary,
   type CapletsLockEntry,
+  type CapletsLockRuntimeFingerprint,
   type CapletsLockSource,
+  type CapletsLockfile,
 } from "./lockfile";
 
 export type InstallableCaplet = {
@@ -59,7 +79,7 @@ export type InstallableCaplet = {
   destination: string;
   kind: "file" | "directory";
   hash?: string | undefined;
-  status?: "installed" | "restored" | "updated" | "noop" | undefined;
+  status?: "installed" | "restored" | "updated" | "content_updated" | "noop" | undefined;
   lockfile?: string | undefined;
   catalogIndexing?: CatalogIndexingResult | undefined;
   vaultSetup?: unknown;
@@ -77,15 +97,62 @@ type LockedSourceResolution = {
   cleanup: () => void;
 };
 
+export type CapletTransactionPhase =
+  | "prepared"
+  | "staged"
+  | "backup_created"
+  | "destination_replaced"
+  | "lock_temporary_written"
+  | "lock_replaced";
+
+export type InstallTransactionDependencies = {
+  writeLockfileTemporary?: (path: string, lockfile: CapletsLockfile, temporaryPath: string) => void;
+  replaceLockfileTemporary?: (path: string, temporaryPath: string) => void;
+  cleanupTransaction?: () => void;
+  onTransactionPhase?: (phase: CapletTransactionPhase) => "interrupt" | void;
+};
+
+type CapletArtifactTransactionJournal = {
+  version: 1;
+  entryId: string;
+  destination: string;
+  hadDestination: boolean;
+  beforeEntry: CapletsLockEntry;
+  afterEntry: CapletsLockEntry;
+  beforeHash?: string | undefined;
+  afterHash: string;
+  phase: CapletTransactionPhase;
+};
+
+type CandidateArtifact = {
+  plan: InstallPlan;
+  transactionPaths: CapletTransactionPaths;
+  stagedPath: string;
+  artifactHash: string;
+  runtimeSnapshot: RuntimeFingerprintSnapshot;
+  risk: CapletsLockEntry["risk"];
+};
+
+type InstallCapletsOptions = {
+  capletIds?: string[];
+  destinationRoot?: string;
+  force?: boolean;
+  lockfilePath?: string | undefined;
+  now?: Date | undefined;
+};
+
 export function installCaplets(
   repo: string,
-  options: {
-    capletIds?: string[];
-    destinationRoot?: string;
-    force?: boolean;
-    lockfilePath?: string | undefined;
-    now?: Date | undefined;
-  } = {},
+  options: InstallCapletsOptions = {},
+): { installed: InstallableCaplet[] } {
+  return options.lockfilePath
+    ? withLockfileTransaction(options.lockfilePath, () => installCapletsUnlocked(repo, options))
+    : installCapletsUnlocked(repo, options);
+}
+
+function installCapletsUnlocked(
+  repo: string,
+  options: InstallCapletsOptions = {},
 ): { installed: InstallableCaplet[] } {
   const source = resolveInstallSource(repo);
   try {
@@ -149,55 +216,150 @@ export function installCaplets(
   }
 }
 
-export function restoreCapletsFromLockfile(options: {
+type TransactionLockMetadata = {
+  pid: number;
+  acquiredAt: string;
+  ownerToken: string;
+};
+
+function withLockfileTransaction<T>(lockfilePath: string, operation: () => T): T {
+  const path = `${lockfilePath}.transaction.lock`;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const owner: TransactionLockMetadata = {
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+    ownerToken: randomUUID(),
+  };
+  const recoveryPath = recoverDeadTransactionLock(path, owner);
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, "wx", 0o600);
+    writeFileSync(descriptor, `${JSON.stringify(owner)}\n`);
+  } catch (error) {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+      rmSync(path, { force: true });
+    }
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Another Caplets install, restore, or update holds ${path}; if no operation is running, remove the lock and retry`,
+      toSafeError(error),
+    );
+  } finally {
+    if (recoveryPath) rmSync(recoveryPath, { force: true });
+  }
+  try {
+    return operation();
+  } finally {
+    closeSync(descriptor);
+    const currentOwner = readTransactionLockMetadata(path);
+    if (currentOwner?.ownerToken === owner.ownerToken) rmSync(path, { force: true });
+  }
+}
+
+function recoverDeadTransactionLock(
+  path: string,
+  recoveringOwner: TransactionLockMetadata,
+): string | undefined {
+  if (!existsSync(path)) return undefined;
+  const existingOwner = readTransactionLockMetadata(path);
+  if (!existingOwner || !isDeadProcess(existingOwner.pid)) return undefined;
+
+  const recoveryPath = `${path}.recovery`;
+  if (existsSync(recoveryPath)) {
+    const recoveryOwner = readTransactionLockMetadata(recoveryPath);
+    if (!recoveryOwner || !isDeadProcess(recoveryOwner.pid)) return undefined;
+    rmSync(recoveryPath, { force: true });
+  }
+
+  try {
+    linkSync(path, recoveryPath);
+  } catch {
+    return undefined;
+  }
+  try {
+    const claimedOwner = readTransactionLockMetadata(recoveryPath);
+    if (!claimedOwner || !isDeadProcess(claimedOwner.pid)) return undefined;
+    writeFileSync(recoveryPath, `${JSON.stringify(recoveringOwner)}\n`, { mode: 0o600 });
+    const lockStats = lstatSync(path);
+    const recoveryStats = lstatSync(recoveryPath);
+    if (lockStats.dev !== recoveryStats.dev || lockStats.ino !== recoveryStats.ino) {
+      return undefined;
+    }
+    rmSync(path);
+    return recoveryPath;
+  } finally {
+    if (existsSync(path)) rmSync(recoveryPath, { force: true });
+  }
+}
+
+function readTransactionLockMetadata(path: string): TransactionLockMetadata | undefined {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (
+      !isRecord(value) ||
+      !Number.isSafeInteger(value.pid) ||
+      (value.pid as number) <= 0 ||
+      typeof value.acquiredAt !== "string"
+    ) {
+      return undefined;
+    }
+    return {
+      pid: value.pid as number,
+      acquiredAt: value.acquiredAt,
+      ownerToken: typeof value.ownerToken === "string" ? value.ownerToken : "",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isDeadProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+type RestoreCapletsOptions = {
   destinationRoot?: string;
   lockfilePath: string;
   force?: boolean;
   capletIds?: string[] | undefined;
   now?: Date | undefined;
-}): { installed: InstallableCaplet[] } {
-  const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
-  const lockfile = readCapletsLockfile(options.lockfilePath);
-  const selectedIds = new Set(options.capletIds ?? []);
-  const entries = lockfile.entries.filter(
-    (entry) => selectedIds.size === 0 || selectedIds.has(entry.id),
-  );
-  const missing = [...selectedIds].filter(
-    (id) => !lockfile.entries.some((entry) => entry.id === id),
-  );
-  if (missing.length > 0) {
-    throw new CapletsError(
-      "CONFIG_NOT_FOUND",
-      `Caplet ${missing.join(", ")} not found in lockfile`,
-    );
-  }
-  if (entries.length === 0) {
-    throw new CapletsError(
-      "CONFIG_NOT_FOUND",
-      `No Caplets found in lockfile ${options.lockfilePath}`,
-    );
-  }
+};
 
+export function restoreCapletsFromLockfile(
+  options: RestoreCapletsOptions,
+  dependencies: InstallTransactionDependencies = {},
+): { installed: InstallableCaplet[] } {
+  return withLockfileTransaction(options.lockfilePath, () =>
+    restoreCapletsFromLockfileUnlocked(options, dependencies),
+  );
+}
+
+function restoreCapletsFromLockfileUnlocked(
+  options: RestoreCapletsOptions,
+  dependencies: InstallTransactionDependencies,
+): { installed: InstallableCaplet[] } {
+  const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
+  recoverInterruptedCapletTransactions({
+    lockfilePath: options.lockfilePath,
+    destinationRoot,
+    dependencies,
+  });
+  const lockfile = readCapletsLockfile(options.lockfilePath);
+  const entries = selectedLockEntries(lockfile, options.capletIds, options.lockfilePath);
   const nextEntries = new Map(lockfile.entries.map((entry) => [entry.id, entry]));
   const results: InstallableCaplet[] = [];
   for (const entry of entries) {
     const destination = validateLockfileDestination(destinationRoot, entry.destination);
     const existing = lstatIfExists(destination);
-    if (existing) {
-      const currentHash = hashInstalledArtifact(destination);
-      if (currentHash === entry.installedHash) {
-        results.push({
-          id: entry.id,
-          source: lockSourceDisplay(entry.source),
-          destination,
-          kind: entry.kind,
-          hash: currentHash,
-          status: "noop",
-          lockfile: options.lockfilePath,
-        });
-        continue;
-      }
-      if (!options.force) {
+    const currentHash = existing ? hashInstalledArtifact(destination) : undefined;
+    if (currentHash !== undefined) {
+      if (currentHash !== entry.installedHash && !options.force) {
         throw new CapletsError(
           "CONFIG_EXISTS",
           `Caplet ${entry.id} has local modifications at ${destination}; pass --force to replace it`,
@@ -206,99 +368,81 @@ export function restoreCapletsFromLockfile(options: {
     }
 
     const lockedSource = resolveLockedSource(entry.source);
+    let candidate: CandidateArtifact | undefined;
     try {
-      const plan: InstallPlan = {
-        id: entry.id,
-        source: lockSourceDisplay(entry.source),
-        sourcePath: lockedSource.sourcePath,
-        sourceBoundary: dirname(lockedSource.sourcePath),
-        destination,
-        kind: entry.kind,
-      };
-      preflightInstallCaplets(
-        [
-          {
-            id: entry.id,
-            path:
-              entry.kind === "directory"
-                ? join(lockedSource.sourcePath, "CAPLET.md")
-                : lockedSource.sourcePath,
-          },
-        ],
-        {
-          destinationRoot,
-          force: true,
-          repoRoot: lockedSource.repoRoot,
-          sourceId: lockSourceDisplay(entry.source),
-        },
-      );
-      installOneCaplet(plan, { force: true });
-      const hash = hashInstalledArtifact(destination);
-      if (hash !== entry.installedHash) {
-        nextEntries.set(entry.id, {
-          ...entry,
-          installedHash: hash,
-          updatedAt: (options.now ?? new Date()).toISOString(),
-        });
-        writeCapletsLockfile(options.lockfilePath, {
-          version: 1,
-          entries: [...nextEntries.values()],
-        });
+      const plan = lockedInstallPlan(entry, destination, lockedSource);
+      candidate = stageAndValidateCandidate(plan, options.lockfilePath);
+      if (candidate.artifactHash !== entry.installedHash) {
+        throw new CapletsError(
+          "CONFIG_INVALID",
+          `Locked source for ${entry.id} has changed; run caplets update to accept it`,
+        );
       }
-      results.push({
-        id: entry.id,
-        source: lockSourceDisplay(entry.source),
-        destination,
-        kind: entry.kind,
-        hash,
-        status: "restored",
-        lockfile: options.lockfilePath,
-      });
+      const status =
+        currentHash === entry.installedHash && candidate.artifactHash === entry.installedHash
+          ? "noop"
+          : "restored";
+      const finalizingCandidate = candidate;
+      candidate = undefined;
+      results.push(
+        finalizeStagedCandidate({
+          lockfilePath: options.lockfilePath,
+          entry,
+          candidate: finalizingCandidate,
+          status,
+          nextEntries,
+          now: options.now,
+          dependencies,
+        }),
+      );
     } finally {
+      if (candidate) {
+        removeInstallPath(candidate.stagedPath, `staged Caplet ${entry.id}`, true);
+      }
       lockedSource.cleanup();
     }
   }
   return { installed: results };
 }
 
-export function updateCapletsFromLockfile(options: {
+type UpdateCapletsOptions = {
   destinationRoot?: string;
   lockfilePath: string;
   force?: boolean;
   allowRiskIncrease?: boolean;
   capletIds?: string[] | undefined;
   now?: Date | undefined;
-}): { installed: InstallableCaplet[] } {
-  const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
-  const lockfile = readCapletsLockfile(options.lockfilePath);
-  const selectedIds = new Set(options.capletIds ?? []);
-  const entries = lockfile.entries.filter(
-    (entry) => selectedIds.size === 0 || selectedIds.has(entry.id),
-  );
-  const missing = [...selectedIds].filter(
-    (id) => !lockfile.entries.some((entry) => entry.id === id),
-  );
-  if (missing.length > 0) {
-    throw new CapletsError(
-      "CONFIG_NOT_FOUND",
-      `Caplet ${missing.join(", ")} not found in lockfile`,
-    );
-  }
-  if (entries.length === 0) {
-    throw new CapletsError(
-      "CONFIG_NOT_FOUND",
-      `No Caplets found in lockfile ${options.lockfilePath}`,
-    );
-  }
+};
 
+export function updateCapletsFromLockfile(
+  options: UpdateCapletsOptions,
+  dependencies: InstallTransactionDependencies = {},
+): { installed: InstallableCaplet[] } {
+  return withLockfileTransaction(options.lockfilePath, () =>
+    updateCapletsFromLockfileUnlocked(options, dependencies),
+  );
+}
+
+function updateCapletsFromLockfileUnlocked(
+  options: UpdateCapletsOptions,
+  dependencies: InstallTransactionDependencies,
+): { installed: InstallableCaplet[] } {
+  const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
+  recoverInterruptedCapletTransactions({
+    lockfilePath: options.lockfilePath,
+    destinationRoot,
+    dependencies,
+  });
+  const lockfile = readCapletsLockfile(options.lockfilePath);
+  const entries = selectedLockEntries(lockfile, options.capletIds, options.lockfilePath);
   const allowRiskIncrease = options.allowRiskIncrease ?? options.force ?? false;
   const nextEntries = new Map(lockfile.entries.map((entry) => [entry.id, entry]));
   const results: InstallableCaplet[] = [];
   for (const entry of entries) {
     const destination = validateLockfileDestination(destinationRoot, entry.destination);
     const existing = lstatIfExists(destination);
-    if (existing) {
-      const currentHash = hashInstalledArtifact(destination);
+    const currentHash = existing ? hashInstalledArtifact(destination) : undefined;
+    if (currentHash !== undefined) {
       if (currentHash !== entry.installedHash && !options.force) {
         throw new CapletsError(
           "CONFIG_EXISTS",
@@ -308,105 +452,653 @@ export function updateCapletsFromLockfile(options: {
     }
 
     const lockedSource = resolveLockedSource(entry.source, { useResolvedRevision: false });
+    let candidate: CandidateArtifact | undefined;
     try {
       if (!existsSync(lockedSource.sourcePath)) {
         throw new CapletsError("CONFIG_NOT_FOUND", `Locked source for ${entry.id} is unavailable`);
       }
       const nextSource = refreshedLockSource(entry.source, lockedSource);
-      const sourceHash =
-        entry.kind === "directory"
-          ? hashDirectoryCapletInstallSource(
-              lockedSource.sourcePath,
-              realpathSync(dirname(lockedSource.sourcePath)),
-            )
-          : hashInstalledArtifact(lockedSource.sourcePath);
-      const nextRisk = riskSummaryForSourcePath(lockedSource.sourcePath);
-      if (existing && sourceHash === entry.installedHash && !options.force) {
-        const sourceChanged = !sameLockSource(entry.source, nextSource);
-        const riskChanged = !sameLockRisk(entry.risk, nextRisk);
-        if (sourceChanged || riskChanged) {
-          nextEntries.set(entry.id, {
-            ...entry,
-            source: nextSource,
-            risk: nextRisk,
-            updatedAt: (options.now ?? new Date()).toISOString(),
-          });
-          writeCapletsLockfile(options.lockfilePath, {
-            version: 1,
-            entries: [...nextEntries.values()],
-          });
+      const plan = lockedInstallPlan(entry, destination, lockedSource);
+      candidate = stageAndValidateCandidate(plan, options.lockfilePath);
+
+      let status: "noop" | "content_updated" | "updated";
+      if (currentHash === entry.installedHash && candidate.artifactHash === entry.installedHash) {
+        status = "noop";
+      } else {
+        const installedFingerprint = existing
+          ? fingerprintInstalledArtifact(entry, destination)?.artifactFingerprint
+          : undefined;
+        status =
+          installedFingerprint !== undefined &&
+          installedFingerprint === candidate.runtimeSnapshot.artifactFingerprint
+            ? "content_updated"
+            : "updated";
+        if (
+          status === "updated" &&
+          !allowRiskIncrease &&
+          riskIncrease(entry.risk, candidate.risk)
+        ) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            `Caplet ${entry.id} update changes its risk profile; pass --force to update it`,
+          );
         }
-        results.push({
-          id: entry.id,
-          source: lockSourceDisplay(entry.source),
-          destination,
-          kind: entry.kind,
-          hash: entry.installedHash,
-          status: "noop",
-          lockfile: options.lockfilePath,
-        });
-        continue;
-      }
-      if (!allowRiskIncrease && riskIncrease(entry.risk, nextRisk)) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          `Caplet ${entry.id} update changes its risk profile; pass --force to update it`,
-        );
       }
 
-      const plan: InstallPlan = {
-        id: entry.id,
-        source: lockSourceDisplay(entry.source),
-        sourcePath: lockedSource.sourcePath,
-        sourceBoundary: dirname(lockedSource.sourcePath),
-        destination,
-        kind: entry.kind,
-      };
-      preflightInstallCaplets(
-        [
-          {
-            id: entry.id,
-            path:
-              entry.kind === "directory"
-                ? join(lockedSource.sourcePath, "CAPLET.md")
-                : lockedSource.sourcePath,
-          },
-        ],
-        {
-          destinationRoot,
-          force: true,
-          repoRoot: lockedSource.repoRoot,
-          sourceId: lockSourceDisplay(entry.source),
-        },
+      const finalizingCandidate = candidate;
+      candidate = undefined;
+      results.push(
+        finalizeStagedCandidate({
+          lockfilePath: options.lockfilePath,
+          entry,
+          source: nextSource,
+          candidate: finalizingCandidate,
+          status,
+          nextEntries,
+          now: options.now,
+          dependencies,
+        }),
       );
-      installOneCaplet(plan, { force: true });
-      const hash = hashInstalledArtifact(destination);
-      const now = (options.now ?? new Date()).toISOString();
-      nextEntries.set(entry.id, {
-        ...entry,
-        source: nextSource,
-        installedHash: hash,
-        updatedAt: now,
-        risk: nextRisk,
-      });
-      writeCapletsLockfile(options.lockfilePath, {
-        version: 1,
-        entries: [...nextEntries.values()],
-      });
-      results.push({
-        id: entry.id,
-        source: lockSourceDisplay(entry.source),
-        destination,
-        kind: entry.kind,
-        hash,
-        status: "updated",
-        lockfile: options.lockfilePath,
-      });
     } finally {
+      if (candidate) {
+        removeInstallPath(candidate.stagedPath, `staged Caplet ${entry.id}`, true);
+      }
       lockedSource.cleanup();
     }
   }
   return { installed: results };
+}
+function selectedLockEntries(
+  lockfile: CapletsLockfile,
+  capletIds: string[] | undefined,
+  lockfilePath: string,
+): CapletsLockEntry[] {
+  const selectedIds = new Set(capletIds ?? []);
+  const entries = lockfile.entries.filter(
+    (entry) => selectedIds.size === 0 || selectedIds.has(entry.id),
+  );
+  const missing = [...selectedIds].filter(
+    (id) => !lockfile.entries.some((entry) => entry.id === id),
+  );
+  if (missing.length > 0) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Caplet ${missing.join(", ")} not found in lockfile`,
+    );
+  }
+  if (entries.length === 0) {
+    throw new CapletsError("CONFIG_NOT_FOUND", `No Caplets found in lockfile ${lockfilePath}`);
+  }
+  return entries;
+}
+
+function lockedInstallPlan(
+  entry: CapletsLockEntry,
+  destination: string,
+  lockedSource: LockedSourceResolution,
+): InstallPlan {
+  return {
+    id: entry.id,
+    source: lockSourceDisplay(entry.source),
+    sourcePath: lockedSource.sourcePath,
+    sourceBoundary: dirname(lockedSource.sourcePath),
+    destination,
+    kind: entry.kind,
+  };
+}
+
+function stageAndValidateCandidate(plan: InstallPlan, lockfilePath: string): CandidateArtifact {
+  rejectUnsafeInstallParents(plan.destination);
+  makeInstallDirectory(dirname(plan.destination));
+  const paths = transactionPaths(lockfilePath, plan.destination, plan.id);
+  removeInstallPath(paths.stagedPath, `stale staged Caplet ${plan.id}`, true);
+  try {
+    copyInstallPath(plan, paths.stagedPath);
+    const runtimeSnapshot = fingerprintArtifact(plan.id, plan.kind, paths.stagedPath);
+    const artifactHash = hashInstalledArtifact(paths.stagedPath);
+    return {
+      plan,
+      transactionPaths: paths,
+      stagedPath: paths.stagedPath,
+      artifactHash,
+      runtimeSnapshot,
+      risk: riskSummaryForSourcePath(paths.stagedPath),
+    };
+  } catch (error) {
+    removeInstallPath(paths.stagedPath, `staged Caplet ${plan.id}`, true);
+    if (error instanceof CapletsError) throw error;
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Could not validate staged Caplet ${plan.id}`,
+      toSafeError(error),
+    );
+  }
+}
+
+function fingerprintInstalledArtifact(
+  entry: CapletsLockEntry,
+  destination: string,
+): RuntimeFingerprintSnapshot | undefined {
+  try {
+    return fingerprintArtifact(entry.id, entry.kind, destination);
+  } catch {
+    return undefined;
+  }
+}
+
+function fingerprintArtifact(
+  id: string,
+  kind: "file" | "directory",
+  artifactPath: string,
+): RuntimeFingerprintSnapshot {
+  const files: Array<{ path: string; content: string }> = [];
+  if (kind === "file") {
+    files.push({ path: `${id}.md`, content: readFileSync(artifactPath, "utf8") });
+  } else {
+    collectArtifactFiles(artifactPath, artifactPath, files);
+  }
+  const configFiles =
+    kind === "file"
+      ? files
+      : files.filter(
+          (file) => file.path === "CAPLET.md" || /(?:^|\/)[^/]+\/CAPLET\.md$/u.test(file.path),
+        );
+  const loaded = loadCapletFilesFromMap({ files: configFiles });
+  if (!loaded) {
+    throw new CapletsError("CONFIG_INVALID", `Staged Caplet ${id} has no loadable CAPLET.md`);
+  }
+  const config = parseConfig({ version: 1, ...loaded.config });
+  const contents = Object.fromEntries(files.map((file) => [file.path, file.content]));
+  return createRuntimeFingerprintSnapshot({
+    config,
+    provenance: Object.fromEntries(
+      Object.entries(loaded.paths).map(([runtimeId, sourcePath]) => [
+        runtimeId,
+        {
+          parentId: loaded.metadata?.[runtimeId]?.parentId ?? id,
+          ...(loaded.metadata?.[runtimeId]?.childId
+            ? { childId: loaded.metadata[runtimeId]?.childId }
+            : {}),
+          sourcePath,
+        },
+      ]),
+    ),
+    reader: createMemoryDeclaredInputReader(contents),
+  });
+}
+
+function collectArtifactFiles(
+  root: string,
+  current: string,
+  files: Array<{ path: string; content: string }>,
+): void {
+  for (const entry of readdirSync(current, { withFileTypes: true }).sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    const path = join(current, entry.name);
+    if (entry.isDirectory()) {
+      collectArtifactFiles(root, path, files);
+    } else if (entry.isFile()) {
+      files.push({
+        path: relative(root, path).split(sep).join("/"),
+        content: readFileSync(path, "utf8"),
+      });
+    }
+  }
+}
+
+function runtimeFingerprintForPersistence(
+  snapshot: RuntimeFingerprintSnapshot,
+): CapletsLockRuntimeFingerprint | undefined {
+  return snapshot.valid && snapshot.persistenceEligible
+    ? { version: 1, artifactFingerprint: snapshot.artifactFingerprint }
+    : undefined;
+}
+
+function sameLockEntryExceptUpdatedAt(
+  left: CapletsLockEntry,
+  right: Omit<CapletsLockEntry, "updatedAt"> & { updatedAt?: string },
+): boolean {
+  const { updatedAt: _leftUpdatedAt, ...leftComparable } = left;
+  const { updatedAt: _rightUpdatedAt, ...rightComparable } = right;
+  return JSON.stringify(leftComparable) === JSON.stringify(rightComparable);
+}
+
+type FinalizeStagedCandidateInput = {
+  lockfilePath: string;
+  entry: CapletsLockEntry;
+  source?: CapletsLockSource | undefined;
+  candidate: CandidateArtifact;
+  status: "restored" | "updated" | "content_updated" | "noop";
+  nextEntries: Map<string, CapletsLockEntry>;
+  now?: Date | undefined;
+  dependencies: InstallTransactionDependencies;
+};
+
+function finalizeStagedCandidate(input: FinalizeStagedCandidateInput): InstallableCaplet {
+  let cleanupCandidate = true;
+  try {
+    const runtimeFingerprint = runtimeFingerprintForPersistence(input.candidate.runtimeSnapshot);
+    const prospective = {
+      ...input.entry,
+      ...(input.source ? { source: input.source } : {}),
+      installedHash: input.candidate.artifactHash,
+      risk: input.candidate.risk,
+      ...(runtimeFingerprint ? { runtimeFingerprint } : { runtimeFingerprint: undefined }),
+    };
+    const lockChanged = !sameLockEntryExceptUpdatedAt(input.entry, prospective);
+    const afterEntry: CapletsLockEntry = {
+      ...prospective,
+      updatedAt: lockChanged ? (input.now ?? new Date()).toISOString() : input.entry.updatedAt,
+    };
+
+    if (input.status === "noop" && !lockChanged) {
+      removeInstallPath(input.candidate.stagedPath, `staged Caplet ${input.entry.id}`, true);
+      cleanupCandidate = false;
+    } else {
+      const updatedEntries = new Map(input.nextEntries);
+      updatedEntries.set(input.entry.id, afterEntry);
+      cleanupCandidate = false;
+      commitStagedCapletAndLock({
+        lockfilePath: input.lockfilePath,
+        currentLockfile: { version: 1, entries: [...updatedEntries.values()] },
+        beforeEntry: input.entry,
+        afterEntry,
+        candidate: input.candidate,
+        replaceDestination: input.status !== "noop",
+        dependencies: input.dependencies,
+      });
+      input.nextEntries.set(input.entry.id, afterEntry);
+    }
+
+    return {
+      id: input.entry.id,
+      source: lockSourceDisplay(input.entry.source),
+      destination: input.candidate.plan.destination,
+      kind: input.entry.kind,
+      hash: input.candidate.artifactHash,
+      status: input.status,
+      lockfile: input.lockfilePath,
+    };
+  } finally {
+    if (cleanupCandidate) {
+      removeInstallPath(input.candidate.stagedPath, `staged Caplet ${input.entry.id}`, true);
+    }
+  }
+}
+
+type CapletTransactionPaths = {
+  journalPath: string;
+  journalTemporaryPath: string;
+  stagedPath: string;
+  backupPath: string;
+  lockTemporaryPath: string;
+};
+
+type CommitStagedCapletInput = {
+  lockfilePath: string;
+  currentLockfile: CapletsLockfile;
+  beforeEntry: CapletsLockEntry;
+  afterEntry: CapletsLockEntry;
+  candidate: CandidateArtifact;
+  replaceDestination: boolean;
+  dependencies: InstallTransactionDependencies;
+};
+
+function transactionPaths(
+  lockfilePath: string,
+  destination: string,
+  id: string,
+): CapletTransactionPaths {
+  if (!SERVER_ID_PATTERN.test(id)) {
+    throw new CapletsError("CONFIG_INVALID", `Invalid Caplet transaction ID ${id}`);
+  }
+  const lockName = basename(lockfilePath || "caplets.lock.json");
+  const destinationName = basename(destination);
+  return {
+    journalPath: join(dirname(lockfilePath), `.${lockName}.caplet-txn-${id}.json`),
+    journalTemporaryPath: join(dirname(lockfilePath), `.${lockName}.caplet-txn-${id}.json.tmp`),
+    stagedPath: join(dirname(destination), `.${destinationName}.caplet-txn-${id}.stage`),
+    backupPath: join(dirname(destination), `.${destinationName}.caplet-txn-${id}.backup`),
+    lockTemporaryPath: join(dirname(lockfilePath), `.${lockName}.caplet-txn-${id}.lock.tmp`),
+  };
+}
+
+class CapletTransactionInterruption extends Error {}
+
+function persistTransactionPhase(
+  journal: CapletArtifactTransactionJournal,
+  paths: CapletTransactionPaths,
+  phase: CapletTransactionPhase,
+  dependencies: InstallTransactionDependencies,
+): void {
+  journal.phase = phase;
+  writeFileSync(paths.journalTemporaryPath, `${JSON.stringify(journal, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  renameSync(paths.journalTemporaryPath, paths.journalPath);
+  if (dependencies.onTransactionPhase?.(phase) === "interrupt") {
+    throw new CapletTransactionInterruption(`Interrupted after ${phase}`);
+  }
+}
+
+function commitStagedCapletAndLock(input: CommitStagedCapletInput): void {
+  const paths = input.candidate.transactionPaths;
+  const existing = lstatIfExists(input.candidate.plan.destination);
+  const journal: CapletArtifactTransactionJournal = {
+    version: 1,
+    entryId: input.afterEntry.id,
+    destination: input.afterEntry.destination,
+    hadDestination: Boolean(existing),
+    beforeEntry: input.beforeEntry,
+    afterEntry: input.afterEntry,
+    ...(existing ? { beforeHash: hashInstalledArtifact(input.candidate.plan.destination) } : {}),
+    afterHash: input.candidate.artifactHash,
+    phase: "prepared",
+  };
+  try {
+    persistTransactionPhase(journal, paths, "prepared", input.dependencies);
+    persistTransactionPhase(journal, paths, "staged", input.dependencies);
+    if (input.replaceDestination) {
+      removeInstallPath(paths.backupPath, `stale Caplet backup ${input.afterEntry.id}`, true);
+      if (existing) {
+        renameSync(input.candidate.plan.destination, paths.backupPath);
+        persistTransactionPhase(journal, paths, "backup_created", input.dependencies);
+      }
+      renameSync(paths.stagedPath, input.candidate.plan.destination);
+      persistTransactionPhase(journal, paths, "destination_replaced", input.dependencies);
+    } else {
+      removeInstallPath(paths.stagedPath, `staged Caplet ${input.afterEntry.id}`, true);
+    }
+    const writeLockfileTemporary =
+      input.dependencies.writeLockfileTemporary ?? writeCapletsLockfileTemporary;
+    writeLockfileTemporary(input.lockfilePath, input.currentLockfile, paths.lockTemporaryPath);
+    persistTransactionPhase(journal, paths, "lock_temporary_written", input.dependencies);
+    const replaceLockfileTemporary =
+      input.dependencies.replaceLockfileTemporary ?? replaceCapletsLockfileTemporary;
+    replaceLockfileTemporary(input.lockfilePath, paths.lockTemporaryPath);
+    persistTransactionPhase(journal, paths, "lock_replaced", input.dependencies);
+  } catch (error) {
+    if (error instanceof CapletTransactionInterruption) throw error;
+    try {
+      rollbackCapletArtifactTransaction(input, journal, paths);
+    } catch (rollbackError) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Could not roll back Caplet transaction ${input.afterEntry.id}`,
+        toSafeError(rollbackError),
+      );
+    }
+    if (error instanceof CapletsError) throw error;
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Could not commit Caplet transaction ${input.afterEntry.id}`,
+      toSafeError(error),
+    );
+  }
+  try {
+    if (input.dependencies.cleanupTransaction) {
+      input.dependencies.cleanupTransaction();
+    } else {
+      cleanupTransactionPaths(paths);
+    }
+  } catch {
+    // The new artifact and lock are committed. Leave the journal for recovery to clean up.
+  }
+}
+
+function rollbackCapletArtifactTransaction(
+  input: CommitStagedCapletInput,
+  journal: CapletArtifactTransactionJournal,
+  paths: CapletTransactionPaths,
+): void {
+  const destination = input.candidate.plan.destination;
+  const destinationHash = existsSync(destination) ? hashInstalledArtifact(destination) : undefined;
+  const backupHash = existsSync(paths.backupPath)
+    ? hashInstalledArtifact(paths.backupPath)
+    : undefined;
+  const currentLockfile = readCapletsLockfile(input.lockfilePath);
+  const current = currentLockfile.entries.find((entry) => entry.id === journal.entryId);
+  const lockIsBefore = sameLockEntry(current, journal.beforeEntry);
+  const lockIsAfter = sameLockEntry(current, journal.afterEntry);
+
+  if (
+    (backupHash !== undefined &&
+      !transactionPhaseMayHaveStarted(journal.phase, "backup_created")) ||
+    (destinationHash === journal.afterHash &&
+      !transactionPhaseMayHaveStarted(journal.phase, "destination_replaced") &&
+      !(
+        !journal.hadDestination && transactionPhaseMayHaveStarted(journal.phase, "backup_created")
+      )) ||
+    (lockIsAfter && !transactionPhaseMayHaveStarted(journal.phase, "lock_replaced"))
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplet transaction ${journal.entryId} reached an impossible rollback state`,
+    );
+  }
+
+  if (lockIsAfter && destinationHash === journal.afterHash) {
+    cleanupTransactionPaths(paths);
+    return;
+  }
+
+  if (backupHash === journal.beforeHash && journal.beforeHash !== undefined) {
+    removeInstallPath(destination, `uncommitted Caplet ${journal.entryId}`, true);
+    renameSync(paths.backupPath, destination);
+  } else if (
+    !journal.hadDestination &&
+    (destinationHash === undefined || destinationHash === journal.afterHash)
+  ) {
+    removeInstallPath(destination, `uncommitted Caplet ${journal.entryId}`, true);
+  } else if (destinationHash !== journal.beforeHash) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Artifact changed during rollback for ${journal.entryId}`,
+    );
+  }
+
+  if (lockIsAfter) {
+    const entries = currentLockfile.entries.map((entry) =>
+      entry.id === journal.entryId ? journal.beforeEntry : entry,
+    );
+    writeCapletsLockfileAtomically(input.lockfilePath, { version: 1, entries });
+  } else if (!lockIsBefore) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Lock entry changed during rollback for ${journal.entryId}`,
+    );
+  }
+  cleanupTransactionPaths(paths);
+}
+
+function transactionPhaseMayHaveStarted(
+  persisted: CapletTransactionPhase,
+  target: CapletTransactionPhase,
+): boolean {
+  const phases: CapletTransactionPhase[] = [
+    "prepared",
+    "staged",
+    "backup_created",
+    "destination_replaced",
+    "lock_temporary_written",
+    "lock_replaced",
+  ];
+  return phases.indexOf(persisted) + 1 >= phases.indexOf(target);
+}
+
+function recoverInterruptedCapletTransactions(input: {
+  lockfilePath: string;
+  destinationRoot: string;
+  dependencies: InstallTransactionDependencies;
+}): void {
+  const lockDirectory = dirname(input.lockfilePath);
+  if (!existsSync(lockDirectory)) return;
+  const prefix = `.${basename(input.lockfilePath)}.caplet-txn-`;
+  const journals = readdirSync(lockDirectory)
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".json"))
+    .sort();
+  for (const name of journals) {
+    const journalPath = join(lockDirectory, name);
+    let journalValue: unknown;
+    try {
+      journalValue = JSON.parse(readFileSync(journalPath, "utf8"));
+    } catch (error) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Invalid Caplet transaction journal ${journalPath}`,
+        toSafeError(error),
+      );
+    }
+    const journal = parseTransactionJournal(journalValue, journalPath);
+    const destination = validateLockfileDestination(input.destinationRoot, journal.destination);
+    const paths = transactionPaths(input.lockfilePath, destination, journal.entryId);
+    if (paths.journalPath !== journalPath) {
+      throw new CapletsError("CONFIG_INVALID", `Invalid Caplet transaction journal ${journalPath}`);
+    }
+    const lockfile = readCapletsLockfile(input.lockfilePath);
+    const currentEntry = lockfile.entries.find((entry) => entry.id === journal.entryId);
+    const destinationHash = existsSync(destination)
+      ? hashInstalledArtifact(destination)
+      : undefined;
+    const backupHash = existsSync(paths.backupPath)
+      ? hashInstalledArtifact(paths.backupPath)
+      : undefined;
+    const lockIsBefore = sameLockEntry(currentEntry, journal.beforeEntry);
+    const lockIsAfter = sameLockEntry(currentEntry, journal.afterEntry);
+
+    if (lockIsAfter && destinationHash === journal.afterHash) {
+      cleanupTransactionPaths(paths);
+      continue;
+    }
+    if (lockIsBefore && destinationHash === journal.afterHash) {
+      const entries = lockfile.entries.map((entry) =>
+        entry.id === journal.entryId ? journal.afterEntry : entry,
+      );
+      writeCapletsLockfileAtomically(
+        input.lockfilePath,
+        { version: 1, entries },
+        paths.lockTemporaryPath,
+      );
+      cleanupTransactionPaths(paths);
+      continue;
+    }
+    if (lockIsAfter && destinationHash === journal.beforeHash) {
+      const entries = lockfile.entries.map((entry) =>
+        entry.id === journal.entryId ? journal.beforeEntry : entry,
+      );
+      writeCapletsLockfileAtomically(
+        input.lockfilePath,
+        { version: 1, entries },
+        paths.lockTemporaryPath,
+      );
+      cleanupTransactionPaths(paths);
+      continue;
+    }
+    if (
+      lockIsBefore &&
+      (destinationHash === journal.beforeHash ||
+        (!journal.hadDestination && destinationHash === undefined))
+    ) {
+      cleanupTransactionPaths(paths);
+      continue;
+    }
+    if (
+      lockIsBefore &&
+      destinationHash === undefined &&
+      journal.beforeHash !== undefined &&
+      backupHash === journal.beforeHash
+    ) {
+      renameSync(paths.backupPath, destination);
+      cleanupTransactionPaths(paths);
+      continue;
+    }
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplet transaction ${journal.entryId} does not match its artifact and lock baselines`,
+    );
+  }
+}
+
+function parseTransactionJournal(value: unknown, path: string): CapletArtifactTransactionJournal {
+  if (!isRecord(value) || value.version !== 1) {
+    throw new CapletsError("CONFIG_INVALID", `Invalid Caplet transaction journal ${path}`);
+  }
+  const entryId = typeof value.entryId === "string" ? value.entryId : "";
+  const destination = typeof value.destination === "string" ? value.destination : "";
+  const phase = value.phase;
+  const phases: CapletTransactionPhase[] = [
+    "prepared",
+    "staged",
+    "backup_created",
+    "destination_replaced",
+    "lock_temporary_written",
+    "lock_replaced",
+  ];
+  if (
+    !SERVER_ID_PATTERN.test(entryId) ||
+    destination.length === 0 ||
+    typeof value.hadDestination !== "boolean" ||
+    typeof value.afterHash !== "string" ||
+    value.afterHash.length === 0 ||
+    !phases.includes(phase as CapletTransactionPhase)
+  ) {
+    throw new CapletsError("CONFIG_INVALID", `Invalid Caplet transaction journal ${path}`);
+  }
+  const beforeEntry = parseCapletsLockfile({
+    version: 1,
+    entries: [value.beforeEntry],
+  }).entries[0];
+  const afterEntry = parseCapletsLockfile({
+    version: 1,
+    entries: [value.afterEntry],
+  }).entries[0];
+  if (
+    !beforeEntry ||
+    !afterEntry ||
+    beforeEntry.id !== entryId ||
+    afterEntry.id !== entryId ||
+    beforeEntry.destination !== destination ||
+    afterEntry.destination !== destination
+  ) {
+    throw new CapletsError("CONFIG_INVALID", `Invalid Caplet transaction journal ${path}`);
+  }
+  const beforeHash =
+    value.beforeHash === undefined
+      ? undefined
+      : typeof value.beforeHash === "string"
+        ? value.beforeHash
+        : null;
+  if (
+    beforeHash === null ||
+    (value.hadDestination && (!beforeHash || beforeHash.length === 0)) ||
+    (!value.hadDestination && beforeHash !== undefined)
+  ) {
+    throw new CapletsError("CONFIG_INVALID", `Invalid Caplet transaction journal ${path}`);
+  }
+  return {
+    version: 1,
+    entryId,
+    destination,
+    hadDestination: value.hadDestination,
+    beforeEntry,
+    afterEntry,
+    ...(beforeHash ? { beforeHash } : {}),
+    afterHash: value.afterHash,
+    phase: phase as CapletTransactionPhase,
+  };
+}
+
+function sameLockEntry(left: CapletsLockEntry | undefined, right: CapletsLockEntry): boolean {
+  return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function cleanupTransactionPaths(paths: CapletTransactionPaths): void {
+  removeInstallPath(paths.stagedPath, `transaction stage ${paths.stagedPath}`, true);
+  removeInstallPath(paths.backupPath, `transaction backup ${paths.backupPath}`, true);
+  rmSync(paths.lockTemporaryPath, { force: true });
+  rmSync(paths.journalTemporaryPath, { force: true });
+  rmSync(paths.journalPath, { force: true });
 }
 
 export async function indexInstalledCapletsFromLockfile(
@@ -552,8 +1244,6 @@ function catalogEntryForInstalledLockEntry(
         resolvedRevision: entry.source.resolvedRevision,
       }),
       tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
-      useWhen: catalogStringFromFrontmatter(frontmatter.useWhen),
-      avoidWhen: catalogStringFromFrontmatter(frontmatter.avoidWhen),
       setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
       authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
       projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),
@@ -647,14 +1337,6 @@ function refreshedLockSource(
   };
 }
 
-function sameLockSource(left: CapletsLockSource, right: CapletsLockSource): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function sameLockRisk(left: CapletsLockEntry["risk"], right: CapletsLockEntry["risk"]): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function discoverSelectedCapletFiles(
   sourceRoot: string,
   selectedIds: Set<string>,
@@ -666,12 +1348,26 @@ function discoverSelectedCapletFiles(
     }
 
     const filePath = join(sourceRoot, `${id}.md`);
-    if (existsSync(filePath) && statSync(filePath).isFile()) {
+    const fileStats = lstatIfExists(filePath);
+    if (fileStats?.isSymbolicLink()) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Caplet source ${filePath} must not be a symbolic link`,
+      );
+    }
+    if (fileStats?.isFile()) {
       candidates.push({ id, path: filePath });
     }
 
     const directoryPath = join(sourceRoot, id, "CAPLET.md");
-    if (existsSync(directoryPath) && statSync(directoryPath).isFile()) {
+    const directoryStats = lstatIfExists(directoryPath);
+    if (directoryStats?.isSymbolicLink()) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Caplet source ${directoryPath} must not be a symbolic link`,
+      );
+    }
+    if (directoryStats?.isFile()) {
       candidates.push({ id, path: directoryPath });
     }
   }
@@ -1267,12 +1963,6 @@ function hashInstalledArtifact(path: string): string {
   return `sha256:${hash.digest("hex")}`;
 }
 
-function hashDirectoryCapletInstallSource(path: string, sourceBoundary: string): string {
-  const hash = createHash("sha256");
-  hashDirectoryCapletInstallPath(path, "", hash, sourceBoundary);
-  return `sha256:${hash.digest("hex")}`;
-}
-
 function hashPath(path: string, relativePath: string, hash: ReturnType<typeof createHash>): void {
   const stats = lstatSync(path);
   const mode = stats.mode & 0o111 ? "executable" : "plain";
@@ -1289,46 +1979,6 @@ function hashPath(path: string, relativePath: string, hash: ReturnType<typeof cr
   }
   hash.update(`file\0${relativePath}\0${mode}\0`);
   hash.update(readFileSync(path));
-  hash.update("\0");
-}
-
-function hashDirectoryCapletInstallPath(
-  path: string,
-  relativePath: string,
-  hash: ReturnType<typeof createHash>,
-  sourceBoundary: string,
-  seenDirectories = new Set<string>(),
-): void {
-  const lstat = lstatSync(path);
-  const resolvedPath = lstat.isSymbolicLink()
-    ? resolveDirectoryCapletSymlink(path, sourceBoundary)
-    : path;
-  const stats = statSync(resolvedPath);
-  if (stats.isDirectory()) {
-    const realDirectory = realpathSync(resolvedPath);
-    if (seenDirectories.has(realDirectory)) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        `Directory Caplet symlink ${path} creates a copy cycle`,
-      );
-    }
-    hash.update(`dir\0${relativePath}\0`);
-    const childSeenDirectories = new Set(seenDirectories);
-    childSeenDirectories.add(realDirectory);
-    for (const entry of readdirSync(resolvedPath).sort()) {
-      hashDirectoryCapletInstallPath(
-        join(resolvedPath, entry),
-        relativePath ? `${relativePath}/${entry}` : entry,
-        hash,
-        sourceBoundary,
-        childSeenDirectories,
-      );
-    }
-    return;
-  }
-  const mode = stats.mode & 0o111 ? "executable" : "plain";
-  hash.update(`file\0${relativePath}\0${mode}\0`);
-  hash.update(readFileSync(resolvedPath));
   hash.update("\0");
 }
 
@@ -1731,11 +2381,14 @@ function copyInstallPath(plan: InstallPlan, destination: string): void {
       return;
     }
 
-    cpSync(plan.sourcePath, destination, {
-      recursive: false,
-      force: false,
-      errorOnExist: true,
-    });
+    const sourceStats = lstatSync(plan.sourcePath);
+    if (!sourceStats.isFile()) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `File Caplet source ${plan.sourcePath} must be a regular file`,
+      );
+    }
+    copyFileSync(plan.sourcePath, destination, constants.COPYFILE_EXCL);
   } catch (error) {
     if (error instanceof CapletsError) {
       throw error;

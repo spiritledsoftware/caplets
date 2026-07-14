@@ -18,18 +18,15 @@ mcpServer:
 
 # Cloudflare
 
-Use this Caplet when an agent needs live Cloudflare account or zone context, or needs to act on DNS, Workers, cache, rules, security, access, pages, images, logs, or other Cloudflare resources through Cloudflare's hosted MCP server.
+## Targeting and Prerequisites
 
-## First Workflow
+- Use the account ID, zone ID, domain, Worker name, rule ID, or another exact resource identifier when available.
+- List and get operations can narrow ambiguous matches before any create, update, delete, purge, or deployment.
+- OAuth access should be limited to the intended Cloudflare account and resources.
 
-1. Start with the account ID, zone ID, domain, Worker name, rule ID, or other exact resource identifier when available.
-2. Read current resource state before proposing or applying changes, especially for DNS records, security rules, Workers routes, cache settings, and access policies.
-3. Use list and get operations to narrow ambiguous matches before creating, updating, deleting, purging, or deploying anything.
-4. Summarize the intended external effect and target resource before making mutating calls.
+## Safe Operation
 
-## Operate Carefully
-
-- Cloudflare changes can affect production traffic, DNS resolution, security policy, cache behavior, and deployed code. Prefer read-only inspection first.
-- Keep OAuth access limited to the Cloudflare account and resources intended for the task.
+- Read current resource state before a change, especially for DNS records, security rules, Workers routes, cache settings, and access policies.
+- Cloudflare changes can affect production traffic, DNS resolution, security policy, cache behavior, and deployed code. Keep access read-only until a write is necessary.
+- Review the target resource and intended external effect before a mutation.
 - Confirm destructive targets before deleting DNS records, rules, routes, keys, certificates, applications, Workers resources, or account-level settings.
-- Avoid this Caplet when the task only needs local Cloudflare project files; use the project workspace and Cloudflare tooling for local configuration state.

@@ -374,71 +374,41 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("loads optional agent selection hints from JSON config", () => {
-    const config = parseConfig({
-      mcpServers: {
-        docs: {
-          name: "Docs",
-          description: "Search and read product documentation.",
-          command: "node",
-          useWhen: "Use for product documentation questions.",
-          avoidWhen: "Avoid for source-code search.",
+  it.each([
+    ["useWhen", "Use for product documentation questions."],
+    ["avoidWhen", "Avoid for source-code search."],
+  ])("rejects removed %s metadata from JSON config", (field, value) => {
+    expect(() =>
+      parseConfig({
+        mcpServers: {
+          docs: {
+            name: "Docs",
+            description: "Search and read product documentation.",
+            command: "node",
+            [field]: value,
+          },
         },
-      },
-      httpApis: {
-        osv: {
-          name: "OSV",
-          description: "Query vulnerability data from OSV.",
-          baseUrl: "https://api.osv.dev",
-          auth: { type: "none" },
-          useWhen: "Use for package vulnerability lookups.",
-          actions: {
-            query_package_version: {
-              method: "POST",
-              path: "/v1/query",
-              useWhen: "Use when the task names one ecosystem, package, and version.",
-              avoidWhen: "Avoid for multi-package batch requests.",
+      }),
+    ).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({
+        httpApis: {
+          osv: {
+            name: "OSV",
+            description: "Query vulnerability data from OSV.",
+            baseUrl: "https://api.osv.dev",
+            auth: { type: "none" },
+            actions: {
+              query_package_version: {
+                method: "POST",
+                path: "/v1/query",
+                [field]: value,
+              },
             },
           },
         },
-      },
-      cliTools: {
-        repo: {
-          name: "Repo",
-          description: "Run repository inspection commands.",
-          useWhen: "Use for local repository state.",
-          actions: {
-            status: {
-              command: "git",
-              args: ["status", "--short"],
-              useWhen: "Use for a concise working-tree status.",
-            },
-          },
-        },
-      },
-    });
-
-    expect(config.mcpServers.docs).toMatchObject({
-      useWhen: "Use for product documentation questions.",
-      avoidWhen: "Avoid for source-code search.",
-    });
-    expect(config.httpApis.osv).toMatchObject({
-      useWhen: "Use for package vulnerability lookups.",
-      actions: {
-        query_package_version: {
-          useWhen: "Use when the task names one ecosystem, package, and version.",
-          avoidWhen: "Avoid for multi-package batch requests.",
-        },
-      },
-    });
-    expect(config.cliTools.repo).toMatchObject({
-      useWhen: "Use for local repository state.",
-      actions: {
-        status: {
-          useWhen: "Use for a concise working-tree status.",
-        },
-      },
-    });
+      }),
+    ).toThrow(CapletsError);
   });
 
   it("loads project config when user config does not exist", () => {
@@ -522,47 +492,35 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("loads optional agent selection hints from CAPLET.md frontmatter", () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-hints-files-"));
-    writeFileSync(
-      join(dir, "osv.md"),
-      [
-        "---",
-        "name: OSV",
-        "description: Query vulnerability data from OSV.",
-        "useWhen: Use for package vulnerability lookups.",
-        "avoidWhen: Avoid for license or maintainer lookups.",
-        "httpApi:",
-        "  baseUrl: https://api.osv.dev",
-        "  auth:",
-        "    type: none",
-        "  actions:",
-        "    query_package_version:",
-        "      method: POST",
-        "      path: /v1/query",
-        "      useWhen: Use when the task names one ecosystem, package, and version.",
-        "      avoidWhen: Avoid for multi-package batch requests.",
-        "---",
-        "",
-        "# OSV",
-        "",
-      ].join("\n"),
-    );
-
-    const config = loadCapletFiles(dir);
-
-    expect(config?.httpApis?.osv).toMatchObject({
-      useWhen: "Use for package vulnerability lookups.",
-      avoidWhen: "Avoid for license or maintainer lookups.",
-      actions: {
-        query_package_version: {
-          useWhen: "Use when the task names one ecosystem, package, and version.",
-          avoidWhen: "Avoid for multi-package batch requests.",
-        },
-      },
-    });
-    rmSync(dir, { recursive: true, force: true });
-  });
+  it.each(["useWhen", "avoidWhen"])(
+    "rejects removed %s metadata from CAPLET.md frontmatter",
+    (field) => {
+      const dir = mkdtempSync(join(tmpdir(), "caplets-hints-files-"));
+      writeFileSync(
+        join(dir, "osv.md"),
+        [
+          "---",
+          "name: OSV",
+          "description: Query vulnerability data from OSV.",
+          `${field}: Removed selection metadata.`,
+          "httpApi:",
+          "  baseUrl: https://api.osv.dev",
+          "  auth:",
+          "    type: none",
+          "  actions:",
+          "    query_package_version:",
+          "      method: POST",
+          "      path: /v1/query",
+          "---",
+          "",
+          "# OSV",
+          "",
+        ].join("\n"),
+      );
+      expect(() => loadCapletFiles(dir)).toThrow(CapletsError);
+      rmSync(dir, { recursive: true, force: true });
+    },
+  );
 
   it("rejects setup commands that look like agent tools", () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-setup-invalid-"));
@@ -943,17 +901,16 @@ describe("config", () => {
       command: "user-github",
       env: { name: "secret-value" },
       tags: ["code", "$env:EXAMPLE_TOKEN"],
-      body: "# GitHub Card\nUse this for GitHub work with ${EXAMPLE_TOKEN} in prose.",
     });
+    expect(config.mcpServers.github).not.toHaveProperty("body");
     expect(config.mcpServers.github?.description).toContain("${EXAMPLE_TOKEN}");
     expect(config.mcpServers.github?.tags).toContain("$env:EXAMPLE_TOKEN");
-    expect(config.mcpServers.github?.body).toContain("${EXAMPLE_TOKEN}");
     expect(config.mcpServers.linear).toMatchObject({
       server: "linear",
       name: "Linear Project",
       command: "project-linear",
-      body: "# Project Linear",
     });
+    expect(config.mcpServers.linear).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2365,8 +2322,8 @@ describe("config", () => {
       backend: "openapi",
       specPath: "/tmp/users-openapi.json",
       auth: { type: "none" },
-      body: "# Users API",
     });
+    expect(config.openapiEndpoints.users).not.toHaveProperty("body");
     rmSync(root, { recursive: true, force: true });
 
     mkdirSync(root, { recursive: true });
@@ -2427,8 +2384,8 @@ describe("config", () => {
         scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
       },
       includeOperations: ["files.*"],
-      body: "# Drive API",
     });
+    expect(config.googleDiscoveryApis.drive).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2503,8 +2460,8 @@ describe("config", () => {
       server: "reviews",
       backend: "graphql",
       schemaPath: join(root, "reviews.graphql"),
-      body: "# Reviews GraphQL",
     });
+    expect(config.graphqlEndpoints.reviews).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2598,8 +2555,8 @@ describe("config", () => {
       backend: "http",
       auth: { type: "bearer", token: "secret-value" },
       description: "Manage support data through HTTP actions and ${EXAMPLE_TOKEN}.",
-      body: "# Support HTTP",
     });
+    expect(config.httpApis.support).not.toHaveProperty("body");
     rmSync(dir, { recursive: true, force: true });
   });
 

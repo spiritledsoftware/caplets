@@ -594,8 +594,6 @@ function codeModeRunToolDescription(caplets: ExposureProjectionCodeModeCaplet[])
       id: entry.id,
       name: entry.title ?? entry.id,
       description: entry.description ?? "",
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     })),
   });
   return generateCodeModeRunToolDescription(declaration);
@@ -623,8 +621,6 @@ class EngineNativeCapletsService implements NativeCapletsService {
       title: entry.title ?? entry.id,
       description: entry.description ?? "",
       ...(entry.shadowing ? { shadowing: entry.shadowing } : {}),
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       promptGuidance: [],
     }));
   }
