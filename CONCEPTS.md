@@ -62,9 +62,33 @@ In v1, Catalog Presentation Metadata is limited to `catalog.icon`, which may ide
 
 A `caplets.lock.json` file that records installed catalog Caplets, their source repository, source path, destination, tracked source channel, resolved revision when available, content hash, and portability status.
 
-Caplets Lockfiles let `caplets install`, no-argument install restore, and `caplets update` manage installed Caplets from recorded provenance rather than from copied files alone. Project installs use `./.caplets.lock.json`; global installs use the target machine's Caplets state directory.
+Caplets Lockfiles let `caplets install`, no-argument install restore, and `caplets update` manage installed Caplets from recorded provenance rather than from copied files alone. Project installs use the share-safe `./.caplets.lock.json`; global installation provenance lives in the SQL Control Plane Store, with a legacy global lockfile retained only as protected migration recovery data after validated cutover.
 
-Caplets Lockfiles are share-safe and integrity-aware. They strip credential-bearing source URLs, prefer project-relative paths where possible, verify recorded content before restore, and fail closed when local-source entries are unavailable or marked non-portable.
+Project Caplets Lockfiles remain share-safe and integrity-aware. They strip credential-bearing source URLs, prefer project-relative paths where possible, verify recorded content before restore, and fail closed when local-source entries are unavailable or marked non-portable.
+
+### Storage Authority Layer
+
+The ordered runtime sources that combine SQL-owned mutable global state with filesystem-owned static state.
+
+SQL is the global base layer, host filesystem Caplets and configuration override SQL, and project filesystem sources have highest precedence. Dashboard and global CLI management surfaces may mutate only SQL-owned state; filesystem-owned state remains authoritative and read-only through those surfaces.
+
+### SQL Control Plane Store
+
+The SQLite or Postgres persistence layer for mutable global Caplets state, installation provenance, host configuration, administration state, credentials, sessions, Vault state, and Operator Activity Log entries.
+
+SQLite serves one standard node, while Postgres lets multiple nodes share one logical Current Host. Project Caplets, daemon logs, and large media artifact payloads remain outside the SQL Control Plane Store.
+
+### Portable Caplet Projection
+
+A deterministic Caplet File or directory bundle imported from or exported to the SQL Control Plane Store as the shareable representation of one Caplet.
+
+The SQL relational model is canonical: typed Caplet/backend/reference records, a Markdown body column, and asset records generate the projection. The projection preserves portable runtime behavior, human documentation, catalog presentation metadata, and declared non-secret inputs while excluding Vault values, credentials, grants, host-specific paths, and host-specific installation provenance.
+
+### Bootstrap Fingerprint
+
+A deterministic identity derived from the canonical resolved runtime-affecting projection of host filesystem Caplets and configuration.
+
+Postgres-backed nodes compare their Bootstrap Fingerprint with the cluster's accepted fingerprint before readiness so identical files that resolve differently through environment or platform inputs cannot serve divergent runtime behavior.
 
 ### Namespace Shadowing Policy
 
@@ -248,7 +272,7 @@ Remote Profiles are the source of truth for request credentials. Long-lived clie
 
 The server-side authorization role assigned to a paired remote client after a Pending Remote Login is approved.
 
-Remote Client Roles split ordinary runtime access from host administration. They are scoped to the Caplets host that issued the credentials so a future multi-host dashboard can preserve independent authority per host.
+Remote Client Roles are hierarchical: Access Client grants ordinary runtime capabilities, while Operator Client is its strict superset and adds host administration. Roles are scoped to the Caplets host that issued the credentials so a future multi-host dashboard can preserve independent authority per host.
 
 ### Access Client
 
@@ -258,9 +282,9 @@ Access Clients are for agent-facing and attach-facing runtime use. They do not a
 
 ### Operator Client
 
-A paired remote client whose role allows dashboard and host administration operations against a Caplets host.
+A paired remote client whose role includes every Access Client capability plus dashboard and host administration against a Caplets host.
 
-Operator Clients can approve or revoke remote clients, administer Caplets and catalog installs, manage Vault state, view diagnostics, and perform dedicated human-only reveal actions where allowed. Operator authority is granted through the same Pending Remote Login approval lane as ordinary access, but with an operator role request.
+Operator Clients can invoke Caplets, use Remote Attach, MCP, and Project Binding, approve or revoke remote clients, administer Caplets and catalog installs, manage Vault state, view diagnostics, and perform dedicated human-only reveal actions where allowed. Operator authority is granted through the same Pending Remote Login approval lane as ordinary access, but with an operator role request.
 
 ### Operator Activity Log
 
