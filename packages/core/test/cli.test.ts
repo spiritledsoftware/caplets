@@ -2637,10 +2637,12 @@ describe("cli init", () => {
       await runCli(["install", repo], { writeOut: () => {} });
       const lockfilePath = join(projectRoot, ".caplets.lock.json");
       const lockfile = JSON.parse(readFileSync(lockfilePath, "utf8"));
-      for (const entry of lockfile.entries) {
-        entry.installedHash = "sha256:stale";
-      }
-      writeFileSync(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+      const initialHashes = Object.fromEntries(
+        lockfile.entries.map((entry: { id: string; installedHash: string }) => [
+          entry.id,
+          entry.installedHash,
+        ]),
+      );
       rmSync(join(projectRoot, ".caplets", "github"), { recursive: true, force: true });
       rmSync(join(projectRoot, ".caplets", "filesystem.md"), { force: true });
 
@@ -2651,11 +2653,13 @@ describe("cli init", () => {
         expect.arrayContaining([
           expect.objectContaining({
             id: "filesystem",
-            installedHash: expect.stringMatching(/^sha256:(?!stale$)/),
+            installedHash: initialHashes.filesystem,
+            runtimeFingerprint: expect.objectContaining({ version: 1 }),
           }),
           expect.objectContaining({
             id: "github",
-            installedHash: expect.stringMatching(/^sha256:(?!stale$)/),
+            installedHash: initialHashes.github,
+            runtimeFingerprint: expect.objectContaining({ version: 1 }),
           }),
         ]),
       );
@@ -2665,7 +2669,7 @@ describe("cli init", () => {
     }
   });
 
-  it("persists restored lockfile hash changes before a later restore fails", async () => {
+  it("persists an earlier restore before a later restore fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-partial-"));
     const repo = join(dir, "repo");
     const projectRoot = join(dir, "project");
@@ -2685,7 +2689,7 @@ describe("cli init", () => {
         (entry: { id: string }) => entry.id === "filesystem",
       );
       const github = lockfile.entries.find((entry: { id: string }) => entry.id === "github");
-      filesystem.installedHash = "sha256:stale";
+      const filesystemHash = filesystem.installedHash;
       github.source.path = join(repo, "caplets", "missing-github");
       writeFileSync(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
       rmSync(join(projectRoot, ".caplets", "filesystem.md"), { force: true });
@@ -2699,8 +2703,11 @@ describe("cli init", () => {
       const restoredFilesystem = restored.entries.find(
         (entry: { id: string }) => entry.id === "filesystem",
       );
-      expect(restoredFilesystem.installedHash).toMatch(/^sha256:/);
-      expect(restoredFilesystem.installedHash).not.toBe("sha256:stale");
+      expect(restoredFilesystem.installedHash).toBe(filesystemHash);
+      expect(restoredFilesystem.runtimeFingerprint).toEqual({
+        version: 1,
+        artifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -2941,6 +2948,50 @@ describe("cli init", () => {
       code: "REQUEST_INVALID",
       message: "Cannot combine mutation target flags: --project, --remote",
     } satisfies Partial<CapletsError>);
+  });
+
+  it("rejects locked-source drift during restore even with force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-source-drift-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      const lockfilePath = join(projectRoot, ".caplets.lock.json");
+      const destination = join(projectRoot, ".caplets", "github");
+      const destinationReadme = join(destination, "README.md");
+      const lockedState = readFileSync(lockfilePath, "utf8");
+      const installedReadme = readFileSync(destinationReadme, "utf8");
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "changed locked source\n");
+
+      await expect(runCli(["install"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+        message: "Locked source for github has changed; run caplets update to accept it",
+      } satisfies Partial<CapletsError>);
+      expect(readFileSync(destinationReadme, "utf8")).toBe(installedReadme);
+      expect(readFileSync(lockfilePath, "utf8")).toBe(lockedState);
+      expect(
+        readdirSync(join(projectRoot, ".caplets")).some((name) => name.includes("caplet-txn")),
+      ).toBe(false);
+
+      writeFileSync(destinationReadme, "local edit\n");
+      await expect(runCli(["install", "--force"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+        message: "Locked source for github has changed; run caplets update to accept it",
+      } satisfies Partial<CapletsError>);
+      expect(readFileSync(destinationReadme, "utf8")).toBe("local edit\n");
+      expect(readFileSync(lockfilePath, "utf8")).toBe(lockedState);
+      expect(
+        readdirSync(join(projectRoot, ".caplets")).some((name) => name.includes("caplet-txn")),
+      ).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses to restore over local modifications without force", async () => {

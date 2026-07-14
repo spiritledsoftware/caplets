@@ -372,6 +372,12 @@ function restoreCapletsFromLockfileUnlocked(
     try {
       const plan = lockedInstallPlan(entry, destination, lockedSource);
       candidate = stageAndValidateCandidate(plan, options.lockfilePath);
+      if (candidate.artifactHash !== entry.installedHash) {
+        throw new CapletsError(
+          "CONFIG_INVALID",
+          `Locked source for ${entry.id} has changed; run caplets update to accept it`,
+        );
+      }
       const status =
         currentHash === entry.installedHash && candidate.artifactHash === entry.installedHash
           ? "noop"
