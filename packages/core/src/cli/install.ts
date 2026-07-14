@@ -372,51 +372,23 @@ function restoreCapletsFromLockfileUnlocked(
     try {
       const plan = lockedInstallPlan(entry, destination, lockedSource);
       candidate = stageAndValidateCandidate(plan, options.lockfilePath);
-      const runtimeFingerprint = runtimeFingerprintForPersistence(candidate.runtimeSnapshot);
-      const prospective = {
-        ...entry,
-        installedHash: candidate.artifactHash,
-        risk: candidate.risk,
-        ...(runtimeFingerprint ? { runtimeFingerprint } : { runtimeFingerprint: undefined }),
-      };
-      const lockChanged = !sameLockEntryExceptUpdatedAt(entry, prospective);
-      const afterEntry: CapletsLockEntry = {
-        ...prospective,
-        updatedAt: lockChanged ? (options.now ?? new Date()).toISOString() : entry.updatedAt,
-      };
       const status =
         currentHash === entry.installedHash && candidate.artifactHash === entry.installedHash
           ? "noop"
           : "restored";
-      if (status === "noop" && !lockChanged) {
-        removeInstallPath(candidate.stagedPath, `staged Caplet ${entry.id}`, true);
-      } else {
-        const updatedEntries = new Map(nextEntries);
-        updatedEntries.set(entry.id, afterEntry);
-        const committingCandidate = candidate;
-        candidate = undefined;
-        commitStagedCapletAndLock({
-          lockfilePath: options.lockfilePath,
-          currentLockfile: { version: 1, entries: [...updatedEntries.values()] },
-          beforeEntry: entry,
-          afterEntry,
-          candidate: committingCandidate,
-          replaceDestination: status !== "noop",
-          dependencies,
-        });
-        nextEntries.set(entry.id, afterEntry);
-        candidate = committingCandidate;
-      }
-      results.push({
-        id: entry.id,
-        source: lockSourceDisplay(entry.source),
-        destination,
-        kind: entry.kind,
-        hash: candidate.artifactHash,
-        status,
-        lockfile: options.lockfilePath,
-      });
+      const finalizingCandidate = candidate;
       candidate = undefined;
+      results.push(
+        finalizeStagedCandidate({
+          lockfilePath: options.lockfilePath,
+          entry,
+          candidate: finalizingCandidate,
+          status,
+          nextEntries,
+          now: options.now,
+          dependencies,
+        }),
+      );
     } finally {
       if (candidate) {
         removeInstallPath(candidate.stagedPath, `staged Caplet ${entry.id}`, true);
@@ -482,26 +454,13 @@ function updateCapletsFromLockfileUnlocked(
       const nextSource = refreshedLockSource(entry.source, lockedSource);
       const plan = lockedInstallPlan(entry, destination, lockedSource);
       candidate = stageAndValidateCandidate(plan, options.lockfilePath);
-      const runtimeFingerprint = runtimeFingerprintForPersistence(candidate.runtimeSnapshot);
-      const prospective = {
-        ...entry,
-        source: nextSource,
-        installedHash: candidate.artifactHash,
-        risk: candidate.risk,
-        ...(runtimeFingerprint ? { runtimeFingerprint } : { runtimeFingerprint: undefined }),
-      };
-      const lockChanged = !sameLockEntryExceptUpdatedAt(entry, prospective);
-      const afterEntry: CapletsLockEntry = {
-        ...prospective,
-        updatedAt: lockChanged ? (options.now ?? new Date()).toISOString() : entry.updatedAt,
-      };
 
       let status: "noop" | "content_updated" | "updated";
       if (currentHash === entry.installedHash && candidate.artifactHash === entry.installedHash) {
         status = "noop";
       } else {
         const installedFingerprint = existing
-          ? fingerprintInstalledArtifact(entry, destination).artifactFingerprint
+          ? fingerprintInstalledArtifact(entry, destination)?.artifactFingerprint
           : undefined;
         status =
           installedFingerprint !== undefined &&
@@ -520,35 +479,20 @@ function updateCapletsFromLockfileUnlocked(
         }
       }
 
-      if (status === "noop" && !lockChanged) {
-        removeInstallPath(candidate.stagedPath, `staged Caplet ${entry.id}`, true);
-      } else {
-        const updatedEntries = new Map(nextEntries);
-        updatedEntries.set(entry.id, afterEntry);
-        const committingCandidate = candidate;
-        candidate = undefined;
-        commitStagedCapletAndLock({
-          lockfilePath: options.lockfilePath,
-          currentLockfile: { version: 1, entries: [...updatedEntries.values()] },
-          beforeEntry: entry,
-          afterEntry,
-          candidate: committingCandidate,
-          replaceDestination: status !== "noop",
-          dependencies,
-        });
-        nextEntries.set(entry.id, afterEntry);
-        candidate = committingCandidate;
-      }
-      results.push({
-        id: entry.id,
-        source: lockSourceDisplay(entry.source),
-        destination,
-        kind: entry.kind,
-        hash: candidate.artifactHash,
-        status,
-        lockfile: options.lockfilePath,
-      });
+      const finalizingCandidate = candidate;
       candidate = undefined;
+      results.push(
+        finalizeStagedCandidate({
+          lockfilePath: options.lockfilePath,
+          entry,
+          source: nextSource,
+          candidate: finalizingCandidate,
+          status,
+          nextEntries,
+          now: options.now,
+          dependencies,
+        }),
+      );
     } finally {
       if (candidate) {
         removeInstallPath(candidate.stagedPath, `staged Caplet ${entry.id}`, true);
@@ -628,8 +572,12 @@ function stageAndValidateCandidate(plan: InstallPlan, lockfilePath: string): Can
 function fingerprintInstalledArtifact(
   entry: CapletsLockEntry,
   destination: string,
-): RuntimeFingerprintSnapshot {
-  return fingerprintArtifact(entry.id, entry.kind, destination);
+): RuntimeFingerprintSnapshot | undefined {
+  try {
+    return fingerprintArtifact(entry.id, entry.kind, destination);
+  } catch {
+    return undefined;
+  }
 }
 
 function fingerprintArtifact(
@@ -708,6 +656,69 @@ function sameLockEntryExceptUpdatedAt(
   const { updatedAt: _leftUpdatedAt, ...leftComparable } = left;
   const { updatedAt: _rightUpdatedAt, ...rightComparable } = right;
   return JSON.stringify(leftComparable) === JSON.stringify(rightComparable);
+}
+
+type FinalizeStagedCandidateInput = {
+  lockfilePath: string;
+  entry: CapletsLockEntry;
+  source?: CapletsLockSource | undefined;
+  candidate: CandidateArtifact;
+  status: "restored" | "updated" | "content_updated" | "noop";
+  nextEntries: Map<string, CapletsLockEntry>;
+  now?: Date | undefined;
+  dependencies: InstallTransactionDependencies;
+};
+
+function finalizeStagedCandidate(input: FinalizeStagedCandidateInput): InstallableCaplet {
+  let cleanupCandidate = true;
+  try {
+    const runtimeFingerprint = runtimeFingerprintForPersistence(input.candidate.runtimeSnapshot);
+    const prospective = {
+      ...input.entry,
+      ...(input.source ? { source: input.source } : {}),
+      installedHash: input.candidate.artifactHash,
+      risk: input.candidate.risk,
+      ...(runtimeFingerprint ? { runtimeFingerprint } : { runtimeFingerprint: undefined }),
+    };
+    const lockChanged = !sameLockEntryExceptUpdatedAt(input.entry, prospective);
+    const afterEntry: CapletsLockEntry = {
+      ...prospective,
+      updatedAt: lockChanged ? (input.now ?? new Date()).toISOString() : input.entry.updatedAt,
+    };
+
+    if (input.status === "noop" && !lockChanged) {
+      removeInstallPath(input.candidate.stagedPath, `staged Caplet ${input.entry.id}`, true);
+      cleanupCandidate = false;
+    } else {
+      const updatedEntries = new Map(input.nextEntries);
+      updatedEntries.set(input.entry.id, afterEntry);
+      cleanupCandidate = false;
+      commitStagedCapletAndLock({
+        lockfilePath: input.lockfilePath,
+        currentLockfile: { version: 1, entries: [...updatedEntries.values()] },
+        beforeEntry: input.entry,
+        afterEntry,
+        candidate: input.candidate,
+        replaceDestination: input.status !== "noop",
+        dependencies: input.dependencies,
+      });
+      input.nextEntries.set(input.entry.id, afterEntry);
+    }
+
+    return {
+      id: input.entry.id,
+      source: lockSourceDisplay(input.entry.source),
+      destination: input.candidate.plan.destination,
+      kind: input.entry.kind,
+      hash: input.candidate.artifactHash,
+      status: input.status,
+      lockfile: input.lockfilePath,
+    };
+  } finally {
+    if (cleanupCandidate) {
+      removeInstallPath(input.candidate.stagedPath, `staged Caplet ${input.entry.id}`, true);
+    }
+  }
 }
 
 type CapletTransactionPaths = {

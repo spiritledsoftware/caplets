@@ -3109,6 +3109,41 @@ describe("cli init", () => {
     }
   });
 
+  it("force-updates an installed directory with a missing CAPLET.md as a runtime update", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-missing-installed-caplet-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const destinationRoot = join(projectRoot, ".caplets");
+    const lockfilePath = join(projectRoot, ".caplets.lock.json");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      installCaplets(repo, {
+        capletIds: ["github"],
+        destinationRoot,
+        lockfilePath,
+      });
+      const installedCapletPath = join(destinationRoot, "github", "CAPLET.md");
+      rmSync(installedCapletPath);
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "new upstream content\n");
+
+      const result = updateCapletsFromLockfile({
+        destinationRoot,
+        lockfilePath,
+        capletIds: ["github"],
+        force: true,
+      });
+
+      expect(result.installed[0]?.status).toBe("updated");
+      expect(readFileSync(installedCapletPath, "utf8")).toContain("name: GitHub");
+      expect(readFileSync(join(destinationRoot, "github", "README.md"), "utf8")).toBe(
+        "new upstream content\n",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rolls back artifact bytes when the lock replacement fails synchronously", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-update-lock-rollback-"));
     const repo = join(dir, "repo");
