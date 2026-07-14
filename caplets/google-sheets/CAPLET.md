@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Sheets
 description: Read, create, and update Google Sheets spreadsheets through the Sheets API Discovery document.
-avoidWhen: Use Google Drive for locating, sharing, copying, moving, trashing, or deleting spreadsheet files.
 tags:
   - google
   - sheets

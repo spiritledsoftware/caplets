@@ -2,8 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Playwright
 description: Drive a browser through Playwright MCP for frontend testing, inspection, and automation workflows.
-useWhen: Use for isolated browser testing, frontend inspection, accessibility checks, visual inspection, and end-to-end workflows.
-avoidWhen: Avoid when work requires the user's real signed-in browser context; use Browser Use instead.
 tags:
   - browser
   - testing

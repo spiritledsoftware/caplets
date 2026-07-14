@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Tasks
 description: Read, create, update, organize, and complete Google Tasks through the Google Tasks API Discovery document.
-avoidWhen: Prefer Linear or GitHub Issues for team-owned engineering work.
 tags:
   - google
   - tasks

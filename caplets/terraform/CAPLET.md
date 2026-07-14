@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Terraform
 description: Inspect Terraform Registry providers, modules, policies, and optional HCP Terraform or Terraform Enterprise workspaces through HashiCorp's MCP server.
-avoidWhen: Edit local Terraform files directly when no external provider, module, policy, or workspace context is needed.
 tags:
   - terraform
   - infrastructure

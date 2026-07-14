@@ -71,7 +71,7 @@ const outputs = new Map<string, string>([
         sourcePath: "schemas/caplet.schema.json",
         canonicalUrl: "https://caplets.dev/caplet.schema.json",
         intro:
-          'Caplet files are Markdown files with two independent projections. YAML frontmatter is the sole authority for runtime configuration and structured agent-selection metadata. The Markdown body is a publishable human operator README rendered separately; it is never a runtime input, interpolation source, selection channel, Code Mode declaration, or agent context. Do not include secrets, credentials, private endpoints, customer data, or other sensitive operational material in the body. Store a single-file Caplet as `osv.md`, or use a folder with `CAPLET.md` when frontmatter references nearby runtime assets.\n\n`useWhen` and `avoidWhen` are literal public agent-selection metadata and are not template-interpolated. Existing hints such as `useWhen: "Use for ${TENANT}"` must be rewritten as literal selection prose. Move dynamic or private values into the appropriate runtime fields, such as backend configuration, `auth`, environment, or setup fields. Never put secrets or sensitive operational values in selection metadata.',
+          "Caplet files are Markdown files with two independent projections. YAML frontmatter is the sole authority for runtime configuration. The Markdown body is a publishable human operator README rendered separately; it is never a runtime input, interpolation source, selection channel, Code Mode declaration, or agent context. Do not include secrets, credentials, private endpoints, customer data, or other sensitive operational material in the body. Store a single-file Caplet as `osv.md`, or use a folder with `CAPLET.md` when frontmatter references nearby runtime assets.\n\n`useWhen` and `avoidWhen` are no longer valid Caplet configuration fields. Put concise agent-facing capability context in `description`; put operator-only prerequisites, safety notes, troubleshooting, and references in the Markdown body.",
       }),
     ),
   ],
@@ -235,8 +235,6 @@ Plural form child fields:
 | \`tags\` | Optional | array | Optional tags for grouping or searching Caplets. |
 | \`exposure\` | Optional | "direct" \\| "progressive" \\| "code_mode" \\| "direct_and_code_mode" \\| "progressive_and_code_mode" | How this Caplet is exposed to agents. |
 | \`shadowing\` | Optional | "forbid" \\| "allow" \\| "namespace" | Whether attached local Caplets may shadow this remote Caplet ID. |
-| \`useWhen\` | Optional | string | When agents should prefer this Caplet or configured action. |
-| \`avoidWhen\` | Optional | string | When agents should avoid this Caplet or configured action. |
 | \`setup\` | Optional | object | Optional explicit setup and verification metadata for this Caplet. |
 
 Plural \`cliTools\` is recognized only when the value is a child-ID map. \`actions\` is reserved for the singular form and cannot be used as a plural child ID.`;
@@ -320,8 +318,6 @@ function commonSchemaRecipes(sourcePath: string): string {
       "---",
       "name: Example Tools",
       "description: Expose a small local MCP server to agents.",
-      "useWhen: Prefer for local evaluation of the example MCP tools.",
-      "avoidWhen: Avoid for production or provider-specific workflows.",
       "exposure: code_mode",
       "mcpServer:",
       "  command: npx",
@@ -348,9 +344,9 @@ function commonSchemaRecipes(sourcePath: string): string {
       "```",
       "",
       "Runtime actions, paths, environment and authentication values, setup metadata, exposure,",
-      "and agent-selection guidance belong in frontmatter. Use `useWhen` and `avoidWhen` for",
-      "selection. Treat the body as publishable content: reserve it for human prerequisites, safety,",
-      "troubleshooting, and references, and do not include secrets or sensitive operational material.",
+      "and concise agent-facing capability descriptions belong in frontmatter. Treat the body as",
+      "publishable content: reserve it for human prerequisites, safety, troubleshooting, and",
+      "references, and do not include secrets or sensitive operational material.",
       "",
       "Project-bound Caplet with setup:",
       "",
@@ -358,8 +354,6 @@ function commonSchemaRecipes(sourcePath: string): string {
       "---",
       "name: Repository Checks",
       "description: Run repository-local checks before an agent edits this project.",
-      "useWhen: Prefer when repository-local test results are required.",
-      "avoidWhen: Avoid when no project is attached.",
       "exposure: code_mode",
       "cliTools:",
       "  actions:",
@@ -401,8 +395,6 @@ function commonSchemaRecipes(sourcePath: string): string {
       "---",
       "name: Google Workspace",
       "description: Work with Gmail and Drive from one installable capability.",
-      "useWhen: Prefer when work spans Gmail and Drive.",
-      "avoidWhen: Avoid when only one provider surface is needed.",
       "tags: [google, workspace]",
       "auth:",
       "  type: oauth2",

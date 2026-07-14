@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Computer Use
 description: Control local desktop applications and windows through open-computer-use for explicit desktop automation workflows.
-useWhen: Use only for desktop, application-window, or GUI work that cannot be completed through a smaller API or CLI surface.
 tags:
   - computer-use
   - desktop

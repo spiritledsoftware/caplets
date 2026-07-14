@@ -6,8 +6,6 @@ export function capabilityDescription(server: CapletConfig): string {
   return [
     `${server.name} Caplet.`,
     server.description,
-    server.useWhen ? `Use when: ${server.useWhen}` : undefined,
-    server.avoidWhen ? `Avoid when: ${server.avoidWhen}` : undefined,
     server.backend === "mcp"
       ? `${flow} Resources/prompts/completions may exist for MCP backends.`
       : flow,

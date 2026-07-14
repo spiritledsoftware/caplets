@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Notion
 description: Search, fetch, create, update, move, duplicate, and query Notion workspace pages, databases, views, and connected content through Notion's hosted MCP server.
-avoidWhen: Avoid when the work only concerns local Markdown files or static Notion API documentation rather than a connected workspace.
 tags:
   - notion
   - docs

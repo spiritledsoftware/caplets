@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Drive
 description: Search, read, download, upload, and manage Google Drive files through the Drive API Discovery document.
-avoidWhen: Prefer repository files when the task concerns local project state.
 tags:
   - google
   - drive

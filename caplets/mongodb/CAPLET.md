@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: MongoDB
 description: Inspect MongoDB databases, collections, schemas, indexes, queries, and Atlas resources through MongoDB's MCP server with read-only access by default.
-avoidWhen: Avoid when the work only concerns local ODM models, migrations, or application code rather than live MongoDB or Atlas state.
 tags:
   - mongodb
   - atlas

@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Slides
 description: Read, create, preview, and edit Google Slides presentations through the Slides API Discovery document.
-avoidWhen: Use Google Drive for finding, sharing, copying, moving, trashing, or deleting presentation files.
 tags:
   - google
   - slides

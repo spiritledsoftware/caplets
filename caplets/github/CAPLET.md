@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: GitHub
 description: Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows.
-avoidWhen: Prefer local Git and project files when the task concerns workspace state rather than GitHub's remote state.
 tags:
   - code
   - github

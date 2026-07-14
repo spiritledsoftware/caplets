@@ -327,8 +327,6 @@ describe("native Caplets service", () => {
           exposure: "direct",
           baseUrl: "http://127.0.0.1:1",
           auth: { type: "none" },
-          useWhen: "Use when the service health is needed.",
-          avoidWhen: "Avoid for mutation requests.",
           shadowing: "namespace",
           actions: {
             ping: {
@@ -359,8 +357,6 @@ describe("native Caplets service", () => {
             type: "object",
             properties: { verbose: { type: "boolean" } },
           },
-          useWhen: "Use when the service health is needed.",
-          avoidWhen: "Avoid for mutation requests.",
           shadowing: "namespace",
         }),
       ]);

@@ -41,7 +41,7 @@ This ambiguity couples a shareable document format to the current file-backed co
 - **Operator README body:** The body documents prerequisites, setup context, troubleshooting, safety considerations, and other Caplet-specific information for human operators. It is not agent operating context.
 - **Frontmatter-only runtime authority:** Every runtime-affecting value originates in frontmatter or in a bundle file referenced from frontmatter. Presentation-only frontmatter fields may remain presentation-only; the body never supplies configuration.
 - **Independent update lifecycles:** A body-only edit is a content update. It may be detected, published, installed, and rendered without changing runtime configuration, triggering runtime reload, or requiring setup reapproval.
-- **No replacement instruction payload:** The cutover does not move the body into a new free-form agent-instruction field. Compact agent-visible descriptions and selection hints remain structured frontmatter metadata.
+- **No replacement instruction payload:** The cutover does not move the body into a new free-form agent-instruction field. Compact agent-visible capability descriptions remain structured frontmatter metadata; dedicated `useWhen` and `avoidWhen` fields are removed.
 - **Clean content cutover:** Official Caplet bodies, examples, templates, and authoring documentation adopt the operator README contract in the same change.
 
 ```mermaid
@@ -97,7 +97,7 @@ The body has no path to runtime or agent capability surfaces. Referenced bundle 
 **Artifact and authority**
 
 - R1. A Caplet Markdown file must remain a shareable artifact composed of fenced YAML frontmatter and a Markdown body with independently defined semantics.
-- R2. Frontmatter and supported bundle files explicitly referenced from it must be the sole sources of runtime-affecting Caplet values, including backend configuration, authentication, exposure, runtime requirements, setup, project binding, and agent-visible selection metadata.
+- R2. Frontmatter and supported bundle files explicitly referenced from it must be the sole sources of runtime-affecting Caplet values, including backend configuration, authentication, exposure, runtime requirements, setup, project binding, and agent-visible capability descriptions.
 - R3. Presentation-only frontmatter metadata may remain outside runtime backend configuration without weakening the rule that no runtime value originates in the body.
 - R4. The Markdown body must be retained as publishable operator documentation for prerequisites, setup context, troubleshooting, safety considerations, and general Caplet-specific guidance; authors must not place secrets, credentials, private endpoints, customer data, or other sensitive operational material in it.
 - R5. Files within a Caplet bundle may remain runtime inputs only when frontmatter references them through a supported path or interpolation mechanism.
@@ -109,7 +109,7 @@ The body has no path to runtime or agent capability surfaces. Referenced bundle 
 - R8. Caplets must not expose the body through agent discovery, search, detail, declaration, registration, invocation, result, Attach, or native integration surfaces.
 - R9. Backend managers and downstream capability calls must not receive the body as hidden context, instructions, metadata, or configuration.
 - R10. Independent host filesystem access to a source `CAPLET.md` file is outside the Caplets exposure guarantee; Caplets itself must provide no agent-facing route to the body.
-- R11. Agent-visible descriptions, `useWhen`, `avoidWhen`, and equivalent structured selection metadata must continue to come from frontmatter or backend-owned tool metadata.
+- R11. Agent-visible Caplet descriptions must continue to come from frontmatter; backend-owned tool metadata may continue to include downstream selection hints.
 - R12. No new free-form agent-instruction field may replace the body as part of this cutover.
 
 **Content and configuration lifecycles**
@@ -276,8 +276,8 @@ flowchart TB
 
 - Preserve the existing fenced-frontmatter, file-size, and body-size validity limits. An artifact that exceeds those limits is invalid, not a content-only update.
 - Preserve last-known-good runtime behavior on parse, validation, or source-resolution failure; update the stored runtime fingerprint only after a successful load.
-- Preserve public JSON configuration and generated frontmatter schema behavior. They already exclude body and should not gain a new field or compatibility alias.
-- Preserve frontmatter-derived `description`, `useWhen`, and `avoidWhen`, plus backend-owned tool, resource, resource-template, and prompt content.
+- Remove `useWhen` and `avoidWhen` from public JSON configuration and generated frontmatter schemas without adding compatibility aliases.
+- Preserve frontmatter-derived `description` plus backend-owned tool, resource, resource-template, and prompt content.
 - Do not hash `cwd` trees, arbitrary sibling files, Markdown links, or raw `capletsRoot` directories. Resolve only supported frontmatter-declared runtime inputs.
 - Represent missing or unreadable declared inputs with safe deterministic categories so deletion and recovery are runtime changes without embedding filesystem error prose.
 - Preserve materialized symlink handling, whole-artifact local-drift checks, and current restore force behavior.
@@ -323,7 +323,7 @@ flowchart TB
 | Multi-Caplet updates partially succeed                      | Preserve per-Caplet commits, finish each matched artifact-and-lock pair before advancing, and make retries idempotent for earlier successes.                                           |
 | Catalog indexing changes update success                     | Run indexing strictly post-commit and report unavailable/throwing indexers as ancillary outcomes in local and Current Host paths.                                                      |
 | New update status is lost by a relay                        | Update local, remote, Current Host, activity, and dashboard unions/renderers together and exercise JSON plus human output.                                                             |
-| Official rewrites remove useful agent selection guidance    | Audit each agent-directed body statement; move only necessary compact selection guidance to existing structured metadata and keep the rest operator-facing.                            |
+| Official rewrites remove useful agent selection guidance    | Audit each agent-directed body statement; move only necessary compact capability context to `description` and keep the rest operator-facing.                                           |
 
 ### Planning Research
 
@@ -341,7 +341,7 @@ flowchart TB
 
 ### U1. Remove the body from runtime configuration
 
-**Goal:** Make every normalized Caplet configuration structurally body-free while preserving raw Markdown for content consumers and structured selection metadata for agents.
+**Goal:** Make every normalized Caplet configuration structurally body-free while preserving raw Markdown for content consumers and compact capability descriptions for agents.
 
 **Requirements:** R1-R12, R18, R20, R22; F1-F2; AE1, AE6-AE7.
 
@@ -381,12 +381,12 @@ flowchart TB
 1. Load singular fixtures across all backend families with a unique README sentinel, fake YAML, a path-like string, and a secret-looking value; each normalized result has no body key or sentinel while frontmatter-derived fields and normalized references remain intact.
 2. Load plural fixtures and assert every expanded child lacks body data while parent/shared and child-specific frontmatter inheritance remains unchanged.
 3. Pass a parsed configuration through backend-operation dispatch for check, discovery, and invocation; manager adapters receive no body key or sentinel.
-4. Serialize registry summary/detail, generated Code Mode declarations, and local/native Attach manifests; none contain body data, while description and selection hints remain present.
+4. Serialize registry summary/detail, generated Code Mode declarations, and local/native Attach manifests; none contain body data, while descriptions remain present and authored `useWhen` or `avoidWhen` properties are absent.
 5. Force a legacy body property through the internal normalized parser and assert the strict schema rejects it; direct JSON configuration continues rejecting the property.
 6. Compare setup hashes for otherwise identical body-free configurations originating from different README bodies; the values match. Changing setup, auth, exposure, or backend configuration still changes the existing hash input.
 7. Keep a backend-advertised resource or prompt named `README.md`; it remains downstream-owned content and is never replaced with the Caplet README.
 
-**Verification:** Every runtime type, parsed value, expanded child, manager input, and agent projection is body-free; catalog/raw Markdown code remains untouched and structured selection metadata is unchanged.
+**Verification:** Every runtime type, parsed value, expanded child, manager input, and agent projection is body-free; catalog/raw Markdown code remains untouched and capability descriptions are unchanged.
 
 ### U2. Establish the canonical runtime fingerprint
 
@@ -439,7 +439,7 @@ flowchart TB
 2. Compute stable fingerprints for semantically identical frontmatter with different YAML comments, key order, formatting, and source roots; values match.
 3. Resolve the same `$env` and `$vault` templates to different secret values; stable fingerprints, setup approval, and persistence-safe lock payloads remain equal and contain no resolution-derived material.
 4. Use literal bearer/header/client-secret fields and absolute host paths; runtime differences are detectable by live comparison, but optional lock state, outputs, activities, and diagnostics contain no new digest or correlate.
-5. Change description, selection hints, exposure, auth templates, setup, runtime requirements, or backend configuration; the applicable Caplet and containing aggregate fingerprints change.
+5. Change description, exposure, auth templates, setup, runtime requirements, or backend configuration; the applicable Caplet and containing aggregate fingerprints change.
 6. Change only body text or catalog metadata; all stable runtime fingerprints stay equal.
 7. Mutate every supported declared input family; the applicable fingerprint changes. Add an arbitrary sibling file, `cwd` file, or README link; it does not.
 8. Exercise identical logical references through filesystem and portable readers; present, missing, and unreadable states are distinct and contain no absolute root or OS error text.
@@ -488,7 +488,7 @@ flowchart TB
 1. Start an engine from a temporary directory Caplet, subscribe to reload, record exposure generation, edit only valid README text, and call reload; success is returned with no registry replacement, generation change, manager activity, or reload callback.
 2. Repeat through the filesystem watcher/debounce path; body-only edits produce no runtime event.
 3. Attach native service, MCP/native sessions, local/native Attach, and HTTP Attach SSE subscribers; a body-only edit produces no tool update, registration update, manifest invalidation, revision change, or manifest-change event.
-4. Change frontmatter selection metadata and then a declared runtime input; each causes one normal reload, manager invalidation where applicable, exposure refresh, and downstream notification.
+4. Change a frontmatter description and then a declared runtime input; each causes one normal reload, manager invalidation where applicable, exposure refresh, and downstream notification.
 5. Delete and restore a declared input; both transitions are runtime-affecting and never collapse into a content-only no-op.
 6. Keep frontmatter templates fixed, rotate resolved environment and Vault values, and trigger the established refresh/reload path; stable configuration equality remains while volatile execution equality changes and runtime consumers refresh without persisting secret-derived state.
 7. Make the candidate artifact invalid through malformed frontmatter or an exceeded artifact/body guardrail; reload fails and retains the prior registry, generation, and fingerprint.
@@ -560,7 +560,7 @@ flowchart TB
 
 ### U5. Cut over authoring and official Caplet content
 
-**Goal:** Make operator README semantics the only current authoring guidance while preserving public catalog rendering and necessary structured agent selection metadata.
+**Goal:** Make operator README semantics the only current authoring guidance while preserving public catalog rendering and necessary compact agent capability descriptions.
 
 **Requirements:** R4, R11-R13, R18-R22; F1-F3; AE1-AE3, AE6-AE7.
 
@@ -584,7 +584,7 @@ flowchart TB
 - Change authoring templates and generated examples so body content addresses operators: prerequisites, setup context, troubleshooting, safety, and reference material.
 - Teach authors to treat README bodies as publishable catalog content and keep secrets, credentials, private endpoints, customer data, and other sensitive operational material out of them.
 - Audit every official body. Rewrite agent-directed workflows into operator guidance where useful; delete low-value instruction prose instead of preserving it for compatibility.
-- Move only compact guidance that remains necessary for agent selection into existing `description`, `useWhen`, or `avoidWhen` frontmatter. Do not add a free-form replacement field.
+- Move only compact context that remains necessary for agent selection into the existing `description` frontmatter field. Remove `useWhen` and `avoidWhen`; do not add a free-form replacement field.
 - Keep runtime references explicit in frontmatter. Markdown links and path-like body text remain documentation only.
 - Update the generated reference at its generator source, then regenerate the MDX output. Update direct Vault wording that currently describes body text as public metadata.
 - Preserve the catalog’s raw `contentMarkdown` and human body rendering path. Do not source operator content from runtime configuration or suppress public browser rendering.
@@ -602,7 +602,7 @@ flowchart TB
 2. Split official-style Markdown in the catalog helper; frontmatter rows and body Markdown remain independent, and the body remains renderable for humans.
 3. Build an official catalog entry from an updated Caplet; raw `contentMarkdown` includes its README while resolved runtime configuration has no body.
 4. Put path-like text, a Markdown link, and a vault-looking token in a body; none becomes a runtime reference or interpolation input.
-5. Confirm structured selection hints added during the prose audit survive registry and Code Mode projection tests from U1.
+5. Confirm capability descriptions added during the prose audit survive registry and Code Mode projection tests from U1.
 6. Do not add assertions for exact headlines, workflows, or subjective body wording; review the official corpus manually against the operator README and sensitive-content contracts.
 
 **Verification:** Current authoring surfaces and official artifacts consistently teach and demonstrate operator README semantics; catalog rendering remains intact and no content migration recreates an agent instruction channel.
@@ -684,7 +684,7 @@ Behavioral verification must include these cross-cutting invariants:
 
 | Unit | Done signal                                                                                                                                                                                 |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| U1   | Runtime values and every manager/agent boundary are structurally body-free while structured selection metadata remains.                                                                     |
+| U1   | Runtime values and every manager/agent boundary are structurally body-free while compact capability descriptions remain.                                                                    |
 | U2   | Versioned per-Caplet, artifact, and host fingerprints are deterministic, source-root independent, declared-reference complete, body-blind, secret-safe, and adapter-consistent.             |
 | U3   | Manual and watched content-only reloads cause no engine or adapter side effects; template, declared-input, runtime-wide, and resolved-secret changes still fan out correctly.               |
 | U4   | Trusted content-only updates, runtime updates, candidate/lock failures, local drift, restore, legacy/live-only locks, indexing, batches, and every status relay preserve coherent outcomes. |

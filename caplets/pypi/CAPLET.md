@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: PyPI Registry
 description: Query Python package metadata, releases, files, vulnerabilities, and Simple API project details from PyPI.
-avoidWhen: Use OSV for cross-ecosystem vulnerability review.
 tags:
   - openapi
   - pypi

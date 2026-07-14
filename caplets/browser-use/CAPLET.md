@@ -2,8 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Browser Use
 description: Drive the user's real browser through Playwright MCP for local control.
-useWhen: Use for signed-in web apps, current tabs, extension-backed inspection, or workflows that require the user's real browser context.
-avoidWhen: Prefer an isolated test browser when the real signed-in browser environment is not required.
 tags:
   - browser
   - playwright

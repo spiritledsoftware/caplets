@@ -169,8 +169,6 @@ export class HttpActionManager {
     return {
       name: operation.name,
       ...(operation.description ? { description: operation.description } : {}),
-      ...(operation.useWhen ? { useWhen: operation.useWhen } : {}),
-      ...(operation.avoidWhen ? { avoidWhen: operation.avoidWhen } : {}),
       inputSchema: (operation.inputSchema ?? DEFAULT_INPUT_SCHEMA) as Tool["inputSchema"],
       ...(operation.outputSchema
         ? {

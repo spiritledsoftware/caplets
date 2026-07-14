@@ -269,8 +269,6 @@ Troubleshooting only.
         tool: {
           name: "Tool",
           description: "Run a stable remote tool safely.",
-          useWhen: "Use for stable work.",
-          avoidWhen: "Avoid for unstable work.",
           tags: ["stable"],
           exposure: "code_mode",
           shadowing: "forbid",
@@ -287,8 +285,6 @@ Troubleshooting only.
     });
     const variants = [
       { description: "Run a changed remote tool safely." },
-      { useWhen: "Use for changed work." },
-      { avoidWhen: "Avoid for changed work." },
       { tags: ["changed"] },
       { exposure: "direct" as const },
       { shadowing: "allow" as const },

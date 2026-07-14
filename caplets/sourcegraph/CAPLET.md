@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Sourcegraph
 description: Search and inspect code across Sourcegraph using its MCP endpoint for repository-aware coding workflows.
-avoidWhen: Read the local repository directly when it is available.
 tags:
   - sourcegraph
   - code-search

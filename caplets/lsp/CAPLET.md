@@ -2,8 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: LSP
 description: Language Server Protocol tools for project-aware code intelligence through language-server-mcp.
-useWhen: Use for language-server-specific, project-aware code intelligence such as definitions, references, diagnostics, types, symbols, code actions, formatting, and rename edits.
-avoidWhen: Avoid for syntax-pattern or text searches that do not require language-server semantics; use ast-grep or text search instead.
 tags:
   - mcp
   - code

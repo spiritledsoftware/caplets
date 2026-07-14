@@ -121,11 +121,6 @@ export type RuntimeRequirementsConfig = {
   resources?: { class?: RuntimeResourceClass | undefined } | undefined;
 };
 
-export type AgentSelectionHintsConfig = {
-  useWhen?: string | undefined;
-  avoidWhen?: string | undefined;
-};
-
 export type CapletShadowingPolicy = "forbid" | "allow" | "namespace";
 
 export type CapletExposure =
@@ -135,7 +130,7 @@ export type CapletExposure =
   | "direct_and_code_mode"
   | "progressive_and_code_mode";
 
-export type CapletServerConfig = AgentSelectionHintsConfig & {
+export type CapletServerConfig = {
   server: string;
   backend: "mcp";
   name: string;
@@ -165,7 +160,7 @@ export type OpenApiAuthConfig =
   | { type: "headers"; headers: Record<string, string> }
   | Extract<RemoteAuthConfig, { type: "oauth2" | "oidc" }>;
 
-export type OpenApiEndpointConfig = AgentSelectionHintsConfig & {
+export type OpenApiEndpointConfig = {
   server: string;
   backend: "openapi";
   name: string;
@@ -185,14 +180,14 @@ export type OpenApiEndpointConfig = AgentSelectionHintsConfig & {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
-export type GraphQlOperationConfig = AgentSelectionHintsConfig & {
+export type GraphQlOperationConfig = {
   document?: string | undefined;
   documentPath?: string | undefined;
   operationName?: string | undefined;
   description?: string | undefined;
 };
 
-export type GraphQlEndpointConfig = AgentSelectionHintsConfig & {
+export type GraphQlEndpointConfig = {
   server: string;
   backend: "graphql";
   name: string;
@@ -215,7 +210,7 @@ export type GraphQlEndpointConfig = AgentSelectionHintsConfig & {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
-export type HttpActionConfig = AgentSelectionHintsConfig & {
+export type HttpActionConfig = {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   description?: string | undefined;
@@ -226,7 +221,7 @@ export type HttpActionConfig = AgentSelectionHintsConfig & {
   jsonBody?: unknown;
 };
 
-export type HttpApiConfig = AgentSelectionHintsConfig & {
+export type HttpApiConfig = {
   server: string;
   backend: "http";
   name: string;
@@ -245,7 +240,7 @@ export type HttpApiConfig = AgentSelectionHintsConfig & {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
-export type GoogleDiscoveryApiConfig = AgentSelectionHintsConfig & {
+export type GoogleDiscoveryApiConfig = {
   server: string;
   backend: "googleDiscovery";
   name: string;
@@ -271,7 +266,7 @@ export type CliToolOutputConfig = {
   type: "text" | "json";
 };
 
-export type CliToolActionConfig = AgentSelectionHintsConfig & {
+export type CliToolActionConfig = {
   description?: string | undefined;
   inputSchema?: Record<string, unknown> | undefined;
   outputSchema?: Record<string, unknown> | undefined;
@@ -292,7 +287,7 @@ export type CliToolActionConfig = AgentSelectionHintsConfig & {
     | undefined;
 };
 
-export type CliToolsConfig = AgentSelectionHintsConfig & {
+export type CliToolsConfig = {
   server: string;
   backend: "cli";
   name: string;
@@ -311,7 +306,7 @@ export type CliToolsConfig = AgentSelectionHintsConfig & {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
-export type CapletSetConfig = AgentSelectionHintsConfig & {
+export type CapletSetConfig = {
   server: string;
   backend: "caplets";
   name: string;
@@ -479,8 +474,6 @@ const NON_INTERPOLATED_SERVER_FIELDS: Record<string, true> = {
   name: true,
   description: true,
   tags: true,
-  useWhen: true,
-  avoidWhen: true,
 };
 const VAULT_BARE_REFERENCE = "[A-Za-z0-9_-]+";
 
@@ -626,21 +619,6 @@ const runtimeRequirementsSchema = z
   })
   .strict()
   .describe("Runtime feature and resource requirements for hosted execution.");
-const agentSelectionHintSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(500)
-  .describe("Optional author-supplied hint for agent tool/caplet selection.");
-
-const agentSelectionHintsSchema = {
-  useWhen: agentSelectionHintSchema
-    .optional()
-    .describe("When agents should prefer this Caplet or configured action."),
-  avoidWhen: agentSelectionHintSchema
-    .optional()
-    .describe("When agents should avoid this Caplet or configured action."),
-};
 
 const exposureSchema = z
   .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
@@ -719,7 +697,6 @@ const publicServerSchema = z
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
     shadowing: shadowingSchema,
-    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -770,7 +747,6 @@ const publicOpenApiEndpointSchema = z
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
     shadowing: shadowingSchema,
-    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -828,7 +804,6 @@ const publicGoogleDiscoveryApiSchema = z
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
     shadowing: shadowingSchema,
-    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -861,7 +836,6 @@ const graphQlOperationSchema = z
     documentPath: z.string().min(1).optional().describe("Path to a GraphQL operation document."),
     operationName: z.string().min(1).optional().describe("Operation name to execute."),
     description: z.string().min(1).optional().describe("Operation capability description."),
-    ...agentSelectionHintsSchema,
   })
   .strict()
   .superRefine((operation, ctx) => {
@@ -902,7 +876,6 @@ const publicGraphQlEndpointSchema = z
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
     shadowing: shadowingSchema,
-    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -964,7 +937,6 @@ const httpActionSchema = z
       .refine((value) => !value.startsWith("//"), "HTTP action path must not start with //")
       .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
     description: z.string().min(1).optional().describe("Action capability description."),
-    ...agentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -1020,7 +992,6 @@ const publicHttpApiSchema = z
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
     shadowing: shadowingSchema,
-    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -1063,7 +1034,6 @@ const cliToolAnnotationsSchema = z
 const cliToolActionSchema = z
   .object({
     description: z.string().min(1).optional().describe("Action capability description."),
-    ...agentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -1117,7 +1087,6 @@ const publicCliToolsSchema = z
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
     shadowing: shadowingSchema,
-    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -1174,7 +1143,6 @@ const publicCapletSetSchema = z
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
     shadowing: shadowingSchema,
-    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),

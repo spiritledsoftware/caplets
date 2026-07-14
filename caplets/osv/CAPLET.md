@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: OSV Vulnerabilities
 description: Query OSV.dev vulnerability data through explicit HTTP actions.
-avoidWhen: Avoid for package release metadata; use the relevant registry Caplet instead.
 tags:
   - security
   - vulnerabilities

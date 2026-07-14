@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Chat
 description: Search spaces, read messages, send messages, and add reactions through the Google Chat API Discovery document.
-avoidWhen: Prefer Gmail for email-centric work or a task system for durable task tracking.
 tags:
   - google
   - chat

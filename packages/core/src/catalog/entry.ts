@@ -26,8 +26,6 @@ export function createCatalogEntry(input: CatalogEntryInput): CatalogEntry {
     ...(input.contentMarkdown ? { contentMarkdown: input.contentMarkdown } : {}),
     ...(input.icon ? { icon: input.icon } : {}),
     tags: stableTags(input.tags ?? []),
-    intendedTask: input.useWhen?.trim() || "unknown",
-    ...(input.avoidWhen?.trim() ? { avoidWhen: input.avoidWhen.trim() } : {}),
     setupReadiness: readiness(input.setupRequired),
     authReadiness: readiness(input.authRequired),
     projectBindingReadiness: readiness(input.projectBindingRequired),

@@ -108,21 +108,6 @@ const capletRuntimeRequirementsSchema = z
   })
   .strict()
   .describe("Runtime feature and resource requirements for hosted execution.");
-const capletAgentSelectionHintSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(500)
-  .describe("Optional author-supplied hint for agent tool/caplet selection.");
-
-const capletAgentSelectionHintsSchema = {
-  useWhen: capletAgentSelectionHintSchema
-    .optional()
-    .describe("When agents should prefer this Caplet or configured action."),
-  avoidWhen: capletAgentSelectionHintSchema
-    .optional()
-    .describe("When agents should avoid this Caplet or configured action."),
-};
 
 const capletExposureSchema = z
   .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
@@ -413,7 +398,6 @@ const capletGraphQlOperationSchema = z
     documentPath: z.string().min(1).optional().describe("Path to a GraphQL operation document."),
     operationName: z.string().min(1).optional().describe("Operation name to execute."),
     description: z.string().min(1).optional().describe("Operation capability description."),
-    ...capletAgentSelectionHintsSchema,
   })
   .strict()
   .superRefine((operation, ctx) => {
@@ -523,7 +507,6 @@ const capletHttpActionSchema = z
       .refine((value) => !value.startsWith("//"), "HTTP action path must not start with //")
       .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
     description: z.string().min(1).optional().describe("Action capability description."),
-    ...capletAgentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -619,7 +602,6 @@ const capletCliToolAnnotationsSchema = z
 const capletCliToolActionSchema = z
   .object({
     description: z.string().min(1).optional().describe("Action capability description."),
-    ...capletAgentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -721,7 +703,6 @@ const capletFileChildSharedFields = {
   tags: z.array(z.string().trim().min(1).max(80)).optional(),
   exposure: capletExposureSchema.optional(),
   shadowing: capletShadowingSchema.optional(),
-  ...capletAgentSelectionHintsSchema,
   setup: capletSetupSchema.optional(),
   projectBinding: capletProjectBindingSchema.optional(),
   runtime: capletRuntimeRequirementsSchema.optional(),
@@ -816,7 +797,6 @@ export const capletFileSchema = z
       .describe("Optional tags for grouping or searching Caplets."),
     exposure: capletExposureSchema.optional(),
     shadowing: capletShadowingSchema.optional(),
-    ...capletAgentSelectionHintsSchema,
     setup: capletSetupSchema.optional(),
     projectBinding: capletProjectBindingSchema.optional(),
     runtime: capletRuntimeRequirementsSchema.optional(),
@@ -1381,8 +1361,6 @@ type SharedCapletFields = {
   tags?: string[] | undefined;
   exposure?: z.infer<typeof capletExposureSchema> | undefined;
   shadowing?: z.infer<typeof capletShadowingSchema> | undefined;
-  useWhen?: string | undefined;
-  avoidWhen?: string | undefined;
   setup?: z.infer<typeof capletSetupSchema> | undefined;
   projectBinding?: z.infer<typeof capletProjectBindingSchema> | undefined;
   runtime?: z.infer<typeof capletRuntimeRequirementsSchema> | undefined;
@@ -1394,8 +1372,6 @@ const CHILD_SHARED_FIELD_KEYS = new Set([
   "tags",
   "exposure",
   "shadowing",
-  "useWhen",
-  "avoidWhen",
   "setup",
   "projectBinding",
   "runtime",
@@ -1546,8 +1522,6 @@ function parentSharedFields(frontmatter: CapletFileFrontmatter): SharedCapletFie
     tags: frontmatter.tags,
     exposure: frontmatter.exposure,
     shadowing: frontmatter.shadowing,
-    useWhen: frontmatter.useWhen,
-    avoidWhen: frontmatter.avoidWhen,
     setup: frontmatter.setup,
     projectBinding: frontmatter.projectBinding,
     runtime: frontmatter.runtime,
@@ -1564,8 +1538,6 @@ function mergeSharedCapletFields(
     tags: mergeTags(parent.tags, child.tags),
     exposure: child.exposure ?? parent.exposure,
     shadowing: child.shadowing ?? parent.shadowing,
-    useWhen: child.useWhen ?? parent.useWhen,
-    avoidWhen: child.avoidWhen ?? parent.avoidWhen,
     setup: mergeSetup(parent.setup, child.setup),
     projectBinding: child.projectBinding ?? parent.projectBinding,
     runtime: mergeRuntime(parent.runtime, child.runtime),
@@ -1727,8 +1699,6 @@ function normalizedSharedOutput(shared: SharedCapletFields): Record<string, unkn
     ...(shared.tags ? { tags: shared.tags } : {}),
     ...(shared.exposure ? { exposure: shared.exposure } : {}),
     ...(shared.shadowing ? { shadowing: shared.shadowing } : {}),
-    ...(shared.useWhen ? { useWhen: shared.useWhen } : {}),
-    ...(shared.avoidWhen ? { avoidWhen: shared.avoidWhen } : {}),
     ...(shared.setup ? { setup: shared.setup } : {}),
     ...(shared.projectBinding ? { projectBinding: shared.projectBinding } : {}),
     ...(shared.runtime ? { runtime: shared.runtime } : {}),
@@ -1763,8 +1733,6 @@ function sharedCapletFields(frontmatter: CapletFileFrontmatter): Record<string, 
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
     ...(frontmatter.exposure ? { exposure: frontmatter.exposure } : {}),
     ...(frontmatter.shadowing ? { shadowing: frontmatter.shadowing } : {}),
-    ...(frontmatter.useWhen ? { useWhen: frontmatter.useWhen } : {}),
-    ...(frontmatter.avoidWhen ? { avoidWhen: frontmatter.avoidWhen } : {}),
     ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
     ...(frontmatter.projectBinding ? { projectBinding: frontmatter.projectBinding } : {}),
     ...(frontmatter.runtime ? { runtime: frontmatter.runtime } : {}),

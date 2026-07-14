@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Vercel
 description: Inspect and manage Vercel teams, projects, deployments, logs, and documentation through Vercel's hosted MCP server.
-avoidWhen: Use local Next.js, frontend, or repository configuration when no live Vercel context is needed.
 tags:
   - vercel
   - deployments

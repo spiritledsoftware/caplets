@@ -11,8 +11,6 @@ describe("registry", () => {
           name: "Enabled Server",
           description: "A useful enabled server.",
           command: "node",
-          useWhen: "Use for enabled test workflows.",
-          avoidWhen: "Avoid for disabled server checks.",
           args: ["secret-arg", "$env:SECRET_TOKEN"],
           env: { SECRET_TOKEN: "$env:SECRET_TOKEN" },
           auth: undefined,
@@ -90,8 +88,6 @@ describe("registry", () => {
     expect(registry.get("status")?.backend).toBe("http");
     const description = capabilityDescription(config.mcpServers.enabled!);
     expect(description).toContain("Enabled Server");
-    expect(description).toContain("Use when: Use for enabled test workflows.");
-    expect(description).toContain("Avoid when: Avoid for disabled server checks.");
     expect(description).toContain("Use tools/search_tools for downstream names");
     expect(description).toContain("callTemplate");
     expect(description).toContain("Prefer direct call_tool");
@@ -103,11 +99,6 @@ describe("registry", () => {
     expect(description).not.toContain("secret-env-value");
 
     const remoteDetail = registry.detail(config.mcpServers.remote!);
-    const enabledDetail = registry.detail(config.mcpServers.enabled!);
-    expect(enabledDetail).toMatchObject({
-      useWhen: "Use for enabled test workflows.",
-      avoidWhen: "Avoid for disabled server checks.",
-    });
     const serialized = JSON.stringify(remoteDetail);
     expect(serialized).toContain('"transport":"http"');
     expect(serialized).not.toContain("secret-url-value");

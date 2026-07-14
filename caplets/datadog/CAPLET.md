@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Datadog
 description: Query Datadog logs, metrics, traces, dashboards, monitors, incidents, services, events, notebooks, and observability insights through Datadog's managed MCP server.
-avoidWhen: Prefer local tools when only local log files or application instrumentation code are needed.
 tags:
   - datadog
   - observability

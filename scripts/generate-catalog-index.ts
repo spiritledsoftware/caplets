@@ -93,12 +93,6 @@ export async function generateOfficialCatalogEntries(root: string): Promise<Cata
         tags:
           (isSuite ? nonEmpty(catalogStringArrayFromFrontmatter(frontmatter.tags)) : undefined) ??
           caplet.config.tags,
-        useWhen:
-          (isSuite ? catalogStringFromFrontmatter(frontmatter.useWhen) : undefined) ??
-          caplet.config.useWhen,
-        avoidWhen:
-          (isSuite ? catalogStringFromFrontmatter(frontmatter.avoidWhen) : undefined) ??
-          caplet.config.avoidWhen,
         setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
         authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
         projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),

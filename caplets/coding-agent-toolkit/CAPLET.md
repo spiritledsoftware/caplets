@@ -2,8 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Coding Agent Toolkit
 description: self-contained nested toolkit of high-value Caplets for coding agents.
-useWhen: Use as a compact default toolkit for coding work that benefits from several complementary Caplets.
-avoidWhen: Prefer a narrower individual Caplet for a specific provider or capability.
 tags:
   - coding-agent
   - toolkit

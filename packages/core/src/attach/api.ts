@@ -59,8 +59,6 @@ export type AttachManifestExport = {
   capletId: string;
   sourceCapletId?: string | undefined;
   shadowing: CapletShadowingPolicy;
-  useWhen?: string | undefined;
-  avoidWhen?: string | undefined;
 };
 
 export type AttachProgressiveCapletExport = AttachManifestExport & {
@@ -72,6 +70,8 @@ export type AttachToolExport = AttachManifestExport & {
   kind: "tool";
   name: string;
   downstreamName: string;
+  useWhen?: string | undefined;
+  avoidWhen?: string | undefined;
 };
 
 export type AttachResourceExport = AttachManifestExport & {
@@ -251,8 +251,6 @@ function nativeProgressiveCaplets(
       schemaHash: schemaHash(tool.inputSchema ?? null),
       capletId: tool.caplet,
       ...(tool.sourceCaplet ? { sourceCapletId: tool.sourceCaplet } : {}),
-      ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
-      ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
       shadowing: tool.shadowing ?? "forbid",
     }));
 }
@@ -306,8 +304,6 @@ function nativeCodeModeCaplets(
       schemaHash: null,
       capletId: caplet.id,
       ...(caplet.sourceCapletId ? { sourceCapletId: caplet.sourceCapletId } : {}),
-      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
-      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
       shadowing: caplet.shadowing ?? "forbid",
     })),
   );
@@ -431,8 +427,6 @@ function progressiveCapletExport(
       inputSchema: entry.inputSchema,
       schemaHash: schemaHash(entry.inputSchema ?? null),
       capletId: entry.capletId,
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
     },
   ];
@@ -451,8 +445,6 @@ function codeModeCapletExport(
       description: entry.description,
       schemaHash: null,
       capletId: entry.capletId,
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
     },
   ];
@@ -496,8 +488,6 @@ function resourceExport(
       ...(typeof entry.size === "number" ? { size: entry.size } : {}),
       schemaHash: null,
       capletId: entry.capletId,
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
     },
   ];
@@ -523,8 +513,6 @@ function resourceTemplateExport(
       ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
       schemaHash: null,
       capletId: entry.capletId,
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
     },
   ];
@@ -543,8 +531,6 @@ function promptExport(entry: ExposureProjectionEntry): Array<Omit<AttachPromptEx
       inputSchema: entry.inputSchema,
       schemaHash: schemaHash(entry.inputSchema ?? null),
       capletId: entry.capletId,
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
     },
   ];
@@ -563,8 +549,6 @@ function completionExport(
       description: entry.description,
       schemaHash: null,
       capletId: entry.capletId,
-      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
-      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
     },
   ];

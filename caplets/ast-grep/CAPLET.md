@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: ast-grep
 description: Search, scan, test, rewrite, and scaffold ast-grep rules through curated MCP tools.
-avoidWhen: Prefer ordinary text search for lexical matches and LSP for symbol references or type information.
 tags:
   - mcp
   - code

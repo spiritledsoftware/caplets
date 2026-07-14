@@ -10,8 +10,6 @@ tags:
   - files
 catalog:
   icon: https://workspace.google.com/favicon.ico
-useWhen: Coordinate work across Google mail, files, documents, spreadsheets, presentations, and tasks.
-avoidWhen: Use a focused Google Caplet when the task only needs one Workspace surface.
 googleDiscoveryApis:
   gmail:
     name: Gmail

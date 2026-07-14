@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: PagerDuty
 description: Inspect PagerDuty incidents, services, schedules, escalation policies, event orchestrations, on-call context, and related operational state through PagerDuty's MCP server.
-avoidWhen: Avoid when the work only concerns local runbooks or postmortem files rather than live PagerDuty state.
 tags:
   - pagerduty
   - incidents

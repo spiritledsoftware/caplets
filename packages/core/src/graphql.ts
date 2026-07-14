@@ -56,8 +56,6 @@ const SCALAR_JSON_SCHEMA: Record<string, Record<string, unknown>> = {
 type GraphQlOperation = {
   name: string;
   description?: string;
-  useWhen?: string;
-  avoidWhen?: string;
   document: string;
   operationName?: string;
   inputSchema: Record<string, unknown>;
@@ -325,8 +323,6 @@ export class GraphQLManager {
     return {
       name: operation.name,
       ...(operation.description ? { description: operation.description } : {}),
-      ...(operation.useWhen ? { useWhen: operation.useWhen } : {}),
-      ...(operation.avoidWhen ? { avoidWhen: operation.avoidWhen } : {}),
       inputSchema: operation.inputSchema as Tool["inputSchema"],
       annotations:
         operation.kind === "query"
@@ -405,8 +401,6 @@ function loadConfiguredOperations(
       return {
         name,
         ...(config.description ? { description: config.description } : {}),
-        ...(config.useWhen ? { useWhen: config.useWhen } : {}),
-        ...(config.avoidWhen ? { avoidWhen: config.avoidWhen } : {}),
         document,
         ...(config.operationName ? { operationName: config.operationName } : {}),
         inputSchema: variablesSchema(schema, operation),

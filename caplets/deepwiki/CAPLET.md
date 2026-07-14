@@ -2,8 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: DeepWiki
 description: Query repository-focused documentation and codebase explanations through DeepWiki's MCP service.
-useWhen: Orient work in an unfamiliar repository before implementation decisions.
-avoidWhen: Prefer direct source inspection and tests when the local repository is available.
 tags:
   - docs
   - code

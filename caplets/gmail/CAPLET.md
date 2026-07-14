@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Gmail
 description: Search, read, label, draft, and send Gmail messages through the Gmail API Discovery document.
-avoidWhen: Prefer a task or calendar integration when follow-up tracking does not require email content.
 tags:
   - google
   - gmail

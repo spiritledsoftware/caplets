@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Cloudflare
 description: Inspect and manage Cloudflare accounts, zones, DNS, Workers, security settings, caches, rules, and other resources through Cloudflare's hosted MCP server.
-avoidWhen: Prefer the project workspace and Cloudflare tooling when only local Cloudflare project files are needed.
 tags:
   - cloudflare
   - dns

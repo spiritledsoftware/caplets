@@ -7,8 +7,6 @@ export type CodeModeCallableCaplet = {
   name: string;
   description: string;
   shadowing?: "forbid" | "allow" | "namespace";
-  useWhen?: string;
-  avoidWhen?: string;
 };
 
 export type CodeModeDeclarationInput = {

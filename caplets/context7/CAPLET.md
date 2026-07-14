@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Context7
 description: Fetch current library and framework documentation through Context7 before using version-sensitive APIs.
-avoidWhen: Do not substitute documentation lookup for available local source, lockfiles, generated types, or failing tests.
 tags:
   - docs
   - libraries

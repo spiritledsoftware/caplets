@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Docs
 description: Read, create, and edit Google Docs documents through the Google Docs API Discovery document.
-avoidWhen: Use Google Drive for file search, folder placement, sharing, copying, moving, trashing, or deleting documents.
 tags:
   - google
   - docs

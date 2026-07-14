@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: npm Registry
 description: Query package metadata, versions, dist-tags, and search results from the public npm registry.
-avoidWhen: Avoid for security reviews or vulnerability lookups; use OSV for structured vulnerability data.
 tags:
   - openapi
   - npm

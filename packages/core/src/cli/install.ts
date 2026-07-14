@@ -1227,8 +1227,6 @@ function catalogEntryForInstalledLockEntry(
         resolvedRevision: entry.source.resolvedRevision,
       }),
       tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
-      useWhen: catalogStringFromFrontmatter(frontmatter.useWhen),
-      avoidWhen: catalogStringFromFrontmatter(frontmatter.avoidWhen),
       setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
       authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
       projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),

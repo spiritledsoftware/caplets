@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Neon
 description: Inspect and manage Neon Postgres organizations, projects, branches, databases, roles, queries, and docs through Neon's hosted MCP server.
-avoidWhen: Avoid when the work only concerns local migration files, ORMs, or application code rather than live Neon state.
 tags:
   - neon
   - postgres

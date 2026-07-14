@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: AWS
 description: Inspect and manage AWS accounts, Regions, services, resources, IAM-authorized operations, and AWS documentation through the managed AWS MCP Server.
-avoidWhen: Prefer the project workspace and deployment tooling when only local IaC or application files are needed.
 tags:
   - aws
   - cloud

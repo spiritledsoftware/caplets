@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Google Meet
 description: Create Meet spaces and inspect Meet conference records, participants, recordings, transcripts, and smart notes through the Meet API Discovery document.
-avoidWhen: Use Google Calendar for scheduling, invites, guest lists, or event lifecycle management.
 tags:
   - google
   - meet

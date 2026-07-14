@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Supabase
 description: Inspect and manage Supabase projects, databases, schemas, branches, storage, edge functions, and docs through Supabase's hosted MCP server.
-avoidWhen: Use local migration files or application code when live Supabase state is not needed.
 tags:
   - supabase
   - postgres

@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Stripe
 description: Inspect and manage Stripe accounts, API resources, documentation, reports, refunds, and payments through Stripe's hosted MCP server.
-avoidWhen: Use local SDK sources or static API documentation when no live Stripe account context is needed.
 tags:
   - stripe
   - payments

@@ -2,7 +2,6 @@
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Azure
 description: Inspect and manage Azure resources, subscriptions, services, deployment state, and documentation through Microsoft's Azure MCP Server.
-avoidWhen: Prefer the project workspace when only local IaC or application files are needed.
 tags:
   - azure
   - cloud

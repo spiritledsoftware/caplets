@@ -434,18 +434,6 @@
             "type": "string",
             "enum": ["forbid", "allow", "namespace"]
           },
-          "useWhen": {
-            "description": "When agents should prefer this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "avoidWhen": {
-            "description": "When agents should avoid this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
           "setup": {
             "type": "object",
             "properties": {
@@ -855,18 +843,6 @@
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
             "enum": ["forbid", "allow", "namespace"]
-          },
-          "useWhen": {
-            "description": "When agents should prefer this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "avoidWhen": {
-            "description": "When agents should avoid this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
           },
           "setup": {
             "type": "object",
@@ -1287,18 +1263,6 @@
             "type": "string",
             "enum": ["forbid", "allow", "namespace"]
           },
-          "useWhen": {
-            "description": "When agents should prefer this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "avoidWhen": {
-            "description": "When agents should avoid this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
           "setup": {
             "type": "object",
             "properties": {
@@ -1543,18 +1507,6 @@
                   "description": "Operation capability description.",
                   "type": "string",
                   "minLength": 1
-                },
-                "useWhen": {
-                  "description": "When agents should prefer this Caplet or configured action.",
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 500
-                },
-                "avoidWhen": {
-                  "description": "When agents should avoid this Caplet or configured action.",
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 500
                 }
               },
               "additionalProperties": false
@@ -1752,18 +1704,6 @@
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
             "enum": ["forbid", "allow", "namespace"]
-          },
-          "useWhen": {
-            "description": "When agents should prefer this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "avoidWhen": {
-            "description": "When agents should avoid this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
           },
           "setup": {
             "type": "object",
@@ -2166,18 +2106,6 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "useWhen": {
-                  "description": "When agents should prefer this Caplet or configured action.",
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 500
-                },
-                "avoidWhen": {
-                  "description": "When agents should avoid this Caplet or configured action.",
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 500
-                },
                 "inputSchema": {
                   "description": "JSON Schema for call_tool arguments.",
                   "type": "object",
@@ -2268,18 +2196,6 @@
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
             "enum": ["forbid", "allow", "namespace"]
-          },
-          "useWhen": {
-            "description": "When agents should prefer this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "avoidWhen": {
-            "description": "When agents should avoid this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
           },
           "setup": {
             "type": "object",
@@ -2490,18 +2406,6 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "useWhen": {
-                  "description": "When agents should prefer this Caplet or configured action.",
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 500
-                },
-                "avoidWhen": {
-                  "description": "When agents should avoid this Caplet or configured action.",
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 500
-                },
                 "inputSchema": {
                   "description": "JSON Schema for call_tool arguments.",
                   "type": "object",
@@ -2633,18 +2537,6 @@
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
             "enum": ["forbid", "allow", "namespace"]
-          },
-          "useWhen": {
-            "description": "When agents should prefer this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "avoidWhen": {
-            "description": "When agents should avoid this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
           },
           "setup": {
             "type": "object",
@@ -2896,18 +2788,6 @@
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
             "enum": ["forbid", "allow", "namespace"]
-          },
-          "useWhen": {
-            "description": "When agents should prefer this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "avoidWhen": {
-            "description": "When agents should avoid this Caplet or configured action.",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
           },
           "setup": {
             "type": "object",

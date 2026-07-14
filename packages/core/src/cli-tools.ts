@@ -157,8 +157,6 @@ export class CliToolsManager {
     return {
       name: action.name,
       ...(action.description ? { description: action.description } : {}),
-      ...(action.useWhen ? { useWhen: action.useWhen } : {}),
-      ...(action.avoidWhen ? { avoidWhen: action.avoidWhen } : {}),
       inputSchema: (action.inputSchema ?? DEFAULT_INPUT_SCHEMA) as Tool["inputSchema"],
       ...(action.outputSchema ? { outputSchema: action.outputSchema as Tool["outputSchema"] } : {}),
       ...(action.annotations ? { annotations: action.annotations as Tool["annotations"] } : {}),

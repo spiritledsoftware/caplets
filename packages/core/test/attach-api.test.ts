@@ -347,8 +347,6 @@ describe("Attach API dispatch", () => {
               id: "filesystem",
               name: "Filesystem",
               description: "Filesystem.",
-              useWhen: "Use for repository files.",
-              avoidWhen: "Avoid for network calls.",
               shadowing: "allow",
             },
           ],
@@ -369,8 +367,6 @@ describe("Attach API dispatch", () => {
         kind: "caplet",
         name: "Filesystem",
         capletId: "filesystem",
-        useWhen: "Use for repository files.",
-        avoidWhen: "Avoid for network calls.",
         shadowing: "allow",
       }),
     ]);
