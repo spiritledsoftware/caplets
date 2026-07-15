@@ -294,7 +294,7 @@ export const RELATIONAL_MODEL_CHECKLIST: readonly RelationalChecklistItem[] =
   CONTROL_PLANE_ENTITY_INVENTORY.map((entry) => ({
     entity: entry.kind,
     primaryKey: ["logicalHostId", "id"],
-    foreignKeys: entry.kind === "host-setting" ? ["storeId"] : ["logicalHostId", "storeId"],
+    foreignKeys: ["__caplets_storage_identity_v1(logicalHostId,storeId)"],
     uniqueKeys: [["logicalHostId", "id"]],
     invariants: [
       "model-version-checked",
@@ -411,3 +411,5 @@ export function assertControlPlaneTransition(
 }
 
 export * from "./fields";
+export * from "./storage-identity";
+export * from "./host-settings";

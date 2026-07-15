@@ -140,6 +140,107 @@ export function classifyCapletPlacement(input: {
     : { state: "setup-required", effective: false };
 }
 
+export type CanonicalCapletBackendRow = {
+  capletId: string;
+  ordinal: number;
+  kind: Exclude<PortableBackendKind, "mixed">;
+  childId?: string;
+  config: PortableJson;
+};
+
+export type CanonicalCapletAssetRow = {
+  capletId: string;
+  ordinal: number;
+  path: string;
+  role: PortableAssetRole;
+  mediaType: string;
+  content: Uint8Array;
+  contentHash: ContentHash;
+};
+
+export type CanonicalCapletReferenceRow = {
+  capletId: string;
+  ordinal: number;
+  reference: PortableReference;
+};
+
+export type CapletActivationHistoryEvent = {
+  capletId: string;
+  sequence: number;
+  from: CapletActivationState | "absent";
+  to: CapletActivationState;
+  reason:
+    | "imported"
+    | "setup-required"
+    | "setup-remediated"
+    | "filesystem-shadowed"
+    | "filesystem-unshadowed"
+    | "disabled"
+    | "enabled"
+    | "sql-replaced";
+  actorId: string;
+  aggregateVersion: number;
+  authorityVersion: number;
+  effectiveVersion: number;
+  occurredAt: string;
+};
+
+export type CanonicalCapletRelationalProjection = {
+  capletId: string;
+  sourceFrontmatter: PortableJson;
+  body: string;
+  backends: CanonicalCapletBackendRow[];
+  assets: CanonicalCapletAssetRow[];
+  references: CanonicalCapletReferenceRow[];
+  activationHistory: CapletActivationHistoryEvent[];
+};
+
+export function validateCapletRelationalProjection(
+  aggregate: CanonicalCapletAggregate,
+  projection: CanonicalCapletRelationalProjection,
+): void {
+  if (projection.capletId !== aggregate.id) throw new Error("Caplet projection owner mismatch");
+  assertOrderedOwnedRows(aggregate.id, projection.backends, "backend");
+  assertOrderedOwnedRows(aggregate.id, projection.assets, "asset");
+  assertOrderedOwnedRows(aggregate.id, projection.references, "reference");
+  const paths = new Set<string>();
+  for (const asset of projection.assets) {
+    if (!(asset.content instanceof Uint8Array))
+      throw new Error("Caplet asset content must be bytes");
+    const key = asset.path.normalize("NFC").toLocaleLowerCase("en-US");
+    if (paths.has(key)) throw new Error(`Caplet asset path collision ${asset.path}`);
+    paths.add(key);
+  }
+  for (const [index, event] of projection.activationHistory.entries()) {
+    if (event.capletId !== aggregate.id || event.sequence !== index + 1) {
+      throw new Error("Caplet activation history ownership or sequence is invalid");
+    }
+    if (index > 0 && projection.activationHistory[index - 1]!.to !== event.from) {
+      throw new Error("Caplet activation history has a discontinuity");
+    }
+  }
+  const last = projection.activationHistory.at(-1);
+  if (
+    !last ||
+    last.to !== aggregate.activation ||
+    last.aggregateVersion !== aggregate.aggregateVersion
+  ) {
+    throw new Error("Caplet activation history does not describe the aggregate");
+  }
+}
+
+function assertOrderedOwnedRows(
+  capletId: string,
+  rows: Array<{ capletId: string; ordinal: number }>,
+  label: string,
+): void {
+  for (const [index, row] of rows.entries()) {
+    if (row.capletId !== capletId || row.ordinal !== index) {
+      throw new Error(`Caplet ${label} ownership or ordering is invalid`);
+    }
+  }
+}
+
 export const CAPLET_RELATIONAL_CHECKLIST = [
   "caplet identity and aggregate version",
   "typed backend row and ordered repeating backend children",

@@ -77,6 +77,9 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     field("contentHash", "hash"),
     field("runtimeFingerprint", "hash", false),
     clock("installedAt", false),
+    text("resolvedRevision", false),
+    json("riskSummary"),
+    id("ownerId", false),
   ],
   "operation-namespace": [
     id("namespaceId"),
@@ -130,6 +133,14 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     id("ownerId", false),
     field("accessCiphertext", "bytes"),
     field("refreshCiphertext", "bytes", false),
+    text("authType", false),
+    field("idTokenCiphertext", "bytes", false),
+    text("issuer", false),
+    text("subject", false),
+    id("clientId", false),
+    field("clientSecretCiphertext", "bytes", false),
+    text("protectedResourceOrigin", false),
+    json("metadata"),
     text("tokenType", false),
     json("scope"),
     clock("expiresAt", false),
@@ -150,6 +161,11 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     text("purpose"),
     text("protection"),
     field("verifierOrCiphertext", "bytes"),
+    field("accessCiphertext", "bytes", false),
+    field("refreshCiphertext", "bytes", false),
+    text("workspace", false),
+    version("recordVersion", false),
+    id("ownerId", false),
     version("keyVersion"),
     clock("expiresAt", false),
     id("refreshFamilyId", false),
@@ -197,27 +213,30 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
   ],
   "vault-value": [
     text("referenceName"),
+    version("recordVersion"),
+    text("algorithm"),
     field("ciphertext", "bytes"),
     field("nonce", "bytes"),
     field("authTag", "bytes"),
+    version("valueBytes"),
     version("keyVersion"),
-    version("aadVersion"),
+    version("aadVersion", false),
     id("ownerId", false),
   ],
   "vault-grant": [
     text("referenceName"),
     id("capletId"),
-    text("originKind"),
-    text("originPath"),
-    field("storedKey", "bytes"),
-    text("scope"),
+    json("origin", true),
+    text("storedKey"),
+    text("scope", false),
     id("ownerId", false),
   ],
   "operator-activity": [
     id("activityId"),
     id("actorId"),
     text("action"),
-    text("target", false),
+    text("outcome"),
+    json("target", true),
     json("redactedDetail"),
     clock("occurredAt"),
   ],
@@ -225,6 +244,7 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     version("generation"),
     text("bindingState"),
     text("authorityToken"),
+    id("operationNamespace"),
     id("transferId", false),
   ],
   "effective-version": [
@@ -351,11 +371,7 @@ function validFieldValue(definition: CanonicalFieldDefinition, value: unknown): 
     return typeof value === "string" && Number.isFinite(Date.parse(value));
   if (definition.type === "boolean") return typeof value === "boolean";
   if (definition.type === "json") return value !== undefined;
-  if (definition.type === "bytes")
-    return (
-      (value instanceof Uint8Array && value.byteLength > 0) ||
-      (typeof value === "string" && value.length > 0)
-    );
+  if (definition.type === "bytes") return value instanceof Uint8Array && value.byteLength > 0;
   if (definition.type === "hash") return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
   return typeof value === "string" && value.length > 0;
 }

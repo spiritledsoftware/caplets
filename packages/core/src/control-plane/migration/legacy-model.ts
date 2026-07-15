@@ -1,6 +1,7 @@
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { stableJsonStringify } from "../../stable-json";
-import { CANONICAL_MODEL_VERSION, type ControlPlaneEntityKind } from "../model";
+import { CANONICAL_MODEL_VERSION, canonicalFields, type ControlPlaneEntityKind } from "../model";
 
 export const LEGACY_MAPPING_VERSION = 1 as const;
 
@@ -37,12 +38,14 @@ export type LegacyFieldRule = {
     | "value"
     | "extensible-map"
     | "repeating-child";
+  codec?: "utf8-bytes" | "base64url-bytes" | "daemon-url";
 };
 
 export type LegacyDomainManifest = {
   domain: LegacyDomain;
   canonicalKind: ControlPlaneEntityKind;
   identityFields: readonly string[];
+  syntheticIdentity?: Readonly<Record<string, string>>;
   fields: readonly LegacyFieldRule[];
   malformedPolicy: "quarantine";
   unknownFieldPolicy: "quarantine";
@@ -59,6 +62,19 @@ const optional = (
   category: LegacyFieldRule["category"],
   empty: LegacyFieldRule["empty"] = "preserve",
 ): LegacyFieldRule => ({ source, destination, presence: "optional", empty, category });
+const encoded = (
+  source: string,
+  destination: string,
+  presence: LegacyFieldRule["presence"],
+  codec: NonNullable<LegacyFieldRule["codec"]>,
+): LegacyFieldRule => ({
+  source,
+  destination,
+  presence,
+  empty: presence === "required" ? "reject" : "preserve",
+  category: "encryption",
+  codec,
+});
 
 export const LEGACY_MAPPING_MANIFEST: {
   version: typeof LEGACY_MAPPING_VERSION;
@@ -71,15 +87,20 @@ export const LEGACY_MAPPING_MANIFEST: {
       canonicalKind: "oauth-token",
       identityFields: ["serverName"],
       fields: [
-        required("serverName", "identity.serverName", "identity"),
-        required("accessToken", "fields.accessToken", "encryption"),
-        optional("refreshToken", "fields.refreshToken", "encryption"),
+        required("server", "identity.serverName", "identity"),
+        optional("authType", "fields.authType", "value"),
+        encoded("accessToken", "fields.accessCiphertext", "required", "utf8-bytes"),
+        encoded("refreshToken", "fields.refreshCiphertext", "optional", "utf8-bytes"),
         optional("tokenType", "fields.tokenType", "value"),
-        optional("scope", "fields.scope", "repeating-child"),
+        optional("scope", "fields.scope", "value"),
         optional("expiresAt", "fields.expiresAt", "clock"),
-        optional("version", "fields.version", "version"),
-        optional("keyVersion", "fields.keyVersion", "encryption"),
-        optional("ownerId", "fields.ownerId", "ownership"),
+        encoded("idToken", "fields.idTokenCiphertext", "optional", "utf8-bytes"),
+        optional("issuer", "fields.issuer", "value"),
+        optional("subject", "fields.subject", "value"),
+        optional("clientId", "fields.clientId", "reference"),
+        encoded("clientSecret", "fields.clientSecretCiphertext", "optional", "utf8-bytes"),
+        optional("protectedResourceOrigin", "fields.protectedResourceOrigin", "value"),
+        optional("metadata", "fields.metadata", "extensible-map"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -87,15 +108,15 @@ export const LEGACY_MAPPING_MANIFEST: {
     {
       domain: "remote-server-state",
       canonicalKind: "client",
-      identityFields: ["serverId"],
+      identityFields: ["clientId"],
       fields: [
-        required("serverId", "identity.serverId", "identity"),
-        optional("version", "fields.version", "version"),
+        required("serverId", "identity.clientId", "identity"),
+        optional("version", "fields.aggregateVersion", "version"),
         optional("pairingCodes", "children.pairingCodes", "repeating-child"),
         optional("clients", "children.clients", "repeating-child"),
         optional("pendingLogins", "children.pendingApprovals", "repeating-child"),
         optional("supersededTokens", "children.supersededTokens", "repeating-child"),
-        optional("encryptedReplayRecords", "children.encryptedReplayRecords", "encryption"),
+        optional("encryptedReplayRecords", "children.encryptedReplayRecords", "repeating-child"),
         optional("authorityVersion", "fields.authorityVersion", "authority"),
       ],
       malformedPolicy: "quarantine",
@@ -104,16 +125,16 @@ export const LEGACY_MAPPING_MANIFEST: {
     {
       domain: "dashboard-session",
       canonicalKind: "dashboard-session",
-      identityFields: ["id"],
+      identityFields: ["sessionId"],
       fields: [
-        required("id", "identity.id", "identity"),
+        required("id", "identity.sessionId", "identity"),
         required("clientId", "fields.clientId", "reference"),
         required("createdAt", "fields.createdAt", "clock"),
         required("expiresAt", "fields.expiresAt", "clock"),
         optional("lastSeenAt", "fields.lastSeenAt", "clock"),
         optional("revokedAt", "fields.revokedAt", "clock"),
-        optional("verifier", "fields.verifier", "encryption"),
-        optional("version", "fields.version", "version"),
+        encoded("verifier", "fields.verifier", "optional", "utf8-bytes"),
+        optional("version", "fields.aggregateVersion", "version"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -121,15 +142,15 @@ export const LEGACY_MAPPING_MANIFEST: {
     {
       domain: "remote-profile",
       canonicalKind: "host-setting",
-      identityFields: ["id"],
+      identityFields: ["key"],
       fields: [
-        required("id", "identity.id", "identity"),
-        required("name", "fields.name", "value"),
-        required("url", "fields.url", "value"),
-        optional("selectedWorkspace", "fields.selectedWorkspace", "reference"),
+        required("id", "identity.key", "identity"),
+        required("name", "fields.value.name", "value"),
+        required("url", "fields.value.url", "value"),
+        optional("selectedWorkspace", "fields.value.selectedWorkspace", "reference"),
         optional("createdAt", "fields.createdAt", "clock"),
         optional("updatedAt", "fields.updatedAt", "clock"),
-        optional("ownerId", "fields.ownerId", "ownership"),
+        optional("ownerId", "fields.value.ownerId", "ownership"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -137,12 +158,12 @@ export const LEGACY_MAPPING_MANIFEST: {
     {
       domain: "remote-profile-credential",
       canonicalKind: "credential",
-      identityFields: ["profileId"],
+      identityFields: ["credentialId"],
       fields: [
-        required("profileId", "identity.profileId", "identity"),
-        required("credential", "fields.credential", "encryption"),
+        required("profileId", "identity.credentialId", "identity"),
+        encoded("credential", "fields.verifierOrCiphertext", "required", "utf8-bytes"),
         optional("expiresAt", "fields.expiresAt", "clock"),
-        optional("keyVersion", "fields.keyVersion", "encryption"),
+        optional("keyVersion", "fields.keyVersion", "version"),
         optional("ownerId", "fields.ownerId", "ownership"),
       ],
       malformedPolicy: "quarantine",
@@ -151,15 +172,15 @@ export const LEGACY_MAPPING_MANIFEST: {
     {
       domain: "cloud-auth",
       canonicalKind: "credential",
-      identityFields: ["profileId"],
+      identityFields: ["credentialId"],
       fields: [
-        required("profileId", "identity.profileId", "identity"),
-        required("accessToken", "fields.accessToken", "encryption"),
-        optional("refreshToken", "fields.refreshToken", "encryption"),
+        required("profileId", "identity.credentialId", "identity"),
+        encoded("accessToken", "fields.accessCiphertext", "required", "utf8-bytes"),
+        encoded("refreshToken", "fields.refreshCiphertext", "optional", "utf8-bytes"),
         optional("expiresAt", "fields.expiresAt", "clock"),
         optional("workspace", "fields.workspace", "reference"),
-        optional("version", "fields.version", "version"),
-        optional("keyVersion", "fields.keyVersion", "encryption"),
+        optional("version", "fields.recordVersion", "version"),
+        optional("keyVersion", "fields.keyVersion", "version"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -171,12 +192,14 @@ export const LEGACY_MAPPING_MANIFEST: {
       fields: [
         required("referenceName", "identity.referenceName", "identity"),
         required("version", "fields.recordVersion", "version"),
-        required("ciphertext", "fields.ciphertext", "encryption"),
-        required("iv", "fields.iv", "encryption"),
-        optional("authTag", "fields.authTag", "encryption"),
-        required("keyVersion", "fields.keyVersion", "encryption"),
-        optional("aadVersion", "fields.aadVersion", "encryption"),
-        optional("updatedAt", "fields.updatedAt", "clock"),
+        required("algorithm", "fields.algorithm", "value"),
+        encoded("nonce", "fields.nonce", "required", "base64url-bytes"),
+        encoded("ciphertext", "fields.ciphertext", "required", "base64url-bytes"),
+        encoded("authTag", "fields.authTag", "required", "base64url-bytes"),
+        required("valueBytes", "fields.valueBytes", "version"),
+        required("createdAt", "fields.createdAt", "clock"),
+        required("updatedAt", "fields.updatedAt", "clock"),
+        required("keyVersion", "fields.keyVersion", "version"),
         optional("ownerId", "fields.ownerId", "ownership"),
       ],
       malformedPolicy: "quarantine",
@@ -185,15 +208,14 @@ export const LEGACY_MAPPING_MANIFEST: {
     {
       domain: "vault-grant",
       canonicalKind: "vault-grant",
-      identityFields: ["referenceName", "capletId", "originKind", "originPath"],
+      identityFields: ["referenceName", "capletId", "origin"],
       fields: [
         required("referenceName", "identity.referenceName", "identity"),
         required("capletId", "identity.capletId", "reference"),
-        required("originKind", "identity.originKind", "identity"),
-        required("originPath", "identity.originPath", "identity"),
-        required("storedKey", "fields.storedKey", "encryption"),
-        optional("createdAt", "fields.createdAt", "clock"),
-        optional("updatedAt", "fields.updatedAt", "clock"),
+        required("origin", "identity.origin", "extensible-map"),
+        required("storedKey", "fields.storedKey", "value"),
+        required("createdAt", "fields.createdAt", "clock"),
+        required("updatedAt", "fields.updatedAt", "clock"),
         optional("ownerId", "fields.ownerId", "ownership"),
       ],
       malformedPolicy: "quarantine",
@@ -210,7 +232,7 @@ export const LEGACY_MAPPING_MANIFEST: {
         optional("metadata", "fields.metadata", "extensible-map"),
         optional("createdAt", "fields.createdAt", "clock"),
         optional("updatedAt", "fields.updatedAt", "clock"),
-        optional("version", "fields.version", "version"),
+        optional("version", "fields.workspaceVersion", "version"),
         optional("ownerId", "fields.ownerId", "ownership"),
       ],
       malformedPolicy: "quarantine",
@@ -249,15 +271,15 @@ export const LEGACY_MAPPING_MANIFEST: {
     {
       domain: "operator-activity",
       canonicalKind: "operator-activity",
-      identityFields: ["id"],
+      identityFields: ["activityId"],
       fields: [
-        required("id", "identity.id", "identity"),
-        required("timestamp", "fields.timestamp", "clock"),
-        required("actor", "fields.actor", "ownership"),
+        required("id", "identity.activityId", "identity"),
+        required("createdAt", "fields.occurredAt", "clock"),
+        required("actorClientId", "fields.actorId", "ownership"),
         required("action", "fields.action", "value"),
-        optional("target", "fields.target", "reference"),
-        optional("details", "fields.redactedDetails", "extensible-map"),
-        optional("authorityVersion", "fields.authorityVersion", "authority"),
+        required("outcome", "fields.outcome", "value"),
+        required("target", "fields.target", "extensible-map"),
+        optional("metadata", "fields.redactedDetail", "extensible-map"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -266,13 +288,12 @@ export const LEGACY_MAPPING_MANIFEST: {
       domain: "host-setting",
       canonicalKind: "host-setting",
       identityFields: ["key"],
+      syntheticIdentity: { key: "native.daemon-url" },
       fields: [
-        required("key", "identity.key", "identity"),
-        optional("value", "fields.value", "value"),
-        optional("version", "fields.version", "version"),
-        optional("updatedAt", "fields.updatedAt", "clock"),
-        optional("ownerId", "fields.ownerId", "ownership"),
-        optional("effective", "fields.effective", "authority"),
+        required("version", "fields.aggregateVersion", "version"),
+        required("source", "fields.value.source", "value"),
+        { ...required("daemon", "fields.value.url", "extensible-map"), codec: "daemon-url" },
+        required("updatedAt", "fields.updatedAt", "clock"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -285,7 +306,7 @@ export const LEGACY_MAPPING_MANIFEST: {
         required("logicalHostId", "identity.logicalHostId", "identity"),
         required("storeId", "identity.storeId", "identity"),
         required("operationNamespace", "fields.operationNamespace", "authority"),
-        required("state", "fields.state", "authority"),
+        required("state", "fields.bindingState", "authority"),
         required("generation", "fields.generation", "version"),
         optional("transferId", "fields.transferId", "reference"),
         optional("updatedAt", "fields.updatedAt", "clock"),
@@ -305,7 +326,7 @@ export const LEGACY_MAPPING_MANIFEST: {
         optional("runtimeFingerprint", "fields.runtimeFingerprint", "reference"),
         optional("riskSummary", "fields.riskSummary", "extensible-map"),
         optional("installedAt", "fields.installedAt", "clock"),
-        optional("version", "fields.version", "version"),
+        optional("version", "fields.aggregateVersion", "version"),
         optional("ownerId", "fields.ownerId", "ownership"),
       ],
       malformedPolicy: "quarantine",
@@ -341,6 +362,52 @@ export type LegacyMappingResult =
       fields: string[];
     };
 
+export const LEGACY_CHILD_GRAPH_DESTINATIONS: Readonly<Record<string, ControlPlaneEntityKind>> = {
+  "children.pairingCodes": "credential",
+  "children.clients": "client",
+  "children.pendingApprovals": "pending-approval",
+  "children.supersededTokens": "credential",
+  "children.encryptedReplayRecords": "credential",
+};
+
+export function assertLegacyMappingManifestAligned(): void {
+  for (const domain of LEGACY_MAPPING_MANIFEST.domains) {
+    const fields = new Set(
+      canonicalFields(domain.canonicalKind).map((definition) => definition.name),
+    );
+    const destinations = new Set<string>();
+    for (const rule of domain.fields) {
+      if (destinations.has(rule.destination)) {
+        throw new Error(`Legacy ${domain.domain} destination ${rule.destination} is ambiguous`);
+      }
+      destinations.add(rule.destination);
+      if (rule.destination.startsWith("children.")) {
+        if (!LEGACY_CHILD_GRAPH_DESTINATIONS[rule.destination]) {
+          throw new Error(
+            `Legacy ${domain.domain} child destination ${rule.destination} is unknown`,
+          );
+        }
+        continue;
+      }
+      const fieldName = rule.destination.replace(/^(?:identity|fields)\./u, "").split(".")[0]!;
+      if (!fields.has(fieldName)) {
+        throw new Error(`Legacy ${domain.domain} destination ${rule.destination} is not canonical`);
+      }
+    }
+    const suppliedIdentity = new Set([
+      ...Object.keys(domain.syntheticIdentity ?? {}),
+      ...domain.fields
+        .filter((rule) => rule.destination.startsWith("identity."))
+        .map((rule) => rule.destination.slice("identity.".length)),
+    ]);
+    for (const identityField of domain.identityFields) {
+      if (!suppliedIdentity.has(identityField)) {
+        throw new Error(`Legacy ${domain.domain} identity ${identityField} has no source`);
+      }
+    }
+  }
+}
+
 export function mapLegacyRecord(
   domain: LegacyDomain,
   raw: unknown,
@@ -361,15 +428,16 @@ export function mapLegacyRecord(
       return quarantine(domain, "malformed-record", source.sourcePath, raw);
     }
   }
-  const identity: Record<string, unknown> = {};
+  const identity: Record<string, unknown> = { ...manifest.syntheticIdentity };
   const fields: Record<string, unknown> = {};
   const fieldDestinations: Record<string, string> = {};
   for (const [sourceField, value] of Object.entries(raw)) {
     const rule = bySource[sourceField]!;
     fieldDestinations[sourceField] = rule.destination;
+    const decoded = decodeLegacyValue(rule, value);
     if (rule.destination.startsWith("identity."))
-      identity[rule.destination.slice("identity.".length)] = value;
-    else fields[rule.destination.replace(/^(?:fields|children)\./u, "")] = value;
+      identity[rule.destination.slice("identity.".length)] = decoded;
+    else fields[rule.destination.replace(/^(?:fields|children)\./u, "")] = decoded;
   }
   return {
     status: "accepted",
@@ -382,6 +450,20 @@ export function mapLegacyRecord(
     },
     fieldDestinations,
   };
+}
+
+function decodeLegacyValue(rule: LegacyFieldRule, value: unknown): unknown {
+  if (!rule.codec) return value;
+  if (rule.codec === "daemon-url") {
+    if (!isObject(value) || typeof value.url !== "string") {
+      throw new Error(`Legacy ${rule.source} must contain a URL`);
+    }
+    return value.url;
+  }
+  if (typeof value !== "string") throw new Error(`Legacy ${rule.source} must be a string`);
+  return rule.codec === "utf8-bytes"
+    ? new TextEncoder().encode(value)
+    : Uint8Array.from(Buffer.from(value, "base64url"));
 }
 
 function validLegacyField(rule: LegacyFieldRule, value: unknown): boolean {
