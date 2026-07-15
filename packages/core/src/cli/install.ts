@@ -1957,7 +1957,7 @@ function inferLocalRepoRoot(sourcePath: string): string {
   return index === -1 ? dirname(sourcePath) : sourcePath.slice(0, index);
 }
 
-function hashInstalledArtifact(path: string): string {
+export function hashInstalledArtifact(path: string): string {
   const hash = createHash("sha256");
   hashPath(path, "", hash);
   return `sha256:${hash.digest("hex")}`;

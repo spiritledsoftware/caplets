@@ -138,6 +138,61 @@ describe("caplets lockfile", () => {
     }
   });
 
+  it("rejects unknown and duplicate JSON fields at every manifest level", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-lockfile-strict-fields-"));
+    const lockPath = join(dir, "caplets.lock.json");
+    try {
+      for (const lockfile of [
+        { version: 1, entries: [], unexpected: true },
+        { version: 1, entries: [{ ...lockEntry(), unexpected: true }] },
+        {
+          version: 1,
+          entries: [{ ...lockEntry(), source: { ...lockEntry().source, unexpected: true } }],
+        },
+        {
+          version: 1,
+          entries: [{ ...lockEntry(), risk: { ...lockEntry().risk, unexpected: true } }],
+        },
+        {
+          version: 1,
+          entries: [
+            {
+              ...lockEntry(),
+              runtimeFingerprint: {
+                version: 1,
+                artifactFingerprint: "sha256:runtime",
+                unexpected: true,
+              },
+            },
+          ],
+        },
+      ]) {
+        writeFileSync(lockPath, `${JSON.stringify(lockfile)}\n`);
+        expect(() => readCapletsLockfile(lockPath)).toThrow(
+          expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+        );
+      }
+
+      writeFileSync(lockPath, '{"version":1,"version":1,"entries":[]}\n');
+      expect(() => readCapletsLockfile(lockPath)).toThrow(
+        expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+      );
+
+      writeFileSync(
+        lockPath,
+        `{"version":1,"entries":[${JSON.stringify(lockEntry()).replace(
+          '"destination":"github"',
+          '"destination":"github","destination":"github"',
+        )}]}\n`,
+      );
+      expect(() => readCapletsLockfile(lockPath)).toThrow(
+        expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("round-trips optional v1 runtime fingerprints and rejects malformed present state", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-lockfile-runtime-fingerprint-"));
     const lockPath = join(dir, "caplets.lock.json");

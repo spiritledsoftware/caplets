@@ -345,6 +345,7 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     field("manifestHash", "hash"),
     field("checksum", "hash"),
     json("compatibility", true),
+    json("stateDocument"),
     clock("activatedAt", false),
   ],
   backup: [
@@ -361,6 +362,7 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     text("state"),
     clock("destroyedAt", false),
     id("destructionId", false),
+    json("stateDocument"),
   ],
   recovery: [
     id("recoveryId"),
@@ -369,6 +371,7 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     version("invalidatedAuthorityGeneration"),
     field("validationHash", "hash", false),
     clock("activatedAt", false),
+    json("stateDocument"),
   ],
   retention: [
     id("retentionId"),
@@ -396,6 +399,7 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     field("manifestHash", "hash"),
     text("replacementReason"),
     clock("checkpointedAt"),
+    json("stateDocument"),
   ],
   quarantine: [
     id("quarantineId"),

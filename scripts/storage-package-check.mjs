@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
+const packageManager = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const matrix = JSON.parse(await readFile(join(root, "storage/package-matrix.json"), "utf8"));
 const requestedId = argumentValue("--tuple") ?? process.env.CAPLETS_STORAGE_TUPLE_ID;
 const runtimeKind = process.env.CAPLETS_STORAGE_RUNTIME ?? (process.versions.bun ? "bun" : "node");
@@ -61,10 +63,23 @@ try {
   result.checks.tuple = { status: "pass", manifestId: selected.id };
 
   temporary = await mkdtemp(join(tmpdir(), "caplets-storage-package-"));
+  const helperFixture = await createPackagedHelperFixture(join(temporary, "windows-helper"));
   const packed = spawnSync(
-    "pnpm",
+    packageManager,
     ["--filter", "@caplets/core", "pack", "--pack-destination", temporary],
-    { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+    {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+      env: {
+        ...process.env,
+        CAPLETS_REQUIRE_WINDOWS_EXCLUSION_HELPER: "1",
+        CAPLETS_WINDOWS_HELPER_ARTIFACT_ROOT: helperFixture.root,
+        CAPLETS_WINDOWS_HELPER_PUBLISHER: helperFixture.publisher,
+        CAPLETS_WINDOWS_HELPER_TEST_FIXTURE: "1",
+      },
+      shell: process.platform === "win32",
+    },
   );
   if (packed.status !== 0) throw new Error("core package packing failed");
   const archive = (await readdir(temporary)).find((name) => name.endsWith(".tgz"));
@@ -86,11 +101,42 @@ allowBuilds:
 `,
   );
   run(
-    "pnpm",
+    packageManager,
     ["--dir", installRoot, "add", join(temporary, archive), "--config.minimum-release-age=0"],
     root,
+    process.platform === "win32",
   );
   result.checks.install = { status: "pass" };
+  const installedCoreRoot = join(installRoot, "node_modules", "@caplets", "core");
+  const installedExclusionBundle = await readFile(
+    join(installedCoreRoot, "dist", "control-plane", "migration", "exclusion.js"),
+    "utf8",
+  );
+  if (!installedExclusionBundle.includes("../../native/windows-exclusion-helper/manifest.json")) {
+    throw new Error("packed Windows exclusion helper manifest resolver escapes dist/native");
+  }
+
+  const installedHelperRoot = join(installedCoreRoot, "dist", "native", "windows-exclusion-helper");
+  const installedManifest = JSON.parse(
+    await readFile(join(installedHelperRoot, "manifest.json"), "utf8"),
+  );
+  const installedArtifact = installedManifest.architectures?.["win32-x64"];
+  if (
+    installedArtifact?.publisher !== helperFixture.publisher ||
+    installedArtifact.sha256 !== helperFixture.sha256 ||
+    createHash("sha256")
+      .update(await readFile(join(installedHelperRoot, installedArtifact.file)))
+      .digest("hex") !== helperFixture.sha256
+  ) {
+    throw new Error("packed Windows exclusion helper manifest is invalid");
+  }
+  result.checks.windowsHelper = {
+    status: "pass",
+    architectures: ["win32-x64"],
+    checksum: true,
+    publisherManifest: true,
+    resolverInsideDistNative: true,
+  };
 
   const smokePath = join(installRoot, "smoke.mjs");
   await writeFile(smokePath, packageSmokeSource());
@@ -134,8 +180,30 @@ function unsupportedReason(id) {
   return match?.reason ?? "detected runtime tuple is unavailable and has no passing manifest";
 }
 
-function run(command, args, cwd) {
-  const child = spawnSync(command, args, { cwd, stdio: "inherit", env: process.env });
+async function createPackagedHelperFixture(directory) {
+  const publisher = "CN=Caplets Exclusion Test Publisher";
+  const file = "caplets-windows-exclusion-helper-win32-x64.exe";
+  const bytes = Buffer.from("caplets-reviewed-windows-helper-package-fixture-v1", "utf8");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, file), bytes);
+  await writeFile(
+    join(directory, "manifest.json"),
+    `${JSON.stringify({
+      version: 1,
+      protocolVersion: 1,
+      architectures: { "win32-x64": { file, sha256, publisher } },
+    })}\n`,
+  );
+  await writeFile(
+    join(directory, "signature-evidence.json"),
+    `${JSON.stringify({ [file]: { status: "Valid", publisher, sha256 } })}\n`,
+  );
+  return { root: directory, publisher, sha256 };
+}
+
+function run(command, args, cwd, shell = false) {
+  const child = spawnSync(command, args, { cwd, stdio: "inherit", env: process.env, shell });
   if (child.error) throw child.error;
   if (child.status !== 0)
     throw new Error(`${command} ${args.join(" ")} failed with exit ${child.status}`);
@@ -167,7 +235,7 @@ if (STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets !== 2000 || nearestRank([1, 2
 }
 for (const dialect of ["sqlite", "postgres"]) {
   const registry = await loadMigrationRegistry({ dialect });
-  if (registry.migrations.length !== 3 || registry.migrations.some((migration) => !migration.sql || !migration.downSql)) {
+  if (registry.migrations.length !== 4 || registry.migrations.some((migration) => !migration.sql || !migration.downSql)) {
     throw new Error("packed " + dialect + " migration history is unavailable");
   }
 }

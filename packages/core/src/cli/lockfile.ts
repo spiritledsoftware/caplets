@@ -80,15 +80,19 @@ export function readCapletsLockfile(path: string): CapletsLockfile {
     });
   }
 
-  let parsed: unknown;
+  const parsed = parseStrictJsonDocument(contents, `Caplets lockfile at ${path}`);
+  return parseCapletsLockfile(parsed, path);
+}
+
+export function parseStrictJsonDocument(contents: string, label: string): unknown {
+  assertNoDuplicateJsonObjectKeys(contents, label);
   try {
-    parsed = JSON.parse(contents);
+    return JSON.parse(contents) as unknown;
   } catch (error) {
-    throw new CapletsError("CONFIG_INVALID", `Caplets lockfile at ${path} is not valid JSON`, {
+    throw new CapletsError("CONFIG_INVALID", `${label} is not valid JSON`, {
       cause: toSafeError(error),
     });
   }
-  return parseCapletsLockfile(parsed, path);
 }
 
 function isErrorCode(error: unknown, code: string): boolean {
@@ -149,6 +153,8 @@ export function parseCapletsLockfile(value: unknown, path = "Caplets lockfile"):
   if (!isRecord(value)) {
     throw new CapletsError("CONFIG_INVALID", `${path} must be a JSON object`);
   }
+  assertOnlyKeys(value, ["version", "entries"], path);
+
   if (value.version !== CAPLETS_LOCKFILE_VERSION) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -199,6 +205,22 @@ export function validateLockfileDestination(capletsRoot: string, destination: st
 
 function parseLockEntry(value: unknown, label: string): CapletsLockEntry {
   if (!isRecord(value)) throw new CapletsError("CONFIG_INVALID", `${label} must be an object`);
+  assertOnlyKeys(
+    value,
+    [
+      "id",
+      "destination",
+      "kind",
+      "source",
+      "installedHash",
+      "installedAt",
+      "updatedAt",
+      "risk",
+      "runtimeFingerprint",
+    ],
+    label,
+  );
+
   const id = requireString(value.id, `${label}.id`);
   const destination = requireString(value.destination, `${label}.destination`);
   const kind = parseEnum(value.kind, ["file", "directory"], `${label}.kind`);
@@ -229,6 +251,8 @@ function parseLockEntry(value: unknown, label: string): CapletsLockEntry {
 
 function parseRuntimeFingerprint(value: unknown, label: string): CapletsLockRuntimeFingerprint {
   if (!isRecord(value)) throw new CapletsError("CONFIG_INVALID", `${label} must be an object`);
+  assertOnlyKeys(value, ["version", "artifactFingerprint"], label);
+
   if (value.version !== 1) {
     throw new CapletsError("CONFIG_INVALID", `${label}.version must be 1`);
   }
@@ -241,6 +265,14 @@ function parseRuntimeFingerprint(value: unknown, label: string): CapletsLockRunt
 function parseLockSource(value: unknown, label: string): CapletsLockSource {
   if (!isRecord(value)) throw new CapletsError("CONFIG_INVALID", `${label} must be an object`);
   const type = parseEnum(value.type, ["git", "local"], `${label}.type`);
+  assertOnlyKeys(
+    value,
+    type === "git"
+      ? ["type", "repository", "path", "trackedRef", "resolvedRevision", "portability"]
+      : ["type", "path", "gitRepository", "gitRevision", "dirty", "portability"],
+    label,
+  );
+
   if (type === "git") {
     const repository = requireCredentialFreeSource(
       requireString(value.repository, `${label}.repository`),
@@ -278,6 +310,22 @@ function parseLockSource(value: unknown, label: string): CapletsLockSource {
 
 function parseRiskSummary(value: unknown, label: string): CapletsLockRiskSummary {
   if (!isRecord(value)) throw new CapletsError("CONFIG_INVALID", `${label} must be an object`);
+  assertOnlyKeys(
+    value,
+    [
+      "backendFamilies",
+      "safety",
+      "projectBindingRequired",
+      "authScopes",
+      "runtimeFeatures",
+      "mutating",
+      "destructive",
+      "bodyHash",
+      "referenceHash",
+    ],
+    label,
+  );
+
   return {
     backendFamilies: requireStringArray(value.backendFamilies, `${label}.backendFamilies`),
     safety: parseEnum(
@@ -384,6 +432,113 @@ function parseEnum<const T extends readonly string[]>(
     throw new CapletsError("CONFIG_INVALID", `${label} must be one of ${allowed.join(", ")}`);
   }
   return value;
+}
+
+function assertOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const allowedKeys = new Set(allowed);
+  const unknown = Object.keys(value).filter((key) => !allowedKeys.has(key));
+  if (unknown.length > 0) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `${label} contains unsupported field ${unknown.sort()[0]}`,
+    );
+  }
+}
+
+function assertNoDuplicateJsonObjectKeys(contents: string, label: string): void {
+  let offset = 0;
+  const whitespace = /\s/u;
+
+  const skipWhitespace = (): void => {
+    while (offset < contents.length && whitespace.test(contents[offset]!)) offset += 1;
+  };
+  const parseString = (): string => {
+    const start = offset;
+    offset += 1;
+    while (offset < contents.length) {
+      const character = contents[offset]!;
+      offset += 1;
+      if (character === "\\") {
+        offset += 1;
+        continue;
+      }
+      if (character === '"') return JSON.parse(contents.slice(start, offset)) as string;
+    }
+    throw new Error("unterminated JSON string");
+  };
+  const parseValue = (): void => {
+    skipWhitespace();
+    const character = contents[offset];
+    if (character === '"') {
+      parseString();
+      return;
+    }
+    if (character === "{") {
+      offset += 1;
+      skipWhitespace();
+      const keys = new Set<string>();
+      if (contents[offset] === "}") {
+        offset += 1;
+        return;
+      }
+      while (offset < contents.length) {
+        skipWhitespace();
+        const key = parseString();
+        if (keys.has(key)) {
+          throw new CapletsError("CONFIG_INVALID", `${label} contains duplicate JSON field ${key}`);
+        }
+        keys.add(key);
+        skipWhitespace();
+        offset += 1;
+        parseValue();
+        skipWhitespace();
+        if (contents[offset] === "}") {
+          offset += 1;
+          return;
+        }
+        offset += 1;
+      }
+      return;
+    }
+    if (character === "[") {
+      offset += 1;
+      skipWhitespace();
+      if (contents[offset] === "]") {
+        offset += 1;
+        return;
+      }
+      while (offset < contents.length) {
+        parseValue();
+        skipWhitespace();
+        if (contents[offset] === "]") {
+          offset += 1;
+          return;
+        }
+        offset += 1;
+      }
+      return;
+    }
+    while (
+      offset < contents.length &&
+      contents[offset] !== "," &&
+      contents[offset] !== "]" &&
+      contents[offset] !== "}" &&
+      !whitespace.test(contents[offset]!)
+    ) {
+      offset += 1;
+    }
+  };
+
+  try {
+    parseValue();
+  } catch (error) {
+    if (error instanceof CapletsError) throw error;
+    // JSON.parse below owns ordinary syntax diagnostics.
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

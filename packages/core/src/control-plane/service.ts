@@ -2,11 +2,17 @@ import type {
   CurrentHostOperationBinding,
   CurrentHostOperationLookupOutcome,
 } from "../current-host/operations";
+import { CapletsError } from "../errors";
 import {
   validateControlPlaneAuthorization,
   type ControlPlaneAuthorizer,
   type ControlPlaneAuthorizationDecision,
 } from "./authorization";
+import {
+  createControlPlaneMigrationPersistence,
+  type ControlPlaneMigrationPersistence,
+  type ControlPlaneMigrationPersistenceOptions,
+} from "./migration/persistence";
 import type { ControlPlaneSqlTransaction, ControlPlaneStore } from "./store";
 import type {
   CapletManagementMutation,
@@ -133,6 +139,56 @@ export function createControlPlaneService(options: {
     async mutateHostSetting(input) {
       const prepared = await prepare(input);
       return "aggregateId" in prepared ? options.store.mutateHostSetting(prepared) : prepared;
+    },
+  };
+}
+
+export type InternalControlPlaneStorageMigrationRequest = Readonly<{
+  target: "global";
+  mode: "offline";
+}>;
+
+export type InternalControlPlaneStorageMigrationResult = Readonly<{
+  status: "migrated" | "already-migrated";
+  backend: "sqlite" | "postgres";
+  authorityToken?: string | undefined;
+  manifestSha256?: string | undefined;
+}>;
+
+/**
+ * Internal U7 seam only. Production runtime construction intentionally does not create or call
+ * this service until U10 owns the storage activation boundary.
+ */
+export type InternalControlPlaneStorageMigrationService = Readonly<{
+  migrate(
+    request: InternalControlPlaneStorageMigrationRequest,
+  ): Promise<InternalControlPlaneStorageMigrationResult>;
+}>;
+
+export function createInternalControlPlaneStorageMigrationService(
+  options: Readonly<{
+    initialize(
+      request: InternalControlPlaneStorageMigrationRequest,
+      persistence?: ControlPlaneMigrationPersistence,
+    ): Promise<InternalControlPlaneStorageMigrationResult>;
+    persistence?: ControlPlaneMigrationPersistenceOptions | undefined;
+  }>,
+): InternalControlPlaneStorageMigrationService {
+  const persistence = options.persistence
+    ? createControlPlaneMigrationPersistence(options.persistence)
+    : undefined;
+  return {
+    async migrate(request) {
+      if (request.target !== "global" || request.mode !== "offline") {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Internal storage migration requires the global offline target",
+        );
+      }
+      const migrationRequest = { target: "global", mode: "offline" } as const;
+      return persistence
+        ? options.initialize(migrationRequest, persistence)
+        : options.initialize(migrationRequest);
     },
   };
 }

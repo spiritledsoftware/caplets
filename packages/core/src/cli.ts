@@ -159,6 +159,7 @@ import {
 import { maybePrintUpdateNotice } from "./update-check";
 import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
 import type { VaultAccessGrantFilter } from "./vault";
+import type { InternalControlPlaneStorageMigrationService } from "./control-plane/service";
 
 export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
@@ -194,6 +195,7 @@ type CliIO = {
   setupOperations?: SetupPhaseOperations;
   mcpOperations?: SetupMcpOperations;
   readStdin?: () => Promise<string>;
+  internalStorageMigration?: InternalControlPlaneStorageMigrationService;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -1463,6 +1465,25 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut,
       writeErr,
       outputError: (value, write) => write(value),
+    });
+
+  const storageCommand = program
+    .command("storage")
+    .description("Manage the local SQL control-plane store.");
+  storageCommand
+    .command("migrate")
+    .description("Run the global legacy migration while every replica is stopped.")
+    .requiredOption("--global", "target the local global control plane")
+    .requiredOption("--offline", "require the one-shot offline migration path")
+    .action(async () => {
+      if (!io.internalStorageMigration) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Storage migration is unavailable until the SQL activation boundary is enabled",
+        );
+      }
+      await io.internalStorageMigration.migrate({ target: "global", mode: "offline" });
+      writeOut("Global legacy storage migration complete.\n");
     });
 
   program

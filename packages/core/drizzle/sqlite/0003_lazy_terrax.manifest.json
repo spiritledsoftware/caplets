@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0003_lazy_terrax",
+  "order": 3,
+  "dialect": "sqlite",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0003_lazy_terrax.sql",
+    "sha256": "271ab3a88873d80f20fe460ad24674db123a80318cfbdfef07250452ac431f59"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 3
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0003_lazy_terrax.down.sql",
+      "sha256": "a904dc72adf5198973f46089674ce2e57dde3131654adf7eb52c9f41709d3a6a"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "01731712698dda53b03700d854de5816978c4c07290374c33f463bc91b4c5de7"
+}

@@ -133,15 +133,17 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "node ./scripts/build-dashboard-for-core.mjs && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs && node ./scripts/copy-control-plane-migrations.mjs",
+    "build": "node ./scripts/build-dashboard-for-core.mjs && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs && node ./scripts/copy-control-plane-migrations.mjs && node ./scripts/build-windows-exclusion-helper.mjs --copy-packaged",
     "build:watch": "pnpm run clean && rolldown -c --watch",
-    "prepack": "pnpm build",
+    "prepack": "pnpm build && pnpm windows-helper:verify-publish",
     "typecheck": "tsgo --noEmit",
     "db:generate:sqlite": "drizzle-kit generate --config drizzle.sqlite.config.ts",
     "db:generate:postgres": "drizzle-kit generate --config drizzle.postgres.config.ts",
     "db:generate": "pnpm run db:generate:sqlite && pnpm run db:generate:postgres",
     "db:check": "drizzle-kit check --config drizzle.sqlite.config.ts && drizzle-kit check --config drizzle.postgres.config.ts && node ./scripts/copy-control-plane-migrations.mjs --check-source",
-    "test": "vitest run"
+    "test": "vitest run",
+    "windows-helper:build": "node ./scripts/build-windows-exclusion-helper.mjs --build",
+    "windows-helper:verify-publish": "node ./scripts/build-windows-exclusion-helper.mjs --verify-publish"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",

@@ -123,6 +123,155 @@ jobs:
           path: storage-results/*.json
           if-no-files-found: error
 
+  storage-exclusion-linux:
+    name: Storage exclusion (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install published prior Caplets fixture
+        run: pnpm add --global caplets@0.25.10
+
+      - name: Run Linux exclusion and offline one-shot gate
+        run: pnpm storage:platform:check
+        env:
+          CAPLETS_STORAGE_PLATFORM_EXPECT: linux
+          CAPLETS_STORAGE_RESULT_DIR: storage-results
+          CAPLETS_PRIOR_CAPLETS_BIN: caplets
+          CAPLETS_REQUIRE_PRIOR_PACKAGE: "1"
+
+      - name: Upload Linux exclusion evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: storage-exclusion-linux
+          path: storage-results/*.json
+          if-no-files-found: error
+
+  storage-exclusion-macos:
+    name: Storage exclusion (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install published prior Caplets fixture
+        run: pnpm add --global caplets@0.25.10
+
+      - name: Run macOS lsof exclusion gate
+        run: pnpm storage:platform:check
+        env:
+          CAPLETS_STORAGE_PLATFORM_EXPECT: darwin
+          CAPLETS_STORAGE_RESULT_DIR: storage-results
+          CAPLETS_PRIOR_CAPLETS_BIN: caplets
+          CAPLETS_REQUIRE_PRIOR_PACKAGE: "1"
+
+      - name: Upload macOS exclusion evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: storage-exclusion-macos
+          path: storage-results/*.json
+          if-no-files-found: error
+
+  storage-exclusion-windows:
+    name: Storage exclusion (Windows x64)
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install published prior Caplets fixture
+        run: pnpm add --global caplets@0.25.10
+
+      - name: Create trusted test code-signing publisher
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate `
+            -Subject "CN=Caplets Exclusion Test Publisher" `
+            -Type CodeSigningCert `
+            -KeyAlgorithm RSA `
+            -KeyLength 3072 `
+            -HashAlgorithm SHA256 `
+            -CertStoreLocation Cert:\CurrentUser\My
+          $root = [Security.Cryptography.X509Certificates.X509Store]::new("Root", "CurrentUser")
+          $root.Open("ReadWrite")
+          $root.Add($cert)
+          $root.Close()
+          "CAPLETS_WINDOWS_HELPER_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          "CAPLETS_WINDOWS_HELPER_PUBLISHER=$($cert.Subject)" >> $env:GITHUB_ENV
+          "CAPLETS_WINDOWS_HELPER_ARTIFACT_ROOT=$PWD\packages\core\native\windows-exclusion-helper\artifacts" >> $env:GITHUB_ENV
+          "CAPLETS_REQUIRE_WINDOWS_EXCLUSION_HELPER=1" >> $env:GITHUB_ENV
+
+      - name: Build and sign reviewed x64 helper
+        run: pnpm --filter @caplets/core windows-helper:build
+
+      - name: Run Authenticode publish guard
+        run: pnpm --filter @caplets/core windows-helper:verify-publish
+
+      - name: Run Windows Restart Manager/share-deny gate
+        run: pnpm storage:platform:check
+        env:
+          CAPLETS_STORAGE_PLATFORM_EXPECT: win32
+          CAPLETS_STORAGE_RESULT_DIR: storage-results
+          CAPLETS_PRIOR_CAPLETS_BIN: caplets.cmd
+          CAPLETS_REQUIRE_PRIOR_PACKAGE: "1"
+
+      - name: Pack core with signed helper manifest
+        run: pnpm --filter @caplets/core pack --pack-destination storage-results/pack
+
+      - name: Upload Windows exclusion evidence and package
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: storage-exclusion-windows
+          path: |
+            storage-results/*.json
+            storage-results/pack/*.tgz
+          if-no-files-found: error
+
   storage-package-matrix:
     name: Storage package (${{ matrix.id }})
     runs-on: ${{ matrix.runner }}

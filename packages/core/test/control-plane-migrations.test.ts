@@ -114,6 +114,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       "0000_orange_tusk",
       "0001_conscious_wilson_fisk",
       "0002_colorful_maverick",
+      "0003_lazy_terrax",
     ]);
     expect(dialect.ready).toBe(true);
     expect(dialect.migrate()).toEqual([]);
@@ -169,7 +170,31 @@ describe("control-plane migration registry and SQLite executor", () => {
     const backupPath = join(fixture.root, "backup.sqlite3");
     await dialect.onlineBackup(backupPath);
     expect((await stat(backupPath)).size).toBeGreaterThan(0);
-    expect(dialect.rollbackLatest()).toBe("0002_colorful_maverick");
+    dialect.execute(
+      "INSERT INTO cp_migration (" +
+        "model_version,id,logical_host_id,store_id,created_at,updated_at," +
+        "aggregate_version,authority_version,effective_version,security_version," +
+        "migration_id,source,destination,phase,manifest_hash,checksum,compatibility,state_document" +
+        ") VALUES (1,?,?,?,?,?,0,0,0,0,?,?,?,?,?,?,?,?)",
+      [
+        "u7-rollback-guard",
+        fixture.storage.logicalHostId,
+        fixture.storage.storeId,
+        "2026-07-14T00:00:00.000Z",
+        "2026-07-14T00:00:00.000Z",
+        "u7-rollback-guard",
+        "legacy",
+        "sqlite",
+        "staged",
+        "0".repeat(64),
+        "1".repeat(64),
+        "{}",
+        '{"version":1,"kind":"rollback-guard"}',
+      ],
+    );
+    expect(() => dialect.rollbackLatest()).toThrow(/NOT NULL constraint failed/u);
+    dialect.execute("DELETE FROM cp_migration WHERE id = ?", ["u7-rollback-guard"]);
+    expect(dialect.rollbackLatest()).toBe("0003_lazy_terrax");
     expect(dialect.ready).toBe(false);
     await dialect.close();
 
@@ -178,7 +203,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       environment,
       assetRoot: fixture.assetRoot,
     });
-    expect(remigrated.migrate()).toEqual(["0002_colorful_maverick"]);
+    expect(remigrated.migrate()).toEqual(["0003_lazy_terrax"]);
     await remigrated.close();
   });
 
@@ -189,6 +214,9 @@ describe("control-plane migration registry and SQLite executor", () => {
         "0002_colorful_maverick.sql",
         "0002_colorful_maverick.down.sql",
         "0002_colorful_maverick.manifest.json",
+        "0003_lazy_terrax.sql",
+        "0003_lazy_terrax.down.sql",
+        "0003_lazy_terrax.manifest.json",
       ].map((file) => rm(join(partialAssetRoot, "sqlite", file))),
     );
     const fixture = await sqliteFixture(partialAssetRoot);
@@ -248,7 +276,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       environment: migrationEnvironment(),
       assetRoot: sourceAssetRoot,
     });
-    expect(upgraded.migrate()).toEqual(["0002_colorful_maverick"]);
+    expect(upgraded.migrate()).toEqual(["0002_colorful_maverick", "0003_lazy_terrax"]);
     expect(
       upgraded.query(
         "SELECT state, algorithm, verifier_version AS verifierVersion, key_version AS keyVersion, " +
@@ -290,7 +318,13 @@ describe("control-plane migration registry and SQLite executor", () => {
   });
 
   it("rolls back the additive SQLite migration without breaking populated child relations", async () => {
-    const fixture = await sqliteFixture();
+    const partialAssetRoot = await copiedAssets();
+    await Promise.all(
+      ["0003_lazy_terrax.sql", "0003_lazy_terrax.down.sql", "0003_lazy_terrax.manifest.json"].map(
+        (file) => rm(join(partialAssetRoot, "sqlite", file)),
+      ),
+    );
+    const fixture = await sqliteFixture(partialAssetRoot);
     const dialect = await openSqliteControlPlaneDialect({
       storage: fixture.storage,
       environment: migrationEnvironment(),
@@ -574,7 +608,7 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
         }),
       ]);
       const elected = await Promise.all([first.migrate(), second.migrate()]);
-      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 3]);
+      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 4]);
       const tableCount = await admin.query(
         "SELECT count(*)::int AS count FROM information_schema.tables " +
           "WHERE table_schema = 'caplets' AND table_name LIKE 'cp_%'",
@@ -661,11 +695,29 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
         first.maintenanceQuery("UPDATE caplets.cp_caplet SET description = 'unsafe'"),
       ).rejects.toThrow();
 
-      expect(await first.rollbackLatest()).toBe("0002_parched_sauron");
+      await admin.query(
+        `INSERT INTO caplets.cp_migration (
+          model_version,id,logical_host_id,store_id,created_at,updated_at,
+          aggregate_version,authority_version,effective_version,security_version,
+          migration_id,source,destination,phase,manifest_hash,checksum,compatibility,state_document
+        ) VALUES (1,$1,$2,$3,$4,$4,0,0,0,0,$1,'legacy','postgres','staged',$5,$6,'{}'::jsonb,$7::jsonb)`,
+        [
+          "u7-rollback-guard",
+          logicalHostId,
+          storeId,
+          canonicalClock,
+          "0".repeat(64),
+          "1".repeat(64),
+          '{"version":1,"kind":"rollback-guard"}',
+        ],
+      );
+      await expect(first.rollbackLatest()).rejects.toThrow(/refusing U7 rollback/u);
+      await admin.query("DELETE FROM caplets.cp_migration WHERE id = $1", ["u7-rollback-guard"]);
+      expect(await first.rollbackLatest()).toBe("0003_concerned_lily_hollister");
       expect(first.ready).toBe(false);
       await second.close();
       second = undefined;
-      expect(await first.migrate()).toEqual(["0002_parched_sauron"]);
+      expect(await first.migrate()).toEqual(["0003_concerned_lily_hollister"]);
       environment.now = new Date("2026-07-22T00:00:00.001Z");
       await expect(first.rollbackLatest()).rejects.toThrow(/Rollback window expired/u);
       expect(first.ready).toBe(true);

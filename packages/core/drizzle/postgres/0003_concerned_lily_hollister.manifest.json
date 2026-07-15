@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0003_concerned_lily_hollister",
+  "order": 3,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0003_concerned_lily_hollister.sql",
+    "sha256": "a7d2204bbcb574c93af686b1fd0aa2108dbc10e631f89fdba817e153a13012a7"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 3
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0003_concerned_lily_hollister.down.sql",
+      "sha256": "584008e32320d5cf11e6ace9c090250ecb3736b872012732a33ad6cddf954da9"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "62705f5fc4da1762f77c2db538f4591e09ef6a1fa228fa5afaa89db3ce4eea1b"
+}

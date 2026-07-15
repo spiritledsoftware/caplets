@@ -10,6 +10,7 @@ export default defineConfig([
       "control-plane/model": "src/control-plane/model/index.ts",
       "control-plane/caplets": "src/control-plane/caplets/index.ts",
       "control-plane/migration/legacy-model": "src/control-plane/migration/legacy-model.ts",
+      "control-plane/migration/exclusion": "src/control-plane/migration/exclusion.ts",
       "control-plane/storage": "src/control-plane/storage.ts",
       "control-plane/schema/model-codec": "src/control-plane/schema/model-codec.ts",
       "control-plane/schema/sqlite": "src/control-plane/schema/sqlite.ts",

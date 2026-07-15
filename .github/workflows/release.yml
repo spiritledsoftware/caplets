@@ -21,7 +21,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows-exclusion-helper-release:
+    name: Build signed Windows exclusion helper
+    runs-on: windows-2025
+    env:
+      CAPLETS_WINDOWS_HELPER_PUBLISHER: ${{ secrets.CAPLETS_WINDOWS_HELPER_PUBLISHER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Import release code-signing publisher
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.CAPLETS_WINDOWS_CODE_SIGNING_PFX }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.CAPLETS_WINDOWS_CODE_SIGNING_PASSWORD }}
+        run: |
+          if (-not $env:SIGNING_PFX_BASE64 -or -not $env:SIGNING_PFX_PASSWORD -or -not $env:CAPLETS_WINDOWS_HELPER_PUBLISHER) {
+            throw "Windows helper release signing configuration is incomplete."
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "caplets-windows-helper.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+          $password = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if ($cert.Subject -ne $env:CAPLETS_WINDOWS_HELPER_PUBLISHER) {
+            throw "Windows helper release publisher does not match the configured subject."
+          }
+          "CAPLETS_WINDOWS_HELPER_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          Remove-Item -LiteralPath $pfx -Force
+
+      - name: Build, sign, and verify release helper
+        run: |
+          pnpm --filter @caplets/core windows-helper:build
+          pnpm --filter @caplets/core windows-helper:verify-publish
+
+      - name: Upload signed helper
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-exclusion-helper-release
+          path: packages/core/native/windows-exclusion-helper/artifacts/*
+          if-no-files-found: error
+
   release:
+    needs: windows-exclusion-helper-release
     name: Version or Publish
     runs-on: ubuntu-latest
     permissions:
@@ -47,6 +105,15 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Download signed Windows exclusion helper
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-exclusion-helper-release
+          path: packages/core/native/windows-exclusion-helper/artifacts
+      - name: Verify signed helper handoff
+        env:
+          CAPLETS_WINDOWS_HELPER_PUBLISHER: ${{ secrets.CAPLETS_WINDOWS_HELPER_PUBLISHER }}
+        run: pnpm storage:windows-helper:publish-check
 
       - name: Verify package
         run: pnpm verify
@@ -67,6 +134,8 @@ jobs:
           CAPLETS_RUNTIME_SENTRY_PROJECT: ${{ secrets.CAPLETS_RUNTIME_SENTRY_PROJECT }}
           CAPLETS_SENTRY_RELEASE: caplets-runtime@${{ github.sha }}
           CAPLETS_SENTRY_ENVIRONMENT: production
+          CAPLETS_REQUIRE_WINDOWS_EXCLUSION_HELPER: "1"
+          CAPLETS_WINDOWS_HELPER_PUBLISHER: ${{ secrets.CAPLETS_WINDOWS_HELPER_PUBLISHER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check whether CLI package was published
