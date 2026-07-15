@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://caplets.dev/storage/gate-result.schema.json",
+  "title": "Caplets storage gate tuple result",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["version", "gate", "tuple", "status", "checks", "generatedAt"],
+  "properties": {
+    "version": { "const": 1 },
+    "gate": { "enum": ["storage-stack", "storage-package"] },
+    "tuple": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["pass", "fail", "unavailable", "unsupported"] },
+    "checks": { "type": "object" },
+    "external": { "type": "object" },
+    "error": { "type": "string" },
+    "generatedAt": { "type": "string", "format": "date-time" }
+  }
+}

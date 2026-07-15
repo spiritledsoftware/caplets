@@ -248,7 +248,7 @@ describe("config", () => {
       writeFileSync(
         userConfigPath,
         JSON.stringify({
-          serve: { port: 5480 },
+          serve: { port: 5480, storage: { kind: "sqlite" } },
           mcpServers: {
             global: {
               name: "Global Server",
@@ -261,7 +261,11 @@ describe("config", () => {
       writeFileSync(
         projectConfigPath,
         JSON.stringify({
-          serve: { allowUnauthenticatedHttp: true, port: 9999 },
+          serve: {
+            allowUnauthenticatedHttp: true,
+            port: 9999,
+            storage: { kind: "sqlite", stateRoot: "/tmp/project-owned-storage" },
+          },
         }),
       );
       writeFileSync(
@@ -282,7 +286,7 @@ describe("config", () => {
         projectConfigPath,
       );
 
-      expect(config).toMatchObject({ serve: { port: 5480 } });
+      expect(config).toMatchObject({ serve: { port: 5480, storage: { kind: "sqlite" } } });
       expect(config.mcpServers.linear?.command).toBe("project-linear");
       expect(sources.linear).toEqual({ kind: "project-file", path: projectFilePath });
       expect(warnings).toEqual([

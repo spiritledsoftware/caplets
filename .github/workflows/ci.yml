@@ -40,6 +40,200 @@ jobs:
       - name: Run quality gates
         run: pnpm verify
 
+  storage-stack:
+    name: Storage stack (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22.23.1, 24.18.0]
+    services:
+      postgres:
+        image: postgres:16.9-bookworm
+        env:
+          POSTGRES_DB: caplets
+          POSTGRES_USER: caplets
+          POSTGRES_PASSWORD: caplets-test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U caplets -d caplets"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start S3-compatible fixture
+        run: >-
+          docker run --detach --rm --name caplets-minio
+          --publish 9000:9000
+          --env MINIO_ROOT_USER=caplets-test
+          --env MINIO_ROOT_PASSWORD=caplets-test-secret
+          quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          server /data --address :9000
+
+      - name: Wait for S3-compatible fixture
+        run: |
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:9000/minio/health/live && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Run storage stack exit gate
+        run: pnpm storage:stack:check
+        env:
+          CAPLETS_REQUIRE_STORAGE_EXTERNAL: "1"
+          CAPLETS_STORAGE_RESULT_DIR: storage-results
+          CAPLETS_TEST_POSTGRES_URL: postgres://caplets:caplets-test@127.0.0.1:5432/caplets
+          CAPLETS_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          CAPLETS_TEST_S3_BUCKET: caplets-stack
+          CAPLETS_TEST_S3_ACCESS_KEY_ID: caplets-test
+          CAPLETS_TEST_S3_SECRET_ACCESS_KEY: caplets-test-secret
+          CAPLETS_TEST_S3_CREATE_BUCKET: "1"
+
+      - name: Upload storage stack result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: storage-stack-node-${{ matrix.node-version }}
+          path: storage-results/*.json
+          if-no-files-found: error
+
+  storage-package-matrix:
+    name: Storage package (${{ matrix.id }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: node-22.23.1-linux-glibc-x64
+            runner: ubuntu-24.04
+            runtime: node
+            version: 22.23.1
+          - id: node-22.23.1-linux-glibc-arm64
+            runner: ubuntu-24.04-arm
+            runtime: node
+            version: 22.23.1
+          - id: node-22.23.1-darwin-x64
+            runner: macos-15-intel
+            runtime: node
+            version: 22.23.1
+          - id: node-22.23.1-darwin-arm64
+            runner: macos-15
+            runtime: node
+            version: 22.23.1
+          - id: node-22.23.1-win32-x64
+            runner: windows-2025
+            runtime: node
+            version: 22.23.1
+          - id: node-24.18.0-linux-glibc-x64
+            runner: ubuntu-24.04
+            runtime: node
+            version: 24.18.0
+          - id: node-24.18.0-linux-glibc-arm64
+            runner: ubuntu-24.04-arm
+            runtime: node
+            version: 24.18.0
+          - id: node-24.18.0-darwin-x64
+            runner: macos-15-intel
+            runtime: node
+            version: 24.18.0
+          - id: node-24.18.0-darwin-arm64
+            runner: macos-15
+            runtime: node
+            version: 24.18.0
+          - id: node-24.18.0-win32-x64
+            runner: windows-2025
+            runtime: node
+            version: 24.18.0
+          - id: bun-1.3.14-linux-glibc-x64
+            runner: ubuntu-24.04
+            runtime: bun
+            version: 1.3.14
+          - id: bun-1.3.14-darwin-arm64
+            runner: macos-15
+            runtime: bun
+            version: 1.3.14
+          - id: docker-node-24.18.0-bookworm-x64
+            runner: ubuntu-24.04
+            runtime: docker
+            version: 24.18.0
+            image: node:24.18.0-bookworm-slim
+          - id: docker-node-24.18.0-bookworm-arm64
+            runner: ubuntu-24.04-arm
+            runtime: docker
+            version: 24.18.0
+            image: node:24.18.0-bookworm-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        if: matrix.runtime != 'docker'
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        if: matrix.runtime != 'docker'
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.runtime == 'node' && matrix.version || '24.18.0' }}
+          cache: pnpm
+
+      - name: Setup Bun
+        if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.version }}
+
+      - name: Install dependencies
+        if: matrix.runtime != 'docker'
+        run: pnpm install --frozen-lockfile
+
+      - name: Check packed Node or Bun tuple
+        if: matrix.runtime != 'docker'
+        run: pnpm storage:package:check
+        env:
+          CAPLETS_STORAGE_TUPLE_ID: ${{ matrix.id }}
+          CAPLETS_STORAGE_RUNTIME: ${{ matrix.runtime }}
+          CAPLETS_STORAGE_RUNTIME_VERSION: ${{ matrix.version }}
+          CAPLETS_PACKAGE_RUNTIME_EXECUTABLE: ${{ matrix.runtime == 'bun' && 'bun' || '' }}
+          CAPLETS_STORAGE_RESULT_DIR: storage-results
+
+      - name: Check packed Debian image tuple
+        if: matrix.runtime == 'docker'
+        shell: bash
+        run: >-
+          docker run --rm
+          --volume "$PWD:/workspace"
+          --workdir /workspace
+          --env CAPLETS_STORAGE_TUPLE_ID=${{ matrix.id }}
+          --env CAPLETS_STORAGE_RESULT_DIR=storage-results
+          ${{ matrix.image }}
+          sh -lc "corepack enable && corepack prepare pnpm@11.9.0 --activate && pnpm install --frozen-lockfile && pnpm storage:package:check"
+
+      - name: Upload storage package result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: storage-package-${{ matrix.id }}
+          path: storage-results/*.json
+          if-no-files-found: error
+
   changeset:
     name: Changeset
     runs-on: ubuntu-latest

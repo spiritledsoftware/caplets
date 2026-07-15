@@ -69,6 +69,487 @@
           "description": "Trust proxy headers when deriving public HTTP request URLs.",
           "type": "boolean"
         },
+        "storage": {
+          "description": "Static deployment-owned SQLite or Postgres control-plane storage.",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "sqlite"
+                },
+                "stateRoot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)"
+                },
+                "databasePath": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)"
+                },
+                "keyProviderManifest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)"
+                },
+                "artifacts": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "filesystem"
+                    },
+                    "root": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)"
+                    }
+                  },
+                  "required": ["kind", "root"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["kind"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "postgres"
+                },
+                "stateRoot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)"
+                },
+                "logicalHostId": {
+                  "type": "string",
+                  "pattern": "^host_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "expectedStoreId": {
+                  "type": "string",
+                  "pattern": "^store_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "processRole": {
+                  "type": "string",
+                  "enum": ["online", "migrator", "maintenance"]
+                },
+                "connection": {
+                  "type": "object",
+                  "properties": {
+                    "tls": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "const": "verify-full"
+                        },
+                        "serverName": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "ca": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "env"
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "pattern": "^[A-Z_][A-Z0-9_]*$",
+                                  "description": "Name of a deployment-owned environment variable."
+                                }
+                              },
+                              "required": ["kind", "name"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "file"
+                                },
+                                "path": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+                                  "description": "Owner/service-only secret file opened with bounded no-follow semantics."
+                                }
+                              },
+                              "required": ["kind", "path"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": ["mode", "serverName"],
+                      "additionalProperties": false
+                    },
+                    "roles": {
+                      "type": "object",
+                      "properties": {
+                        "runtime": {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+                            },
+                            "credential": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "env"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "pattern": "^[A-Z_][A-Z0-9_]*$",
+                                      "description": "Name of a deployment-owned environment variable."
+                                    }
+                                  },
+                                  "required": ["kind", "name"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "file"
+                                    },
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+                                      "description": "Owner/service-only secret file opened with bounded no-follow semantics."
+                                    }
+                                  },
+                                  "required": ["kind", "path"],
+                                  "additionalProperties": false
+                                }
+                              ],
+                              "description": "Reference to a complete PostgreSQL connection string for this exact role."
+                            }
+                          },
+                          "required": ["role", "credential"],
+                          "additionalProperties": false
+                        },
+                        "migrator": {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+                            },
+                            "credential": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "env"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "pattern": "^[A-Z_][A-Z0-9_]*$",
+                                      "description": "Name of a deployment-owned environment variable."
+                                    }
+                                  },
+                                  "required": ["kind", "name"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "file"
+                                    },
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+                                      "description": "Owner/service-only secret file opened with bounded no-follow semantics."
+                                    }
+                                  },
+                                  "required": ["kind", "path"],
+                                  "additionalProperties": false
+                                }
+                              ],
+                              "description": "Reference to a complete PostgreSQL connection string for this exact role."
+                            }
+                          },
+                          "required": ["role", "credential"],
+                          "additionalProperties": false
+                        },
+                        "maintenance": {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+                            },
+                            "credential": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "env"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "pattern": "^[A-Z_][A-Z0-9_]*$",
+                                      "description": "Name of a deployment-owned environment variable."
+                                    }
+                                  },
+                                  "required": ["kind", "name"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "file"
+                                    },
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+                                      "description": "Owner/service-only secret file opened with bounded no-follow semantics."
+                                    }
+                                  },
+                                  "required": ["kind", "path"],
+                                  "additionalProperties": false
+                                }
+                              ],
+                              "description": "Reference to a complete PostgreSQL connection string for this exact role."
+                            }
+                          },
+                          "required": ["role", "credential"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": ["runtime", "migrator", "maintenance"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["tls", "roles"],
+                  "additionalProperties": false
+                },
+                "keyProviderManifest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)"
+                },
+                "artifacts": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "s3"
+                    },
+                    "endpoint": {
+                      "type": "string",
+                      "pattern": "^https:\\/\\/[^/?#@]+(?:\\/[^?#]*)?$"
+                    },
+                    "region": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "pattern": "^(?=.{3,63}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])$"
+                    },
+                    "prefix": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?!\\/)(?!.*\\/\\/)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))[^\\\\]*[^/\\\\]$"
+                    },
+                    "canary": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "env"
+                            },
+                            "name": {
+                              "type": "string",
+                              "pattern": "^[A-Z_][A-Z0-9_]*$",
+                              "description": "Name of a deployment-owned environment variable."
+                            }
+                          },
+                          "required": ["kind", "name"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "file"
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+                              "description": "Owner/service-only secret file opened with bounded no-follow semantics."
+                            }
+                          },
+                          "required": ["kind", "path"],
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "Reference to the provisioned immutable shared-provider canary."
+                    },
+                    "credentials": {
+                      "type": "object",
+                      "properties": {
+                        "accessKeyId": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "env"
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "pattern": "^[A-Z_][A-Z0-9_]*$",
+                                  "description": "Name of a deployment-owned environment variable."
+                                }
+                              },
+                              "required": ["kind", "name"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "file"
+                                },
+                                "path": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+                                  "description": "Owner/service-only secret file opened with bounded no-follow semantics."
+                                }
+                              },
+                              "required": ["kind", "path"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "secretAccessKey": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "env"
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "pattern": "^[A-Z_][A-Z0-9_]*$",
+                                  "description": "Name of a deployment-owned environment variable."
+                                }
+                              },
+                              "required": ["kind", "name"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "file"
+                                },
+                                "path": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "pattern": "^(?:\\/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+)",
+                                  "description": "Owner/service-only secret file opened with bounded no-follow semantics."
+                                }
+                              },
+                              "required": ["kind", "path"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": ["accessKeyId", "secretAccessKey"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "endpoint",
+                    "region",
+                    "bucket",
+                    "prefix",
+                    "canary",
+                    "credentials"
+                  ],
+                  "additionalProperties": false
+                },
+                "migration": {
+                  "type": "object",
+                  "properties": {
+                    "designated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["designated"],
+                  "additionalProperties": false
+                },
+                "retention": {
+                  "type": "object",
+                  "properties": {
+                    "backupDays": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 3650
+                    }
+                  },
+                  "required": ["backupDays"],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "kind",
+                "stateRoot",
+                "logicalHostId",
+                "expectedStoreId",
+                "processRole",
+                "connection",
+                "keyProviderManifest",
+                "artifacts",
+                "migration",
+                "retention"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
         "publicOrigins": {
           "description": "Additional public HTTP origins.",
           "type": "array",

@@ -55,6 +55,10 @@
       "types": "./dist/code-mode/index.d.ts",
       "default": "./dist/code-mode.js"
     },
+    "./control-plane/storage": {
+      "types": "./dist/control-plane/storage.d.ts",
+      "default": "./dist/control-plane/storage.js"
+    },
     "./observed-output-shapes": {
       "types": "./dist/observed-output-shapes/index.d.ts",
       "default": "./dist/observed-output-shapes.js"
@@ -97,6 +101,7 @@
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
+    "@aws-sdk/client-s3": "3.1087.0",
     "@babel/parser": "^8.0.0",
     "@exodus/bytes": "^1.15.1",
     "@hono/mcp": "^0.3.0",
@@ -106,12 +111,15 @@
     "@ungap/structured-clone": "^1.3.2",
     "add-mcp": "1.13.0",
     "ajv": "^8.20.0",
+    "better-sqlite3": "12.11.1",
     "commander": "^15.0.0",
+    "drizzle-orm": "0.45.2",
     "formdata-node": "^6.0.3",
     "graphql": "^17.0.1",
     "headers-polyfill": "^5.0.1",
     "hono": "^4.12.27",
     "jsonc-parser": "^3.3.1",
+    "pg": "8.22.0",
     "posthog-node": "^5.38.6",
     "quickjs-emscripten": "^0.32.0",
     "semver": "^7.8.5",
@@ -129,6 +137,7 @@
     "@types/semver": "^7.7.1",
     "@types/ws": "^8.18.1",
     "@typescript/native-preview": "7.0.0-dev.20260628.1",
+    "drizzle-kit": "0.31.10",
     "rolldown": "^1.1.3",
     "vitest": "^4.1.9"
   },

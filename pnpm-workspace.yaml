@@ -3,9 +3,14 @@ packages:
   - "packages/*"
   - "tools/*"
 
+overrides:
+  "@aws-sdk/credential-provider-login": "3.972.63"
+  "@aws-sdk/nested-clients": "3.997.31"
+
 allowBuilds:
   "@google/genai": true
   "@sentry/cli": true
+  better-sqlite3: true
   core-js: true
   esbuild: true
   koffi: true
@@ -13,3 +18,20 @@ allowBuilds:
   protobufjs: true
   sharp: true
   workerd: true
+
+minimumReleaseAgeExclude:
+  - "@aws-sdk/checksums@3.1000.17"
+  - "@aws-sdk/client-s3@3.1087.0"
+  - "@aws-sdk/core@3.975.2"
+  - "@aws-sdk/credential-provider-env@3.972.58"
+  - "@aws-sdk/credential-provider-http@3.972.60"
+  - "@aws-sdk/credential-provider-ini@3.973.2"
+  - "@aws-sdk/credential-provider-node@3.972.68"
+  - "@aws-sdk/credential-provider-process@3.972.58"
+  - "@aws-sdk/credential-provider-sso@3.973.2"
+  - "@aws-sdk/credential-provider-web-identity@3.972.64"
+  - "@aws-sdk/middleware-sdk-s3@3.972.63"
+  - "@aws-sdk/signature-v4-multi-region@3.996.40"
+  - "@aws-sdk/token-providers@3.1087.0"
+  - "@aws-sdk/types@3.974.1"
+  - "@aws-sdk/xml-builder@3.972.35"

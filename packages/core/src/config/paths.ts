@@ -148,6 +148,47 @@ export function defaultArtifactDir(
   return pathJoin(defaultStateBaseDir(env, home, platform), "caplets", "artifacts");
 }
 
+export function defaultStorageStateDir(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultStateBaseDir(env, home, platform), "caplets", "control-plane");
+}
+
+export function defaultStorageDatabasePath(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultStorageStateDir(env, home, platform), "control-plane.sqlite");
+}
+
+export function defaultStorageArtifactDir(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultStorageStateDir(env, home, platform), "artifacts");
+}
+
+export function defaultStorageKeyProviderManifestPath(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(
+    defaultStorageStateDir(env, home, platform),
+    "key-provider",
+    "manifests",
+    "online.json",
+  );
+}
+
 export function defaultCompletionCacheDir(
   env: PathEnv = process.env,
   home = homedir(),

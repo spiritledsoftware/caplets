@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "selected": {
+    "drizzle-orm": "0.45.2",
+    "drizzle-kit": "0.31.10",
+    "better-sqlite3": "12.11.1",
+    "pg": "8.22.0",
+    "@aws-sdk/client-s3": "3.1087.0"
+  },
+  "reselected": [
+    {
+      "package": "drizzle-orm",
+      "planned": "0.45.3",
+      "selected": "0.45.2",
+      "registryEvidence": "ERR_PNPM_NO_MATCHING_VERSION; registry latest stable was 0.45.2 on 2026-07-14"
+    },
+    {
+      "package": "better-sqlite3",
+      "planned": "12.11.2",
+      "selected": "12.11.1",
+      "registryEvidence": "ERR_PNPM_PACKAGE_NOT_FOUND; registry latest stable was 12.11.1 on 2026-07-14"
+    }
+  ],
+  "workspaceOverrides": [
+    {
+      "package": "@aws-sdk/credential-provider-login",
+      "selected": "3.972.63",
+      "reason": "client-s3 3.1087.0 resolved credential-provider-ini requiring unavailable ^3.972.64; explicit S3 credentials keep the default/login chain unreachable"
+    },
+    {
+      "package": "@aws-sdk/nested-clients",
+      "selected": "3.997.31",
+      "reason": "the observed client-s3 install next required unavailable ^3.997.32; 3.997.31 was the registry latest"
+    }
+  ]
+}

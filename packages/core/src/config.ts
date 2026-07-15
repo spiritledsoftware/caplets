@@ -32,6 +32,7 @@ import {
   SERVER_ID_PATTERN,
   isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
+  isVerifiedHttpsBaseUrl,
   isUrl,
   validateHttpActionHeaders,
 } from "./config/validation";
@@ -51,6 +52,10 @@ export {
   defaultCacheBaseDir,
   defaultCapletsLockfilePath,
   defaultCompletionCacheDir,
+  defaultStorageArtifactDir,
+  defaultStorageDatabasePath,
+  defaultStorageKeyProviderManifestPath,
+  defaultStorageStateDir,
   defaultTelemetryStateDir,
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
@@ -348,6 +353,69 @@ export type CapletsOptions = {
   completion: CompletionConfig;
 };
 
+export type DeploymentSecretReference =
+  | { kind: "env"; name: string }
+  | { kind: "file"; path: string };
+
+export type FilesystemArtifactStorageConfig = {
+  kind: "filesystem";
+  root: string;
+};
+
+export type S3ArtifactStorageConfig = {
+  kind: "s3";
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix: string;
+  canary: DeploymentSecretReference;
+  credentials: {
+    accessKeyId: DeploymentSecretReference;
+    secretAccessKey: DeploymentSecretReference;
+  };
+};
+
+export type SqliteStorageConfig = {
+  kind: "sqlite";
+  stateRoot?: string | undefined;
+  databasePath?: string | undefined;
+  keyProviderManifest?: string | undefined;
+  artifacts?: FilesystemArtifactStorageConfig | undefined;
+};
+
+export type PostgresProcessRole = "online" | "migrator" | "maintenance";
+
+export type PostgresRoleCredentialConfig = {
+  role: string;
+  credential: DeploymentSecretReference;
+};
+
+export type PostgresStorageConfig = {
+  kind: "postgres";
+  stateRoot: string;
+  logicalHostId: string;
+  expectedStoreId: string;
+  processRole: PostgresProcessRole;
+  connection: {
+    tls: {
+      mode: "verify-full";
+      serverName: string;
+      ca?: DeploymentSecretReference | undefined;
+    };
+    roles: {
+      runtime: PostgresRoleCredentialConfig;
+      migrator: PostgresRoleCredentialConfig;
+      maintenance: PostgresRoleCredentialConfig;
+    };
+  };
+  keyProviderManifest: string;
+  artifacts: S3ArtifactStorageConfig;
+  migration: { designated: boolean };
+  retention: { backupDays: number };
+};
+
+export type ServeStorageConfig = SqliteStorageConfig | PostgresStorageConfig;
+
 export type ServeConfig = {
   host?: string | undefined;
   port?: number | undefined;
@@ -357,6 +425,7 @@ export type ServeConfig = {
   allowUnauthenticatedHttp?: boolean | undefined;
   trustProxy?: boolean | undefined;
   publicOrigins: string[];
+  storage?: ServeStorageConfig | undefined;
 };
 
 export type CompletionConfig = {
@@ -1213,6 +1282,198 @@ const publicOriginSchema = z
       "public origin must be an http(s) origin without credentials, path, query, or fragment; http is only allowed for loopback development origins",
   })
   .transform(normalizePublicOrigin);
+const STORAGE_IDENTIFIER_PATTERNS = {
+  logicalHost: /^host_[0-9A-HJKMNP-TV-Z]{26}$/u,
+  store: /^store_[0-9A-HJKMNP-TV-Z]{26}$/u,
+  environment: /^[A-Z_][A-Z0-9_]*$/u,
+  databaseRole: /^[a-z_][a-z0-9_]{0,62}$/u,
+  bucket: /^(?=.{3,63}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])$/u,
+} as const;
+
+const absoluteStoragePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/u, "storage path must be absolute");
+
+function deploymentSecretReferenceIdentity(reference: DeploymentSecretReference): string {
+  if (reference.kind === "env") {
+    const name = process.platform === "win32" ? reference.name.toLowerCase() : reference.name;
+    return `env:${name}`;
+  }
+  const normalized = resolve(reference.path);
+  return `file:${process.platform === "win32" ? normalized.toLowerCase() : normalized}`;
+}
+
+const deploymentSecretReferenceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("env"),
+      name: z
+        .string()
+        .regex(STORAGE_IDENTIFIER_PATTERNS.environment)
+        .describe("Name of a deployment-owned environment variable."),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("file"),
+      path: absoluteStoragePathSchema.describe(
+        "Owner/service-only secret file opened with bounded no-follow semantics.",
+      ),
+    })
+    .strict(),
+]);
+
+const filesystemArtifactStorageSchema = z
+  .object({
+    kind: z.literal("filesystem"),
+    root: absoluteStoragePathSchema,
+  })
+  .strict();
+
+const s3ArtifactStorageSchema = z
+  .object({
+    kind: z.literal("s3"),
+    endpoint: z
+      .string()
+      .url()
+      .regex(
+        /^https:\/\/[^/?#@]+(?:\/[^?#]*)?$/u,
+        "S3 endpoint must use verified HTTPS without credentials, query, or fragment",
+      )
+      .refine(isVerifiedHttpsBaseUrl, {
+        message: "S3 endpoint must use verified HTTPS without credentials, query, or fragment",
+      }),
+    region: z.string().trim().min(1),
+    bucket: z.string().regex(STORAGE_IDENTIFIER_PATTERNS.bucket),
+    prefix: z
+      .string()
+      .trim()
+      .min(1)
+      .regex(
+        /^(?!\/)(?!.*\/\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[^\\]*[^/\\]$/u,
+        "S3 prefix must be a relative canonical object prefix",
+      ),
+    canary: deploymentSecretReferenceSchema.describe(
+      "Reference to the provisioned immutable shared-provider canary.",
+    ),
+    credentials: z
+      .object({
+        accessKeyId: deploymentSecretReferenceSchema,
+        secretAccessKey: deploymentSecretReferenceSchema,
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((storage, ctx) => {
+    const references = [
+      storage.canary,
+      storage.credentials.accessKeyId,
+      storage.credentials.secretAccessKey,
+    ].map(deploymentSecretReferenceIdentity);
+    if (new Set(references).size !== references.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["credentials"],
+        message: "S3 canary and credentials must use distinct references",
+      });
+    }
+  });
+
+const postgresRoleCredentialSchema = z
+  .object({
+    role: z.string().regex(STORAGE_IDENTIFIER_PATTERNS.databaseRole),
+    credential: deploymentSecretReferenceSchema.describe(
+      "Reference to a complete PostgreSQL connection string for this exact role.",
+    ),
+  })
+  .strict();
+
+const sqliteStorageSchema = z
+  .object({
+    kind: z.literal("sqlite"),
+    stateRoot: absoluteStoragePathSchema.optional(),
+    databasePath: absoluteStoragePathSchema.optional(),
+    keyProviderManifest: absoluteStoragePathSchema.optional(),
+    artifacts: filesystemArtifactStorageSchema.optional(),
+  })
+  .strict();
+
+const postgresStorageSchema = z
+  .object({
+    kind: z.literal("postgres"),
+    stateRoot: absoluteStoragePathSchema,
+    logicalHostId: z.string().regex(STORAGE_IDENTIFIER_PATTERNS.logicalHost),
+    expectedStoreId: z.string().regex(STORAGE_IDENTIFIER_PATTERNS.store),
+    processRole: z.enum(["online", "migrator", "maintenance"]),
+    connection: z
+      .object({
+        tls: z
+          .object({
+            mode: z.literal("verify-full"),
+            serverName: z.string().trim().min(1),
+            ca: deploymentSecretReferenceSchema.optional(),
+          })
+          .strict(),
+        roles: z
+          .object({
+            runtime: postgresRoleCredentialSchema,
+            migrator: postgresRoleCredentialSchema,
+            maintenance: postgresRoleCredentialSchema,
+          })
+          .strict(),
+      })
+      .strict(),
+    keyProviderManifest: absoluteStoragePathSchema,
+    artifacts: s3ArtifactStorageSchema,
+    migration: z.object({ designated: z.boolean() }).strict(),
+    retention: z.object({ backupDays: z.number().int().min(1).max(3_650) }).strict(),
+  })
+  .strict()
+  .superRefine((storage, ctx) => {
+    const roles = Object.values(storage.connection.roles);
+    if (new Set(roles.map((entry) => entry.role)).size !== roles.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["connection", "roles"],
+        message: "Postgres runtime, migrator, and maintenance roles must be distinct",
+      });
+    }
+    const references = [
+      ...roles.map(({ credential }) => credential),
+      ...(storage.connection.tls.ca ? [storage.connection.tls.ca] : []),
+      storage.artifacts.canary,
+      storage.artifacts.credentials.accessKeyId,
+      storage.artifacts.credentials.secretAccessKey,
+    ].map(deploymentSecretReferenceIdentity);
+    if (new Set(references).size !== references.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["connection", "roles"],
+        message: "Postgres and S3 deployment secrets must use distinct references",
+      });
+    }
+    if (/(?:admin|owner|superuser|migrat|maint)/u.test(storage.connection.roles.runtime.role)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["connection", "roles", "runtime", "role"],
+        message: "Postgres runtime role must be least-privilege and non-administrative",
+      });
+    }
+    if (storage.processRole === "migrator" && !storage.migration.designated) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["migration", "designated"],
+        message: "Postgres migrator process must be explicitly designated",
+      });
+    }
+  });
+
+const serveStorageSchema = z.discriminatedUnion("kind", [
+  sqliteStorageSchema,
+  postgresStorageSchema,
+]);
 
 const serveConfigSchema = z
   .object({
@@ -1244,6 +1505,9 @@ const serveConfigSchema = z
       .boolean()
       .optional()
       .describe("Trust proxy headers when deriving public HTTP request URLs."),
+    storage: serveStorageSchema
+      .optional()
+      .describe("Static deployment-owned SQLite or Postgres control-plane storage."),
     publicOrigins: z
       .array(publicOriginSchema)
       .default([])
@@ -3243,6 +3507,7 @@ function normalizeServeConfig(raw: z.infer<typeof serveConfigSchema>): ServeConf
     upstreamUrl: raw.upstreamUrl,
     allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp,
     trustProxy: raw.trustProxy,
+    storage: raw.storage,
     publicOrigins: raw.publicOrigins,
   }) as ServeConfig;
 }
@@ -3283,6 +3548,9 @@ function stripUndefined<T extends Record<string, unknown>>(value: T): T {
 }
 
 function interpolateConfig<T>(value: T, path: string[] = [], options: ConfigParseOptions = {}): T {
+  if (path[0] === "serve" && path[1] === "storage") {
+    return value;
+  }
   if (isPublicMetadataPath(path)) {
     return value;
   }

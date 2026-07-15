@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "bunVersion": "1.3.14",
+  "supported": [
+    {
+      "id": "node-22.23.1-linux-glibc-x64",
+      "runtime": "node",
+      "version": "22.23.1",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "glibc",
+      "runner": "ubuntu-24.04"
+    },
+    {
+      "id": "node-22.23.1-linux-glibc-arm64",
+      "runtime": "node",
+      "version": "22.23.1",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "glibc",
+      "runner": "ubuntu-24.04-arm"
+    },
+    {
+      "id": "node-22.23.1-darwin-x64",
+      "runtime": "node",
+      "version": "22.23.1",
+      "os": "darwin",
+      "arch": "x64",
+      "libc": "system",
+      "runner": "macos-15-intel"
+    },
+    {
+      "id": "node-22.23.1-darwin-arm64",
+      "runtime": "node",
+      "version": "22.23.1",
+      "os": "darwin",
+      "arch": "arm64",
+      "libc": "system",
+      "runner": "macos-15"
+    },
+    {
+      "id": "node-22.23.1-win32-x64",
+      "runtime": "node",
+      "version": "22.23.1",
+      "os": "win32",
+      "arch": "x64",
+      "libc": "system",
+      "runner": "windows-2025"
+    },
+    {
+      "id": "node-24.18.0-linux-glibc-x64",
+      "runtime": "node",
+      "version": "24.18.0",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "glibc",
+      "runner": "ubuntu-24.04"
+    },
+    {
+      "id": "node-24.18.0-linux-glibc-arm64",
+      "runtime": "node",
+      "version": "24.18.0",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "glibc",
+      "runner": "ubuntu-24.04-arm"
+    },
+    {
+      "id": "node-24.18.0-darwin-x64",
+      "runtime": "node",
+      "version": "24.18.0",
+      "os": "darwin",
+      "arch": "x64",
+      "libc": "system",
+      "runner": "macos-15-intel"
+    },
+    {
+      "id": "node-24.18.0-darwin-arm64",
+      "runtime": "node",
+      "version": "24.18.0",
+      "os": "darwin",
+      "arch": "arm64",
+      "libc": "system",
+      "runner": "macos-15"
+    },
+    {
+      "id": "node-24.18.0-win32-x64",
+      "runtime": "node",
+      "version": "24.18.0",
+      "os": "win32",
+      "arch": "x64",
+      "libc": "system",
+      "runner": "windows-2025"
+    },
+    {
+      "id": "bun-1.3.14-linux-glibc-x64",
+      "runtime": "bun",
+      "version": "1.3.14",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "glibc",
+      "runner": "ubuntu-24.04"
+    },
+    {
+      "id": "bun-1.3.14-darwin-arm64",
+      "runtime": "bun",
+      "version": "1.3.14",
+      "os": "darwin",
+      "arch": "arm64",
+      "libc": "system",
+      "runner": "macos-15"
+    },
+    {
+      "id": "docker-node-24.18.0-bookworm-x64",
+      "runtime": "docker",
+      "version": "24.18.0",
+      "os": "linux",
+      "arch": "x64",
+      "libc": "glibc",
+      "runner": "ubuntu-24.04",
+      "image": "node:24.18.0-bookworm-slim"
+    },
+    {
+      "id": "docker-node-24.18.0-bookworm-arm64",
+      "runtime": "docker",
+      "version": "24.18.0",
+      "os": "linux",
+      "arch": "arm64",
+      "libc": "glibc",
+      "runner": "ubuntu-24.04-arm",
+      "image": "node:24.18.0-bookworm-slim"
+    }
+  ],
+  "unsupported": [
+    {
+      "os": "linux-musl",
+      "arch": "x64/arm64",
+      "reason": "musl and Alpine are outside the release-blocking native-driver matrix"
+    },
+    {
+      "os": "win32",
+      "arch": "arm64",
+      "reason": "Windows arm64 is not admitted by the native-driver matrix"
+    },
+    {
+      "os": "win32",
+      "arch": "x64/arm64",
+      "reason": "Bun on Windows is not admitted by the runtime matrix"
+    },
+    { "os": "any", "arch": "32-bit", "reason": "32-bit targets are unsupported" }
+  ]
+}

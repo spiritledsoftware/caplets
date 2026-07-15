@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "maxEffectiveCaplets": 2000,
+  "maxNormalizedRows": 100000,
+  "maxEncodedSnapshotBytes": 268435456,
+  "managementWritesPerSecond": 100,
+  "writeBurstSeconds": 10,
+  "maxReadyNodes": 16,
+  "warmupSamples": 10,
+  "measuredSamplesPerRun": 100,
+  "independentRuns": 3,
+  "maxSnapshotLoadP99Ms": 1500,
+  "maxConvergenceP99Ms": 5000
+}

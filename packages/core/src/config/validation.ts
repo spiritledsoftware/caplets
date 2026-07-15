@@ -70,6 +70,16 @@ export function isAllowedHttpBaseUrl(value: string): boolean {
   return isAllowedRemoteUrl(value) && !url.username && !url.password && !url.search && !url.hash;
 }
 
+export function isVerifiedHttpsBaseUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
+}
+
 export function isUrl(value: string): boolean {
   try {
     new URL(value);

@@ -35,6 +35,8 @@
     "release:publish": "pnpm telemetry:prepare-release-env && pnpm release",
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
+    "storage:package:check": "node scripts/storage-package-check.mjs",
+    "storage:stack:check": "node scripts/storage-stack-check.mjs",
     "test": "vitest run",
     "telemetry:check-release-env": "tsx ./scripts/check-telemetry-release-env.ts",
     "telemetry:check-source-maps": "tsx ./scripts/check-sentry-source-maps.ts",

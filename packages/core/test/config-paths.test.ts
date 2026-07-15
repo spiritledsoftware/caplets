@@ -6,6 +6,10 @@ import {
   defaultConfigBaseDir,
   defaultConfigPath,
   defaultStateBaseDir,
+  defaultStorageArtifactDir,
+  defaultStorageDatabasePath,
+  defaultStorageKeyProviderManifestPath,
+  defaultStorageStateDir,
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
   resolveProjectLockfilePath,
@@ -27,6 +31,27 @@ describe("config paths", () => {
     expect(defaultCapletsLockfilePath(env, home, "linux")).toBe(
       posix.join(home, ".local", "state", "caplets", "caplets.lock.json"),
     );
+    expect(defaultStorageStateDir(env, home, "linux")).toBe(
+      posix.join(home, ".local", "state", "caplets", "control-plane"),
+    );
+    expect(defaultStorageDatabasePath(env, home, "linux")).toBe(
+      posix.join(home, ".local", "state", "caplets", "control-plane", "control-plane.sqlite"),
+    );
+    expect(defaultStorageArtifactDir(env, home, "linux")).toBe(
+      posix.join(home, ".local", "state", "caplets", "control-plane", "artifacts"),
+    );
+    expect(defaultStorageKeyProviderManifestPath(env, home, "linux")).toBe(
+      posix.join(
+        home,
+        ".local",
+        "state",
+        "caplets",
+        "control-plane",
+        "key-provider",
+        "manifests",
+        "online.json",
+      ),
+    );
   });
 
   it("uses absolute Unix XDG overrides", () => {
@@ -44,6 +69,9 @@ describe("config paths", () => {
     expect(defaultCapletsLockfilePath(env, "/home/alex", "darwin")).toBe(
       posix.join("/xdg/state", "caplets", "caplets.lock.json"),
     );
+    expect(defaultStorageStateDir(env, "/home/alex", "darwin")).toBe(
+      posix.join("/xdg/state", "caplets", "control-plane"),
+    );
   });
 
   it("ignores relative Unix XDG overrides", () => {
@@ -58,6 +86,9 @@ describe("config paths", () => {
     );
     expect(defaultAuthDir(env, home, "darwin")).toBe(
       posix.join(home, ".local", "state", "caplets", "auth"),
+    );
+    expect(defaultStorageStateDir(env, home, "darwin")).toBe(
+      posix.join(home, ".local", "state", "caplets", "control-plane"),
     );
   });
 
@@ -75,6 +106,9 @@ describe("config paths", () => {
     );
     expect(defaultCapletsLockfilePath(env, "C:\\Users\\Alex", "win32")).toBe(
       win32.join(env.LOCALAPPDATA, "caplets", "caplets.lock.json"),
+    );
+    expect(defaultStorageStateDir(env, "C:\\Users\\Alex", "win32")).toBe(
+      win32.join(env.LOCALAPPDATA, "caplets", "control-plane"),
     );
   });
 
