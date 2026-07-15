@@ -10,6 +10,7 @@ import { findProjectRoot, fingerprintProjectRoot } from "./cloud/project-root";
 import {
   type CapletConfig,
   type CapletsConfig,
+  type ConfigVaultResolver,
   loadLocalRuntimeConfig,
   type LocalOverlayConfigWarning,
   resolveCapletsRoot,
@@ -23,6 +24,10 @@ import {
   resolvedExecutionFingerprintForConfig,
   type DeclaredInputReader,
 } from "./caplet-source/runtime-fingerprint";
+import type {
+  ControlPlaneRuntimeSnapshot,
+  ControlPlaneRuntimeSnapshotLoader,
+} from "./control-plane/snapshot";
 import { DownstreamManager } from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
@@ -112,6 +117,26 @@ type WatchedPath = {
   reason: "config" | "caplets";
 };
 
+type InternalCapletsEngineInitialization = Readonly<{
+  snapshot: ControlPlaneRuntimeSnapshot;
+  loader: ControlPlaneRuntimeSnapshotLoader;
+}>;
+
+/**
+ * Internal U8 injection seam. Production callers continue to construct the legacy filesystem
+ * engine until U10; injected callers cannot receive an engine before hydration completes.
+ */
+export async function createInternalCapletsEngine(
+  options: CapletsEngineOptions,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+  initializedSnapshot?: ControlPlaneRuntimeSnapshot,
+): Promise<CapletsEngine> {
+  const snapshot =
+    initializedSnapshot ??
+    (await loader.initialize({ vaultResolver: vaultResolverForAuthDir(options.authDir) }));
+  return new CapletsEngine(options, { snapshot, loader });
+}
+
 export class CapletsEngine {
   private registry: ServerRegistry;
   private readonly downstream: DownstreamManager;
@@ -145,8 +170,11 @@ export class CapletsEngine {
   private closed = false;
   private stableHostConfigurationFingerprint: string;
   private resolvedExecutionFingerprint: string;
+  private runtimeSnapshot: ControlPlaneRuntimeSnapshot | undefined;
+  private readonly runtimeSnapshotLoader: ControlPlaneRuntimeSnapshotLoader | undefined;
+  private readonly runtimeVaultResolver: ConfigVaultResolver;
 
-  constructor(options: CapletsEngineOptions = {}) {
+  constructor(options: CapletsEngineOptions = {}, internal?: InternalCapletsEngineInitialization) {
     this.paths = {
       configPath: resolveConfigPath(options.configPath),
       projectConfigPath: options.projectConfigPath ?? resolveProjectConfigPath(),
@@ -154,13 +182,16 @@ export class CapletsEngine {
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
     this.configLoader =
       options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
+    this.runtimeVaultResolver = vaultResolverForAuthDir(options.authDir);
     this.declaredInputReader = options.declaredInputReader;
     this.requireValidCustomFingerprint = options.configLoader !== undefined;
-    const config = this.loadConfigWithWarnings();
+    this.runtimeSnapshot = internal?.snapshot;
+    this.runtimeSnapshotLoader = internal?.loader;
+    const config = internal?.snapshot.config ?? this.loadConfigWithWarnings();
     this.stableHostConfigurationFingerprint =
       runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
     this.resolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(config);
-    this.registry = new ServerRegistry(config);
+    this.registry = new ServerRegistry(config, internal?.snapshot.caplets);
     this.telemetry = createRuntimeTelemetryContext({
       config: this.registry.config,
       env: options.telemetryEnv,
@@ -215,6 +246,10 @@ export class CapletsEngine {
 
   currentConfig(): CapletsConfig {
     return this.registry.config;
+  }
+
+  currentControlPlaneRuntimeSnapshot(): ControlPlaneRuntimeSnapshot | undefined {
+    return this.runtimeSnapshot;
   }
 
   enabledServers(): CapletConfig[] {
@@ -549,20 +584,22 @@ export class CapletsEngine {
   }
 
   private async reloadOnce(): Promise<boolean> {
-    if (this.closed) {
-      return false;
-    }
+    if (this.closed) return false;
     let nextConfig: CapletsConfig;
+    let nextRuntimeSnapshot: ControlPlaneRuntimeSnapshot | undefined;
     try {
-      nextConfig = this.loadConfigWithWarnings();
+      nextRuntimeSnapshot = this.runtimeSnapshotLoader
+        ? await this.runtimeSnapshotLoader.reload({
+            vaultResolver: this.runtimeVaultResolver,
+          })
+        : undefined;
+      nextConfig = nextRuntimeSnapshot?.config ?? this.loadConfigWithWarnings();
     } catch (error) {
       this.writeErr(`Caplets config reload failed; keeping last known-good config.\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
       return false;
     }
-    if (this.closed) {
-      return false;
-    }
+    if (this.closed) return false;
 
     const nextStableHostConfigurationFingerprint =
       runtimeFingerprintForConfig(nextConfig).hostConfigurationFingerprint;
@@ -571,37 +608,63 @@ export class CapletsEngine {
       nextStableHostConfigurationFingerprint === this.stableHostConfigurationFingerprint &&
       nextResolvedExecutionFingerprint === this.resolvedExecutionFingerprint
     ) {
+      if (nextRuntimeSnapshot) {
+        if (!this.runtimeSnapshotLoader?.commit(nextRuntimeSnapshot)) return false;
+        const nextRegistry = this.registry.withRuntimeMetadata(
+          nextConfig,
+          nextRuntimeSnapshot.caplets,
+        );
+        this.registry = nextRegistry;
+        this.runtimeSnapshot = nextRuntimeSnapshot;
+        this.downstream.updateRegistry(nextRegistry);
+        this.openapi.updateRegistry(nextRegistry);
+        this.googleDiscovery.updateRegistry(nextRegistry);
+        this.graphql.updateRegistry(nextRegistry);
+        this.http.updateRegistry(nextRegistry);
+        this.cli.updateRegistry(nextRegistry);
+        this.capletSets.updateRegistry(nextRegistry);
+      }
       return true;
     }
-    const previousConfig = this.registry.config;
-    const nextRegistry = new ServerRegistry(nextConfig);
-    this.registry = nextRegistry;
-    this.exposureGeneration += 1;
-    this.telemetry.config = nextConfig;
-    this.stableHostConfigurationFingerprint = nextStableHostConfigurationFingerprint;
-    this.resolvedExecutionFingerprint = nextResolvedExecutionFingerprint;
-    this.downstream.updateRegistry(nextRegistry);
-    this.openapi.updateRegistry(nextRegistry);
-    this.googleDiscovery.updateRegistry(nextRegistry);
-    this.graphql.updateRegistry(nextRegistry);
-    this.http.updateRegistry(nextRegistry);
-    this.cli.updateRegistry(nextRegistry);
-    this.capletSets.updateRegistry(nextRegistry);
 
+    const previousConfig = this.registry.config;
+    const previousRegistry = this.registry;
+    const nextRegistry = new ServerRegistry(nextConfig, nextRuntimeSnapshot?.caplets);
+    // Fence new calls against the candidate registry before awaiting connection shutdown. Engine
+    // lookups still use the previous registry, so they fail stale rather than reconnecting old state.
+    this.updateManagerRegistries(nextRegistry);
     let invalidated = true;
     try {
       await this.invalidateChangedBackends(previousConfig, nextConfig);
     } catch (error) {
       invalidated = false;
-      this.writeErr(`Caplets backend invalidation failed; continuing reload.\n`);
+      const message = nextRuntimeSnapshot
+        ? "Caplets backend invalidation failed; keeping last known-good config."
+        : "Caplets backend invalidation failed; continuing reload.";
+      this.writeErr(`${message}\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "INTERNAL_ERROR"), null, 2)}\n`);
+      if (nextRuntimeSnapshot) {
+        this.updateManagerRegistries(previousRegistry);
+        return false;
+      }
     }
     if (this.closed) {
+      this.updateManagerRegistries(previousRegistry);
       return false;
     }
-    if (this.watchEnabled) {
-      this.resetWatchers();
+
+    if (nextRuntimeSnapshot && !this.runtimeSnapshotLoader?.commit(nextRuntimeSnapshot)) {
+      this.updateManagerRegistries(previousRegistry);
+      return false;
     }
+    this.registry = nextRegistry;
+    this.runtimeSnapshot = nextRuntimeSnapshot;
+    this.exposureGeneration += 1;
+    this.telemetry.config = nextConfig;
+    this.stableHostConfigurationFingerprint = nextStableHostConfigurationFingerprint;
+    this.resolvedExecutionFingerprint = nextResolvedExecutionFingerprint;
+
+    if (this.watchEnabled) this.resetWatchers();
     this.emitReload({ previous: previousConfig, next: nextConfig, invalidated });
     return invalidated;
   }
@@ -646,6 +709,16 @@ export class CapletsEngine {
         this.writeErr(`${JSON.stringify(toSafeError(error, "INTERNAL_ERROR"), null, 2)}\n`);
       }
     }
+  }
+
+  private updateManagerRegistries(registry: ServerRegistry): void {
+    this.downstream.updateRegistry(registry);
+    this.openapi.updateRegistry(registry);
+    this.googleDiscovery.updateRegistry(registry);
+    this.graphql.updateRegistry(registry);
+    this.http.updateRegistry(registry);
+    this.cli.updateRegistry(registry);
+    this.capletSets.updateRegistry(registry);
   }
 
   private async invalidateChangedBackends(

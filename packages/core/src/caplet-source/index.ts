@@ -1,11 +1,15 @@
 export { BundleCapletSource } from "./bundle";
 export { parseCapletSource } from "./parse";
 export {
+  createBootstrapFingerprintSnapshot,
   createMemoryDeclaredInputReader,
   createRuntimeFingerprintSnapshot,
+  effectiveRuntimeFingerprintForConfig,
 } from "./runtime-fingerprint";
 export type {
   CapletRuntimeFingerprint,
+  BootstrapFingerprintInput,
+  BootstrapFingerprintSnapshot,
   DeclaredInputKind,
   DeclaredInputListState,
   DeclaredInputReader,

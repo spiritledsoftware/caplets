@@ -12,6 +12,7 @@ export default defineConfig([
       "control-plane/migration/legacy-model": "src/control-plane/migration/legacy-model.ts",
       "control-plane/migration/exclusion": "src/control-plane/migration/exclusion.ts",
       "control-plane/storage": "src/control-plane/storage.ts",
+      "control-plane/runtime": "src/control-plane/snapshot.ts",
       "control-plane/schema/model-codec": "src/control-plane/schema/model-codec.ts",
       "control-plane/schema/sqlite": "src/control-plane/schema/sqlite.ts",
       "control-plane/schema/postgres": "src/control-plane/schema/postgres.ts",

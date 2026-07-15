@@ -128,7 +128,76 @@ function entityChecks(
     checks.push(
       check(
         "cp_host_setting_typed_value_check",
-        sql`${key} = 'native.daemon-url' AND jsonb_typeof(${value}) = 'object' AND ${value} ->> 'source' = 'setup' AND jsonb_typeof(${value} -> 'url') = 'string'`,
+        sql`(
+          (
+            ${key} = 'native.daemon-url'
+            AND jsonb_typeof(${value}) = 'object'
+            AND ${value} ->> 'source' = 'setup'
+            AND jsonb_typeof(${value} -> 'url') = 'string'
+            AND ${value} - ARRAY['source', 'url']::text[] = '{}'::jsonb
+          )
+          OR (${key} = 'telemetry' AND jsonb_typeof(${value}) = 'boolean')
+          OR (
+            ${key} IN (
+              'options.defaultSearchLimit',
+              'options.exposureDiscoveryTimeoutMs',
+              'options.completion.discoveryTimeoutMs',
+              'options.completion.overallTimeoutMs'
+            )
+            AND jsonb_typeof(${value}) = 'number'
+            AND (${value} #>> '{}')::numeric = trunc((${value} #>> '{}')::numeric)
+            AND (${value} #>> '{}')::numeric > 0
+          )
+          OR (
+            ${key} = 'options.maxSearchLimit'
+            AND jsonb_typeof(${value}) = 'number'
+            AND (${value} #>> '{}')::numeric = trunc((${value} #>> '{}')::numeric)
+            AND (${value} #>> '{}')::numeric BETWEEN 1 AND 50
+          )
+          OR (
+            ${key} = 'options.exposureDiscoveryConcurrency'
+            AND jsonb_typeof(${value}) = 'number'
+            AND (${value} #>> '{}')::numeric = trunc((${value} #>> '{}')::numeric)
+            AND (${value} #>> '{}')::numeric BETWEEN 1 AND 32
+          )
+          OR (
+            ${key} IN (
+              'options.completion.cacheTtlMs',
+              'options.completion.negativeCacheTtlMs'
+            )
+            AND jsonb_typeof(${value}) = 'number'
+            AND (${value} #>> '{}')::numeric = trunc((${value} #>> '{}')::numeric)
+            AND (${value} #>> '{}')::numeric >= 0
+          )
+          OR (
+            ${key} = 'options.exposure'
+            AND jsonb_typeof(${value}) = 'string'
+            AND ${value} #>> '{}' IN (
+              'direct',
+              'progressive',
+              'code_mode',
+              'direct_and_code_mode',
+              'progressive_and_code_mode'
+            )
+          )
+          OR (
+            ${key} = 'namespaceAliases'
+            AND jsonb_typeof(${value}) = 'object'
+            AND ${value} ? 'upstreams'
+            AND ${value} - ARRAY['local', 'upstreams']::text[] = '{}'::jsonb
+            AND jsonb_typeof(${value} -> 'upstreams') = 'object'
+            AND (
+              NOT (${value} ? 'local')
+              OR (
+                jsonb_typeof(${value} -> 'local') = 'string'
+                AND ${value} ->> 'local' ~ '^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$'
+              )
+            )
+            AND NOT (${value} -> 'upstreams') @? '$.keyvalue() ? (@.key like_regex "^\\s*$")'
+            AND NOT (${value} -> 'upstreams') @? '$.* ? (@.type() != "string")'
+            AND NOT (${value} -> 'upstreams') @? '$.* ? (!(@ like_regex "^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$"))'
+          )
+        )`,
       ),
     );
   }

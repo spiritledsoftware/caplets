@@ -1,9 +1,10 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import type { CapletsConfig } from "./config";
-import { CapletsEngine, type CapletsEngineOptions } from "./engine";
+import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "./engine";
 import { CapletsMcpSession, type CapletsMcpSessionOptions, type ToolServer } from "./serve/session";
+import type { ControlPlaneRuntimeSnapshotLoader } from "./control-plane/snapshot";
 
-type CapletsRuntimeOptions = {
+export type CapletsRuntimeOptions = {
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
@@ -21,8 +22,8 @@ export class CapletsRuntime {
   private readonly engine: CapletsEngine;
   private readonly session: CapletsMcpSession;
 
-  constructor(options: CapletsRuntimeOptions = {}) {
-    this.engine = new CapletsEngine(engineOptions(options));
+  constructor(options: CapletsRuntimeOptions = {}, internalEngine?: CapletsEngine) {
+    this.engine = internalEngine ?? new CapletsEngine(engineOptions(options));
     this.session = new CapletsMcpSession(this.engine, selectSessionOptions(options));
     this.server = this.session.server;
   }
@@ -63,6 +64,14 @@ export class CapletsRuntime {
   watchedPaths(): string[] {
     return this.engine.watchedPaths();
   }
+}
+
+export async function createInternalCapletsRuntime(
+  options: CapletsRuntimeOptions,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+): Promise<CapletsRuntime> {
+  const engine = await createInternalCapletsEngine(engineOptions(options), loader);
+  return new CapletsRuntime(options, engine);
 }
 
 function selectSessionOptions(options: CapletsRuntimeOptions): CapletsMcpSessionOptions {

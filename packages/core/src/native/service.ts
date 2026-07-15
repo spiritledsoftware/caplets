@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { vaultResolverForAuthDir } from "../config";
 import { isLoopbackHost } from "../server/options";
 import type { NativeCapletsServiceResolutionInput } from "./options";
 import {
@@ -23,8 +24,14 @@ import {
   type RemoteCapletsClient,
   type SdkRemoteCapletsClientOptions,
 } from "./remote";
-import { CapletsEngine, type ResolvedExposureProjection } from "../engine";
+import {
+  CapletsEngine,
+  createInternalCapletsEngine,
+  type CapletsEngineOptions,
+  type ResolvedExposureProjection,
+} from "../engine";
 import { CapletsError, errorResult } from "../errors";
+import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
 import type {
   RuntimeMode,
   TelemetryDebugSink,
@@ -183,6 +190,40 @@ export function createNativeCapletsService(
   return new DefaultNativeCapletsService(options);
 }
 
+export async function createInternalNativeCapletsService(
+  options: NativeCapletsServiceOptions,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+): Promise<NativeCapletsService> {
+  if (options.localServiceFactory) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Internal SQL runtime injection cannot use a custom local service factory",
+    );
+  }
+  const resolved = resolveNativeCapletsServiceOptions(options);
+  if (
+    resolved.mode === "daemon" ||
+    resolved.mode === "cloud" ||
+    (resolved.mode === "remote" && !options.remoteClientFactory)
+  ) {
+    await loader.initialize({ vaultResolver: vaultResolverForAuthDir(options.authDir) });
+    return createNativeCapletsService(options);
+  }
+  const engine = await createInternalCapletsEngine(nativeEngineOptions(options), loader);
+  try {
+    if (resolved.mode === "local") {
+      return new DefaultNativeCapletsService(options, engine);
+    }
+    return createNativeCapletsService({
+      ...options,
+      localServiceFactory: (localOptions) => new DefaultNativeCapletsService(localOptions, engine),
+    });
+  } catch (error) {
+    await engine.close();
+    throw error;
+  }
+}
+
 export function resetNativeProjectBindingFallbackWarningForTests(): void {
   hasWarnedRemoteProjectBindingFallback = false;
 }
@@ -206,17 +247,9 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private postReloadRefresh: Promise<void> | undefined;
   private exposureRefreshSequence = 0;
 
-  constructor(options: LocalNativeCapletsServiceOptions) {
+  constructor(options: LocalNativeCapletsServiceOptions, internalEngine?: CapletsEngine) {
     this.writeErr = options.writeErr ?? (() => undefined);
-    this.engine = new CapletsEngine({
-      ...options,
-      writeErr: this.writeErr,
-      projectBindingContext: projectBindingContextForNativeOptions(options),
-      telemetrySurface: options.telemetrySurface ?? "native",
-      telemetryVisibility: options.telemetryVisibility ?? "hidden",
-      telemetryRuntimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
-      telemetryIntegration: options.telemetryIntegration ?? "native",
-    });
+    this.engine = internalEngine ?? new CapletsEngine(nativeEngineOptions(options, this.writeErr));
     this.postReloadRefresh = this.refreshExposureProjection({ emitToolsChanged: true });
     this.unsubscribeEngineReload = this.engine.onReload(() => {
       this.postReloadRefresh = this.refreshExposureProjection({ emitToolsChanged: true });
@@ -777,6 +810,21 @@ async function executeCodeModeRunNative(
     journalStore: new CodeModeJournalStore(),
     ...(sessionManager === undefined ? {} : { sessionManager }),
   });
+}
+
+function nativeEngineOptions(
+  options: NativeCapletsServiceOptions,
+  writeErr: (value: string) => void = options.writeErr ?? (() => undefined),
+): CapletsEngineOptions {
+  return {
+    ...options,
+    writeErr,
+    projectBindingContext: projectBindingContextForNativeOptions(options),
+    telemetrySurface: options.telemetrySurface ?? "native",
+    telemetryVisibility: options.telemetryVisibility ?? "hidden",
+    telemetryRuntimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
+    telemetryIntegration: options.telemetryIntegration ?? "native",
+  };
 }
 
 function createDefaultNativeCapletsService(

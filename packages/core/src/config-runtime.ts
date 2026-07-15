@@ -499,6 +499,65 @@ const namespaceAliasesSchema = z
     }
   });
 
+const mutablePositiveIntegerSchema = z.number().int().positive();
+const mutableNonNegativeIntegerSchema = z.number().int().nonnegative();
+
+export const MutableHostSettingSchema = z.discriminatedUnion("key", [
+  z.object({ key: z.literal("telemetry"), value: z.boolean() }).strict(),
+  z
+    .object({
+      key: z.literal("options.defaultSearchLimit"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.maxSearchLimit"),
+      value: mutablePositiveIntegerSchema.max(50),
+    })
+    .strict(),
+  z.object({ key: z.literal("options.exposure"), value: exposureSchema }).strict(),
+  z
+    .object({
+      key: z.literal("options.exposureDiscoveryTimeoutMs"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.exposureDiscoveryConcurrency"),
+      value: mutablePositiveIntegerSchema.max(32),
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.discoveryTimeoutMs"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.overallTimeoutMs"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.cacheTtlMs"),
+      value: mutableNonNegativeIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.negativeCacheTtlMs"),
+      value: mutableNonNegativeIntegerSchema,
+    })
+    .strict(),
+  z.object({ key: z.literal("namespaceAliases"), value: namespaceAliasesSchema }).strict(),
+]);
+
+export type MutableHostSetting = z.infer<typeof MutableHostSettingSchema>;
+
 const configSchema = z
   .object({
     version: z.literal(1).default(1),

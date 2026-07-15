@@ -18,8 +18,12 @@ import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { listCaplets } from "./../cli/inspection";
 import { loadConfigWithSources, vaultBootstrapResolver, vaultResolverForAuthDir } from "../config";
-import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
+import type {
+  ControlPlaneRuntimeSnapshot,
+  ControlPlaneRuntimeSnapshotLoader,
+} from "../control-plane/snapshot";
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
 import type { RemoteAuthFlowStore } from "./auth-flow";
 import {
@@ -35,6 +39,7 @@ export type RemoteControlDispatchContext = CapletsEngineOptions & {
   globalLockfilePath?: string | undefined;
   authFlowStore?: RemoteAuthFlowStore;
   controlCallbackBaseUrl?: string;
+  internalRuntimeSnapshotLoader?: ControlPlaneRuntimeSnapshotLoader | undefined;
 };
 
 type AddKind =
@@ -98,11 +103,18 @@ async function dispatch(
 ) {
   assertObject(request, "remote control request");
   assertObject(request.arguments, "remote control request arguments");
+  const initializedRuntime = context.internalRuntimeSnapshotLoader
+    ? await context.internalRuntimeSnapshotLoader.initialize({
+        vaultResolver: vaultResolverForAuthDir(context.authDir),
+      })
+    : undefined;
 
   if (request.command === "list") {
-    const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
-      vaultResolver: vaultBootstrapResolver,
-    });
+    const config =
+      initializedRuntime?.configWithSources ??
+      loadConfigWithSources(context.configPath, context.projectConfigPath, {
+        vaultResolver: vaultBootstrapResolver,
+      });
     return listCaplets(config, {
       includeDisabled: optionalBoolean(request.arguments, "includeDisabled") ?? false,
     });
@@ -111,7 +123,7 @@ async function dispatch(
   if (ENGINE_COMMANDS.has(request.command)) {
     const caplet = requiredString(request.arguments, "caplet");
     const toolRequest = requiredEngineRequest(request.arguments, request.command);
-    const engine = new CapletsEngine(context);
+    const engine = await createDispatchEngine(context, initializedRuntime);
     try {
       return await engine.execute(caplet, toolRequest);
     } finally {
@@ -167,7 +179,7 @@ async function dispatch(
   if (request.command === "complete_cli") {
     const shell = optionalString(request.arguments, "shell") ?? "bash";
     if (!completionShells.includes(shell as CompletionShell)) return [];
-    const engine = new CapletsEngine(context);
+    const engine = await createDispatchEngine(context, initializedRuntime);
     try {
       return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
     } finally {
@@ -227,6 +239,22 @@ async function dispatch(
   throw new CapletsError(
     "UNKNOWN_OPERATION",
     `Unsupported remote control command ${request.command}`,
+  );
+}
+
+async function createDispatchEngine(
+  context: RemoteControlDispatchContext,
+  initializedRuntime: ControlPlaneRuntimeSnapshot | undefined,
+): Promise<CapletsEngine> {
+  const { internalRuntimeSnapshotLoader, ...engineOptions } = context;
+  if (!internalRuntimeSnapshotLoader) return new CapletsEngine(engineOptions);
+  if (!initializedRuntime) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Control-plane runtime was not initialized");
+  }
+  return createInternalCapletsEngine(
+    engineOptions,
+    internalRuntimeSnapshotLoader,
+    initializedRuntime,
   );
 }
 

@@ -6,6 +6,7 @@ import type {
   GraphQlEndpointConfig,
 } from "./config";
 import type { SafeErrorSummary } from "./errors";
+import type { RuntimeCapletOwnership } from "./control-plane/snapshot";
 export { capabilityDescription } from "./capability-description";
 
 export type ServerStatus = "disabled" | "not_started" | "starting" | "available" | "unavailable";
@@ -17,6 +18,11 @@ export type CapletServerSummary = {
   disabled?: boolean;
   status: ServerStatus;
   lastError?: SafeErrorSummary;
+  owner?: "sql" | "filesystem" | undefined;
+  source?: RuntimeCapletOwnership["source"] | undefined;
+  shadowed?: boolean | undefined;
+  runtimeStatus?: RuntimeCapletOwnership["runtimeStatus"] | undefined;
+  provenance?: RuntimeOwnershipProvenance | undefined;
 };
 
 export type CapletServerDetail = {
@@ -74,6 +80,11 @@ export type CapletServerDetail = {
         source: "configPath" | "capletsRoot" | "both";
         toolCacheTtlMs: number;
       };
+  owner?: "sql" | "filesystem" | undefined;
+  source?: RuntimeCapletOwnership["source"] | undefined;
+  shadowed?: boolean | undefined;
+  runtimeStatus?: RuntimeCapletOwnership["runtimeStatus"] | undefined;
+  provenance?: RuntimeOwnershipProvenance | undefined;
 };
 
 export class ServerRegistry {
@@ -82,9 +93,14 @@ export class ServerRegistry {
     string,
     { status: ServerStatus; lastError?: SafeErrorSummary }
   >();
+  private readonly ownership: Readonly<Record<string, RuntimeCapletOwnership>>;
 
-  constructor(config: CapletsConfig) {
+  constructor(
+    config: CapletsConfig,
+    ownership: Readonly<Record<string, RuntimeCapletOwnership>> = {},
+  ) {
     this.config = config;
+    this.ownership = ownership;
     for (const server of this.allCaplets()) {
       this.statuses.set(server.server, { status: server.disabled ? "disabled" : "not_started" });
     }
@@ -122,6 +138,21 @@ export class ServerRegistry {
     return this.statuses.get(serverId)?.status ?? "not_started";
   }
 
+  runtimeOwnership(serverId: string): RuntimeCapletOwnership | undefined {
+    return this.ownership[serverId];
+  }
+
+  withRuntimeMetadata(
+    config: CapletsConfig,
+    ownership: Readonly<Record<string, RuntimeCapletOwnership>>,
+  ): ServerRegistry {
+    const next = new ServerRegistry(config, ownership);
+    for (const [serverId, status] of this.statuses) {
+      if (next.statuses.has(serverId)) next.statuses.set(serverId, status);
+    }
+    return next;
+  }
+
   summary(server: CapletConfig): CapletServerSummary {
     const status = this.statuses.get(server.server);
     return {
@@ -131,6 +162,7 @@ export class ServerRegistry {
       ...(server.disabled ? { disabled: true } : {}),
       status: status?.status ?? (server.disabled ? "disabled" : "not_started"),
       ...(status?.lastError ? { lastError: status.lastError } : {}),
+      ...ownershipSummary(this.ownership[server.server]),
     };
   }
 
@@ -142,6 +174,7 @@ export class ServerRegistry {
       description: server.description,
       ...(server.tags ? { tags: server.tags } : {}),
       backend,
+      ...ownershipSummary(this.ownership[server.server]),
     };
   }
 
@@ -156,6 +189,27 @@ export class ServerRegistry {
       ...Object.values(this.config.capletSets),
     ];
   }
+}
+
+type RuntimeOwnershipProvenance = NonNullable<
+  RuntimeCapletOwnership["underlyingSql"]
+>["provenance"];
+
+function ownershipSummary(
+  ownership: RuntimeCapletOwnership | undefined,
+): Pick<CapletServerSummary, "owner" | "source" | "shadowed" | "runtimeStatus" | "provenance"> {
+  if (!ownership) return {};
+  const sqlLayer =
+    ownership.owner === "sql"
+      ? ownership.shadowChain.find((layer) => layer.owner === "sql")
+      : ownership.underlyingSql;
+  return {
+    owner: ownership.owner,
+    source: ownership.source,
+    shadowed: Boolean(ownership.underlyingSql && ownership.owner === "filesystem"),
+    runtimeStatus: ownership.runtimeStatus,
+    ...(sqlLayer?.provenance ? { provenance: sqlLayer.provenance } : {}),
+  };
 }
 
 function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {

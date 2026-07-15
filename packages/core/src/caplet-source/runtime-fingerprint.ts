@@ -14,6 +14,8 @@ const HOST_DOMAIN = "caplets.runtime-fingerprint.host.v1";
 const INPUT_DOMAIN = "caplets.runtime-fingerprint.input.v1";
 const NESTED_INPUT_DOMAIN = "caplets.runtime-fingerprint.nested-input.v1";
 const RESOLVED_EXECUTION_DOMAIN = "caplets.runtime-fingerprint.resolved-execution.v1";
+const BOOTSTRAP_DOMAIN = "caplets.runtime-fingerprint.bootstrap.v1";
+const EFFECTIVE_RUNTIME_DOMAIN = "caplets.runtime-fingerprint.effective-runtime.v1";
 const RUNTIME_BACKEND_KEYS = [
   "mcpServers",
   "openapiEndpoints",
@@ -89,6 +91,18 @@ export type RuntimeFingerprintSnapshot = {
   valid: boolean;
 };
 
+export type BootstrapFingerprintSnapshot = Readonly<{
+  version: typeof FINGERPRINT_VERSION;
+  fingerprint: string;
+}>;
+
+export type BootstrapFingerprintInput = Readonly<{
+  filesystemInputs: readonly unknown[];
+  resolvedRuntimeInputs: unknown;
+  hiddenCommitments: readonly string[];
+  providerVersions: Readonly<Record<string, string | number>>;
+}>;
+
 type FingerprintConfig = CapletsConfig & {
   telemetry?: boolean | undefined;
   serve?:
@@ -117,6 +131,33 @@ export function resolvedExecutionFingerprintForConfig(config: CapletsConfig): st
   return domainHash(RESOLVED_EXECUTION_DOMAIN, {
     version: FINGERPRINT_VERSION,
     config,
+  });
+}
+
+/**
+ * Fingerprints the deployment-owned bootstrap projection without retaining any hidden
+ * commitment or resolved secret material in the returned snapshot.
+ */
+export function createBootstrapFingerprintSnapshot(
+  input: BootstrapFingerprintInput,
+): BootstrapFingerprintSnapshot {
+  assertCanonicalRuntimeInput(input.filesystemInputs);
+  assertCanonicalRuntimeInput(input.resolvedRuntimeInputs);
+  assertCanonicalRuntimeInput(input.providerVersions);
+  const fingerprint = domainHash(BOOTSTRAP_DOMAIN, {
+    version: FINGERPRINT_VERSION,
+    filesystemInputs: canonicalBootstrapValue(input.filesystemInputs),
+    resolvedRuntimeInputs: canonicalBootstrapValue(input.resolvedRuntimeInputs),
+    hiddenCommitments: canonicalHiddenCommitments(input.hiddenCommitments),
+    providerVersions: canonicalFingerprintValue(input.providerVersions),
+  });
+  return Object.freeze({ version: FINGERPRINT_VERSION, fingerprint });
+}
+
+export function effectiveRuntimeFingerprintForConfig(config: CapletsConfig): string {
+  return domainHash(EFFECTIVE_RUNTIME_DOMAIN, {
+    version: FINGERPRINT_VERSION,
+    config: canonicalFingerprintValue(config),
   });
 }
 
@@ -465,7 +506,7 @@ function transformPaths(value: unknown, path: string[]): unknown {
       .filter(([, nested]) => nested !== undefined)
       .map(([key, nested]) => {
         const nextPath = [...path, key];
-        if (typeof nested === "string" && DECLARED_PATH_KEYS[key]) {
+        if (typeof nested === "string" && isDeclaredRuntimeLocalPathField(key)) {
           return [key, canonicalSemanticPath(nested, nextPath.join("."))];
         }
         return [key, transformPaths(nested, nextPath)];
@@ -473,14 +514,18 @@ function transformPaths(value: unknown, path: string[]): unknown {
   );
 }
 
-const DECLARED_PATH_KEYS: Record<string, true> = {
-  specPath: true,
-  discoveryPath: true,
-  schemaPath: true,
-  documentPath: true,
-  configPath: true,
-  capletsRoot: true,
-};
+const DECLARED_PATH_KEYS: ReadonlySet<string> = new Set([
+  "specPath",
+  "discoveryPath",
+  "schemaPath",
+  "documentPath",
+  "configPath",
+  "capletsRoot",
+]);
+
+export function isDeclaredRuntimeLocalPathField(value: string): boolean {
+  return DECLARED_PATH_KEYS.has(value);
+}
 
 function canonicalSemanticPath(value: string, label: string): string {
   if (
@@ -541,7 +586,7 @@ function normalizeNestedConfigPaths(
     if (!isRecord(entries)) continue;
     for (const value of Object.values(entries)) {
       if (!isRecord(value)) continue;
-      for (const key of Object.keys(DECLARED_PATH_KEYS)) {
+      for (const key of DECLARED_PATH_KEYS) {
         if (typeof value[key] === "string") value[key] = logicalJoin(base, value[key] as string);
       }
       if (backendKey === "graphqlEndpoints" && isRecord(value.operations)) {
@@ -737,6 +782,150 @@ function isAbsoluteHostPath(value: string): boolean {
 
 function compareDeclaredInputs(left: DeclaredInputSnapshot, right: DeclaredInputSnapshot): number {
   return left.logicalPath.localeCompare(right.logicalPath) || left.kind.localeCompare(right.kind);
+}
+
+function canonicalFingerprintValue(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\r\n?/gu, "\n").normalize("NFC");
+  if (Array.isArray(value)) return value.map(canonicalFingerprintValue);
+  if (!value || typeof value !== "object") return value;
+  const canonical: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))) {
+    const normalizedKey = key.normalize("NFC");
+    if (normalizedKey in canonical) {
+      throw new TypeError(`Canonical fingerprint key collision at ${normalizedKey}`);
+    }
+    canonical[normalizedKey] = canonicalFingerprintValue(nested);
+  }
+  return canonical;
+}
+
+function canonicalBootstrapValue(value: unknown, path: string[] = []): unknown {
+  if (path.length > 0 && isHiddenBootstrapPath(path)) return "<hidden>";
+  if (typeof value === "string") {
+    return sanitizeBootstrapString(value.replace(/\r\n?/gu, "\n").normalize("NFC"));
+  }
+  if (Array.isArray(value)) {
+    if (path.at(-1)?.toLowerCase() === "args") {
+      return canonicalBootstrapArguments(value, path);
+    }
+    return value.map((entry, index) => canonicalBootstrapValue(entry, [...path, String(index)]));
+  }
+  if (!value || typeof value !== "object") return value;
+  const canonical: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))) {
+    const normalizedKey = key.normalize("NFC");
+    if (normalizedKey in canonical) {
+      throw new TypeError(
+        `Canonical bootstrap key collision at ${[...path, normalizedKey].join(".")}`,
+      );
+    }
+    canonical[normalizedKey] = canonicalBootstrapValue(nested, [...path, normalizedKey]);
+  }
+  return canonical;
+}
+
+function canonicalHiddenCommitments(commitments: readonly string[]): string[] {
+  const canonical = commitments.map((commitment) => commitment.normalize("NFC").toLowerCase());
+  if (canonical.some((commitment) => !/^[a-f0-9]{64}$/u.test(commitment))) {
+    throw new TypeError("Hidden fingerprint commitments must be opaque SHA-256 values");
+  }
+  return [...new Set(canonical)].sort();
+}
+
+function canonicalBootstrapArguments(value: unknown[], path: string[]): unknown[] {
+  let previousWasSensitiveFlag = false;
+  return value.map((entry, index) => {
+    if (typeof entry !== "string") {
+      previousWasSensitiveFlag = false;
+      return canonicalBootstrapValue(entry, [...path, String(index)]);
+    }
+    if (previousWasSensitiveFlag) {
+      previousWasSensitiveFlag = false;
+      return "<hidden-argument>";
+    }
+    const inline =
+      /^(--?(?:password|passphrase|token|secret|credential|authorization|cookie|signature|api[-_]?key|access[-_]?key))=(.*)$/iu.exec(
+        entry,
+      );
+    if (inline) return `${inline[1]}=<hidden-argument>`;
+    previousWasSensitiveFlag =
+      /^--?(?:password|passphrase|token|secret|credential|authorization|cookie|signature|api[-_]?key|access[-_]?key)$/iu.test(
+        entry,
+      );
+    if (previousWasSensitiveFlag) return entry;
+    if (/^(?:authorization|cookie)\s*:|\bbearer\s+[^\s]+/iu.test(entry)) {
+      return "<hidden-argument>";
+    }
+    return sanitizeBootstrapString(entry);
+  });
+}
+
+function isHiddenBootstrapPath(path: readonly string[]): boolean {
+  const normalized = path.map((segment) => segment.toLowerCase());
+  const key = normalized.at(-1) ?? "";
+  const storageConnection =
+    normalized.some((segment) => /(?:postgres|database|storage|connection)/u.test(segment)) &&
+    /(?:url|uri|dsn|user|username)$/u.test(key);
+  const setupCommand =
+    key === "command" &&
+    normalized.includes("setup") &&
+    (normalized.includes("actions") ||
+      normalized.includes("commands") ||
+      normalized.includes("verify"));
+  return (
+    /(?:password|passphrase|token|secret|privatekey|credentials|credentialreference|connectionstring|databaseurl|authorization|cookie|signature|apikey|accesskey)/u.test(
+      key.replaceAll("-", ""),
+    ) ||
+    storageConnection ||
+    setupCommand
+  );
+}
+
+function sanitizeBootstrapString(value: string): string {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) return value;
+  try {
+    const url = new URL(value);
+    url.username = url.username ? "<hidden>" : "";
+    url.password = url.password ? "<hidden>" : "";
+    for (const key of url.searchParams.keys()) {
+      if (
+        /(?:password|passphrase|token|secret|credential|signature|api[-_]?key|access[-_]?key)/iu.test(
+          key,
+        )
+      ) {
+        url.searchParams.set(key, "<hidden>");
+      }
+    }
+    return url.href;
+  } catch {
+    return value;
+  }
+}
+
+function assertCanonicalRuntimeInput(value: unknown, path: readonly string[] = []): void {
+  if (typeof value === "string") {
+    if (value.normalize("NFC") !== value) {
+      throw new TypeError(`Bootstrap input is not NFC-normalized at ${path.join(".") || "<root>"}`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertCanonicalRuntimeInput(entry, [...path, String(index)]));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (key.normalize("NFC") !== key) {
+      throw new TypeError(
+        `Bootstrap input key is not NFC-normalized at ${[...path, key].join(".")}`,
+      );
+    }
+    assertCanonicalRuntimeInput(nested, [...path, key]);
+  }
 }
 
 function domainHash(domain: string, value: unknown): string {

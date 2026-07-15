@@ -114,7 +114,78 @@ function entityChecks(
     checks.push(
       check(
         "cp_host_setting_typed_value_check",
-        sql`${key} = 'native.daemon-url' AND json_extract(${value}, '$.source') = 'setup' AND json_type(${value}, '$.url') = 'text'`,
+        sql`(
+          (
+            ${key} = 'native.daemon-url'
+            AND json_type(${value}, '$') = 'object'
+            AND json_extract(${value}, '$.source') = 'setup'
+            AND json_type(${value}, '$.url') = 'text'
+            AND json_remove(${value}, '$.source', '$.url') = '{}'
+          )
+          OR (${key} = 'telemetry' AND json_type(${value}, '$') IN ('true', 'false'))
+          OR (
+            ${key} IN (
+              'options.defaultSearchLimit',
+              'options.exposureDiscoveryTimeoutMs',
+              'options.completion.discoveryTimeoutMs',
+              'options.completion.overallTimeoutMs'
+            )
+            AND json_type(${value}, '$') = 'integer'
+            AND json_extract(${value}, '$') > 0
+          )
+          OR (
+            ${key} = 'options.maxSearchLimit'
+            AND json_type(${value}, '$') = 'integer'
+            AND json_extract(${value}, '$') BETWEEN 1 AND 50
+          )
+          OR (
+            ${key} = 'options.exposureDiscoveryConcurrency'
+            AND json_type(${value}, '$') = 'integer'
+            AND json_extract(${value}, '$') BETWEEN 1 AND 32
+          )
+          OR (
+            ${key} IN (
+              'options.completion.cacheTtlMs',
+              'options.completion.negativeCacheTtlMs'
+            )
+            AND json_type(${value}, '$') = 'integer'
+            AND json_extract(${value}, '$') >= 0
+          )
+          OR (
+            ${key} = 'options.exposure'
+            AND json_type(${value}, '$') = 'text'
+            AND json_extract(${value}, '$') IN (
+              'direct',
+              'progressive',
+              'code_mode',
+              'direct_and_code_mode',
+              'progressive_and_code_mode'
+            )
+          )
+          OR (
+            ${key} = 'namespaceAliases'
+            AND json_type(${value}, '$') = 'object'
+            AND json_type(${value}, '$.upstreams') = 'object'
+            AND json_remove(${value}, '$.local', '$.upstreams') = '{}'
+            AND (
+              json_type(${value}, '$.local') IS NULL
+              OR (
+                json_type(${value}, '$.local') = 'text'
+                AND length(json_extract(${value}, '$.local')) BETWEEN 1 AND 32
+                AND substr(json_extract(${value}, '$.local'), 1, 1) GLOB '[a-z]'
+                AND NOT json_extract(${value}, '$.local') GLOB '*[^a-z0-9-]*'
+                AND (
+                  length(json_extract(${value}, '$.local')) = 1
+                  OR substr(json_extract(${value}, '$.local'), -1, 1) GLOB '[a-z0-9]'
+                )
+              )
+            )
+            AND json_extract(${value}, '$.upstreams') NOT GLOB '*:[^"]*'
+            AND json_extract(${value}, '$.upstreams') NOT GLOB '*:""*[},]'
+            AND json_extract(${value}, '$.upstreams') NOT GLOB '*:"[^a-z]*'
+            AND json_extract(${value}, '$.upstreams') NOT GLOB '*-"[},]*'
+          )
+        )`,
       ),
     );
   }

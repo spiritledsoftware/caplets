@@ -19,8 +19,9 @@ import {
   vaultStoreForAuthDir,
 } from "../config";
 import { version as packageJsonVersion } from "../../package.json";
-import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError, type CapletsErrorCode } from "../errors";
+import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
 import {
   createCurrentHostOperations,
   toCurrentHostSafeError,
@@ -2654,11 +2655,37 @@ export async function serveHttp(
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
 ): Promise<void> {
   const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
-  const engine = new CapletsEngine(remoteEngineOptions);
+  return startHttpService(
+    options,
+    remoteEngineOptions,
+    new CapletsEngine(remoteEngineOptions),
+    writeErr,
+  );
+}
+
+export async function serveInternalHttp(
+  options: HttpServeOptions,
+  engineOptions: CapletsEngineOptions,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+  writeErr: (value: string) => void = (value) => process.stderr.write(value),
+): Promise<void> {
+  const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
+  const engine = await createInternalCapletsEngine(remoteEngineOptions, loader);
+  return startHttpService(options, remoteEngineOptions, engine, writeErr, loader);
+}
+
+function startHttpService(
+  options: HttpServeOptions,
+  remoteEngineOptions: CapletsEngineOptions,
+  engine: CapletsEngine,
+  writeErr: (value: string) => void,
+  loader?: ControlPlaneRuntimeSnapshotLoader,
+): void {
   const app = createHttpServeApp(options, engine, {
     writeErr,
     control: {
       ...remoteEngineOptions,
+      ...(loader ? { internalRuntimeSnapshotLoader: loader } : {}),
       projectCapletsRoot: projectCapletsRootForEngineOptions(remoteEngineOptions),
       globalCapletsRoot: resolveCapletsRoot(remoteEngineOptions.configPath),
       globalLockfilePath: defaultCapletsLockfilePath(),
@@ -2683,7 +2710,6 @@ export async function serveHttp(
       writeErr(`Auth: ${authDescription(options)}\n`);
     },
   );
-
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
 
@@ -2698,7 +2724,49 @@ export async function serveHttpWithSessionFactory(
   engineOptions: CapletsEngineOptions = {},
 ): Promise<void> {
   const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
-  const engine = new CapletsEngine(remoteEngineOptions);
+  return startHttpSessionService(
+    options,
+    createSession,
+    writeErr,
+    io,
+    remoteEngineOptions,
+    new CapletsEngine(remoteEngineOptions),
+  );
+}
+
+export async function serveInternalHttpWithSessionFactory(
+  options: HttpServeOptions,
+  createSession: HttpMcpSessionFactory,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+  writeErr: (value: string) => void = (value) => process.stderr.write(value),
+  io: Pick<
+    HttpServeIo,
+    "attachSessionFactory" | "defaultAttachSessionFactory" | "exposeAttach"
+  > = {},
+  engineOptions: CapletsEngineOptions = {},
+): Promise<void> {
+  const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
+  const engine = await createInternalCapletsEngine(remoteEngineOptions, loader);
+  return startHttpSessionService(
+    options,
+    createSession,
+    writeErr,
+    io,
+    remoteEngineOptions,
+    engine,
+    loader,
+  );
+}
+
+function startHttpSessionService(
+  options: HttpServeOptions,
+  createSession: HttpMcpSessionFactory,
+  writeErr: (value: string) => void,
+  io: Pick<HttpServeIo, "attachSessionFactory" | "defaultAttachSessionFactory" | "exposeAttach">,
+  remoteEngineOptions: CapletsEngineOptions,
+  engine: CapletsEngine,
+  loader?: ControlPlaneRuntimeSnapshotLoader,
+): void {
   const app = createHttpServeApp(options, engine, {
     writeErr,
     exposeAttach: io.exposeAttach ?? false,
@@ -2709,6 +2777,7 @@ export async function serveHttpWithSessionFactory(
       : {}),
     control: {
       ...remoteEngineOptions,
+      ...(loader ? { internalRuntimeSnapshotLoader: loader } : {}),
       projectCapletsRoot: projectCapletsRootForEngineOptions(remoteEngineOptions),
       globalCapletsRoot: resolveCapletsRoot(remoteEngineOptions.configPath),
       globalLockfilePath: defaultCapletsLockfilePath(),
@@ -2732,7 +2801,6 @@ export async function serveHttpWithSessionFactory(
       writeErr(`Auth: ${authDescription(options)}\n`);
     },
   );
-
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
 

@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { CapletSetManager } from "../src/caplet-sets";
 import { parseConfig } from "../src/config";
@@ -371,7 +372,7 @@ describe("CapletSetManager", () => {
     const originalCloseChild = target.closeChild.bind(manager);
     target.closeChild = async (serverId: string) => {
       closeCalls += 1;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await delay(25);
       await originalCloseChild(serverId);
     };
 
@@ -397,13 +398,19 @@ describe("CapletSetManager", () => {
     const manager = new CapletSetManager(new ServerRegistry(config));
 
     const target = manager as unknown as {
-      loadChildRuntime: (nextConfig: typeof caplet, force: boolean) => Promise<unknown>;
+      loadChildRuntime: (
+        nextConfig: typeof caplet,
+        force: boolean,
+        generation: number,
+        invalidationGeneration: number,
+        configFingerprint: string,
+      ) => Promise<unknown>;
       closeChild: (serverId: string) => Promise<void>;
     };
     const originalLoadChildRuntime = target.loadChildRuntime.bind(manager);
-    target.loadChildRuntime = async (nextConfig, force) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      return await originalLoadChildRuntime(nextConfig, force);
+    target.loadChildRuntime = async (...args) => {
+      await delay(25);
+      return await originalLoadChildRuntime(...args);
     };
 
     let closeCalls = 0;
@@ -437,18 +444,27 @@ describe("CapletSetManager", () => {
     const manager = new CapletSetManager(new ServerRegistry(config));
 
     const target = manager as unknown as {
-      loadChildRuntime: (nextConfig: typeof caplet, force: boolean) => Promise<unknown>;
+      loadChildRuntime: (
+        nextConfig: typeof caplet,
+        force: boolean,
+        generation: number,
+        invalidationGeneration: number,
+        configFingerprint: string,
+      ) => Promise<unknown>;
       children: Map<string, unknown>;
     };
     const originalLoadChildRuntime = target.loadChildRuntime.bind(manager);
-    target.loadChildRuntime = async (nextConfig, force) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      return await originalLoadChildRuntime(nextConfig, force);
+    target.loadChildRuntime = async (...args) => {
+      await delay(25);
+      return await originalLoadChildRuntime(...args);
     };
 
-    const refresh = manager.listTools(caplet);
+    const refreshResult = manager.listTools(caplet).then(
+      () => "resolved",
+      () => "rejected",
+    );
     manager.invalidate(caplet.server);
-    await refresh;
+    expect(await refreshResult).toBe("rejected");
     await Promise.resolve();
 
     expect(target.children.has(caplet.server)).toBe(false);

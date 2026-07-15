@@ -450,7 +450,12 @@ export type CapletsConfig = {
   capletSets: Record<string, CapletSetConfig>;
 };
 
-export type ConfigSourceKind = "global-config" | "global-file" | "project-config" | "project-file";
+export type ConfigSourceKind =
+  | "sql"
+  | "global-config"
+  | "global-file"
+  | "project-config"
+  | "project-file";
 
 export type ConfigSource = {
   kind: ConfigSourceKind;
@@ -461,6 +466,8 @@ export type ConfigWithSources = {
   config: CapletsConfig;
   sources: Record<string, ConfigSource>;
   shadows: Record<string, ConfigSource[]>;
+  settingSources?: Record<string, ConfigSource> | undefined;
+  settingShadows?: Record<string, ConfigSource[]> | undefined;
   runtimeFingerprint?: RuntimeFingerprintSnapshot | undefined;
 };
 
@@ -738,6 +745,69 @@ const namespaceAliasesSchema = z
     }
   })
   .describe("Source-level namespace aliases for hash-qualified Caplet IDs.");
+
+const mutablePositiveIntegerSchema = z.number().int().positive();
+const mutableNonNegativeIntegerSchema = z.number().int().nonnegative();
+
+/**
+ * SQL runtime composition accepts only this deliberately small host-setting surface. Static
+ * deployment, storage, credential, backend, catalog, tool, and project fields never cross it.
+ */
+export const MutableHostSettingSchema = z.discriminatedUnion("key", [
+  z.object({ key: z.literal("telemetry"), value: z.boolean() }).strict(),
+  z
+    .object({
+      key: z.literal("options.defaultSearchLimit"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.maxSearchLimit"),
+      value: mutablePositiveIntegerSchema.max(50),
+    })
+    .strict(),
+  z.object({ key: z.literal("options.exposure"), value: exposureSchema }).strict(),
+  z
+    .object({
+      key: z.literal("options.exposureDiscoveryTimeoutMs"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.exposureDiscoveryConcurrency"),
+      value: mutablePositiveIntegerSchema.max(32),
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.discoveryTimeoutMs"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.overallTimeoutMs"),
+      value: mutablePositiveIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.cacheTtlMs"),
+      value: mutableNonNegativeIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal("options.completion.negativeCacheTtlMs"),
+      value: mutableNonNegativeIntegerSchema,
+    })
+    .strict(),
+  z.object({ key: z.literal("namespaceAliases"), value: namespaceAliasesSchema }).strict(),
+]);
+
+export type MutableHostSetting = z.infer<typeof MutableHostSettingSchema>;
 
 const publicServerSchema = z
   .object({
@@ -1243,7 +1313,7 @@ type ConfigSchemaGraphQlEndpointValue = z.infer<typeof normalizedGraphQlEndpoint
 type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
-type ConfigInput = {
+export type RuntimeConfigInput = {
   telemetry?: unknown;
   serve?: unknown;
   namespaceAliases?: unknown;
@@ -1256,6 +1326,8 @@ type ConfigInput = {
   capletSets?: Record<string, unknown>;
   [key: string]: unknown;
 };
+
+type ConfigInput = RuntimeConfigInput;
 
 const CAPLET_BACKEND_KEYS = [
   "mcpServers",
@@ -2054,6 +2126,52 @@ export function loadConfigWithSources(
   );
 }
 
+/**
+ * Reads the four filesystem layers without flattening them. SQL composition uses this internal
+ * seam so every reload rereads both host and project sources before publishing a generation.
+ */
+export function loadRuntimeConfigLayers(
+  path = resolveConfigPath(),
+  projectPath = resolveProjectConfigPath(),
+): RuntimeConfigLayerInput[] {
+  const userConfig = existsSync(path) ? readPublicConfigInput(path) : undefined;
+  const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
+  const projectConfig = existsSync(projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(
+        stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+        projectPath,
+      )
+    : undefined;
+  const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
+  const projectCaplets = projectCapletsRoot
+    ? loadCapletFilesWithPaths(projectCapletsRoot)
+    : undefined;
+  return [
+    ...(userConfig
+      ? [{ input: userConfig, source: { kind: "global-config" as const, path } }]
+      : []),
+    ...(userCaplets
+      ? [
+          {
+            input: userCaplets.config,
+            source: { kind: "global-file" as const, path: userCaplets.paths },
+          },
+        ]
+      : []),
+    ...(projectConfig
+      ? [{ input: projectConfig, source: { kind: "project-config" as const, path: projectPath } }]
+      : []),
+    ...(projectCaplets
+      ? [
+          {
+            input: projectCaplets.config,
+            source: { kind: "project-file" as const, path: projectCaplets.paths },
+          },
+        ]
+      : []),
+  ];
+}
+
 export function loadGlobalConfig(
   path = resolveConfigPath(),
   options: Pick<ConfigParseOptions, "vaultResolver"> = {},
@@ -2157,6 +2275,84 @@ function buildConfigWithSources(
       redactSecrets(error),
     );
   }
+}
+
+/**
+ * Internal SQL activation composer. Unlike the legacy loader, it merges the mutable setting
+ * surface field-by-field while preserving every Caplet and setting shadow source.
+ */
+export function composeRuntimeConfigLayers(
+  layers: readonly RuntimeConfigLayerInput[],
+  options: Pick<ConfigParseOptions, "vaultResolver"> & {
+    fingerprintDeclaredInputs?: boolean;
+  } = {},
+): ConfigWithSources {
+  try {
+    const merged = mergeRuntimeConfigInputsWithSources(layers);
+    const config = parseConfig(merged.input, {
+      sources: merged.sources,
+      vaultResolver: options.vaultResolver ?? defaultVaultResolver(),
+    });
+    const runtimeFingerprint =
+      options.fingerprintDeclaredInputs === false
+        ? undefined
+        : createLoadedRuntimeFingerprint(merged.input, merged.sources);
+    if (runtimeFingerprint) runtimeFingerprintByConfig.set(config, runtimeFingerprint);
+    return {
+      config,
+      sources: merged.sources,
+      shadows: merged.shadows,
+      settingSources: merged.settingSources,
+      settingShadows: merged.settingShadows,
+      ...(runtimeFingerprint ? { runtimeFingerprint } : {}),
+    };
+  } catch (error) {
+    if (error instanceof CapletsError) throw error;
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Layered Caplets runtime configuration is invalid",
+      redactSecrets(error),
+    );
+  }
+}
+
+const declaredInputFingerprintCache = new WeakMap<
+  RuntimeConfigLayerInput,
+  RuntimeFingerprintSnapshot
+>();
+
+export function runtimeFingerprintsForConfigLayers(
+  layers: readonly RuntimeConfigLayerInput[],
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
+): readonly RuntimeFingerprintSnapshot[] {
+  return layers.map((layer) => {
+    const cached = declaredInputFingerprintCache.get(layer);
+    if (cached) return cached;
+    const merged = mergeRuntimeConfigInputsWithSources([layer]);
+    const declaredInputOnly: ConfigInput = {
+      ...(merged.input.version === undefined ? {} : { version: merged.input.version }),
+      ...(merged.input.mcpServers ? { mcpServers: merged.input.mcpServers } : {}),
+      ...(merged.input.openapiEndpoints ? { openapiEndpoints: merged.input.openapiEndpoints } : {}),
+      ...(merged.input.googleDiscoveryApis
+        ? { googleDiscoveryApis: merged.input.googleDiscoveryApis }
+        : {}),
+      ...(merged.input.graphqlEndpoints ? { graphqlEndpoints: merged.input.graphqlEndpoints } : {}),
+      ...(merged.input.httpApis ? { httpApis: merged.input.httpApis } : {}),
+      ...(merged.input.cliTools ? { cliTools: merged.input.cliTools } : {}),
+      ...(merged.input.capletSets ? { capletSets: merged.input.capletSets } : {}),
+    };
+    const resolvedDeclaredInputOnly = interpolateConfig(declaredInputOnly, [], {
+      vaultResolver: options.vaultResolver ?? defaultVaultResolver(),
+    });
+    const fingerprint = createLoadedRuntimeFingerprint(resolvedDeclaredInputOnly, merged.sources);
+    const hasDeclaredInputs = Object.values(fingerprint.caplets).some(
+      (caplet) => caplet.declaredInputs.length > 0,
+    );
+    if (!hasDeclaredInputs && !JSON.stringify(layer.input).includes("$")) {
+      declaredInputFingerprintCache.set(layer, fingerprint);
+    }
+    return fingerprint;
+  });
 }
 
 function createLoadedRuntimeFingerprint(
@@ -2897,14 +3093,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-type ConfigSourceInput =
+export type RuntimeConfigSourceInput =
   | { kind: ConfigSourceKind; path: string }
   | { kind: ConfigSourceKind; path: Record<string, string> };
 
-type ConfigInputWithSource = {
-  input: ConfigInput | undefined;
-  source: ConfigSourceInput;
+type ConfigSourceInput = RuntimeConfigSourceInput;
+
+export type RuntimeConfigLayerInput = {
+  input: RuntimeConfigInput | undefined;
+  source: RuntimeConfigSourceInput;
 };
+
+type ConfigInputWithSource = RuntimeConfigLayerInput;
 
 export function loadIsolatedConfig(options: {
   configPath?: string;
@@ -3266,6 +3466,53 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
   return merged;
 }
 
+function mergeRuntimeConfigInputs(
+  ...inputs: Array<ConfigInput | undefined>
+): ConfigInput | undefined {
+  let merged: ConfigInput | undefined;
+  for (const input of inputs) {
+    if (input === undefined) continue;
+    const leftOptions = isPlainObject(merged?.options) ? merged.options : undefined;
+    const rightOptions = isPlainObject(input.options) ? input.options : undefined;
+    const leftCompletion = isPlainObject(merged?.completion) ? merged.completion : undefined;
+    const rightCompletion = isPlainObject(input.completion) ? input.completion : undefined;
+    merged = {
+      ...merged,
+      ...input,
+      telemetry: input.telemetry === undefined ? merged?.telemetry : input.telemetry,
+      serve: input.serve === undefined ? merged?.serve : input.serve,
+      defaultSearchLimit:
+        input.defaultSearchLimit === undefined
+          ? merged?.defaultSearchLimit
+          : input.defaultSearchLimit,
+      maxSearchLimit:
+        input.maxSearchLimit === undefined ? merged?.maxSearchLimit : input.maxSearchLimit,
+      options:
+        leftOptions || rightOptions
+          ? { ...leftOptions, ...rightOptions }
+          : input.options === undefined
+            ? merged?.options
+            : input.options,
+      completion:
+        leftCompletion || rightCompletion
+          ? { ...leftCompletion, ...rightCompletion }
+          : input.completion === undefined
+            ? merged?.completion
+            : input.completion,
+      namespaceAliases:
+        input.namespaceAliases === undefined ? merged?.namespaceAliases : input.namespaceAliases,
+      mcpServers: { ...merged?.mcpServers, ...input.mcpServers },
+      openapiEndpoints: { ...merged?.openapiEndpoints, ...input.openapiEndpoints },
+      googleDiscoveryApis: { ...merged?.googleDiscoveryApis, ...input.googleDiscoveryApis },
+      graphqlEndpoints: { ...merged?.graphqlEndpoints, ...input.graphqlEndpoints },
+      httpApis: { ...merged?.httpApis, ...input.httpApis },
+      cliTools: { ...merged?.cliTools, ...input.cliTools },
+      capletSets: { ...merged?.capletSets, ...input.capletSets },
+    };
+  }
+  return merged;
+}
+
 function mergeNamespaceAliases(left: unknown, right: unknown): Record<string, unknown> | undefined {
   if (right !== undefined && !isPlainObject(right)) {
     return right as Record<string, unknown>;
@@ -3317,6 +3564,109 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
   }
 
   return { input: merged, sources, shadows };
+}
+
+function mergeRuntimeConfigInputsWithSources(layers: readonly RuntimeConfigLayerInput[]): {
+  input: ConfigInput;
+  sources: Record<string, ConfigSource>;
+  shadows: Record<string, ConfigSource[]>;
+  settingSources: Record<string, ConfigSource>;
+  settingShadows: Record<string, ConfigSource[]>;
+} {
+  let merged: ConfigInput = {};
+  const sources: Record<string, ConfigSource> = {};
+  const shadows: Record<string, ConfigSource[]> = {};
+  const settingSources: Record<string, ConfigSource> = {};
+  const settingShadows: Record<string, ConfigSource[]> = {};
+
+  for (const entry of layers) {
+    if (entry.input === undefined) continue;
+    if (entry.source.kind === "sql") assertSqlRuntimeConfigInput(entry.input);
+    const entryInput =
+      entry.source.kind === "project-config"
+        ? stripProjectServeConfig(
+            entry.input,
+            typeof entry.source.path === "string" ? entry.source.path : "",
+          )
+        : entry.source.kind.endsWith("-file")
+          ? stripUserOnlyConfig(entry.input)
+          : entry.input;
+    const overriddenIds = new Set(capletIds(entryInput));
+    for (const id of overriddenIds) {
+      const source = sourceForId(entry.source, id);
+      if (sources[id]) shadows[id] = [...(shadows[id] ?? []), sources[id]];
+      sources[id] = source;
+    }
+    if (overriddenIds.size > 0) merged = removeCapletIds(merged, overriddenIds);
+    for (const key of mutableSettingPaths(entryInput)) {
+      const source = sourceForSetting(entry.source);
+      if (settingSources[key]) {
+        settingShadows[key] = [...(settingShadows[key] ?? []), settingSources[key]];
+      }
+      settingSources[key] = source;
+    }
+    merged = mergeRuntimeConfigInputs(merged, entryInput) ?? {};
+  }
+  return { input: merged, sources, shadows, settingSources, settingShadows };
+}
+
+function assertSqlRuntimeConfigInput(input: ConfigInput): void {
+  const allowed = new Set<string>([
+    "$schema",
+    "version",
+    "telemetry",
+    "defaultSearchLimit",
+    "maxSearchLimit",
+    "options",
+    "completion",
+    "namespaceAliases",
+    ...CAPLET_BACKEND_KEYS,
+  ]);
+  for (const key of Object.keys(input)) {
+    if (!allowed.has(key)) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `SQL runtime input cannot own deployment setting ${key}`,
+      );
+    }
+  }
+  if (input.options !== undefined) {
+    if (!isPlainObject(input.options)) {
+      throw new CapletsError("CONFIG_INVALID", "SQL runtime options must be an object");
+    }
+    const mutableOptions = new Set([
+      "exposure",
+      "exposureDiscoveryTimeoutMs",
+      "exposureDiscoveryConcurrency",
+    ]);
+    for (const key of Object.keys(input.options)) {
+      if (!mutableOptions.has(key)) {
+        throw new CapletsError("CONFIG_INVALID", `SQL runtime input cannot own options.${key}`);
+      }
+    }
+  }
+}
+
+function mutableSettingPaths(input: ConfigInput): string[] {
+  const paths: string[] = [];
+  if (input.telemetry !== undefined) paths.push("telemetry");
+  if (input.defaultSearchLimit !== undefined) paths.push("options.defaultSearchLimit");
+  if (input.maxSearchLimit !== undefined) paths.push("options.maxSearchLimit");
+  if (isPlainObject(input.options)) {
+    for (const key of Object.keys(input.options)) paths.push(`options.${key}`);
+  }
+  if (isPlainObject(input.completion)) {
+    for (const key of Object.keys(input.completion)) paths.push(`options.completion.${key}`);
+  }
+  if (input.namespaceAliases !== undefined) paths.push("namespaceAliases");
+  return paths;
+}
+
+function sourceForSetting(source: ConfigSourceInput): ConfigSource {
+  return {
+    kind: source.kind,
+    path: typeof source.path === "string" ? source.path : "",
+  };
 }
 
 function stripUserOnlyConfig(input: ConfigInput): ConfigInput {
@@ -3373,6 +3723,21 @@ function removeCapletId(input: ConfigInput, id: string): ConfigInput {
     httpApis,
     cliTools,
     capletSets,
+  };
+}
+
+function removeCapletIds(input: ConfigInput, ids: ReadonlySet<string>): ConfigInput {
+  const retain = <T>(values: Record<string, T> | undefined): Record<string, T> =>
+    Object.fromEntries(Object.entries(values ?? {}).filter(([id]) => !ids.has(id)));
+  return {
+    ...input,
+    mcpServers: retain(input.mcpServers),
+    openapiEndpoints: retain(input.openapiEndpoints),
+    googleDiscoveryApis: retain(input.googleDiscoveryApis),
+    graphqlEndpoints: retain(input.graphqlEndpoints),
+    httpApis: retain(input.httpApis),
+    cliTools: retain(input.cliTools),
+    capletSets: retain(input.capletSets),
   };
 }
 

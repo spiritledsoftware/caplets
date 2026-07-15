@@ -41,7 +41,12 @@ type ChildRuntime = {
 
 export class CapletSetManager {
   private readonly children = new Map<string, ChildRuntime>();
-  private readonly childRefreshLocks = new Map<string, Promise<ChildRuntime>>();
+  private readonly childRefreshLocks = new Map<
+    string,
+    { generation: number; configFingerprint: string; promise: Promise<ChildRuntime> }
+  >();
+  private readonly invalidationGenerations = new Map<string, number>();
+  private registryGeneration = 0;
 
   constructor(
     private registry: ServerRegistry,
@@ -57,22 +62,19 @@ export class CapletSetManager {
 
   updateRegistry(registry: ServerRegistry): void {
     this.registry = registry;
+    this.registryGeneration += 1;
   }
 
   invalidate(serverId: string): void {
-    const pending = this.childRefreshLocks.get(serverId);
-    if (pending) {
-      void pending.then(
-        () => this.closeChild(serverId),
-        () => this.closeChild(serverId),
-      );
-      return;
-    }
+    this.invalidationGenerations.set(
+      serverId,
+      (this.invalidationGenerations.get(serverId) ?? 0) + 1,
+    );
     void this.closeChild(serverId);
   }
 
   async close(): Promise<void> {
-    await Promise.allSettled(this.childRefreshLocks.values());
+    await Promise.allSettled([...this.childRefreshLocks.values()].map(({ promise }) => promise));
     await Promise.allSettled(
       [...this.children.keys()].map((serverId) => this.closeChild(serverId)),
     );
@@ -173,20 +175,47 @@ export class CapletSetManager {
   }
 
   private async childRuntime(config: CapletSetConfig, force: boolean): Promise<ChildRuntime> {
+    const generation = this.registryGeneration;
+    const invalidationGeneration = this.invalidationGenerations.get(config.server) ?? 0;
+    const configFingerprint = JSON.stringify(config);
     const pending = this.childRefreshLocks.get(config.server);
-    if (pending) {
-      return pending;
+    if (
+      pending &&
+      pending.generation === generation &&
+      pending.configFingerprint === configFingerprint
+    ) {
+      return pending.promise;
     }
 
-    const refresh = this.loadChildRuntime(config, force).finally(() => {
-      this.childRefreshLocks.delete(config.server);
+    const refresh = this.loadChildRuntime(
+      config,
+      force,
+      generation,
+      invalidationGeneration,
+      configFingerprint,
+    ).finally(() => {
+      if (this.childRefreshLocks.get(config.server)?.promise === refresh) {
+        this.childRefreshLocks.delete(config.server);
+      }
     });
-    this.childRefreshLocks.set(config.server, refresh);
+    this.childRefreshLocks.set(config.server, { generation, configFingerprint, promise: refresh });
     return await refresh;
   }
 
-  private async loadChildRuntime(config: CapletSetConfig, force: boolean): Promise<ChildRuntime> {
+  private async loadChildRuntime(
+    config: CapletSetConfig,
+    force: boolean,
+    generation: number,
+    invalidationGeneration: number,
+    configFingerprint: string,
+  ): Promise<ChildRuntime> {
     const cacheKey = sourceKey(config);
+    if (!this.isCurrentRefresh(config, generation, invalidationGeneration, configFingerprint)) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        `${config.server} Caplet set refresh was superseded`,
+      );
+    }
     const existing = this.children.get(config.server);
     const now = Date.now();
     const isFresh =
@@ -255,7 +284,7 @@ export class CapletSetManager {
           caplets: capletSets,
         }),
         cacheKey,
-        configFingerprint: JSON.stringify(config),
+        configFingerprint,
         loadedAt: now,
       };
     } catch (error) {
@@ -265,21 +294,48 @@ export class CapletSetManager {
       throw error;
     }
 
+    if (!this.isCurrentRefresh(config, generation, invalidationGeneration, configFingerprint)) {
+      await closeChildRuntime(child);
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        `${config.server} Caplet set refresh was superseded`,
+      );
+    }
     if (existing) {
       await this.closeChild(config.server);
+      if (!this.isCurrentRefresh(config, generation, invalidationGeneration, configFingerprint)) {
+        await closeChildRuntime(child);
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          `${config.server} Caplet set refresh was superseded`,
+        );
+      }
     }
     this.children.set(config.server, child);
     this.registry.setStatus(config.server, "available");
     return child;
   }
 
+  private isCurrentRefresh(
+    config: CapletSetConfig,
+    generation: number,
+    invalidationGeneration: number,
+    configFingerprint: string,
+  ): boolean {
+    const current = this.registry.get(config.server);
+    return (
+      this.registryGeneration === generation &&
+      (this.invalidationGenerations.get(config.server) ?? 0) === invalidationGeneration &&
+      current?.backend === "caplets" &&
+      JSON.stringify(current) === configFingerprint
+    );
+  }
+
   private async closeChild(serverId: string): Promise<void> {
     const child = this.children.get(serverId);
     this.children.delete(serverId);
-    if (!child) {
-      return;
-    }
-    await Promise.allSettled([child.downstream.close(), child.capletSets.close()]);
+    if (!child) return;
+    await closeChildRuntime(child);
   }
 
   private toTool(caplet: CapletConfig): Tool {
@@ -289,6 +345,10 @@ export class CapletSetManager {
       inputSchema: generatedToolInputJsonSchema() as unknown as Tool["inputSchema"],
     };
   }
+}
+
+async function closeChildRuntime(child: ChildRuntime): Promise<void> {
+  await Promise.allSettled([child.downstream.close(), child.capletSets.close()]);
 }
 
 function sourceKey(config: CapletSetConfig): string {

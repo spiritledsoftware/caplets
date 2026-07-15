@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0004_condemned_cardiac",
+  "order": 4,
+  "dialect": "sqlite",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0004_condemned_cardiac.sql",
+    "sha256": "e787e7a321cb900e079a6a20ab88a0d385fd7e10ec359324fe1d2b856eba79f0"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 3
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0004_condemned_cardiac.down.sql",
+      "sha256": "56162514e3f966236baca83294590bb73d92379ebe220515ca0db7173931bc3e"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "1d9074b823578453127da642f578367aab30b734c0b9786d954d962499b67c8b"
+}

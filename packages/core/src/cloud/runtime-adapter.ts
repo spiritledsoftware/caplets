@@ -1,6 +1,7 @@
 import { runtimeFingerprintForConfig, type CapletConfig } from "../config";
-import { CapletsEngine } from "../engine";
+import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError } from "../errors";
+import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
 import { capletSetupContentHash } from "../setup/hash";
 import { LocalSetupStore } from "../setup/local-store";
 import { runCapletSetup } from "../setup/runner";
@@ -34,20 +35,23 @@ export function createCloudRuntimeAdapter(
   return new DefaultCloudRuntimeAdapter(options);
 }
 
+export async function createInternalCloudRuntimeAdapter(
+  options: CloudRuntimeAdapterOptions,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+): Promise<CloudRuntimeAdapter> {
+  const engine = await createInternalCapletsEngine(cloudEngineOptions(options), loader);
+  return new DefaultCloudRuntimeAdapter(options, engine);
+}
+
 class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
   private readonly engine: CapletsEngine;
   private readonly setupStore: LocalSetupStore;
 
-  constructor(private readonly options: CloudRuntimeAdapterOptions) {
-    this.engine = new CapletsEngine({
-      ...(options.configPath === undefined ? {} : { configPath: options.configPath }),
-      ...(options.projectConfigPath === undefined
-        ? {}
-        : { projectConfigPath: options.projectConfigPath }),
-      ...(options.authDir === undefined ? {} : { authDir: options.authDir }),
-      exposeLocalArtifactPaths: false,
-      watch: false,
-    });
+  constructor(
+    private readonly options: CloudRuntimeAdapterOptions,
+    engine?: CapletsEngine,
+  ) {
+    this.engine = engine ?? new CapletsEngine(cloudEngineOptions(options));
     this.setupStore = options.setupStore ?? new LocalSetupStore();
   }
 
@@ -170,6 +174,18 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
       ...(this.options.executionKind === "local-fallback" ? { fallback: true } : {}),
     };
   }
+}
+
+function cloudEngineOptions(options: CloudRuntimeAdapterOptions): CapletsEngineOptions {
+  return {
+    ...(options.configPath === undefined ? {} : { configPath: options.configPath }),
+    ...(options.projectConfigPath === undefined
+      ? {}
+      : { projectConfigPath: options.projectConfigPath }),
+    ...(options.authDir === undefined ? {} : { authDir: options.authDir }),
+    exposeLocalArtifactPaths: false,
+    watch: false,
+  };
 }
 
 function annotateExecution(result: unknown, execution: Record<string, unknown>): unknown {

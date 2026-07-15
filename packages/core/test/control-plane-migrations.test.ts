@@ -19,13 +19,23 @@ import {
   loadMigrationRegistry,
   type MigrationEnvironment,
 } from "../src/control-plane/dialect/migrations";
-import { openSqliteControlPlaneDialect } from "../src/control-plane/dialect/sqlite";
+import {
+  openSqliteControlPlaneDialect,
+  type SqliteControlPlaneDialect,
+} from "../src/control-plane/dialect/sqlite";
 import { stableJsonStringify } from "../src/stable-json";
-import { quoteSafeSqlIdentifier } from "../src/control-plane/schema/model-codec";
+import {
+  encodeCanonicalJson,
+  quoteSafeSqlIdentifier,
+} from "../src/control-plane/schema/model-codec";
 
 const require = createRequire(import.meta.url);
 const Database = require("better-sqlite3") as new (path: string) => {
-  prepare(sql: string): { get(...values: unknown[]): unknown; run(...values: unknown[]): unknown };
+  prepare(sql: string): {
+    all(...values: unknown[]): unknown[];
+    get(...values: unknown[]): unknown;
+    run(...values: unknown[]): unknown;
+  };
   close(): void;
 };
 const sourceAssetRoot = resolve(import.meta.dirname, "..", "drizzle");
@@ -39,6 +49,49 @@ const mutableTestManifestSchema = z
     manifestSha256: z.string(),
   })
   .passthrough();
+
+const validHostSettings: ReadonlyArray<readonly [key: string, value: unknown]> = [
+  ["native.daemon-url", { source: "setup", url: "http://127.0.0.1:3100/" }],
+  ["telemetry", false],
+  ["options.defaultSearchLimit", 9],
+  ["options.maxSearchLimit", 50],
+  ["options.exposure", "progressive_and_code_mode"],
+  ["options.exposureDiscoveryTimeoutMs", 1],
+  ["options.exposureDiscoveryConcurrency", 32],
+  ["options.completion.discoveryTimeoutMs", 1],
+  ["options.completion.overallTimeoutMs", 1],
+  ["options.completion.cacheTtlMs", 0],
+  ["options.completion.negativeCacheTtlMs", 0],
+  [
+    "namespaceAliases",
+    { local: "local-runtime", upstreams: { cloud: "remote", edge: "edge-runtime" } },
+  ],
+];
+
+const invalidHostSettings: ReadonlyArray<readonly [key: string, value: unknown]> = [
+  ["native.daemon-url", { source: "setup", url: "http://127.0.0.1:3100/", extra: true }],
+  ["telemetry", 0],
+  ["options.defaultSearchLimit", 0],
+  ["options.defaultSearchLimit", 1.5],
+  ["options.maxSearchLimit", 51],
+  ["options.exposure", "invalid"],
+  ["options.exposureDiscoveryTimeoutMs", 0],
+  ["options.exposureDiscoveryConcurrency", 33],
+  ["options.completion.discoveryTimeoutMs", 0],
+  ["options.completion.overallTimeoutMs", 0],
+  ["options.completion.cacheTtlMs", -1],
+  ["options.completion.negativeCacheTtlMs", -1],
+  ["namespaceAliases", []],
+  ["namespaceAliases", { local: "Invalid", upstreams: {} }],
+  ["namespaceAliases", { upstreams: [] }],
+  ["namespaceAliases", { upstreams: { cloud: 1 } }],
+  ["namespaceAliases", { upstreams: {}, unsupported: true }],
+  ["serve.storage", "sqlite"],
+  ["credentials.database", "secret"],
+  ["keys.provider", "file-v1"],
+  ["backend.caplets", {}],
+  ["project.root", "/workspace"],
+];
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -82,6 +135,107 @@ async function copiedAssets() {
   return root;
 }
 
+const sqliteHostSettingInsertSql =
+  "INSERT INTO cp_host_setting (" +
+  "model_version,id,logical_host_id,store_id,created_at,updated_at," +
+  "aggregate_version,authority_version,effective_version,security_version," +
+  "key,value,ownership,activation,effective,provenance_id,provenance_source_kind," +
+  "provenance_source,provenance_content_hash" +
+  ") VALUES (1,?,?,?,?,?,0,0,0,0,?,?,?,?,1,?,?,?,?)";
+
+function sqliteHostSettingValues(
+  storage: ResolvedSqliteStorage,
+  id: string,
+  key: string,
+  value: unknown,
+): unknown[] {
+  const now = "2026-07-14T00:00:00.000Z";
+  return [
+    id,
+    storage.logicalHostId,
+    storage.storeId,
+    now,
+    now,
+    key,
+    encodeCanonicalJson(value),
+    "sql",
+    "active",
+    `provenance:${id}`,
+    "runtime",
+    "{}",
+    "0".repeat(64),
+  ];
+}
+
+function insertSqliteHostSetting(
+  dialect: SqliteControlPlaneDialect,
+  storage: ResolvedSqliteStorage,
+  id: string,
+  key: string,
+  value: unknown,
+): void {
+  dialect.execute(sqliteHostSettingInsertSql, sqliteHostSettingValues(storage, id, key, value));
+}
+
+function insertDirectSqliteHostSetting(
+  databasePath: string,
+  storage: ResolvedSqliteStorage,
+  id: string,
+  key: string,
+  value: unknown,
+): void {
+  const database = new Database(databasePath);
+  try {
+    database
+      .prepare(sqliteHostSettingInsertSql)
+      .run(...sqliteHostSettingValues(storage, id, key, value));
+  } finally {
+    database.close();
+  }
+}
+
+function readDirectSqliteHostSettingKeys(
+  databasePath: string,
+  where = "",
+  parameters: readonly unknown[] = [],
+): unknown[] {
+  const database = new Database(databasePath);
+  try {
+    return database
+      .prepare(`SELECT key FROM cp_host_setting ${where} ORDER BY key`)
+      .all(...parameters);
+  } finally {
+    database.close();
+  }
+}
+
+async function insertPostgresHostSetting(
+  pool: PostgresPool,
+  id: string,
+  key: string,
+  value: unknown,
+): Promise<void> {
+  const now = "2026-07-14T00:00:00.000Z";
+  await pool.query(
+    `INSERT INTO caplets.cp_host_setting (
+      model_version,id,logical_host_id,store_id,created_at,updated_at,
+      aggregate_version,authority_version,effective_version,security_version,
+      key,value,ownership,activation,effective,provenance_id,provenance_source_kind,
+      provenance_source,provenance_content_hash
+    ) VALUES (1,$1,$2,$3,$4,$4,0,0,0,0,$5,$6::jsonb,'sql','active',true,$7,'runtime','{}'::jsonb,$8)`,
+    [
+      id,
+      logicalHostId,
+      storeId,
+      now,
+      key,
+      encodeCanonicalJson(value),
+      `provenance:${id}`,
+      "0".repeat(64),
+    ],
+  );
+}
+
 describe("control-plane migration registry and SQLite executor", () => {
   it("requires explicit host administration for the U6 contract migration", async () => {
     const fixture = await sqliteFixture();
@@ -104,7 +258,7 @@ describe("control-plane migration registry and SQLite executor", () => {
   it("migrates fresh/current databases idempotently, excludes a second writer, and rolls back", async () => {
     const fixture = await sqliteFixture();
     const environment = migrationEnvironment();
-    const dialect = await openSqliteControlPlaneDialect({
+    let dialect = await openSqliteControlPlaneDialect({
       storage: fixture.storage,
       environment,
       assetRoot: fixture.assetRoot,
@@ -115,6 +269,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       "0001_conscious_wilson_fisk",
       "0002_colorful_maverick",
       "0003_lazy_terrax",
+      "0004_condemned_cardiac",
     ]);
     expect(dialect.ready).toBe(true);
     expect(dialect.migrate()).toEqual([]);
@@ -123,22 +278,24 @@ describe("control-plane migration registry and SQLite executor", () => {
       ["table", "cp_%"],
     );
     expect(tables).toHaveLength(41);
-    expect(() =>
-      dialect.execute(
-        "INSERT INTO cp_host_setting (model_version,id,logical_host_id,store_id,created_at,updated_at,aggregate_version,authority_version,effective_version,security_version,key,value,ownership,activation,effective) VALUES (1,?,?,?,?,?,0,0,0,0,?,?,?,?,1)",
-        [
-          "setting-1",
-          fixture.storage.logicalHostId,
-          fixture.storage.storeId,
-          "2026-07-14T00:00:00.000Z",
-          "2026-07-14T00:00:00.000Z",
-          "serve.storage",
-          '{"source":"setup","url":"http://127.0.0.1:3100/"}',
-          "sql",
-          "active",
-        ],
-      ),
-    ).toThrow(/constraint/u);
+    for (const [index, [key, value]] of validHostSettings.entries()) {
+      insertSqliteHostSetting(dialect, fixture.storage, `valid-setting-${index}`, key, value);
+    }
+    const storedSettings = dialect.query<{ key: string; value: string }>(
+      "SELECT key, value FROM cp_host_setting ORDER BY key",
+    );
+    expect(storedSettings).toHaveLength(validHostSettings.length);
+    for (const [key, value] of validHostSettings) {
+      expect(storedSettings.find((row) => row.key === key)).toEqual({
+        key,
+        value: encodeCanonicalJson(value),
+      });
+    }
+    for (const [index, [key, value]] of invalidHostSettings.entries()) {
+      expect(() =>
+        insertSqliteHostSetting(dialect, fixture.storage, `invalid-setting-${index}`, key, value),
+      ).toThrow(/cp_host_setting_typed_value_check/u);
+    }
     dialect.execute("CREATE TABLE rebuild_me (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
     dialect.execute("INSERT INTO rebuild_me (id, value) VALUES (?, ?)", ["row-1", "preserved"]);
     dialect.rebuildTable({
@@ -170,6 +327,38 @@ describe("control-plane migration registry and SQLite executor", () => {
     const backupPath = join(fixture.root, "backup.sqlite3");
     await dialect.onlineBackup(backupPath);
     expect((await stat(backupPath)).size).toBeGreaterThan(0);
+    dialect.execute("DELETE FROM cp_host_setting WHERE key <> ?", ["native.daemon-url"]);
+    expect(dialect.rollbackLatest()).toBe("0004_condemned_cardiac");
+    await dialect.close();
+    expect(readDirectSqliteHostSettingKeys(fixture.databasePath)).toEqual([
+      { key: "native.daemon-url" },
+    ]);
+    expect(() =>
+      insertDirectSqliteHostSetting(
+        fixture.databasePath,
+        fixture.storage,
+        "rolled-back-telemetry",
+        "telemetry",
+        true,
+      ),
+    ).toThrow(/cp_host_setting_typed_value_check/u);
+    dialect = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment,
+      assetRoot: fixture.assetRoot,
+    });
+    expect(dialect.migrate()).toEqual(["0004_condemned_cardiac"]);
+    expect(dialect.query<{ key: string }>("SELECT key FROM cp_host_setting ORDER BY key")).toEqual([
+      { key: "native.daemon-url" },
+    ]);
+    const u7AssetRoot = await copiedAssets();
+    await Promise.all(
+      [
+        "0004_condemned_cardiac.sql",
+        "0004_condemned_cardiac.down.sql",
+        "0004_condemned_cardiac.manifest.json",
+      ].map((file) => rm(join(u7AssetRoot, "sqlite", file))),
+    );
     dialect.execute(
       "INSERT INTO cp_migration (" +
         "model_version,id,logical_host_id,store_id,created_at,updated_at," +
@@ -192,7 +381,15 @@ describe("control-plane migration registry and SQLite executor", () => {
         '{"version":1,"kind":"rollback-guard"}',
       ],
     );
+    expect(dialect.rollbackLatest()).toBe("0004_condemned_cardiac");
     expect(() => dialect.rollbackLatest()).toThrow(/NOT NULL constraint failed/u);
+    await dialect.close();
+    dialect = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment,
+      assetRoot: u7AssetRoot,
+    });
+    expect(dialect.migrate()).toEqual([]);
     dialect.execute("DELETE FROM cp_migration WHERE id = ?", ["u7-rollback-guard"]);
     expect(dialect.rollbackLatest()).toBe("0003_lazy_terrax");
     expect(dialect.ready).toBe(false);
@@ -203,8 +400,71 @@ describe("control-plane migration registry and SQLite executor", () => {
       environment,
       assetRoot: fixture.assetRoot,
     });
-    expect(remigrated.migrate()).toEqual(["0003_lazy_terrax"]);
+    expect(remigrated.migrate()).toEqual(["0003_lazy_terrax", "0004_condemned_cardiac"]);
     await remigrated.close();
+  });
+
+  it("upgrades host-setting constraints from 0003 and rolls back without discarding compatible rows", async () => {
+    const partialAssetRoot = await copiedAssets();
+    await Promise.all(
+      [
+        "0004_condemned_cardiac.sql",
+        "0004_condemned_cardiac.down.sql",
+        "0004_condemned_cardiac.manifest.json",
+      ].map((file) => rm(join(partialAssetRoot, "sqlite", file))),
+    );
+    const fixture = await sqliteFixture(partialAssetRoot);
+    const legacy = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment: migrationEnvironment(),
+      assetRoot: partialAssetRoot,
+    });
+    expect(legacy.migrate()).toEqual([
+      "0000_orange_tusk",
+      "0001_conscious_wilson_fisk",
+      "0002_colorful_maverick",
+      "0003_lazy_terrax",
+    ]);
+    insertSqliteHostSetting(
+      legacy,
+      fixture.storage,
+      "upgrade-native",
+      "native.daemon-url",
+      validHostSettings[0]![1],
+    );
+    await legacy.close();
+
+    const upgraded = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment: migrationEnvironment(),
+      assetRoot: sourceAssetRoot,
+    });
+    expect(upgraded.migrate()).toEqual(["0004_condemned_cardiac"]);
+    insertSqliteHostSetting(upgraded, fixture.storage, "upgrade-telemetry", "telemetry", true);
+    insertSqliteHostSetting(
+      upgraded,
+      fixture.storage,
+      "upgrade-aliases",
+      "namespaceAliases",
+      validHostSettings.at(-1)![1],
+    );
+    expect(() => upgraded.rollbackLatest()).toThrow(/NOT NULL constraint failed/u);
+    upgraded.execute("DELETE FROM cp_host_setting WHERE key <> ?", ["native.daemon-url"]);
+    expect(upgraded.rollbackLatest()).toBe("0004_condemned_cardiac");
+    await upgraded.close();
+
+    expect(readDirectSqliteHostSettingKeys(fixture.databasePath)).toEqual([
+      { key: "native.daemon-url" },
+    ]);
+    expect(() =>
+      insertDirectSqliteHostSetting(
+        fixture.databasePath,
+        fixture.storage,
+        "rollback-telemetry",
+        "telemetry",
+        false,
+      ),
+    ).toThrow(/cp_host_setting_typed_value_check/u);
   });
 
   it("invalidates legacy short-code approvals and sessions during the U6 migration", async () => {
@@ -217,6 +477,9 @@ describe("control-plane migration registry and SQLite executor", () => {
         "0003_lazy_terrax.sql",
         "0003_lazy_terrax.down.sql",
         "0003_lazy_terrax.manifest.json",
+        "0004_condemned_cardiac.sql",
+        "0004_condemned_cardiac.down.sql",
+        "0004_condemned_cardiac.manifest.json",
       ].map((file) => rm(join(partialAssetRoot, "sqlite", file))),
     );
     const fixture = await sqliteFixture(partialAssetRoot);
@@ -276,7 +539,11 @@ describe("control-plane migration registry and SQLite executor", () => {
       environment: migrationEnvironment(),
       assetRoot: sourceAssetRoot,
     });
-    expect(upgraded.migrate()).toEqual(["0002_colorful_maverick", "0003_lazy_terrax"]);
+    expect(upgraded.migrate()).toEqual([
+      "0002_colorful_maverick",
+      "0003_lazy_terrax",
+      "0004_condemned_cardiac",
+    ]);
     expect(
       upgraded.query(
         "SELECT state, algorithm, verifier_version AS verifierVersion, key_version AS keyVersion, " +
@@ -320,9 +587,14 @@ describe("control-plane migration registry and SQLite executor", () => {
   it("rolls back the additive SQLite migration without breaking populated child relations", async () => {
     const partialAssetRoot = await copiedAssets();
     await Promise.all(
-      ["0003_lazy_terrax.sql", "0003_lazy_terrax.down.sql", "0003_lazy_terrax.manifest.json"].map(
-        (file) => rm(join(partialAssetRoot, "sqlite", file)),
-      ),
+      [
+        "0003_lazy_terrax.sql",
+        "0003_lazy_terrax.down.sql",
+        "0003_lazy_terrax.manifest.json",
+        "0004_condemned_cardiac.sql",
+        "0004_condemned_cardiac.down.sql",
+        "0004_condemned_cardiac.manifest.json",
+      ].map((file) => rm(join(partialAssetRoot, "sqlite", file))),
     );
     const fixture = await sqliteFixture(partialAssetRoot);
     const dialect = await openSqliteControlPlaneDialect({
@@ -608,7 +880,7 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
         }),
       ]);
       const elected = await Promise.all([first.migrate(), second.migrate()]);
-      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 4]);
+      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 5]);
       const tableCount = await admin.query(
         "SELECT count(*)::int AS count FROM information_schema.tables " +
           "WHERE table_schema = 'caplets' AND table_name LIKE 'cp_%'",
@@ -635,6 +907,22 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
       await firstPools.migrator.query("DROP TABLE caplets.migrator_ddl_proof");
 
       const canonicalClock = "2026-07-14T00:00:00.000Z";
+      for (const [index, [key, value]] of validHostSettings.entries()) {
+        await insertPostgresHostSetting(admin, `valid-setting-${index}`, key, value);
+      }
+      const storedSettings = (
+        await admin.query("SELECT key, value FROM caplets.cp_host_setting ORDER BY key")
+      ).rows;
+      expect(storedSettings).toEqual(
+        validHostSettings
+          .map(([key, value]) => ({ key, value }))
+          .sort((left, right) => left.key.localeCompare(right.key)),
+      );
+      for (const [index, [key, value]] of invalidHostSettings.entries()) {
+        await expect(
+          insertPostgresHostSetting(admin, `invalid-setting-${index}`, key, value),
+        ).rejects.toThrow(/cp_host_setting_typed_value_check/u);
+      }
       await admin.query(
         `INSERT INTO caplets.cp_operator_activity (
           model_version,id,logical_host_id,store_id,created_at,updated_at,
@@ -711,13 +999,21 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
           '{"version":1,"kind":"rollback-guard"}',
         ],
       );
+      await expect(first.rollbackLatest()).rejects.toThrow(
+        /refusing U8 rollback while mutable host settings exist/u,
+      );
+      await admin.query("DELETE FROM caplets.cp_host_setting WHERE key <> 'native.daemon-url'");
+      expect(await first.rollbackLatest()).toBe("0004_short_ultimatum");
       await expect(first.rollbackLatest()).rejects.toThrow(/refusing U7 rollback/u);
       await admin.query("DELETE FROM caplets.cp_migration WHERE id = $1", ["u7-rollback-guard"]);
       expect(await first.rollbackLatest()).toBe("0003_concerned_lily_hollister");
       expect(first.ready).toBe(false);
       await second.close();
       second = undefined;
-      expect(await first.migrate()).toEqual(["0003_concerned_lily_hollister"]);
+      expect(await first.migrate()).toEqual([
+        "0003_concerned_lily_hollister",
+        "0004_short_ultimatum",
+      ]);
       environment.now = new Date("2026-07-22T00:00:00.001Z");
       await expect(first.rollbackLatest()).rejects.toThrow(/Rollback window expired/u);
       expect(first.ready).toBe(true);

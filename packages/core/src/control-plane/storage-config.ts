@@ -171,6 +171,8 @@ type LoadedStorageBinding = {
 
 type StorageCompatibility = {
   keyProvider: Buffer;
+  keyProviderGeneration: number;
+  keyVersionFloors: FileV1VersionFloors;
   databaseIdentity: string;
   artifactIdentity: string;
 };
@@ -260,6 +262,33 @@ export function assertStorageBootstrapCompatible(
   if (!identityMatches || !compatibilityMatches) {
     throw new CapletsError("AUTH_FAILED", "Storage bootstrap compatibility verification failed.");
   }
+}
+
+/**
+ * Returns only a domain-separated compatibility commitment. Resolved credentials never
+ * participate, so two verified credentials for the same store remain bootstrap-compatible.
+ */
+export function storageBootstrapFingerprintCommitment(storage: ResolvedStorageDeployment): string {
+  const compatibility = storageCompatibility.get(storage);
+  if (!compatibility) {
+    throw new CapletsError("AUTH_FAILED", "Storage bootstrap compatibility is unavailable.");
+  }
+  return createHash("sha256")
+    .update("caplets.storage-bootstrap-compatibility.v1\0")
+    .update(
+      JSON.stringify({
+        backend: storage.backend,
+        logicalHostId: storage.logicalHostId,
+        storeId: storage.storeId,
+        operationNamespace: storage.operationNamespace,
+        databaseIdentity: compatibility.databaseIdentity,
+        artifactIdentity: compatibility.artifactIdentity,
+        keyProviderCommitment: compatibility.keyProvider.toString("hex"),
+        keyProviderGeneration: compatibility.keyProviderGeneration,
+        keyVersionFloors: compatibility.keyVersionFloors,
+      }),
+    )
+    .digest("hex");
 }
 
 async function resolveSqliteStorage(
@@ -439,6 +468,8 @@ async function resolveSqliteStorage(
   };
   storageCompatibility.set(resolved, {
     keyProvider: keyProviderCommitment,
+    keyProviderGeneration,
+    keyVersionFloors,
     databaseIdentity,
     artifactIdentity,
   });
@@ -668,6 +699,8 @@ async function resolvePostgresStorage(
   };
   storageCompatibility.set(resolved, {
     keyProvider: keyProviderCommitment,
+    keyProviderGeneration: keyProvider.manifest.generation,
+    keyVersionFloors,
     databaseIdentity: postgres.databaseIdentity,
     artifactIdentity: identity.identityId,
   });

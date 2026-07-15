@@ -71,6 +71,10 @@
       "types": "./dist/control-plane/storage.d.ts",
       "default": "./dist/control-plane/storage.js"
     },
+    "./control-plane/runtime": {
+      "types": "./dist/control-plane/runtime.d.ts",
+      "default": "./dist/control-plane/runtime.js"
+    },
     "./control-plane/schema/model-codec": {
       "types": "./dist/control-plane/schema/model-codec.d.ts",
       "default": "./dist/control-plane/schema/model-codec.js"

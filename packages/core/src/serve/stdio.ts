@@ -1,20 +1,46 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
-import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsMcpSession } from "./session";
+import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
 
 export type ServeStdioOptions = CapletsEngineOptions & {
   signalHandling?: boolean;
 };
 
+export type InternalStdioRuntime = Readonly<{
+  engine: CapletsEngine;
+  session: CapletsMcpSession;
+}>;
+
+export async function createInternalStdioRuntime(
+  options: ServeStdioOptions,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+): Promise<InternalStdioRuntime> {
+  const engine = await createInternalCapletsEngine(options, loader);
+  return { engine, session: new CapletsMcpSession(engine) };
+}
+
 export async function serveStdio(options: ServeStdioOptions = {}): Promise<void> {
   const engine = new CapletsEngine(options);
-  const session = new CapletsMcpSession(engine);
+  return serveStdioWithRuntime(options, { engine, session: new CapletsMcpSession(engine) });
+}
+
+export async function serveInternalStdio(
+  options: ServeStdioOptions,
+  loader: ControlPlaneRuntimeSnapshotLoader,
+): Promise<void> {
+  return serveStdioWithRuntime(options, await createInternalStdioRuntime(options, loader));
+}
+
+async function serveStdioWithRuntime(
+  options: ServeStdioOptions,
+  runtime: InternalStdioRuntime,
+): Promise<void> {
+  const { engine, session } = runtime;
   let closing = false;
 
   const close = async () => {
-    if (closing) {
-      return;
-    }
+    if (closing) return;
     closing = true;
     try {
       await session.close();
@@ -25,7 +51,6 @@ export async function serveStdio(options: ServeStdioOptions = {}): Promise<void>
 
   let sigintHandler: (() => void) | undefined;
   let sigtermHandler: (() => void) | undefined;
-
   if (options.signalHandling !== false) {
     sigintHandler = () => void close().finally(() => process.exit(130));
     sigtermHandler = () => void close().finally(() => process.exit(143));
@@ -41,7 +66,6 @@ export async function serveStdio(options: ServeStdioOptions = {}): Promise<void>
       resolve();
     };
   });
-
   try {
     await session.connect(transport);
     await transportClosed;
