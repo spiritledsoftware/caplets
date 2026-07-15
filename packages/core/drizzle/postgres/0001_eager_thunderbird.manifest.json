@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0001_eager_thunderbird",
+  "order": 1,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 1,
+  "destinationSchemaVersion": 2,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0001_eager_thunderbird.sql",
+    "sha256": "8e90edf5fb15239e592917b7613755cdfc5ebeb8ea6bfc45663ccae371704315"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 2
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0001_eager_thunderbird.down.sql",
+      "sha256": "8ac6ed7095f69189a087be8a1cc37882c070036ca5faf4f76a7b4f095c0beccf"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "19cad546ea8b46899f6da2a6cb3124d3b88622c42b88b76ac31f49c2f1e9df72"
+}

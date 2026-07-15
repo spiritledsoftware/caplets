@@ -1,3 +1,6 @@
+import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import type { AnyPgColumn, AnyPgTable } from "drizzle-orm/pg-core";
 import { createRequire } from "node:module";
 import type { ResolvedPostgresStorage } from "../storage-config";
 import {
@@ -15,7 +18,16 @@ import {
   quoteSafeSqlIdentifier,
 } from "../schema/model-codec";
 import { CONTROL_PLANE_POSTGRES_SCHEMA } from "../schema/definition";
+import { postgresControlPlaneSchema } from "../schema/postgres";
 
+import type {
+  ControlPlaneDatabaseRow,
+  ControlPlaneFilter,
+  ControlPlaneOrder,
+  ControlPlaneTable,
+  ControlPlaneSqlTransaction,
+  ControlPlaneTransactionalDialect,
+} from "../store";
 const require = createRequire(import.meta.url);
 const POSTGRES_HISTORY_TABLE = "__caplets_migration_history_v1";
 const MIGRATION_ADVISORY_LOCK = "731840728441713664";
@@ -61,7 +73,8 @@ export type PostgresRoleSet = {
   maintenance?: string | undefined;
 };
 
-export type PostgresControlPlaneDialect = {
+export type PostgresControlPlaneDialect = ControlPlaneTransactionalDialect & {
+  readonly backend: "postgres";
   readonly ready: boolean;
   migrate(): Promise<readonly string[]>;
   rollbackLatest(): Promise<string>;
@@ -157,6 +170,40 @@ function createDialect(
   };
 
   return {
+    backend: "postgres",
+    compatibility: Object.freeze({
+      binaryVersion: options.environment.binaryVersion,
+      schemaVersion:
+        options.registry.migrations.at(-1)?.manifest.destinationSchemaVersion ??
+        options.environment.supportedSchemaVersion,
+      keyVersion: options.environment.keyVersion,
+      manifestVersion: options.environment.manifestVersion,
+    }),
+    async runtimeTransaction<T>(
+      work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+    ): Promise<T> {
+      requireReady();
+      return withRuntimeTransaction(options.pools.runtime, schema, work);
+    },
+    async snapshotTransaction<T>(
+      work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+    ): Promise<T> {
+      requireReady();
+      return withRuntimeTransaction(
+        options.pools.runtime,
+        schema,
+        work,
+        "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      );
+    },
+    async maintenanceTransaction<T>(
+      work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+    ): Promise<T> {
+      requireReady();
+      const pool = options.pools.maintenance;
+      if (!pool) throw new Error("Postgres maintenance pool is unavailable");
+      return withRuntimeTransaction(pool, schema, work);
+    },
     get ready() {
       return ready;
     },
@@ -250,6 +297,121 @@ function createDialect(
       await closePools(options.pools);
     },
   };
+}
+
+async function withRuntimeTransaction<T>(
+  pool: PostgresPool,
+  schema: string,
+  work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+  begin = "BEGIN",
+): Promise<T> {
+  const client = await pool.connect();
+  const orm = drizzle(client as never, { schema: postgresControlPlaneSchema });
+  try {
+    await client.query(begin);
+    try {
+      await client.query("SELECT set_config('search_path', $1, true)", [
+        fixedPostgresSearchPath(schema),
+      ]);
+      const transaction: ControlPlaneSqlTransaction = {
+        backend: "postgres",
+        async select<Row extends ControlPlaneDatabaseRow>(
+          tableName: ControlPlaneTable,
+          filter?: ControlPlaneFilter,
+          order: readonly ControlPlaneOrder[] = [],
+          limit?: number,
+        ) {
+          const table = postgresControlPlaneSchema[tableName] as AnyPgTable &
+            Record<string, AnyPgColumn>;
+          let query = orm.select().from(table).$dynamic();
+          const where = postgresFilter(table, filter);
+          if (where) query = query.where(where);
+          if (order.length > 0) {
+            query = query.orderBy(
+              ...order.map((entry) =>
+                entry.direction === "desc" ? desc(table[entry.column]!) : asc(table[entry.column]!),
+              ),
+            );
+          }
+          if (limit !== undefined) query = query.limit(limit);
+          return (await query) as Row[];
+        },
+        async insert(
+          tableName: ControlPlaneTable,
+          values: Readonly<Record<string, unknown>>,
+          conflict?: Readonly<{
+            target: readonly string[];
+            update?: Readonly<Record<string, unknown>> | undefined;
+          }>,
+        ) {
+          const table = postgresControlPlaneSchema[tableName] as AnyPgTable &
+            Record<string, AnyPgColumn>;
+          const base = orm.insert(table).values(values);
+          const query = conflict
+            ? conflict.update
+              ? base.onConflictDoUpdate({
+                  target: conflict.target.map((column) => table[column]!),
+                  set: conflict.update,
+                })
+              : base.onConflictDoNothing({
+                  target: conflict.target.map((column) => table[column]!),
+                })
+            : base;
+          const result = await query;
+          return result.rowCount ?? 0;
+        },
+        async update(
+          tableName: ControlPlaneTable,
+          values: Readonly<Record<string, unknown>>,
+          filter: ControlPlaneFilter,
+        ) {
+          const table = postgresControlPlaneSchema[tableName] as AnyPgTable &
+            Record<string, AnyPgColumn>;
+          const result = await orm.update(table).set(values).where(postgresFilter(table, filter));
+          return result.rowCount ?? 0;
+        },
+        async delete(tableName: ControlPlaneTable, filter: ControlPlaneFilter) {
+          const table = postgresControlPlaneSchema[tableName] as AnyPgTable &
+            Record<string, AnyPgColumn>;
+          const result = await orm.delete(table).where(postgresFilter(table, filter));
+          return result.rowCount ?? 0;
+        },
+        async databaseTime() {
+          const result = await orm.execute<{ now: string }>(
+            sql`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS now`,
+          );
+          return String(result.rows[0]?.now);
+        },
+        async lock(serialKey: string) {
+          await orm.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${serialKey}, 0))`);
+        },
+      };
+      const result = await work(transaction);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // The original runtime failure remains authoritative.
+      }
+      throw error;
+    }
+  } finally {
+    client.release();
+  }
+}
+
+function postgresFilter(
+  table: AnyPgTable & Record<string, AnyPgColumn>,
+  filter: ControlPlaneFilter | undefined,
+) {
+  if (!filter) return undefined;
+  const predicates = [
+    ...Object.entries(filter.equals ?? {}).map(([column, value]) => eq(table[column]!, value)),
+    ...Object.entries(filter.greaterThan ?? {}).map(([column, value]) => gt(table[column]!, value)),
+  ];
+  return predicates.length === 0 ? undefined : and(...predicates);
 }
 
 async function withMigrationTransaction<T>(

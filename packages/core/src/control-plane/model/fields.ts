@@ -60,6 +60,15 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     text("ownership"),
     text("activation"),
     field("effective", "boolean"),
+    id("provenanceId"),
+    text("provenanceSourceKind"),
+    json("provenanceSource", true),
+    field("provenanceContentHash", "hash"),
+    field("provenanceRuntimeFingerprint", "hash", false),
+    clock("provenanceInstalledAt", false),
+    text("provenanceResolvedRevision", false),
+    json("provenanceRiskSummary"),
+    id("provenanceOwnerId", false),
   ],
   caplet: [
     text("name"),
@@ -69,6 +78,7 @@ export const CANONICAL_FIELD_CHECKLIST: Record<
     field("effective", "boolean"),
     text("updateState"),
     id("portableAggregateId"),
+    id("installationProvenanceId", false),
   ],
   "caplet-provenance": [
     id("capletId"),

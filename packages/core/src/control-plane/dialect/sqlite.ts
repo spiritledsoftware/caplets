@@ -2,6 +2,9 @@ import { chmod, open, lstat, readFile, rm, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
+import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AnySQLiteColumn, AnySQLiteTable } from "drizzle-orm/sqlite-core";
 import type { ResolvedSqliteStorage } from "../storage-config";
 import {
   assertMigrationEnvironment,
@@ -13,6 +16,15 @@ import {
   type MigrationEnvironment,
 } from "./migrations";
 import { quoteSafeSqlIdentifier } from "../schema/model-codec";
+import { sqliteControlPlaneSchema } from "../schema/sqlite";
+import type {
+  ControlPlaneDatabaseRow,
+  ControlPlaneFilter,
+  ControlPlaneOrder,
+  ControlPlaneTable,
+  ControlPlaneSqlTransaction,
+  ControlPlaneTransactionalDialect,
+} from "../store";
 
 const require = createRequire(import.meta.url);
 const SQLITE_HISTORY_TABLE = "__caplets_migration_history_v1";
@@ -36,8 +48,9 @@ type SqliteConstructor = new (
   options?: { readonly?: boolean; fileMustExist?: boolean; timeout?: number },
 ) => SqliteDatabase;
 
-export type SqliteControlPlaneDialect = {
+export type SqliteControlPlaneDialect = ControlPlaneTransactionalDialect & {
   readonly databasePath: string;
+  readonly backend: "sqlite";
   readonly ready: boolean;
   migrate(): readonly string[];
   rollbackLatest(): string;
@@ -92,6 +105,7 @@ function createDialect(
   registry: LoadedMigrationRegistry,
   environment: MigrationEnvironment,
 ): SqliteControlPlaneDialect {
+  const orm = drizzle(database as never, { schema: sqliteControlPlaneSchema });
   let ready = false;
   let closed = false;
   const requireOpen = () => {
@@ -101,6 +115,121 @@ function createDialect(
     requireOpen();
     if (!ready) throw new Error("SQLite control-plane dialect is not migration-ready");
   };
+  let runtimeTail: Promise<void> = Promise.resolve();
+
+  const runtimeTransaction = async <T>(
+    work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+  ): Promise<T> => {
+    requireReady();
+    const previous = runtimeTail;
+    let release!: () => void;
+    runtimeTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    database.exec("BEGIN IMMEDIATE");
+    const scoped: ControlPlaneSqlTransaction = {
+      backend: "sqlite",
+      async select<Row extends ControlPlaneDatabaseRow>(
+        tableName: ControlPlaneTable,
+        filter?: ControlPlaneFilter,
+        order: readonly ControlPlaneOrder[] = [],
+        limit?: number,
+      ) {
+        const table = sqliteControlPlaneSchema[tableName] as AnySQLiteTable &
+          Record<string, AnySQLiteColumn>;
+        let query = orm.select().from(table).$dynamic();
+        const where = sqliteFilter(table, filter);
+        if (where) query = query.where(where);
+        if (order.length > 0) {
+          query = query.orderBy(
+            ...order.map((entry) =>
+              entry.direction === "desc" ? desc(table[entry.column]!) : asc(table[entry.column]!),
+            ),
+          );
+        }
+        if (limit !== undefined) query = query.limit(limit);
+        return (await query) as Row[];
+      },
+      async insert(
+        tableName: ControlPlaneTable,
+        values: Readonly<Record<string, unknown>>,
+        conflict?: Readonly<{
+          target: readonly string[];
+          update?: Readonly<Record<string, unknown>> | undefined;
+        }>,
+      ) {
+        const table = sqliteControlPlaneSchema[tableName] as AnySQLiteTable &
+          Record<string, AnySQLiteColumn>;
+        const base = orm.insert(table).values(values);
+        const query = conflict
+          ? conflict.update
+            ? base.onConflictDoUpdate({
+                target: conflict.target.map((column) => table[column]!),
+                set: conflict.update,
+              })
+            : base.onConflictDoNothing({
+                target: conflict.target.map((column) => table[column]!),
+              })
+          : base;
+        const result = await query.run();
+        return Number(result.changes);
+      },
+      async update(
+        tableName: ControlPlaneTable,
+        values: Readonly<Record<string, unknown>>,
+        filter: ControlPlaneFilter,
+      ) {
+        const table = sqliteControlPlaneSchema[tableName] as AnySQLiteTable &
+          Record<string, AnySQLiteColumn>;
+        const result = await orm.update(table).set(values).where(sqliteFilter(table, filter)).run();
+        return Number(result.changes);
+      },
+      async delete(tableName: ControlPlaneTable, filter: ControlPlaneFilter) {
+        const table = sqliteControlPlaneSchema[tableName] as AnySQLiteTable &
+          Record<string, AnySQLiteColumn>;
+        const result = await orm.delete(table).where(sqliteFilter(table, filter)).run();
+        return Number(result.changes);
+      },
+      async databaseTime() {
+        const row = orm.get<{ now: string }>(
+          sql`SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS now`,
+        );
+        return row.now;
+      },
+      async lock() {
+        // BEGIN IMMEDIATE is the single-writer serialization point for SQLite.
+      },
+    };
+    try {
+      const result = await work(scoped);
+      database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        database.exec("ROLLBACK");
+      } catch {
+        // The original transaction failure remains authoritative.
+      }
+      throw error;
+    } finally {
+      release();
+    }
+  };
+  function sqliteFilter(
+    table: AnySQLiteTable & Record<string, AnySQLiteColumn>,
+    filter: ControlPlaneFilter | undefined,
+  ) {
+    if (!filter) return undefined;
+    const predicates = [
+      ...Object.entries(filter.equals ?? {}).map(([column, value]) => eq(table[column]!, value)),
+      ...Object.entries(filter.greaterThan ?? {}).map(([column, value]) =>
+        gt(table[column]!, value),
+      ),
+    ];
+    return predicates.length === 0 ? undefined : and(...predicates);
+  }
+
   const transaction = <T>(mode: "IMMEDIATE" | "EXCLUSIVE", work: () => T): T => {
     requireOpen();
     database.exec(`BEGIN ${mode}`);
@@ -120,6 +249,18 @@ function createDialect(
 
   return {
     databasePath,
+    backend: "sqlite",
+    compatibility: Object.freeze({
+      binaryVersion: environment.binaryVersion,
+      schemaVersion:
+        registry.migrations.at(-1)?.manifest.destinationSchemaVersion ??
+        environment.supportedSchemaVersion,
+      keyVersion: environment.keyVersion,
+      manifestVersion: environment.manifestVersion,
+    }),
+    runtimeTransaction,
+    snapshotTransaction: runtimeTransaction,
+    maintenanceTransaction: runtimeTransaction,
     get ready() {
       return ready;
     },
@@ -160,29 +301,38 @@ function createDialect(
     },
     rollbackLatest() {
       requireOpen();
-      const rolledBack = transaction("EXCLUSIVE", () => {
-        ensureHistoryTable(database);
-        const applied = readAppliedMigrations(database);
-        const latest = applied.at(-1);
-        if (!latest) throw new Error("No applied migration is available to roll back");
-        const migration = registry.migrations.find(
-          (candidate) => candidate.manifest.migrationId === latest.migrationId,
-        );
-        if (!migration) throw new Error("Applied migration is newer than this binary");
-        assertRollbackAllowed(migration, latest.appliedAt, environment);
-        if (migration.manifest.rollback.mode !== "down" || !migration.downSql) {
-          throw new Error("SQLite rollback requires reviewed down SQL");
-        }
-        database.exec(migration.downSql);
-        database
-          .prepare(
-            `DELETE FROM ${quoteSafeSqlIdentifier(SQLITE_HISTORY_TABLE)} WHERE migration_id = ?`,
-          )
-          .run(latest.migrationId);
-        return latest.migrationId;
-      });
-      ready = false;
-      return rolledBack;
+      database.pragma("foreign_keys = OFF");
+      try {
+        const rolledBack = transaction("EXCLUSIVE", () => {
+          ensureHistoryTable(database);
+          const applied = readAppliedMigrations(database);
+          const latest = applied.at(-1);
+          if (!latest) throw new Error("No applied migration is available to roll back");
+          const migration = registry.migrations.find(
+            (candidate) => candidate.manifest.migrationId === latest.migrationId,
+          );
+          if (!migration) throw new Error("Applied migration is newer than this binary");
+          assertRollbackAllowed(migration, latest.appliedAt, environment);
+          if (migration.manifest.rollback.mode !== "down" || !migration.downSql) {
+            throw new Error("SQLite rollback requires reviewed down SQL");
+          }
+          database.exec(migration.downSql);
+          database
+            .prepare(
+              `DELETE FROM ${quoteSafeSqlIdentifier(SQLITE_HISTORY_TABLE)} WHERE migration_id = ?`,
+            )
+            .run(latest.migrationId);
+          const violations = database.pragma("foreign_key_check");
+          if (Array.isArray(violations) && violations.length > 0) {
+            throw new Error("SQLite rollback violates foreign-key integrity");
+          }
+          return latest.migrationId;
+        });
+        ready = false;
+        return rolledBack;
+      } finally {
+        database.pragma("foreign_keys = ON");
+      }
     },
     query<T>(sql: string, parameters: readonly unknown[] = []) {
       requireReady();

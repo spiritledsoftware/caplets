@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0001_conscious_wilson_fisk",
+  "order": 1,
+  "dialect": "sqlite",
+  "sourceSchemaVersion": 1,
+  "destinationSchemaVersion": 2,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0001_conscious_wilson_fisk.sql",
+    "sha256": "c8001135c53d1d881a4a14baa2b06eb376653b9a69269adea9fe6b8a6370273c"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 2
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0001_conscious_wilson_fisk.down.sql",
+      "sha256": "e869b1c06b0ba374b09e0177a86c86eefc1aba2683278ccc579fadd6d339dbac"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "a7e16accbb8994c9f8fc679d916065fbd800439543a27cb083f5971976823b72"
+}

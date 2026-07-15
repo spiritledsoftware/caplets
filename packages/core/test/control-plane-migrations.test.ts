@@ -92,7 +92,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       assetRoot: fixture.assetRoot,
     });
     expect(dialect.ready).toBe(false);
-    expect(dialect.migrate()).toEqual(["0000_orange_tusk"]);
+    expect(dialect.migrate()).toEqual(["0000_orange_tusk", "0001_conscious_wilson_fisk"]);
     expect(dialect.ready).toBe(true);
     expect(dialect.migrate()).toEqual([]);
     const tables = dialect.query<{ name: string }>(
@@ -147,7 +147,7 @@ describe("control-plane migration registry and SQLite executor", () => {
     const backupPath = join(fixture.root, "backup.sqlite3");
     await dialect.onlineBackup(backupPath);
     expect((await stat(backupPath)).size).toBeGreaterThan(0);
-    expect(dialect.rollbackLatest()).toBe("0000_orange_tusk");
+    expect(dialect.rollbackLatest()).toBe("0001_conscious_wilson_fisk");
     expect(dialect.ready).toBe(false);
     await dialect.close();
 
@@ -156,8 +156,66 @@ describe("control-plane migration registry and SQLite executor", () => {
       environment,
       assetRoot: fixture.assetRoot,
     });
-    expect(remigrated.migrate()).toEqual(["0000_orange_tusk"]);
+    expect(remigrated.migrate()).toEqual(["0001_conscious_wilson_fisk"]);
     await remigrated.close();
+  });
+
+  it("rolls back the additive SQLite migration without breaking populated child relations", async () => {
+    const fixture = await sqliteFixture();
+    const dialect = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment: migrationEnvironment(),
+      assetRoot: fixture.assetRoot,
+    });
+    dialect.migrate();
+    const now = "2026-07-14T00:00:00.000Z";
+    dialect.execute(
+      "INSERT INTO cp_caplet (" +
+        "model_version, id, logical_host_id, store_id, created_at, updated_at, " +
+        "aggregate_version, authority_version, effective_version, security_version, " +
+        "name, description, ownership, activation, effective, update_state, " +
+        "portable_aggregate_id, installation_provenance_id" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        1,
+        "caplet-rollback",
+        fixture.storage.logicalHostId,
+        fixture.storage.storeId,
+        now,
+        now,
+        1,
+        0,
+        0,
+        0,
+        "Rollback Caplet",
+        "data-bearing rollback fixture",
+        "sql",
+        "active",
+        1,
+        "current",
+        "caplet-rollback",
+        null,
+      ],
+    );
+    dialect.execute(
+      "INSERT INTO cp_caplet_document " +
+        "(logical_host_id, caplet_id, portable_version, canonical_model_version, source_path, source_frontmatter, body) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [fixture.storage.logicalHostId, "caplet-rollback", 1, 1, "CAPLET.md", "{}", "# Rollback"],
+    );
+    expect(dialect.rollbackLatest()).toBe("0001_conscious_wilson_fisk");
+    await dialect.close();
+
+    const database = new Database(fixture.databasePath);
+    expect(
+      database.prepare("SELECT name FROM cp_caplet WHERE id = ?").get("caplet-rollback"),
+    ).toEqual({ name: "Rollback Caplet" });
+    expect(
+      database
+        .prepare("SELECT body FROM cp_caplet_document WHERE caplet_id = ?")
+        .get("caplet-rollback"),
+    ).toEqual({ body: "# Rollback" });
+    database.close();
   });
 
   it("rolls back failed SQL atomically and blocks readiness", async () => {
@@ -346,7 +404,7 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
         }),
       ]);
       const elected = await Promise.all([first.migrate(), second.migrate()]);
-      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 1]);
+      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 2]);
       const tableCount = await admin.query(
         "SELECT count(*)::int AS count FROM information_schema.tables " +
           "WHERE table_schema = 'caplets' AND table_name LIKE 'cp_%'",
@@ -442,11 +500,11 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
         first.maintenanceQuery("UPDATE caplets.cp_caplet SET description = 'unsafe'"),
       ).rejects.toThrow();
 
-      expect(await first.rollbackLatest()).toBe("0000_foamy_zuras");
+      expect(await first.rollbackLatest()).toBe("0001_eager_thunderbird");
       expect(first.ready).toBe(false);
       await second.close();
       second = undefined;
-      expect(await first.migrate()).toEqual(["0000_foamy_zuras"]);
+      expect(await first.migrate()).toEqual(["0001_eager_thunderbird"]);
       environment.now = new Date("2026-07-22T00:00:00.001Z");
       await expect(first.rollbackLatest()).rejects.toThrow(/Rollback window expired/u);
       expect(first.ready).toBe(true);

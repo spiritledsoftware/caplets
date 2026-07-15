@@ -7,7 +7,7 @@ import {
 } from "../model";
 
 export const CONTROL_PLANE_POSTGRES_SCHEMA = "caplets" as const;
-export const CONTROL_PLANE_SCHEMA_VERSION = 1 as const;
+export const CONTROL_PLANE_SCHEMA_VERSION = 2 as const;
 
 export type SqlColumnDefinition = {
   property: string;
