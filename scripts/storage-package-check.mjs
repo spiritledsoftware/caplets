@@ -105,6 +105,7 @@ allowBuilds:
     pg: true,
     s3ExplicitCredentials: true,
     storageEntry: true,
+    migrationAssets: true,
   };
   result.status = "pass";
 } catch (error) {
@@ -153,6 +154,7 @@ async function emitResult(target) {
 function packageSmokeSource() {
   return String.raw`
 import { createRequire } from "node:module";
+import { loadMigrationRegistry } from "@caplets/core/control-plane/dialect/migrations";
 import {
   S3ArtifactProvider,
   STORAGE_BENCHMARK_ENVELOPE,
@@ -162,6 +164,12 @@ import {
 
 if (STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets !== 2000 || nearestRank([1, 2, 3, 4], 0.75) !== 3) {
   throw new Error("packed storage fixture is invalid");
+}
+for (const dialect of ["sqlite", "postgres"]) {
+  const registry = await loadMigrationRegistry({ dialect });
+  if (registry.migrations.length !== 1 || !registry.migrations[0].sql || !registry.migrations[0].downSql) {
+    throw new Error("packed " + dialect + " migration history is unavailable");
+  }
 }
 const coreRequire = createRequire(import.meta.resolve("@caplets/core/control-plane/storage"));
 const bunRuntime = Boolean(process.versions.bun);

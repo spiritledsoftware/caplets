@@ -77,6 +77,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Run paired control-plane schema and role gate
+        run: >-
+          pnpm --filter @caplets/core exec vitest run
+          test/control-plane-schema.test.ts
+          test/control-plane-dialects.test.ts
+          test/control-plane-migrations.test.ts
+        env:
+          CAPLETS_TEST_POSTGRES_URL: postgres://caplets:caplets-test@127.0.0.1:5432/caplets
+
       - name: Start S3-compatible fixture
         run: >-
           docker run --detach --rm --name caplets-minio

@@ -71,6 +71,30 @@
       "types": "./dist/control-plane/storage.d.ts",
       "default": "./dist/control-plane/storage.js"
     },
+    "./control-plane/schema/model-codec": {
+      "types": "./dist/control-plane/schema/model-codec.d.ts",
+      "default": "./dist/control-plane/schema/model-codec.js"
+    },
+    "./control-plane/schema/sqlite": {
+      "types": "./dist/control-plane/schema/sqlite.d.ts",
+      "default": "./dist/control-plane/schema/sqlite.js"
+    },
+    "./control-plane/schema/postgres": {
+      "types": "./dist/control-plane/schema/postgres.d.ts",
+      "default": "./dist/control-plane/schema/postgres.js"
+    },
+    "./control-plane/dialect/migrations": {
+      "types": "./dist/control-plane/dialect/migrations.d.ts",
+      "default": "./dist/control-plane/dialect/migrations.js"
+    },
+    "./control-plane/dialect/sqlite": {
+      "types": "./dist/control-plane/dialect/sqlite.d.ts",
+      "default": "./dist/control-plane/dialect/sqlite.js"
+    },
+    "./control-plane/dialect/postgres": {
+      "types": "./dist/control-plane/dialect/postgres.d.ts",
+      "default": "./dist/control-plane/dialect/postgres.js"
+    },
     "./observed-output-shapes": {
       "types": "./dist/observed-output-shapes/index.d.ts",
       "default": "./dist/observed-output-shapes.js"
@@ -105,10 +129,14 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "node ./scripts/build-dashboard-for-core.mjs && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs",
+    "build": "node ./scripts/build-dashboard-for-core.mjs && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs && node ./scripts/copy-control-plane-migrations.mjs",
     "build:watch": "pnpm run clean && rolldown -c --watch",
     "prepack": "pnpm build",
     "typecheck": "tsgo --noEmit",
+    "db:generate:sqlite": "drizzle-kit generate --config drizzle.sqlite.config.ts",
+    "db:generate:postgres": "drizzle-kit generate --config drizzle.postgres.config.ts",
+    "db:generate": "pnpm run db:generate:sqlite && pnpm run db:generate:postgres",
+    "db:check": "drizzle-kit check --config drizzle.sqlite.config.ts && drizzle-kit check --config drizzle.postgres.config.ts && node ./scripts/copy-control-plane-migrations.mjs --check-source",
     "test": "vitest run"
   },
   "dependencies": {

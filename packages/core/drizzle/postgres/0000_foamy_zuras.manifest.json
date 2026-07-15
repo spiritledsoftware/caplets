@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0000_foamy_zuras",
+  "order": 0,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 0,
+  "destinationSchemaVersion": 1,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0000_foamy_zuras.sql",
+    "sha256": "6d9a0da753b3ffd1927c810a5ae66a67825613d50640b7b73de18d35cfb8d28c"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 0,
+      "maximum": 1
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0000_foamy_zuras.down.sql",
+      "sha256": "a12ae6607fc48fb6da590ec821d000978eceaf72f8519d738de5dadc23274e2c"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "5f1ef0216eafcaf4542d3e71562bf9d44ff59c6e207c627871a33ec2e4edb7be"
+}

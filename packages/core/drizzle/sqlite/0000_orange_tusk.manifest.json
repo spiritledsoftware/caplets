@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0000_orange_tusk",
+  "order": 0,
+  "dialect": "sqlite",
+  "sourceSchemaVersion": 0,
+  "destinationSchemaVersion": 1,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0000_orange_tusk.sql",
+    "sha256": "2c5c16d43b49ed31865dfe74683941e5d0630e024376eeb5dfbf28875e9dfc71"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 0,
+      "maximum": 1
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0000_orange_tusk.down.sql",
+      "sha256": "371bee52e699859186aa96f39f6e509a6c893017c037ad2622be0b62f9b5fdd5"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "442f1ca9cc43ccaa57950cf3b8fa729d857164875d41e81d4c9761819161d6bb"
+}
