@@ -24,9 +24,14 @@ import { CapletsError, toSafeError, type CapletsErrorCode } from "../errors";
 import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
 import {
   createCurrentHostOperations,
+  parseCurrentHostManagementMutation,
+  parseCurrentHostOperationBinding,
   toCurrentHostSafeError,
   trustedDevelopmentOperatorPrincipal,
   withCurrentHostFinalAuthorization,
+  type CurrentHostManagementDependencies,
+  type CurrentHostManagementResource,
+  type CurrentHostOperationBinding,
   type CurrentHostOperatorPrincipal,
 } from "../current-host/operations";
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
@@ -81,6 +86,7 @@ type HttpServeIo = {
   dashboardSessionStore?: DashboardSessionStore;
   dashboardDistDir?: string;
   projectBindingWorkspaceStore?: ProjectBindingWorkspaceStore;
+  currentHostManagement?: CurrentHostManagementDependencies | undefined;
 };
 
 type HttpMcpSession = {
@@ -211,6 +217,7 @@ export function createHttpServeApp(
         }),
     activityLog: dashboardActivityLog,
     remoteCredentialStore,
+    management: io.currentHostManagement,
     version: packageJsonVersion,
   });
   const authenticatedRemoteClients = new WeakMap<Request, ValidatedRemoteClient>();
@@ -426,6 +433,130 @@ export function createHttpServeApp(
       );
 
       return c.json({ caplets: outcome.caplets });
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardManagement, async (c) => {
+    const session = dashboardSessionForRequest(c);
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
+    try {
+      const query = new URL(c.req.url).searchParams;
+      const resource = managementResource(query.get("resource"));
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = dashboardManagementBinding(
+        principal,
+        io.currentHostManagement,
+        `list:${resource}`,
+      );
+      return c.json(await currentHostOperations.list(principal, { binding, resource }));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardManagementInspect, async (c) => {
+    const session = dashboardSessionForRequest(c);
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
+    try {
+      const query = new URL(c.req.url).searchParams;
+      const resource = managementResource(query.get("resource"));
+      const id = requiredQueryParam(query, "id");
+      const selector = managementSelector(query.get("selector"));
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = dashboardManagementBinding(
+        principal,
+        io.currentHostManagement,
+        `inspect:${resource}:${id}:${selector}`,
+      );
+      return c.json(
+        await currentHostOperations.inspect(principal, { binding, resource, id, selector }),
+      );
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardManagementStatus, async (c) => {
+    const session = dashboardSessionForRequest(c);
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
+    try {
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = dashboardManagementBinding(principal, io.currentHostManagement, "status");
+      return c.json(await currentHostOperations.status(principal, binding));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardManagementPreview, async (c) => {
+    const session = dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Current Host management preview");
+      const mutation = parseCurrentHostManagementMutation(parsed.mutation);
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = dashboardManagementBinding(
+        principal,
+        io.currentHostManagement,
+        stringField(parsed, "requestIdentity"),
+        stringField(parsed, "operationId"),
+      );
+      return c.json(await currentHostOperations.preview(principal, { binding, mutation }));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardManagementMutate, async (c) => {
+    const session = dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Current Host management mutation");
+      const mutation = parseCurrentHostManagementMutation(parsed.mutation);
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = dashboardManagementBinding(
+        principal,
+        io.currentHostManagement,
+        stringField(parsed, "requestIdentity"),
+        stringField(parsed, "operationId"),
+      );
+      return c.json(await currentHostOperations.mutate(principal, { binding, mutation }));
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardManagementLookup, async (c) => {
+    const session = dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Current Host operation lookup");
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = parseCurrentHostOperationBinding(parsed.binding);
+      if (binding.actorId !== principal.clientId || binding.target === "project") {
+        throw new CapletsError(
+          "AUTH_FAILED",
+          "Current Host operation lookup target does not match the authenticated operator.",
+        );
+      }
+      return c.json(await currentHostOperations.lookupOperation(principal, binding));
     } catch (error) {
       return currentHostErrorResponse(error);
     }
@@ -2858,6 +2989,12 @@ export function servicePaths(base: string): {
   dashboardLogout: string;
   dashboardSummary: string;
   dashboardCaplets: string;
+  dashboardManagement: string;
+  dashboardManagementInspect: string;
+  dashboardManagementPreview: string;
+  dashboardManagementMutate: string;
+  dashboardManagementStatus: string;
+  dashboardManagementLookup: string;
   dashboardCatalogSearch: string;
   dashboardCatalogDetail: string;
   dashboardCatalogInstall: string;
@@ -2913,6 +3050,12 @@ export function servicePaths(base: string): {
     dashboardLogout: routePath(dashboardApi, "logout"),
     dashboardSummary: routePath(dashboardApi, "summary"),
     dashboardCaplets: routePath(dashboardApi, "caplets"),
+    dashboardManagement: routePath(dashboardApi, "management"),
+    dashboardManagementInspect: routePath(dashboardApi, "management/inspect"),
+    dashboardManagementPreview: routePath(dashboardApi, "management/preview"),
+    dashboardManagementMutate: routePath(dashboardApi, "management/mutate"),
+    dashboardManagementStatus: routePath(dashboardApi, "management/status"),
+    dashboardManagementLookup: routePath(dashboardApi, "management/operations/lookup"),
     dashboardCatalogSearch: routePath(dashboardApi, "catalog/search"),
     dashboardCatalogDetail: routePath(dashboardApi, "catalog/detail"),
     dashboardCatalogInstall: routePath(dashboardApi, "catalog/install"),
@@ -2957,6 +3100,39 @@ function requiredQueryParam(params: URLSearchParams, key: string): string {
   const value = params.get(key);
   if (!value) throw new CapletsError("REQUEST_INVALID", `${key} is required.`);
   return value;
+}
+
+function managementResource(value: string | null): CurrentHostManagementResource {
+  if (value === "caplet" || value === "host-setting") return value;
+  throw new CapletsError("REQUEST_INVALID", "resource must be caplet or host-setting.");
+}
+
+function managementSelector(value: string | null): "effective" | "underlying-sql" {
+  if (value === null || value === "effective") return "effective";
+  if (value === "underlying-sql") return value;
+  throw new CapletsError("REQUEST_INVALID", "selector must be effective or underlying-sql.");
+}
+
+function dashboardManagementBinding(
+  principal: CurrentHostOperatorPrincipal,
+  management: CurrentHostManagementDependencies,
+  requestIdentity: string,
+  operationId = `operation_${randomUUID()}`,
+): CurrentHostOperationBinding {
+  const canonicalRequestIdentity = /^[a-f0-9]{64}$/u.test(requestIdentity)
+    ? requestIdentity
+    : createHash("sha256").update(requestIdentity).digest("hex");
+  if (!/^[A-Za-z0-9_-]{1,160}$/u.test(operationId)) {
+    throw new CapletsError("REQUEST_INVALID", "operationId is invalid.");
+  }
+  return {
+    operationId,
+    target: "global",
+    ...management.storage.identity,
+    actorId: principal.clientId,
+    requestIdentity: canonicalRequestIdentity,
+    operationClass: "logical-state",
+  };
 }
 
 function optionalBooleanField(input: Record<string, unknown>, key: string): boolean | undefined {

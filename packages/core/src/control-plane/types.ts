@@ -6,6 +6,7 @@ import type {
   CurrentHostOperationReceipt,
   CurrentHostOperationIndeterminateOutcome,
 } from "../current-host/operations";
+import type { CurrentHostManagementTargetDetail } from "../current-host/operations";
 import type {
   CanonicalCapletAggregate,
   CanonicalCapletRelationalProjection,
@@ -79,6 +80,8 @@ export type ControlPlaneMutationContext = Readonly<{
   expectedAuthorityGeneration: number;
   expectedSecurityEpoch: number;
   writerFence: ControlPlaneWriterFence;
+  localApplication?: CurrentHostOperationReceipt["localApplication"] | undefined;
+  managementTarget?: CurrentHostManagementTargetDetail | undefined;
   activity: ControlPlaneActivity;
   finalAuthorization?:
     | ((transaction: ControlPlaneSqlTransaction) => Promise<ControlPlaneFinalAuthorization>)
@@ -97,6 +100,16 @@ export type HostSettingManagementMutation = ControlPlaneMutationContext &
     setting: CanonicalHostSetting;
     provenance: ControlPlaneProvenance;
   }>;
+
+export type UntrustedCapletManagementMutation = Omit<
+  CapletManagementMutation,
+  "writerFence" | "finalAuthorization"
+>;
+
+export type UntrustedHostSettingManagementMutation = Omit<
+  HostSettingManagementMutation,
+  "writerFence" | "finalAuthorization"
+>;
 
 export type ControlPlaneConflictReason =
   | "aggregate-version"
@@ -204,6 +217,7 @@ export type ControlPlaneSnapshot = Readonly<{
     projection: CanonicalCapletRelationalProjection;
   }>[];
   hostSettings: readonly CanonicalHostSetting[];
+  hostSettingVersions?: Readonly<Record<string, number>> | undefined;
   encodedBytes: number;
   normalizedRows: number;
 }>;

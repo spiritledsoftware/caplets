@@ -4,8 +4,22 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { dashboardApi, setDashboardSession, toast } = vi.hoisted(() => ({
+const {
+  acknowledgeRecoveredDashboardManagementOperations,
+  dashboardApi,
+  dashboardManagementMutation,
+  dashboardManagementPreview,
+  dashboardManagementRecoveryNoticesAcknowledged,
+  recoverDashboardManagementOperations,
+  setDashboardSession,
+  toast,
+} = vi.hoisted(() => ({
   dashboardApi: vi.fn(),
+  dashboardManagementMutation: vi.fn(),
+  dashboardManagementPreview: vi.fn(),
+  recoverDashboardManagementOperations: vi.fn<() => Promise<unknown[]>>(async () => []),
+  acknowledgeRecoveredDashboardManagementOperations: vi.fn(),
+  dashboardManagementRecoveryNoticesAcknowledged: vi.fn(() => false),
   setDashboardSession: vi.fn(),
   toast: {
     error: vi.fn(),
@@ -15,8 +29,13 @@ const { dashboardApi, setDashboardSession, toast } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({
+  acknowledgeRecoveredDashboardManagementOperations,
   dashboardApi,
+  dashboardManagementMutation,
+  dashboardManagementRecoveryNoticesAcknowledged,
+  dashboardManagementPreview,
   isDashboardUnauthorized: () => false,
+  recoverDashboardManagementOperations,
   setDashboardSession,
 }));
 
@@ -59,6 +78,49 @@ function responseFor(path: string) {
     const response = revealResponses.shift();
     if (!response) throw new Error("Unexpected vault reveal request.");
     return "promise" in response ? response.promise : response;
+  }
+  if (path === "management?resource=host-setting") {
+    return {
+      status: "ok",
+      items: [
+        {
+          resource: "host-setting",
+          id: "telemetry",
+          selector: "effective",
+          owner: "filesystem",
+          source: { kind: "global-config" },
+          effective: true,
+          effectiveChanged: false,
+          shadowChain: [
+            { owner: "sql", source: { kind: "sql" } },
+            { owner: "filesystem", source: { kind: "global-config" } },
+          ],
+          underlyingSqlAvailable: true,
+          consequence: "no-effective-change-while-shadowed",
+        },
+      ],
+    };
+  }
+  if (path.startsWith("management/inspect?resource=host-setting")) {
+    return {
+      status: "ok",
+      target: {
+        resource: "host-setting",
+        id: "telemetry",
+        selector: "underlying-sql",
+        owner: "sql",
+        source: { kind: "sql" },
+        effective: true,
+        effectiveChanged: false,
+        shadowChain: [
+          { owner: "sql", source: { kind: "sql" } },
+          { owner: "filesystem", source: { kind: "global-config" } },
+        ],
+        underlyingSqlAvailable: true,
+        consequence: "no-effective-change-while-shadowed",
+      },
+      record: { key: "telemetry", value: true, aggregateVersion: 1 },
+    };
   }
   return {};
 }
@@ -145,6 +207,29 @@ beforeEach(() => {
   toast.error.mockClear();
   toast.success.mockClear();
   toast.warning.mockClear();
+  dashboardManagementPreview.mockResolvedValue({
+    operation: {
+      operationId: "operation-dashboard-ui-u9",
+      requestIdentity: "request-dashboard-ui-u9",
+      mutation: {
+        kind: "host-setting-set",
+        key: "telemetry",
+        value: false,
+        selector: "underlying-sql",
+      },
+    },
+    result: {
+      status: "preview",
+      target: { consequence: "no-effective-change-while-shadowed" },
+    },
+  });
+  dashboardManagementMutation.mockResolvedValue({
+    status: "committed",
+    receipt: {
+      management: { consequence: "no-effective-change-while-shadowed" },
+    },
+  });
+  recoverDashboardManagementOperations.mockResolvedValue([]);
   window.history.replaceState({}, "", "/dashboard/vault");
   window.matchMedia = vi.fn().mockReturnValue({
     addEventListener: vi.fn(),
@@ -173,6 +258,101 @@ describe("catalog update presentation", () => {
     );
     expect(catalogMutationLabel({ installed: [{ status: "updated" }] })).toBe("Updated");
     expect(catalogMutationLabel({ installed: [{ status: "noop" }] })).toBe("Already current");
+  });
+});
+
+describe("SQL ownership controls", () => {
+  it("reveals the shadow chain and repeats a no-effective-change consequence in preview and receipt", async () => {
+    recoverDashboardManagementOperations.mockResolvedValueOnce([
+      {
+        status: "not_committed",
+        binding: { operationId: "operation-recovered-u9" },
+      },
+    ]);
+    window.history.replaceState({}, "", "/dashboard/settings");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<DashboardApp initialRoute="settings" />);
+    });
+
+    await waitFor(() =>
+      document.body.textContent?.includes("filesystem owner") ? document.body : undefined,
+    );
+    expect(document.body.textContent).toContain("sql:sql → filesystem:global-config");
+    expect(document.body.textContent).toContain("Recovered operation outcomes");
+    expect(document.body.textContent).toContain(
+      "The original identity is fenced as not committed.",
+    );
+
+    await act(async () => {
+      button("Inspect underlying SQL").click();
+    });
+    await waitFor(() =>
+      document.body.textContent?.includes("sql owner") ? document.body : undefined,
+    );
+
+    await act(async () => {
+      button("Preview SQL change").click();
+    });
+    await waitFor(() =>
+      document.body.textContent?.includes(
+        "No effective runtime change while the filesystem override remains.",
+      )
+        ? document.body
+        : undefined,
+    );
+    const draft = Array.from(document.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Proposed JSON value"))
+      ?.querySelector("input");
+    if (!draft) throw new Error("Proposed JSON value input is missing.");
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      valueSetter?.call(draft, "false");
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (candidate) => candidate.textContent?.trim() === "Apply prepared change",
+      ),
+    ).toBe(false);
+    await act(async () => {
+      button("Preview SQL change").click();
+    });
+    await waitFor(() => (button("Apply prepared change") ? document.body : undefined));
+
+    await act(async () => {
+      button("Apply prepared change").click();
+    });
+    await waitFor(() =>
+      document.body.textContent?.includes(
+        "Receipt: no effective runtime change while the filesystem override remains.",
+      )
+        ? document.body
+        : undefined,
+    );
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (candidate) => candidate.textContent?.trim() === "Preview SQL change",
+      ),
+    ).toBe(false);
+    expect(
+      Array.from(document.querySelectorAll("label")).some((label) =>
+        label.textContent?.includes("Proposed JSON value"),
+      ),
+    ).toBe(false);
+    expect(dashboardManagementPreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "host-setting-set",
+        key: "telemetry",
+        selector: "underlying-sql",
+      }),
+    );
+    expect(dashboardManagementMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ selector: "underlying-sql" }),
+      expect.objectContaining({ operationId: "operation-dashboard-ui-u9" }),
+    );
   });
 });
 

@@ -1667,7 +1667,7 @@ function createReceipt(
       authorityGeneration: state.versions.authorityGeneration,
       effectiveGeneration: state.effectiveGeneration,
     }),
-    localApplication: "applied" as const,
+    localApplication: input.localApplication ?? ("applied" as const),
     convergence:
       options.dialect.backend === "sqlite"
         ? ({ kind: "single-node" } as const)
@@ -1675,6 +1675,7 @@ function createReceipt(
             kind: "pending" as const,
             deadline: new Date(Date.parse(state.now) + 5_000).toISOString(),
           } as const),
+    ...(input.managementTarget ? { management: Object.freeze({ ...input.managementTarget }) } : {}),
   });
 }
 
@@ -1807,6 +1808,14 @@ async function readSnapshot(
       updatedAt: decodeCanonicalTimestamp(row.updatedAt),
     }),
   );
+  const hostSettingVersions = Object.freeze(
+    Object.fromEntries(
+      hostRows.map((row) => [
+        row.key,
+        decodeCanonicalVersion(row.aggregateVersion as number | bigint),
+      ]),
+    ),
+  );
   const encodedBytes = caplets.reduce(
     (total, entry) => total + encodePortableCaplet(entry.aggregate.portable).byteLength,
     0,
@@ -1829,6 +1838,7 @@ async function readSnapshot(
     versions: Object.freeze(versions),
     caplets: Object.freeze(caplets),
     hostSettings: Object.freeze(hostSettings),
+    hostSettingVersions,
     encodedBytes,
     normalizedRows,
   });
@@ -2049,7 +2059,9 @@ async function readOutcome(
       operationId,
     },
   });
-  return rows[0] ? (decodeJson(rows[0].receipt) as CurrentHostOperationReceipt) : undefined;
+  return rows[0]
+    ? (decodeJson(rows[0].receipt) as unknown as CurrentHostOperationReceipt)
+    : undefined;
 }
 
 async function readTombstone(

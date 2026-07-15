@@ -11,6 +11,7 @@ import {
 } from "../src/control-plane/service";
 import type { CapletsError } from "../src/errors";
 import { acquireLegacyMigrationMutex } from "../src/control-plane/migration/legacy";
+import type { CurrentHostManagementClient } from "../src/current-host/client-operations";
 
 describe("internal control-plane storage initialization seam", () => {
   it("runs the explicit global-only offline command through the internal service", async () => {
@@ -59,6 +60,104 @@ describe("internal control-plane storage initialization seam", () => {
     ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
   });
 
+  it("routes hidden global management through the injected client with a caller-known operation ID", async () => {
+    const createBinding = vi.fn<CurrentHostManagementClient["createBinding"]>(
+      (request, options) => ({
+        operationId: options?.operationId ?? "operation-generated",
+        target: "global",
+        logicalHostId: "host-cli-u9",
+        storeId: "store-cli-u9",
+        operationNamespace: "namespace-cli-u9",
+        actorId: "operator-cli-u9",
+        requestIdentity: JSON.stringify(request),
+        operationClass: "logical-state",
+      }),
+    );
+    const mutate = vi.fn<CurrentHostManagementClient["mutate"]>(async (_mutation, binding) => ({
+      status: "committed",
+      binding: binding ?? createBinding({}),
+      receipt: {
+        status: "committed",
+        binding: binding ?? createBinding({}),
+        aggregateVersion: 2,
+        authorityToken: { authorityGeneration: 1, effectiveGeneration: 1 },
+        localApplication: "not-applicable",
+        convergence: { kind: "single-node" },
+        management: {
+          resource: "host-setting",
+          id: "telemetry",
+          selector: "underlying-sql",
+          owner: "sql",
+          source: { kind: "sql" },
+          effective: false,
+          effectiveChanged: true,
+          shadowChain: [{ owner: "sql", source: { kind: "sql" } }],
+          underlyingSqlAvailable: true,
+          consequence: "effective-runtime-changes",
+        },
+      },
+    }));
+    const unavailable = async () => {
+      throw new Error("not used");
+    };
+    const client: CurrentHostManagementClient = {
+      target: "global",
+      identity: {
+        logicalHostId: "host-cli-u9",
+        storeId: "store-cli-u9",
+        operationNamespace: "namespace-cli-u9",
+      },
+      createBinding,
+      mutate,
+      list: unavailable,
+      inspect: unavailable,
+      preview: unavailable,
+      status: unavailable,
+      lookupOperation: unavailable,
+    };
+    const out: string[] = [];
+    const mutation = JSON.stringify({
+      kind: "host-setting-set",
+      key: "telemetry",
+      value: false,
+      selector: "underlying-sql",
+    });
+
+    await runCli(
+      [
+        "storage",
+        "management",
+        "mutate",
+        mutation,
+        "--global",
+        "--operation-id",
+        "operation-cli-u9",
+      ],
+      {
+        internalCurrentHostManagement: client,
+        writeOut: (value) => out.push(value),
+        writeErr: () => undefined,
+      },
+    );
+
+    expect(createBinding).toHaveBeenCalledWith(expect.any(Object), {
+      operationId: "operation-cli-u9",
+    });
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ selector: "underlying-sql" }),
+      expect.objectContaining({
+        operationId: "operation-cli-u9",
+        logicalHostId: "host-cli-u9",
+        storeId: "store-cli-u9",
+      }),
+    );
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      status: "committed",
+      receipt: {
+        management: { owner: "sql", selector: "underlying-sql" },
+      },
+    });
+  });
   it("serializes new-process migration attempts with an owner-private mutex", async () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-legacy-mutex-"));
     const path = join(root, "migration.lock");

@@ -450,7 +450,7 @@ export function resolveControlPlaneCapletMutationTarget(
           status: "allowed",
           owner: "sql",
           source: sql.source,
-          effectiveChanged: row.owner === "sql" && row.runtimeStatus === "effective",
+          effectiveChanged: row.owner === "sql",
         }
       : { status: "not-found" };
   }
@@ -460,7 +460,7 @@ export function resolveControlPlaneCapletMutationTarget(
         status: "allowed",
         owner: "sql",
         source: row.source,
-        effectiveChanged: row.runtimeStatus === "effective",
+        effectiveChanged: true,
       };
 }
 

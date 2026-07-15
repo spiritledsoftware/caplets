@@ -27,7 +27,10 @@ import type {
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
 import type { RemoteAuthFlowStore } from "./auth-flow";
 import {
+  parseCurrentHostManagementMutation,
+  parseCurrentHostOperationBinding,
   toCurrentHostSafeError,
+  type CurrentHostManagementResource,
   type CurrentHostOperatorPrincipal,
   type CurrentHostOperations,
 } from "../current-host/operations";
@@ -103,13 +106,24 @@ async function dispatch(
 ) {
   assertObject(request, "remote control request");
   assertObject(request.arguments, "remote control request arguments");
-  const initializedRuntime = context.internalRuntimeSnapshotLoader
-    ? await context.internalRuntimeSnapshotLoader.initialize({
-        vaultResolver: vaultResolverForAuthDir(context.authDir),
-      })
-    : undefined;
+  let initializedRuntime: ControlPlaneRuntimeSnapshot | undefined;
+  const initializeRuntime = async () => {
+    if (initializedRuntime || !context.internalRuntimeSnapshotLoader) return initializedRuntime;
+    initializedRuntime = await context.internalRuntimeSnapshotLoader.initialize({
+      vaultResolver: vaultResolverForAuthDir(context.authDir),
+    });
+    return initializedRuntime;
+  };
+
+  if (request.command.startsWith("current_host_")) {
+    return dispatchCurrentHostManagement(
+      request,
+      requireCurrentHostAdministration(currentHostAdministration),
+    );
+  }
 
   if (request.command === "list") {
+    await initializeRuntime();
     const config =
       initializedRuntime?.configWithSources ??
       loadConfigWithSources(context.configPath, context.projectConfigPath, {
@@ -123,6 +137,7 @@ async function dispatch(
   if (ENGINE_COMMANDS.has(request.command)) {
     const caplet = requiredString(request.arguments, "caplet");
     const toolRequest = requiredEngineRequest(request.arguments, request.command);
+    await initializeRuntime();
     const engine = await createDispatchEngine(context, initializedRuntime);
     try {
       return await engine.execute(caplet, toolRequest);
@@ -259,7 +274,12 @@ async function createDispatchEngine(
 }
 
 function isCurrentHostAdministrationCommand(command: unknown): boolean {
-  return command === "install" || command === "update" || String(command).startsWith("vault_");
+  return (
+    command === "install" ||
+    command === "update" ||
+    String(command).startsWith("vault_") ||
+    String(command).startsWith("current_host_")
+  );
 }
 
 function requireCurrentHostAdministration(
@@ -270,6 +290,46 @@ function requireCurrentHostAdministration(
     "AUTH_FAILED",
     "Current Host administration requires an Operator principal.",
   );
+}
+
+async function dispatchCurrentHostManagement(
+  request: RemoteCliRequest,
+  administration: CurrentHostRemoteAdministration,
+) {
+  const binding = parseCurrentHostOperationBinding(request.arguments.binding);
+  switch (request.command) {
+    case "current_host_list":
+      return administration.operations.list(administration.principal, {
+        binding,
+        resource: requiredManagementResource(request.arguments, "resource"),
+      });
+    case "current_host_inspect":
+      return administration.operations.inspect(administration.principal, {
+        binding,
+        resource: requiredManagementResource(request.arguments, "resource"),
+        id: requiredString(request.arguments, "id"),
+        selector: requiredManagementSelector(request.arguments, "selector"),
+      });
+    case "current_host_preview":
+      return administration.operations.preview(administration.principal, {
+        binding,
+        mutation: parseCurrentHostManagementMutation(request.arguments.mutation),
+      });
+    case "current_host_mutate":
+      return administration.operations.mutate(administration.principal, {
+        binding,
+        mutation: parseCurrentHostManagementMutation(request.arguments.mutation),
+      });
+    case "current_host_status":
+      return administration.operations.status(administration.principal, binding);
+    case "current_host_operation_lookup":
+      return administration.operations.lookupOperation(administration.principal, binding);
+    default:
+      throw new CapletsError(
+        "UNKNOWN_OPERATION",
+        `Unsupported remote Current Host command ${request.command}`,
+      );
+  }
 }
 
 async function dispatchCurrentHostVault(
@@ -488,6 +548,24 @@ function requiredString(args: Record<string, unknown>, key: string): string {
     throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string`);
   }
   return value;
+}
+
+function requiredManagementResource(
+  args: Record<string, unknown>,
+  key: string,
+): CurrentHostManagementResource {
+  const value = requiredString(args, key);
+  if (value === "caplet" || value === "host-setting") return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} must be caplet or host-setting`);
+}
+
+function requiredManagementSelector(
+  args: Record<string, unknown>,
+  key: string,
+): "effective" | "underlying-sql" {
+  const value = requiredString(args, key);
+  if (value === "effective" || value === "underlying-sql") return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} must be effective or underlying-sql`);
 }
 
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {

@@ -396,7 +396,7 @@ describe("U8 layered runtime composition", () => {
     expect(resolveControlPlaneCapletMutationTarget(runtime, "dormant")).toMatchObject({
       status: "allowed",
       owner: "sql",
-      effectiveChanged: false,
+      effectiveChanged: true,
     });
     expect(
       resolveControlPlaneCapletMutationTarget(runtime, "alpha", { underlyingSql: true }),

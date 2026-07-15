@@ -16,13 +16,45 @@ import {
 import type { ControlPlaneSqlTransaction, ControlPlaneStore } from "./store";
 import type {
   CapletManagementMutation,
+  ControlPlaneHealthSummary,
   ControlPlaneMutationResult,
+  ControlPlaneOperationReservationResult,
+  ControlPlaneSnapshot,
   HostSettingManagementMutation,
+  UntrustedCapletManagementMutation,
+  UntrustedHostSettingManagementMutation,
 } from "./types";
 
+export type ControlPlaneManagementAuthorizationFailure =
+  | Readonly<{
+      status: "denied";
+      binding: CurrentHostOperationBinding;
+      reason: "wrong-host" | "wrong-store" | "stale-authority" | "stale-security" | "revoked-role";
+    }>
+  | Readonly<{ status: "unavailable"; binding: CurrentHostOperationBinding }>;
+
 export type ControlPlaneService = Readonly<{
-  mutateCaplet(input: CapletManagementMutation): Promise<ControlPlaneMutationResult>;
-  mutateHostSetting(input: HostSettingManagementMutation): Promise<ControlPlaneMutationResult>;
+  readonly identity: ControlPlaneStore["identity"];
+  reserveOperation(
+    binding: CurrentHostOperationBinding,
+    aggregateId: string,
+  ): Promise<ControlPlaneOperationReservationResult | ControlPlaneManagementAuthorizationFailure>;
+  loadSnapshot(
+    binding: CurrentHostOperationBinding,
+  ): Promise<
+    | Readonly<{ status: "ok"; snapshot: ControlPlaneSnapshot }>
+    | ControlPlaneManagementAuthorizationFailure
+  >;
+  status(
+    binding: CurrentHostOperationBinding,
+  ): Promise<
+    | Readonly<{ status: "ok"; health: ControlPlaneHealthSummary }>
+    | ControlPlaneManagementAuthorizationFailure
+  >;
+  mutateCaplet(input: UntrustedCapletManagementMutation): Promise<ControlPlaneMutationResult>;
+  mutateHostSetting(
+    input: UntrustedHostSettingManagementMutation,
+  ): Promise<ControlPlaneMutationResult>;
   lookupOperation(binding: CurrentHostOperationBinding): Promise<CurrentHostOperationLookupOutcome>;
 }>;
 
@@ -48,9 +80,17 @@ export function createControlPlaneService(options: {
     return validateControlPlaneAuthorization(request, decision);
   };
 
-  const prepare = async <T extends CapletManagementMutation | HostSettingManagementMutation>(
-    input: T,
-  ): Promise<ControlPlaneMutationResult | T> => {
+  async function prepare(
+    input: UntrustedCapletManagementMutation,
+  ): Promise<ControlPlaneMutationResult | CapletManagementMutation>;
+  async function prepare(
+    input: UntrustedHostSettingManagementMutation,
+  ): Promise<ControlPlaneMutationResult | HostSettingManagementMutation>;
+  async function prepare(
+    input: UntrustedCapletManagementMutation | UntrustedHostSettingManagementMutation,
+  ): Promise<
+    ControlPlaneMutationResult | CapletManagementMutation | HostSettingManagementMutation
+  > {
     if (input.binding.logicalHostId !== options.store.identity.logicalHostId) {
       return { status: "denied", reason: "wrong-host" };
     }
@@ -112,9 +152,58 @@ export function createControlPlaneService(options: {
       return { status: "committed", receipt: reservation.receipt };
     }
     return trustedInput;
+  }
+
+  const authorizeManagementBinding = async (
+    binding: CurrentHostOperationBinding,
+  ): Promise<ControlPlaneManagementAuthorizationFailure | undefined> => {
+    if (binding.logicalHostId !== options.store.identity.logicalHostId) {
+      return { status: "denied", binding, reason: "wrong-host" };
+    }
+    if (binding.storeId !== options.store.identity.storeId) {
+      return { status: "denied", binding, reason: "wrong-store" };
+    }
+    const decision = await authorize(binding);
+    if (decision.status === "authorized") return undefined;
+    if (decision.reason === "unavailable") return { status: "unavailable", binding };
+    if (decision.reason === "namespace-mismatch") {
+      return { status: "denied", binding, reason: "stale-authority" };
+    }
+    return {
+      status: "denied",
+      binding,
+      reason:
+        decision.reason === "revoked" || decision.reason === "role-insufficient"
+          ? "revoked-role"
+          : "wrong-store",
+    };
   };
 
   return {
+    identity: options.store.identity,
+    async reserveOperation(binding, aggregateId) {
+      const denied = await authorizeManagementBinding(binding);
+      if (denied) return denied;
+      return options.store.reserveOperation(binding, aggregateId);
+    },
+    async loadSnapshot(binding) {
+      const denied = await authorizeManagementBinding(binding);
+      if (denied) return denied;
+      try {
+        return { status: "ok", snapshot: await options.store.loadSnapshot() };
+      } catch {
+        return { status: "unavailable", binding };
+      }
+    },
+    async status(binding) {
+      const denied = await authorizeManagementBinding(binding);
+      if (denied) return denied;
+      try {
+        return { status: "ok", health: await options.store.health() };
+      } catch {
+        return { status: "unavailable", binding };
+      }
+    },
     async lookupOperation(binding) {
       if (
         binding.logicalHostId !== options.store.identity.logicalHostId ||
@@ -134,11 +223,11 @@ export function createControlPlaneService(options: {
     },
     async mutateCaplet(input) {
       const prepared = await prepare(input);
-      return "aggregateId" in prepared ? options.store.mutateCaplet(prepared) : prepared;
+      return "aggregate" in prepared ? options.store.mutateCaplet(prepared) : prepared;
     },
     async mutateHostSetting(input) {
       const prepared = await prepare(input);
-      return "aggregateId" in prepared ? options.store.mutateHostSetting(prepared) : prepared;
+      return "setting" in prepared ? options.store.mutateHostSetting(prepared) : prepared;
     },
   };
 }

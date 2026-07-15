@@ -1,9 +1,20 @@
+import { createHash, randomUUID } from "node:crypto";
 import { roleChangeMetadata } from "../dashboard/activity-log";
 import { CapletsError } from "../errors";
 import type {
+  CurrentHostManagementInspectResult,
+  CurrentHostManagementListResult,
+  CurrentHostManagementMutation,
+  CurrentHostManagementMutationResult,
+  CurrentHostManagementPreviewResult,
+  CurrentHostManagementResource,
+  CurrentHostManagementStatusResult,
   CurrentHostOperation,
+  CurrentHostOperationBinding,
+  CurrentHostOperationLookupOutcome,
   CurrentHostOperationOutcome,
   CurrentHostOperatorPrincipal,
+  CurrentHostOperations,
   CurrentHostOperationsDependencies,
 } from "./operations";
 
@@ -261,6 +272,102 @@ function clientRoleOutcome(
     });
     throw error;
   }
+}
+
+export interface CurrentHostManagementClient {
+  readonly target: "global" | "remote";
+  readonly identity: Readonly<{
+    logicalHostId: string;
+    storeId: string;
+    operationNamespace: string;
+  }>;
+  createBinding(
+    request: unknown,
+    options?: Readonly<{
+      operationId?: string | undefined;
+      operationClass?: CurrentHostOperationBinding["operationClass"] | undefined;
+    }>,
+  ): CurrentHostOperationBinding;
+  list(resource: CurrentHostManagementResource): Promise<CurrentHostManagementListResult>;
+  inspect(
+    resource: CurrentHostManagementResource,
+    id: string,
+    selector: "effective" | "underlying-sql",
+  ): Promise<CurrentHostManagementInspectResult>;
+  preview(
+    mutation: CurrentHostManagementMutation,
+    binding?: CurrentHostOperationBinding | undefined,
+  ): Promise<CurrentHostManagementPreviewResult>;
+  mutate(
+    mutation: CurrentHostManagementMutation,
+    binding?: CurrentHostOperationBinding | undefined,
+  ): Promise<CurrentHostManagementMutationResult>;
+  status(): Promise<CurrentHostManagementStatusResult>;
+  lookupOperation(binding: CurrentHostOperationBinding): Promise<CurrentHostOperationLookupOutcome>;
+}
+
+export function createCurrentHostManagementClient(
+  options: Readonly<{
+    operations: CurrentHostOperations;
+    principal: CurrentHostOperatorPrincipal;
+    target: "global" | "remote";
+    identity: CurrentHostManagementClient["identity"];
+    allocateOperationId?: (() => string) | undefined;
+  }>,
+): CurrentHostManagementClient {
+  const createBinding: CurrentHostManagementClient["createBinding"] = (
+    request,
+    bindingOptions = {},
+  ) => ({
+    operationId:
+      bindingOptions.operationId ?? options.allocateOperationId?.() ?? `operation_${randomUUID()}`,
+    target: options.target,
+    ...options.identity,
+    actorId: options.principal.clientId,
+    requestIdentity: createHash("sha256").update(JSON.stringify(request)).digest("hex"),
+    operationClass: bindingOptions.operationClass ?? "logical-state",
+  });
+  return Object.freeze({
+    target: options.target,
+    identity: Object.freeze({ ...options.identity }),
+    createBinding,
+    list(resource: CurrentHostManagementResource) {
+      return options.operations.list(options.principal, {
+        binding: createBinding({ action: "list", resource }),
+        resource,
+      });
+    },
+    inspect(
+      resource: CurrentHostManagementResource,
+      id: string,
+      selector: "effective" | "underlying-sql",
+    ) {
+      return options.operations.inspect(options.principal, {
+        binding: createBinding({ action: "inspect", resource, id, selector }),
+        resource,
+        id,
+        selector,
+      });
+    },
+    preview(
+      mutation: CurrentHostManagementMutation,
+      binding: CurrentHostOperationBinding = createBinding(mutation),
+    ) {
+      return options.operations.preview(options.principal, { binding, mutation });
+    },
+    mutate(
+      mutation: CurrentHostManagementMutation,
+      binding: CurrentHostOperationBinding = createBinding(mutation),
+    ) {
+      return options.operations.mutate(options.principal, { binding, mutation });
+    },
+    status() {
+      return options.operations.status(options.principal, createBinding({ action: "status" }));
+    },
+    lookupOperation(binding: CurrentHostOperationBinding) {
+      return options.operations.lookupOperation(options.principal, binding);
+    },
+  });
 }
 
 function requiredRemoteClientId(value: unknown): string {

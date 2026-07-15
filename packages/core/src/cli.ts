@@ -160,6 +160,12 @@ import { maybePrintUpdateNotice } from "./update-check";
 import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
 import type { VaultAccessGrantFilter } from "./vault";
 import type { InternalControlPlaneStorageMigrationService } from "./control-plane/service";
+import type { CurrentHostManagementClient } from "./current-host/client-operations";
+import {
+  parseCurrentHostManagementMutation,
+  parseCurrentHostOperationBinding,
+  type CurrentHostManagementResource,
+} from "./current-host/operations";
 
 export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
@@ -196,6 +202,7 @@ type CliIO = {
   mcpOperations?: SetupMcpOperations;
   readStdin?: () => Promise<string>;
   internalStorageMigration?: InternalControlPlaneStorageMigrationService;
+  internalCurrentHostManagement?: CurrentHostManagementClient;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -1484,6 +1491,92 @@ export function createProgram(io: CliIO = {}): Command {
       }
       await io.internalStorageMigration.migrate({ target: "global", mode: "offline" });
       writeOut("Global legacy storage migration complete.\n");
+    });
+
+  const currentHostStorageCommand = storageCommand.command("management", { hidden: true });
+  currentHostStorageCommand
+    .command("list")
+    .requiredOption("--global", "target the local global control plane")
+    .requiredOption("--resource <resource>", "caplet or host-setting")
+    .action(async (options: { global: true; resource: string }) => {
+      const client = requireInternalCurrentHostManagement(io);
+      writeOut(
+        `${JSON.stringify(await client.list(parseCurrentHostManagementResource(options.resource)))}\n`,
+      );
+    });
+  currentHostStorageCommand
+    .command("inspect")
+    .argument("<resource>", "caplet or host-setting")
+    .argument("<id>", "resource identity")
+    .requiredOption("--global", "target the local global control plane")
+    .option("--underlying-sql", "inspect the explicit underlying SQL record")
+    .action(
+      async (
+        resource: string,
+        id: string,
+        options: { global: true; underlyingSql?: boolean | undefined },
+      ) => {
+        const client = requireInternalCurrentHostManagement(io);
+        writeOut(
+          `${JSON.stringify(
+            await client.inspect(
+              parseCurrentHostManagementResource(resource),
+              id,
+              options.underlyingSql ? "underlying-sql" : "effective",
+            ),
+          )}\n`,
+        );
+      },
+    );
+  currentHostStorageCommand
+    .command("preview")
+    .argument("<mutation>", "JSON Current Host management mutation")
+    .requiredOption("--global", "target the local global control plane")
+    .option("--operation-id <id>", "caller-known operation identity")
+    .action(
+      async (mutationJson: string, options: { global: true; operationId?: string | undefined }) => {
+        const client = requireInternalCurrentHostManagement(io);
+        const mutation = parseCurrentHostManagementMutation(parseJsonArgument(mutationJson));
+        const binding = client.createBinding(mutation, { operationId: options.operationId });
+        writeOut(`${JSON.stringify(await client.preview(mutation, binding))}\n`);
+      },
+    );
+  currentHostStorageCommand
+    .command("mutate")
+    .argument("<mutation>", "JSON Current Host management mutation")
+    .requiredOption("--global", "target the local global control plane")
+    .option("--operation-id <id>", "caller-known operation identity")
+    .action(
+      async (mutationJson: string, options: { global: true; operationId?: string | undefined }) => {
+        const client = requireInternalCurrentHostManagement(io);
+        const mutation = parseCurrentHostManagementMutation(parseJsonArgument(mutationJson));
+        const binding = client.createBinding(mutation, { operationId: options.operationId });
+        writeOut(`${JSON.stringify(await client.mutate(mutation, binding))}\n`);
+      },
+    );
+  currentHostStorageCommand
+    .command("status")
+    .requiredOption("--global", "target the local global control plane")
+    .action(async () => {
+      writeOut(`${JSON.stringify(await requireInternalCurrentHostManagement(io).status())}\n`);
+    });
+  currentHostStorageCommand
+    .command("lookup")
+    .argument("<binding>", "JSON caller-known operation binding")
+    .requiredOption("--global", "target the original local global control plane")
+    .action(async (bindingJson: string) => {
+      const binding = parseCurrentHostOperationBinding(parseJsonArgument(bindingJson));
+      if (binding.target !== "global") {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Local Current Host lookup requires the original global target.",
+        );
+      }
+      writeOut(
+        `${JSON.stringify(
+          await requireInternalCurrentHostManagement(io).lookupOperation(binding),
+        )}\n`,
+      );
     });
 
   program
@@ -5551,4 +5644,28 @@ function writeAddResult(
     return;
   }
   writeOut(result.text);
+}
+
+function requireInternalCurrentHostManagement(io: CliIO): CurrentHostManagementClient {
+  if (io.internalCurrentHostManagement) return io.internalCurrentHostManagement;
+  throw new CapletsError(
+    "SERVER_UNAVAILABLE",
+    "SQL Current Host management is unavailable before storage activation.",
+  );
+}
+
+function parseCurrentHostManagementResource(value: string): CurrentHostManagementResource {
+  if (value === "caplet" || value === "host-setting") return value;
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    "Current Host management resource must be caplet or host-setting.",
+  );
+}
+
+function parseJsonArgument(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new CapletsError("REQUEST_INVALID", "Current Host management JSON is invalid.");
+  }
 }

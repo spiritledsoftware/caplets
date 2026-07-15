@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { CatalogCompactEntry, CatalogEntry } from "../catalog";
 import {
@@ -7,6 +7,26 @@ import {
   type DashboardActivityEntry,
 } from "../dashboard/activity-log";
 import type { CapletsEngine } from "../engine";
+import { MutableHostSettingSchema } from "../config-runtime";
+import {
+  resolveControlPlaneCapletMutationTarget,
+  resolveControlPlaneHostSettingMutationTarget,
+  type ControlPlaneRuntimeSnapshot,
+  type RuntimeOwnershipLayer,
+} from "../control-plane/snapshot";
+import type {
+  ControlPlaneHealthSummary,
+  ControlPlaneMutationResult,
+  ControlPlaneOperationReservationResult,
+  ControlPlaneSnapshot,
+  UntrustedCapletManagementMutation,
+  UntrustedHostSettingManagementMutation,
+} from "../control-plane/types";
+import type {
+  CanonicalCapletAggregate,
+  CanonicalCapletRelationalProjection,
+  CapletActivationState,
+} from "../control-plane/caplets/model";
 import { CapletsError, toSafeError, type SafeErrorSummary } from "../errors";
 import type { RemoteServerCredentialStore } from "../remote/server-credential-store";
 import type {
@@ -127,6 +147,25 @@ export type CurrentHostAuthorityToken = {
   effectiveGeneration: number;
 };
 
+export type CurrentHostOwnershipLayer = Readonly<{
+  owner: "sql" | "filesystem";
+  source: Readonly<{ kind: string }>;
+  provenance?: Readonly<{ id?: string | undefined }> | undefined;
+}>;
+
+export type CurrentHostManagementTargetDetail = Readonly<{
+  resource: "caplet" | "host-setting";
+  id: string;
+  selector: "effective" | "underlying-sql";
+  owner: "sql" | "filesystem";
+  source: Readonly<{ kind: string }>;
+  effective: boolean;
+  effectiveChanged: boolean;
+  shadowChain: readonly CurrentHostOwnershipLayer[];
+  underlyingSqlAvailable: boolean;
+  consequence: "effective-runtime-changes" | "no-effective-change-while-shadowed";
+}>;
+
 export type CurrentHostOperationReceipt = {
   status: "committed";
   binding: CurrentHostOperationBinding;
@@ -137,6 +176,7 @@ export type CurrentHostOperationReceipt = {
     | { kind: "single-node" }
     | { kind: "pending"; deadline: string }
     | { kind: "converged"; appliedNodes: number };
+  management?: CurrentHostManagementTargetDetail | undefined;
 };
 
 export type CurrentHostOperationLookupOutcome =
@@ -224,6 +264,83 @@ export function allocateCurrentHostOperationBinding(
     throw new CapletsError("REQUEST_INVALID", "Current Host operation ID is required.");
   }
   return { operationId, ...input };
+}
+
+export function parseCurrentHostOperationBinding(value: unknown): CurrentHostOperationBinding {
+  if (!isRecord(value)) {
+    throw new CapletsError("REQUEST_INVALID", "Current Host operation binding is invalid.");
+  }
+  const target = value.target;
+  const operationClass = value.operationClass;
+  if (
+    typeof value.operationId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,160}$/u.test(value.operationId) ||
+    (target !== "global" && target !== "remote" && target !== "project") ||
+    typeof value.logicalHostId !== "string" ||
+    typeof value.storeId !== "string" ||
+    typeof value.operationNamespace !== "string" ||
+    typeof value.actorId !== "string" ||
+    typeof value.requestIdentity !== "string" ||
+    value.requestIdentity.length === 0 ||
+    (operationClass !== "logical-state" &&
+      operationClass !== "security-authority" &&
+      operationClass !== "external-effect")
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Current Host operation binding is invalid.");
+  }
+  return {
+    operationId: value.operationId,
+    target,
+    logicalHostId: value.logicalHostId,
+    storeId: value.storeId,
+    operationNamespace: value.operationNamespace,
+    actorId: value.actorId,
+    requestIdentity: value.requestIdentity,
+    operationClass,
+  };
+}
+
+export function parseCurrentHostManagementMutation(value: unknown): CurrentHostManagementMutation {
+  if (!isRecord(value)) {
+    throw new CapletsError("REQUEST_INVALID", "Current Host management mutation is invalid.");
+  }
+  const selector = value.selector;
+  if (selector !== "effective" && selector !== "underlying-sql") {
+    throw new CapletsError("REQUEST_INVALID", "Current Host management selector is invalid.");
+  }
+  const expectedAggregateVersion =
+    value.expectedAggregateVersion === undefined
+      ? undefined
+      : boundedNonNegativeInteger(value.expectedAggregateVersion);
+  const expectedAuthorityToken = parseExpectedAuthorityToken(value.expectedAuthorityToken);
+  if (value.kind === "host-setting-set" && typeof value.key === "string") {
+    return {
+      kind: "host-setting-set",
+      key: value.key,
+      value: value.value,
+      selector,
+      ...(expectedAggregateVersion === undefined ? {} : { expectedAggregateVersion }),
+      ...(expectedAuthorityToken === undefined ? {} : { expectedAuthorityToken }),
+    };
+  }
+  if (
+    value.kind === "caplet-set-activation" &&
+    typeof value.id === "string" &&
+    (value.activation === "active" ||
+      value.activation === "setup-required" ||
+      value.activation === "dormant-shadowed" ||
+      value.activation === "disabled")
+  ) {
+    return {
+      kind: "caplet-set-activation",
+      id: value.id,
+      activation: value.activation,
+      selector,
+      ...(expectedAggregateVersion === undefined ? {} : { expectedAggregateVersion }),
+      ...(expectedAuthorityToken === undefined ? {} : { expectedAuthorityToken }),
+    };
+  }
+  throw new CapletsError("REQUEST_INVALID", "Current Host management mutation is invalid.");
 }
 
 export function createCurrentHostOperationIndeterminateOutcome(
@@ -585,6 +702,176 @@ export type CurrentHostOperationOutcomeFor<TOperation extends CurrentHostOperati
   { kind: TOperation["kind"] }
 >;
 
+export type CurrentHostManagementResource = "caplet" | "host-setting";
+
+export type CurrentHostManagementMutation =
+  | Readonly<{
+      kind: "caplet-set-activation";
+      id: string;
+      activation: CapletActivationState;
+      selector: "effective" | "underlying-sql";
+      expectedAggregateVersion?: number | undefined;
+      expectedAuthorityToken?: CurrentHostAuthorityToken | undefined;
+    }>
+  | Readonly<{
+      kind: "host-setting-set";
+      key: string;
+      value: unknown;
+      selector: "effective" | "underlying-sql";
+      expectedAggregateVersion?: number | undefined;
+      expectedAuthorityToken?: CurrentHostAuthorityToken | undefined;
+    }>;
+
+export type CurrentHostManagementFailure =
+  | Readonly<{
+      status: "denied";
+      binding: CurrentHostOperationBinding;
+      reason: "wrong-host" | "wrong-store" | "stale-authority" | "stale-security" | "revoked-role";
+    }>
+  | Readonly<{ status: "unavailable"; binding: CurrentHostOperationBinding }>
+  | Readonly<{
+      status: "conflict";
+      binding: CurrentHostOperationBinding;
+      reason:
+        | "aggregate-version"
+        | "operation-reservation"
+        | "writer-fence"
+        | "authority-generation"
+        | "effective-generation"
+        | "security-epoch";
+    }>;
+
+export type CurrentHostManagementListResult =
+  | Readonly<{
+      status: "ok";
+      binding: CurrentHostOperationBinding;
+      resource: CurrentHostManagementResource;
+      items: readonly CurrentHostManagementTargetDetail[];
+    }>
+  | CurrentHostManagementFailure;
+
+export type CurrentHostManagementInspectResult =
+  | Readonly<{
+      status: "ok";
+      binding: CurrentHostOperationBinding;
+      target: CurrentHostManagementTargetDetail;
+      record: Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      status: "not_found";
+      binding: CurrentHostOperationBinding;
+      resource: CurrentHostManagementResource;
+      id: string;
+      selector: "effective" | "underlying-sql";
+    }>
+  | CurrentHostManagementFailure;
+
+export type CurrentHostManagementPreviewResult =
+  | Readonly<{
+      status: "preview";
+      binding: CurrentHostOperationBinding;
+      target: CurrentHostManagementTargetDetail;
+      expectedAggregateVersion: number;
+      authorityToken: CurrentHostAuthorityToken;
+      consequence: CurrentHostManagementTargetDetail["consequence"];
+    }>
+  | Readonly<{
+      status: "rejected";
+      binding: CurrentHostOperationBinding;
+      reason: "filesystem-owned";
+      target: CurrentHostManagementTargetDetail;
+    }>
+  | Readonly<{
+      status: "not_found";
+      binding: CurrentHostOperationBinding;
+      resource: CurrentHostManagementResource;
+      id: string;
+      selector: "effective" | "underlying-sql";
+    }>
+  | CurrentHostManagementFailure;
+
+export type CurrentHostManagementMutationResult =
+  | Readonly<{
+      status: "committed";
+      binding: CurrentHostOperationBinding;
+      receipt: CurrentHostOperationReceipt;
+      localApplicationError?: SafeErrorSummary | undefined;
+    }>
+  | Readonly<{
+      status: "unknown";
+      binding: CurrentHostOperationBinding;
+      retryAllowed: false;
+      guidance: "lookup-original-target";
+    }>
+  | Extract<CurrentHostManagementPreviewResult, { status: "rejected" | "not_found" }>
+  | CurrentHostManagementFailure;
+
+export type CurrentHostManagementStatusResult =
+  | Readonly<{
+      status: "ok";
+      binding: CurrentHostOperationBinding;
+      health: ControlPlaneHealthSummary;
+    }>
+  | CurrentHostManagementFailure;
+
+export interface CurrentHostManagementStorage {
+  readonly identity: Readonly<{
+    logicalHostId: string;
+    storeId: string;
+    operationNamespace: string;
+  }>;
+  reserveOperation(
+    binding: CurrentHostOperationBinding,
+    aggregateId: string,
+  ): Promise<
+    | ControlPlaneOperationReservationResult
+    | Exclude<CurrentHostManagementFailure, { status: "conflict" }>
+  >;
+  loadSnapshot(
+    binding: CurrentHostOperationBinding,
+  ): Promise<
+    | Readonly<{ status: "ok"; snapshot: ControlPlaneSnapshot }>
+    | Exclude<CurrentHostManagementFailure, { status: "conflict" }>
+  >;
+  mutateCaplet(input: UntrustedCapletManagementMutation): Promise<ControlPlaneMutationResult>;
+  mutateHostSetting(
+    input: UntrustedHostSettingManagementMutation,
+  ): Promise<ControlPlaneMutationResult>;
+  lookupOperation(binding: CurrentHostOperationBinding): Promise<CurrentHostOperationLookupOutcome>;
+  status(
+    binding: CurrentHostOperationBinding,
+  ): Promise<
+    | Readonly<{ status: "ok"; health: ControlPlaneHealthSummary }>
+    | Exclude<CurrentHostManagementFailure, { status: "conflict" }>
+  >;
+}
+
+export type CurrentHostManagementDependencies = Readonly<{
+  storage: CurrentHostManagementStorage;
+  loadRuntimeSnapshot(): Promise<ControlPlaneRuntimeSnapshot>;
+  applyCommitted?: ((receipt: CurrentHostOperationReceipt) => void | Promise<void>) | undefined;
+  now?: (() => Date) | undefined;
+}>;
+
+export type CurrentHostManagementListRequest = Readonly<{
+  binding: CurrentHostOperationBinding;
+  resource: CurrentHostManagementResource;
+}>;
+
+export type CurrentHostManagementInspectRequest = Readonly<{
+  binding: CurrentHostOperationBinding;
+  resource: CurrentHostManagementResource;
+  id: string;
+  selector: "effective" | "underlying-sql";
+}>;
+
+export type CurrentHostManagementPreviewRequest = Readonly<{
+  binding: CurrentHostOperationBinding;
+  mutation: CurrentHostManagementMutation;
+}>;
+
+export type CurrentHostManagementMutateRequest = CurrentHostManagementPreviewRequest;
+
 /**
  * The single app-scoped Current Host administration boundary. Adapters authenticate
  * and serialize; this Module owns safe administration policy and outcomes.
@@ -594,6 +881,30 @@ export interface CurrentHostOperations {
     principal: CurrentHostPrincipal,
     operation: TOperation,
   ): Promise<CurrentHostOperationOutcomeFor<TOperation>>;
+  list(
+    principal: CurrentHostPrincipal,
+    request: CurrentHostManagementListRequest,
+  ): Promise<CurrentHostManagementListResult>;
+  inspect(
+    principal: CurrentHostPrincipal,
+    request: CurrentHostManagementInspectRequest,
+  ): Promise<CurrentHostManagementInspectResult>;
+  preview(
+    principal: CurrentHostPrincipal,
+    request: CurrentHostManagementPreviewRequest,
+  ): Promise<CurrentHostManagementPreviewResult>;
+  mutate(
+    principal: CurrentHostPrincipal,
+    request: CurrentHostManagementMutateRequest,
+  ): Promise<CurrentHostManagementMutationResult>;
+  status(
+    principal: CurrentHostPrincipal,
+    binding: CurrentHostOperationBinding,
+  ): Promise<CurrentHostManagementStatusResult>;
+  lookupOperation(
+    principal: CurrentHostPrincipal,
+    binding: CurrentHostOperationBinding,
+  ): Promise<CurrentHostOperationLookupOutcome>;
 }
 
 export type CurrentHostOperationsDependencies = {
@@ -601,6 +912,7 @@ export type CurrentHostOperationsDependencies = {
   control?: CurrentHostControlContext | undefined;
   activityLog: DashboardActivityLog;
   remoteCredentialStore?: RemoteServerCredentialStore | undefined;
+  management?: CurrentHostManagementDependencies | undefined;
   version: string;
 };
 
@@ -628,6 +940,45 @@ export function createCurrentHostOperations(
         operation,
       );
       return outcome as CurrentHostOperationOutcomeFor<TOperation>;
+    },
+    async list(principal, request) {
+      const operator = await authorizeCurrentHostManagementPrincipal(principal, request.binding);
+      return executeCurrentHostManagementList(requireManagement(dependencies), operator, request);
+    },
+    async inspect(principal, request) {
+      const operator = await authorizeCurrentHostManagementPrincipal(principal, request.binding);
+      return executeCurrentHostManagementInspect(
+        requireManagement(dependencies),
+        operator,
+        request,
+      );
+    },
+    async preview(principal, request) {
+      const operator = await authorizeCurrentHostManagementPrincipal(principal, request.binding);
+      return executeCurrentHostManagementPreview(
+        requireManagement(dependencies),
+        operator,
+        request,
+      );
+    },
+    async mutate(principal, request) {
+      const operator = await authorizeCurrentHostManagementPrincipal(principal, request.binding);
+      return executeCurrentHostManagementMutation(
+        requireManagement(dependencies),
+        operator,
+        request,
+      );
+    },
+    async status(principal, binding) {
+      await authorizeCurrentHostManagementPrincipal(principal, binding);
+      const result = await requireManagement(dependencies).storage.status(binding);
+      return result.status === "ok"
+        ? { status: "ok", binding, health: result.health }
+        : { ...result, binding };
+    },
+    async lookupOperation(principal, binding) {
+      await authorizeCurrentHostManagementPrincipal(principal, binding);
+      return requireManagement(dependencies).storage.lookupOperation(binding);
     },
   };
 }
@@ -755,6 +1106,574 @@ async function executeCurrentHostOperation(
     default:
       return assertNever(operation);
   }
+}
+
+async function authorizeCurrentHostManagementPrincipal(
+  principal: CurrentHostPrincipal,
+  binding: CurrentHostOperationBinding,
+): Promise<CurrentHostOperatorPrincipal> {
+  assertOperatorPrincipal(principal);
+  if (
+    binding.actorId !== principal.clientId ||
+    binding.target === "project" ||
+    !binding.operationId ||
+    !binding.logicalHostId ||
+    !binding.storeId ||
+    !binding.operationNamespace ||
+    !binding.requestIdentity
+  ) {
+    throw new CapletsError(
+      "AUTH_FAILED",
+      "Current Host management requires an authorized target-bound operation.",
+    );
+  }
+  const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
+  if (finalAuthorization instanceof Promise) await finalAuthorization;
+  return principal;
+}
+
+function requireManagement(
+  dependencies: CurrentHostOperationsDependencies,
+): CurrentHostManagementDependencies {
+  if (dependencies.management) return dependencies.management;
+  throw new CapletsError(
+    "SERVER_UNAVAILABLE",
+    "SQL Current Host management is unavailable before storage activation.",
+  );
+}
+
+async function executeCurrentHostManagementList(
+  management: CurrentHostManagementDependencies,
+  _principal: CurrentHostOperatorPrincipal,
+  request: CurrentHostManagementListRequest,
+): Promise<CurrentHostManagementListResult> {
+  const loaded = await loadAuthorizedManagementSnapshots(management, request.binding);
+  if ("status" in loaded) return loaded;
+  const rows =
+    request.resource === "caplet"
+      ? Object.values(loaded.runtime.caplets).map((row) =>
+          managementTargetDetail("caplet", row.id, "effective", row),
+        )
+      : Object.values(loaded.runtime.hostSettings).map((row) =>
+          managementTargetDetail("host-setting", row.key, "effective", row),
+        );
+  return {
+    status: "ok",
+    binding: request.binding,
+    resource: request.resource,
+    items: rows.toSorted((left, right) => left.id.localeCompare(right.id)),
+  };
+}
+
+async function executeCurrentHostManagementInspect(
+  management: CurrentHostManagementDependencies,
+  _principal: CurrentHostOperatorPrincipal,
+  request: CurrentHostManagementInspectRequest,
+): Promise<CurrentHostManagementInspectResult> {
+  const loaded = await loadAuthorizedManagementSnapshots(management, request.binding);
+  if ("status" in loaded) return loaded;
+  const target = resolveManagementTarget(
+    loaded.runtime,
+    request.resource,
+    request.id,
+    request.selector,
+  );
+  if (!target) {
+    return {
+      status: "not_found",
+      binding: request.binding,
+      resource: request.resource,
+      id: request.id,
+      selector: request.selector,
+    };
+  }
+  return {
+    status: "ok",
+    binding: request.binding,
+    target: target.detail,
+    record: managementRecord(loaded.sql, request.resource, request.id, request.selector),
+  };
+}
+
+async function executeCurrentHostManagementPreview(
+  management: CurrentHostManagementDependencies,
+  _principal: CurrentHostOperatorPrincipal,
+  request: CurrentHostManagementPreviewRequest,
+): Promise<CurrentHostManagementPreviewResult> {
+  const prepared = await prepareCurrentHostManagementMutation(management, request);
+  if (prepared.kind === "replay") {
+    return {
+      status: "conflict",
+      binding: request.binding,
+      reason: "operation-reservation",
+    };
+  }
+  if (prepared.kind === "result") return prepared.result;
+  return {
+    status: "preview",
+    binding: request.binding,
+    target: prepared.target,
+    expectedAggregateVersion: prepared.expectedAggregateVersion,
+    authorityToken: {
+      authorityGeneration: prepared.runtime.authorityGeneration,
+      effectiveGeneration: prepared.runtime.effectiveGeneration,
+    },
+    consequence: prepared.target.consequence,
+  };
+}
+
+async function executeCurrentHostManagementMutation(
+  management: CurrentHostManagementDependencies,
+  _principal: CurrentHostOperatorPrincipal,
+  request: CurrentHostManagementMutateRequest,
+): Promise<CurrentHostManagementMutationResult> {
+  const prepared = await prepareCurrentHostManagementMutation(management, request);
+  if (prepared.kind === "replay") {
+    return {
+      status: "committed",
+      binding: request.binding,
+      receipt: prepared.receipt,
+    };
+  }
+  if (prepared.kind === "result") {
+    if (prepared.result.status === "preview") {
+      throw new CapletsError("INTERNAL_ERROR", "Unexpected management preview result.");
+    }
+    return prepared.result;
+  }
+  const common = {
+    binding: request.binding,
+    aggregateId: managementMutationId(request.mutation),
+    expectedAggregateVersion: prepared.expectedAggregateVersion,
+    expectedAuthorityGeneration: prepared.runtime.authorityGeneration,
+    expectedSecurityEpoch: prepared.runtime.securityEpoch,
+    localApplication: management.applyCommitted
+      ? ("pending" as const)
+      : ("not-applicable" as const),
+    managementTarget: prepared.target,
+    provenance: {
+      id: `provenance:${request.binding.operationId}`,
+      sourceKind: "current-host-management",
+      source: {
+        surface: request.binding.target,
+        resource: prepared.target.resource,
+        selector: prepared.target.selector,
+      },
+      contentHash: managementRequestHash(request.mutation),
+      installedAt: (management.now?.() ?? new Date()).toISOString(),
+      ownerId: request.binding.actorId,
+    },
+    activity: {
+      id: `activity:${request.binding.operationId}`,
+      action: request.mutation.kind,
+      target: {
+        type: prepared.target.resource,
+        id: prepared.target.id,
+        selector: prepared.target.selector,
+      },
+      detail: {
+        owner: prepared.target.owner,
+        source: prepared.target.source.kind,
+        effectiveChanged: prepared.target.effectiveChanged,
+      },
+    },
+  };
+  const result =
+    request.mutation.kind === "host-setting-set"
+      ? await management.storage.mutateHostSetting({
+          ...common,
+          setting: {
+            version: 1,
+            ...MutableHostSettingSchema.parse({
+              key: request.mutation.key,
+              value: request.mutation.value,
+            }),
+            updatedAt: (management.now?.() ?? new Date()).toISOString(),
+          },
+        })
+      : await management.storage.mutateCaplet({
+          ...common,
+          ...capletMutationDocuments(
+            prepared.sql,
+            prepared.runtime,
+            request.mutation,
+            prepared.target,
+            request.binding,
+          ),
+        });
+  if (result.status === "indeterminate") {
+    return {
+      status: "unknown",
+      binding: result.binding,
+      retryAllowed: false,
+      guidance: "lookup-original-target",
+    };
+  }
+  if (result.status !== "committed") return { ...result, binding: request.binding };
+  let localApplicationError: SafeErrorSummary | undefined;
+  if (management.applyCommitted) {
+    try {
+      await management.applyCommitted(result.receipt);
+    } catch (error) {
+      localApplicationError = toCurrentHostSafeError(error);
+    }
+  }
+  return {
+    status: "committed",
+    binding: request.binding,
+    receipt: result.receipt,
+    ...(localApplicationError ? { localApplicationError } : {}),
+  };
+}
+
+type PreparedManagementMutation =
+  | Readonly<{
+      kind: "prepared";
+      sql: ControlPlaneSnapshot;
+      runtime: ControlPlaneRuntimeSnapshot;
+      target: CurrentHostManagementTargetDetail;
+      expectedAggregateVersion: number;
+    }>
+  | Readonly<{
+      kind: "replay";
+      receipt: CurrentHostOperationReceipt;
+    }>
+  | Readonly<{
+      kind: "result";
+      result: CurrentHostManagementPreviewResult;
+    }>;
+
+async function prepareCurrentHostManagementMutation(
+  management: CurrentHostManagementDependencies,
+  request: CurrentHostManagementPreviewRequest,
+): Promise<PreparedManagementMutation> {
+  validateManagementMutation(request.mutation);
+  const aggregateId = managementMutationId(request.mutation);
+  const reservation = await management.storage.reserveOperation(request.binding, aggregateId);
+  if (reservation.status === "unavailable") {
+    return { kind: "result", result: { status: "unavailable", binding: request.binding } };
+  }
+  if (reservation.status === "conflict") {
+    return {
+      kind: "result",
+      result: {
+        status: "conflict",
+        binding: request.binding,
+        reason: "operation-reservation",
+      },
+    };
+  }
+  if (reservation.status === "committed") {
+    return { kind: "replay", receipt: reservation.receipt };
+  }
+  const loaded = await loadAuthorizedManagementSnapshots(management, request.binding);
+  if ("status" in loaded) return { kind: "result", result: loaded };
+  const resource = managementMutationResource(request.mutation);
+  const id = managementMutationId(request.mutation);
+  const target = resolveManagementTarget(loaded.runtime, resource, id, request.mutation.selector);
+  if (!target) {
+    return {
+      kind: "result",
+      result: {
+        status: "not_found",
+        binding: request.binding,
+        resource,
+        id,
+        selector: request.mutation.selector,
+      },
+    };
+  }
+  if (target.rejected) {
+    return {
+      kind: "result",
+      result: {
+        status: "rejected",
+        binding: request.binding,
+        reason: "filesystem-owned",
+        target: target.detail,
+      },
+    };
+  }
+  if (
+    request.mutation.expectedAuthorityToken &&
+    (request.mutation.expectedAuthorityToken.authorityGeneration !==
+      loaded.runtime.authorityGeneration ||
+      request.mutation.expectedAuthorityToken.effectiveGeneration !==
+        loaded.runtime.effectiveGeneration)
+  ) {
+    return {
+      kind: "result",
+      result: {
+        status: "conflict",
+        binding: request.binding,
+        reason:
+          request.mutation.expectedAuthorityToken.authorityGeneration !==
+          loaded.runtime.authorityGeneration
+            ? "authority-generation"
+            : "effective-generation",
+      },
+    };
+  }
+  const expectedAggregateVersion =
+    request.mutation.expectedAggregateVersion ??
+    aggregateVersionForManagement(loaded.sql, resource, id);
+  return {
+    kind: "prepared",
+    sql: loaded.sql,
+    runtime: loaded.runtime,
+    target: target.detail,
+    expectedAggregateVersion,
+  };
+}
+
+async function loadAuthorizedManagementSnapshots(
+  management: CurrentHostManagementDependencies,
+  binding: CurrentHostOperationBinding,
+): Promise<
+  | Readonly<{ sql: ControlPlaneSnapshot; runtime: ControlPlaneRuntimeSnapshot }>
+  | CurrentHostManagementFailure
+> {
+  const loaded = await management.storage.loadSnapshot(binding);
+  if (loaded.status !== "ok") return loaded;
+  try {
+    const runtime = await management.loadRuntimeSnapshot();
+    if (
+      runtime.identity.logicalHostId !== binding.logicalHostId ||
+      runtime.identity.storeId !== binding.storeId ||
+      runtime.identity.operationNamespace !== binding.operationNamespace
+    ) {
+      return { status: "denied", binding, reason: "stale-authority" };
+    }
+    return { sql: loaded.snapshot, runtime };
+  } catch {
+    return { status: "unavailable", binding };
+  }
+}
+
+function resolveManagementTarget(
+  runtime: ControlPlaneRuntimeSnapshot,
+  resource: CurrentHostManagementResource,
+  id: string,
+  selector: "effective" | "underlying-sql",
+): Readonly<{ detail: CurrentHostManagementTargetDetail; rejected: boolean }> | undefined {
+  const row = resource === "caplet" ? runtime.caplets[id] : runtime.hostSettings[id];
+  if (!row) return undefined;
+  const resolution =
+    resource === "caplet"
+      ? resolveControlPlaneCapletMutationTarget(runtime, id, {
+          underlyingSql: selector === "underlying-sql",
+        })
+      : resolveControlPlaneHostSettingMutationTarget(runtime, id, {
+          underlyingSql: selector === "underlying-sql",
+        });
+  if (resolution.status === "not-found") return undefined;
+  return {
+    detail: managementTargetDetail(
+      resource,
+      id,
+      selector,
+      row,
+      resolution.status === "allowed" ? resolution.effectiveChanged : false,
+    ),
+    rejected: resolution.status === "rejected",
+  };
+}
+
+function managementTargetDetail(
+  resource: CurrentHostManagementResource,
+  id: string,
+  selector: "effective" | "underlying-sql",
+  row: Readonly<{
+    owner: "sql" | "filesystem";
+    source: RuntimeOwnershipLayer["source"];
+    effective: boolean;
+    shadowChain: readonly RuntimeOwnershipLayer[];
+    underlyingSql?: RuntimeOwnershipLayer | undefined;
+  }>,
+  effectiveChanged = row.owner === "sql" && row.effective,
+): CurrentHostManagementTargetDetail {
+  const selected =
+    selector === "underlying-sql" && row.owner === "filesystem" ? row.underlyingSql : row;
+  if (!selected) {
+    throw new CapletsError("REQUEST_INVALID", "The underlying SQL record does not exist.");
+  }
+  const consequence = effectiveChanged
+    ? "effective-runtime-changes"
+    : "no-effective-change-while-shadowed";
+  return Object.freeze({
+    resource,
+    id,
+    selector,
+    owner: selected.owner,
+    source: { kind: selected.source.kind },
+    effective: row.effective,
+    effectiveChanged,
+    shadowChain: row.shadowChain.map(safeOwnershipLayer),
+    underlyingSqlAvailable: row.owner === "sql" || row.underlyingSql !== undefined,
+    consequence,
+  });
+}
+
+function safeOwnershipLayer(layer: RuntimeOwnershipLayer): CurrentHostOwnershipLayer {
+  return {
+    owner: layer.owner,
+    source: { kind: layer.source.kind },
+    ...(layer.provenance?.id ? { provenance: { id: layer.provenance.id } } : {}),
+  };
+}
+
+function managementRecord(
+  snapshot: ControlPlaneSnapshot,
+  resource: CurrentHostManagementResource,
+  id: string,
+  selector: "effective" | "underlying-sql",
+): Readonly<Record<string, unknown>> {
+  if (resource === "host-setting") {
+    const setting = snapshot.hostSettings.find((row) => row.key === id);
+    return setting && selector === "underlying-sql"
+      ? {
+          key: setting.key,
+          value: setting.value,
+          updatedAt: setting.updatedAt,
+          aggregateVersion: snapshot.hostSettingVersions?.[id] ?? 0,
+        }
+      : {};
+  }
+  const caplet = snapshot.caplets.find((row) => row.aggregate.id === id)?.aggregate;
+  return caplet && selector === "underlying-sql"
+    ? {
+        id: caplet.id,
+        name: caplet.portable.name,
+        description: caplet.portable.description,
+        activation: caplet.activation,
+        updateState: caplet.updateState,
+        aggregateVersion: caplet.aggregateVersion,
+      }
+    : {};
+}
+
+function aggregateVersionForManagement(
+  snapshot: ControlPlaneSnapshot,
+  resource: CurrentHostManagementResource,
+  id: string,
+): number {
+  if (resource === "caplet") {
+    return snapshot.caplets.find((row) => row.aggregate.id === id)?.aggregate.aggregateVersion ?? 0;
+  }
+  return snapshot.hostSettingVersions?.[id] ?? 0;
+}
+
+function capletMutationDocuments(
+  snapshot: ControlPlaneSnapshot,
+  runtime: ControlPlaneRuntimeSnapshot,
+  mutation: Extract<CurrentHostManagementMutation, { kind: "caplet-set-activation" }>,
+  target: CurrentHostManagementTargetDetail,
+  binding: CurrentHostOperationBinding,
+): Readonly<{
+  aggregate: CanonicalCapletAggregate;
+  projection: CanonicalCapletRelationalProjection;
+}> {
+  const stored = snapshot.caplets.find((row) => row.aggregate.id === mutation.id);
+  if (!stored) throw new CapletsError("REQUEST_INVALID", "The SQL Caplet does not exist.");
+  const aggregateVersion = stored.aggregate.aggregateVersion + 1;
+  const wasEffective = target.effectiveChanged && stored.aggregate.activation === "active";
+  const willBeEffective = target.effectiveChanged && mutation.activation === "active";
+  const aggregate: CanonicalCapletAggregate = {
+    ...stored.aggregate,
+    aggregateVersion,
+    ownership: "sql",
+    activation: mutation.activation,
+    effective: willBeEffective,
+  };
+  const previous = stored.projection.activationHistory.at(-1);
+  const projection: CanonicalCapletRelationalProjection = {
+    ...stored.projection,
+    activationHistory: [
+      ...stored.projection.activationHistory,
+      {
+        capletId: mutation.id,
+        sequence: stored.projection.activationHistory.length + 1,
+        from: previous?.to ?? stored.aggregate.activation,
+        to: mutation.activation,
+        reason: activationReason(mutation.activation),
+        actorId: binding.actorId,
+        aggregateVersion,
+        authorityVersion: runtime.authorityGeneration,
+        effectiveVersion: runtime.effectiveGeneration + (wasEffective === willBeEffective ? 0 : 1),
+        occurredAt: new Date().toISOString(),
+      },
+    ],
+  };
+  return { aggregate, projection };
+}
+
+function activationReason(
+  activation: CapletActivationState,
+): CanonicalCapletRelationalProjection["activationHistory"][number]["reason"] {
+  switch (activation) {
+    case "active":
+      return "enabled";
+    case "disabled":
+      return "disabled";
+    case "setup-required":
+      return "setup-required";
+    case "dormant-shadowed":
+      return "filesystem-shadowed";
+  }
+}
+
+function validateManagementMutation(mutation: CurrentHostManagementMutation): void {
+  if (mutation.kind === "host-setting-set") {
+    MutableHostSettingSchema.parse({ key: mutation.key, value: mutation.value });
+  } else if (
+    !["active", "setup-required", "dormant-shadowed", "disabled"].includes(mutation.activation)
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Unsupported SQL Caplet activation state.");
+  }
+  if (mutation.selector !== "effective" && mutation.selector !== "underlying-sql") {
+    throw new CapletsError("REQUEST_INVALID", "Unsupported Current Host mutation selector.");
+  }
+}
+
+function managementMutationResource(
+  mutation: CurrentHostManagementMutation,
+): CurrentHostManagementResource {
+  return mutation.kind === "host-setting-set" ? "host-setting" : "caplet";
+}
+
+function managementMutationId(mutation: CurrentHostManagementMutation): string {
+  return mutation.kind === "host-setting-set" ? mutation.key : mutation.id;
+}
+
+function managementRequestHash(mutation: CurrentHostManagementMutation): string {
+  return createHash("sha256").update(JSON.stringify(mutation)).digest("hex");
+}
+
+function parseExpectedAuthorityToken(value: unknown): CurrentHostAuthorityToken | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.authorityGeneration) ||
+    Number(value.authorityGeneration) < 0 ||
+    !Number.isSafeInteger(value.effectiveGeneration) ||
+    Number(value.effectiveGeneration) < 0
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Current Host expected authority token is invalid.");
+  }
+  return {
+    authorityGeneration: Number(value.authorityGeneration),
+    effectiveGeneration: Number(value.effectiveGeneration),
+  };
+}
+
+function boundedNonNegativeInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Current Host aggregate version must be a non-negative integer.",
+    );
+  }
+  return Number(value);
 }
 
 function boundedLimit(value: number | undefined): number {

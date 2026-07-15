@@ -32,7 +32,13 @@ export type RemoteCliCommand =
   | "vault_delete"
   | "vault_access_grant"
   | "vault_access_revoke"
-  | "vault_access_list";
+  | "vault_access_list"
+  | "current_host_list"
+  | "current_host_inspect"
+  | "current_host_preview"
+  | "current_host_mutate"
+  | "current_host_status"
+  | "current_host_operation_lookup";
 
 /**
  * Parsed wire input. `command` stays open so the adapter can safely envelope

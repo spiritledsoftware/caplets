@@ -87,8 +87,15 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   dashboardApi,
+  dashboardManagementMutation,
+  dashboardManagementPreview,
   isDashboardUnauthorized,
+  dashboardManagementRecoveryNoticesAcknowledged,
+  acknowledgeRecoveredDashboardManagementOperations,
+  recoverDashboardManagementOperations,
   setDashboardSession,
+  type DashboardManagementMutation,
+  type DashboardManagementOperation,
   type DashboardSession,
 } from "@/lib/api";
 import { EPHEMERAL_REVEAL_TTL_MS, createEphemeralRevealExpiry } from "@/lib/ephemeral-reveal";
@@ -156,6 +163,19 @@ type CapletRecord = Record<string, unknown> & {
   projectBindingRequired?: boolean | "true" | "false";
 };
 
+type ManagementTarget = {
+  resource?: "caplet" | "host-setting";
+  id?: string;
+  selector?: "effective" | "underlying-sql";
+  owner?: "sql" | "filesystem";
+  source?: { kind?: string };
+  effective?: boolean;
+  effectiveChanged?: boolean;
+  shadowChain?: Array<{ owner?: string; source?: { kind?: string }; provenance?: { id?: string } }>;
+  underlyingSqlAvailable?: boolean;
+  consequence?: "effective-runtime-changes" | "no-effective-change-while-shadowed";
+};
+
 type DashboardData = {
   summary?: Summary;
   caplets?: { caplets?: Array<CapletRecord>; error?: string };
@@ -180,6 +200,10 @@ type DashboardData = {
     updates?: Array<{ id?: string; status?: string; risk?: unknown }>;
     error?: string;
   };
+  managementCaplets?: { status?: string; items?: ManagementTarget[]; error?: string };
+  managementSettings?: { status?: string; items?: ManagementTarget[]; error?: string };
+  managementStatus?: { status?: string; health?: Record<string, unknown>; error?: string };
+  managementRecoveries?: { outcomes?: unknown[]; error?: string };
 };
 
 const routes: Array<{
@@ -361,6 +385,15 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         load("logs", "logs?limit=100"),
         load("projectBinding", "project-binding"),
         load("updates", "catalog/updates"),
+        load("managementCaplets", "management?resource=caplet"),
+        load("managementSettings", "management?resource=host-setting"),
+        load("managementStatus", "management/status"),
+        recoverDashboardManagementOperations()
+          .then((outcomes) => ({ name: "managementRecoveries", value: { outcomes } }))
+          .catch((error: unknown) => ({
+            name: "managementRecoveries",
+            value: { error: error instanceof Error ? error.message : String(error) },
+          })),
       ]);
       setData(
         Object.fromEntries(loaded.map((entry) => [entry.name, entry.value])) as DashboardData,
@@ -791,7 +824,7 @@ function Page({
   if (route === "vault") return <VaultPage data={data} loading={loading} action={action} />;
   if (route === "runtime") return <RuntimePage data={data} loading={loading} action={action} />;
   if (route === "activity") return <ActivityPage data={data} loading={loading} />;
-  if (route === "settings") return <SettingsPage session={session} summary={data.summary} />;
+  if (route === "settings") return <SettingsPage session={session} data={data} action={action} />;
   return <OverviewPage data={data} loading={loading} />;
 }
 
@@ -1464,6 +1497,13 @@ function CapletsPage({
           </div>
         </CardContent>
       </Card>
+      <ManagementOwnershipList
+        resource="caplet"
+        items={data.managementCaplets?.items}
+        error={data.managementCaplets?.error}
+        action={action}
+      />
+      <ManagementRecoveryNotices recoveries={data.managementRecoveries?.outcomes} />
     </PageFrame>
   );
 }
@@ -2196,7 +2236,15 @@ function ActivityPage({ data, loading }: { data: DashboardData; loading: boolean
   );
 }
 
-function SettingsPage({ session, summary }: { session: DashboardSession; summary?: Summary }) {
+function SettingsPage({
+  session,
+  data,
+  action,
+}: {
+  session: DashboardSession;
+  data: DashboardData;
+  action: DashboardAction;
+}) {
   const isDevelopmentSession = session.operatorClientId === "development_unauthenticated";
   return (
     <PageFrame
@@ -2240,7 +2288,7 @@ function SettingsPage({ session, summary }: { session: DashboardSession; summary
                 isDevelopmentSession ? "Development no-auth bypass" : "Approved operator session"
               }
             />
-            <RecordRow label="Current Host" value={summary?.host?.baseUrl ?? "Current Host"} />
+            <RecordRow label="Current Host" value={data.summary?.host?.baseUrl ?? "Current Host"} />
             <RecordRow label="Operator client ID" value={session.operatorClientId} />
             <RecordRow label="CSRF token" value={session.csrfToken} />
           </dl>
@@ -2269,8 +2317,452 @@ function SettingsPage({ session, summary }: { session: DashboardSession; summary
           ) : null}
         </CardContent>
       </Card>
+      <ManagementOwnershipList
+        resource="host-setting"
+        items={data.managementSettings?.items}
+        action={action}
+        error={data.managementSettings?.error}
+      />
+      <ManagementRecoveryNotices recoveries={data.managementRecoveries?.outcomes} />
     </PageFrame>
   );
+}
+type ManagementInspection = {
+  target?: ManagementTarget;
+  record?: Record<string, unknown>;
+};
+
+type PreparedManagementChange = {
+  mutation: DashboardManagementMutation;
+  operation: DashboardManagementOperation;
+  result: Record<string, unknown>;
+};
+
+function ManagementOwnershipList({
+  resource,
+  items,
+  error,
+  action,
+}: {
+  resource: "caplet" | "host-setting";
+  items: ManagementTarget[] | undefined;
+  error?: string | undefined;
+  action: DashboardAction;
+}) {
+  const [inspection, setInspection] = useState<ManagementInspection>();
+  const [draft, setDraft] = useState("");
+  const [prepared, setPrepared] = useState<PreparedManagementChange>();
+  const [outcome, setOutcome] = useState<unknown>();
+  const [busy, setBusy] = useState<"inspect" | "preview" | "apply">();
+  const [managementError, setManagementError] = useState<string>();
+  const detailRef = useRef<HTMLDivElement>(null);
+  const detailId = `management-detail-${resource}`;
+  if (!items && !error) return null;
+
+  async function inspectUnderlying(item: ManagementTarget) {
+    setBusy("inspect");
+    setManagementError(undefined);
+    setPrepared(undefined);
+    setOutcome(undefined);
+    try {
+      const result = await dashboardApi<ManagementInspection>(
+        `management/inspect?resource=${encodeURIComponent(resource)}&id=${encodeURIComponent(
+          item.id ?? "",
+        )}&selector=underlying-sql`,
+      );
+      setInspection(result);
+      queueMicrotask(() => {
+        detailRef.current?.focus({ preventScroll: true });
+        detailRef.current?.scrollIntoView?.({ block: "nearest" });
+      });
+      if (resource === "host-setting" && result.record && "value" in result.record) {
+        setDraft(JSON.stringify(result.record.value));
+      }
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  function mutationForInspection(): DashboardManagementMutation {
+    const id = inspection?.target?.id;
+    if (!id) throw new Error("Inspect an underlying SQL record before preparing a change.");
+    const aggregateVersion = numberField(inspection.record, "aggregateVersion");
+    if (resource === "host-setting") {
+      return {
+        kind: "host-setting-set",
+        key: id,
+        value: parseManagementDraft(draft),
+        selector: "underlying-sql",
+        ...(aggregateVersion === undefined ? {} : { expectedAggregateVersion: aggregateVersion }),
+      };
+    }
+    const currentActivation = stringFieldFromRecord(inspection.record, "activation");
+    return {
+      kind: "caplet-set-activation",
+      id,
+      activation: currentActivation === "disabled" ? "active" : "disabled",
+      selector: "underlying-sql",
+      ...(aggregateVersion === undefined ? {} : { expectedAggregateVersion: aggregateVersion }),
+    };
+  }
+
+  async function previewChange() {
+    setBusy("preview");
+    setPrepared(undefined);
+    setOutcome(undefined);
+    setManagementError(undefined);
+    try {
+      const mutation = mutationForInspection();
+      const preview = await dashboardManagementPreview(mutation);
+      setPrepared({ mutation, operation: preview.operation, result: preview.result });
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function applyChange() {
+    if (!prepared) return;
+    setBusy("apply");
+    setManagementError(undefined);
+    try {
+      const result = await dashboardManagementMutation(prepared.mutation, prepared.operation);
+      setOutcome(result);
+      setPrepared(undefined);
+      const status = stringFieldFromRecord(isUnknownRecord(result) ? result : undefined, "status");
+      if (status === "committed") {
+        setInspection(undefined);
+        setDraft("");
+        await action(
+          objectField(result, "localApplicationError")
+            ? "SQL committed; local application remains pending"
+            : "Current Host SQL change committed",
+          async () => result,
+        );
+        if (objectField(result, "localApplicationError")) {
+          toast.warning("SQL committed, but local application requires recovery.");
+        }
+      } else if (status === "unknown") {
+        toast.warning(
+          "Mutation outcome is unknown. The dashboard will look up the original target.",
+        );
+        const recovered = await recoverDashboardManagementOperations();
+        setOutcome(recovered.at(-1) ?? result);
+        const recoveredStatus = managementOutcomeStatus(recovered.at(-1));
+        if (recoveredStatus === "committed" || recoveredStatus === "not_committed") {
+          setInspection(undefined);
+          setDraft("");
+        }
+      } else {
+        toast.error(`Current Host SQL change ${status ?? "failed"}.`);
+      }
+    } catch (error) {
+      setManagementError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  const previewTarget = objectField(prepared?.result, "target");
+  const receipt = objectField(outcome, "receipt");
+  const receiptTarget = objectField(receipt, "management");
+  const selectedTarget = inspection?.target;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          {resource === "caplet" ? "Caplet ownership" : "Mutable host setting ownership"}
+        </CardTitle>
+        <CardDescription>
+          Effective values stay filesystem-owned when overridden. Underlying SQL records require an
+          explicit target and report whether runtime behavior changes.
+        </CardDescription>
+        {error ? (
+          <Alert variant="destructive">
+            <AlertTriangleIcon />
+            <AlertTitle>Ownership data unavailable</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        {error ? null : !items || items.length === 0 ? (
+          <EmptyLine
+            text={
+              resource === "caplet"
+                ? "No SQL-manageable Caplets are present."
+                : "No SQL-manageable host settings are present."
+            }
+          />
+        ) : (
+          items.map((item) => (
+            <div
+              key={`${resource}:${item.id}`}
+              className="flex flex-col gap-3 rounded-lg border bg-card p-3 sm:flex-row sm:items-start sm:justify-between"
+            >
+              <OwnershipSummary target={item} />
+              {item.underlyingSqlAvailable ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void inspectUnderlying(item)}
+                  disabled={busy !== undefined}
+                  aria-busy={busy === "inspect"}
+                  aria-label={`Inspect underlying SQL for ${item.id ?? resource}`}
+                  aria-controls={detailId}
+                  aria-expanded={selectedTarget?.id === item.id}
+                >
+                  <DatabaseIcon data-icon="inline-start" />
+                  Inspect underlying SQL
+                </Button>
+              ) : null}
+            </div>
+          ))
+        )}
+        {managementError ? (
+          <Alert variant="destructive">
+            <AlertTriangleIcon />
+            <AlertTitle>Current Host management failed</AlertTitle>
+            <AlertDescription>{managementError}</AlertDescription>
+          </Alert>
+        ) : null}
+        {outcome ? (
+          <Alert
+            variant={managementOutcomeStatus(outcome) === "committed" ? "default" : "destructive"}
+          >
+            {managementOutcomeStatus(outcome) === "committed" ? (
+              <CheckIcon />
+            ) : (
+              <AlertTriangleIcon />
+            )}
+            <AlertTitle>{managementOutcomeTitle(outcome)}</AlertTitle>
+            <AlertDescription>
+              {managementOutcomeDescription(outcome, receiptTarget)}
+            </AlertDescription>
+          </Alert>
+        ) : null}
+        {selectedTarget ? (
+          <div
+            ref={detailRef}
+            tabIndex={-1}
+            className="grid gap-3 rounded-lg border bg-muted/40 p-4"
+            id={detailId}
+          >
+            <OwnershipSummary target={selectedTarget} />
+            {inspection?.record ? (
+              <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-background p-3 text-xs">
+                <code>{JSON.stringify(inspection.record, null, 2)}</code>
+              </pre>
+            ) : null}
+            {resource === "host-setting" ? (
+              <label className="grid gap-2 text-sm font-medium">
+                Proposed JSON value
+                <Input
+                  value={draft}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    setPrepared(undefined);
+                    setOutcome(undefined);
+                  }}
+                  spellCheck={false}
+                  className="font-mono"
+                />
+              </label>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy !== undefined}
+                aria-busy={busy === "preview"}
+                onClick={() => void previewChange()}
+              >
+                Preview SQL change
+              </Button>
+              {prepared ? (
+                <Button
+                  type="button"
+                  disabled={busy !== undefined}
+                  aria-busy={busy === "apply"}
+                  onClick={() => void applyChange()}
+                >
+                  Apply prepared change
+                </Button>
+              ) : null}
+            </div>
+            {prepared ? (
+              <Alert>
+                <DatabaseIcon />
+                <AlertTitle>Prepared against the underlying SQL record</AlertTitle>
+                <AlertDescription>
+                  {stringFieldFromRecord(previewTarget, "consequence") ===
+                  "no-effective-change-while-shadowed"
+                    ? "No effective runtime change while the filesystem override remains."
+                    : "This change updates effective runtime state."}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ManagementRecoveryNotices({ recoveries }: { recoveries: unknown[] | undefined }) {
+  const [visibleRecoveries, setVisibleRecoveries] = useState(() =>
+    dashboardManagementRecoveryNoticesAcknowledged() ? undefined : recoveries,
+  );
+  useEffect(
+    () =>
+      setVisibleRecoveries(
+        dashboardManagementRecoveryNoticesAcknowledged() ? undefined : recoveries,
+      ),
+    [recoveries],
+  );
+  if (!visibleRecoveries?.length) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Recovered operation outcomes</CardTitle>
+        <CardDescription>
+          These receipts and fences were looked up against each operation&apos;s original target.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        {visibleRecoveries.map((outcome, index) => {
+          const status = managementOutcomeStatus(outcome);
+          const receiptTarget = objectField(objectField(outcome, "receipt"), "management");
+          const binding =
+            objectField(outcome, "binding") ??
+            objectField(objectField(outcome, "receipt"), "binding");
+          const operationId =
+            stringFieldFromRecord(binding, "operationId") ?? `recovered-operation-${index + 1}`;
+          return (
+            <Alert key={operationId} variant={status === "committed" ? "default" : "destructive"}>
+              {status === "committed" ? <CheckIcon /> : <AlertTriangleIcon />}
+              <AlertTitle>
+                {managementOutcomeTitle(outcome)} · {operationId}
+              </AlertTitle>
+              <AlertDescription>
+                {managementOutcomeDescription(outcome, receiptTarget)}
+              </AlertDescription>
+            </Alert>
+          );
+        })}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            acknowledgeRecoveredDashboardManagementOperations();
+            setVisibleRecoveries([]);
+          }}
+        >
+          Acknowledge recovered outcomes
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OwnershipSummary({ target }: { target: ManagementTarget }) {
+  return (
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-sm font-semibold">{target.id ?? "Unknown record"}</span>
+        <Badge variant="outline">
+          {target.selector === "underlying-sql" ? "Selected target" : "Effective value"}
+        </Badge>
+        <Badge variant={target.owner === "sql" ? "secondary" : "outline"}>
+          {target.owner ?? "unknown"} owner
+        </Badge>
+        <Badge variant="outline">{target.source?.kind ?? "unknown source"}</Badge>
+      </div>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {(target.shadowChain ?? [])
+          .map((layer) => `${layer.owner ?? "unknown"}:${layer.source?.kind ?? "unknown"}`)
+          .join(" → ") || "No shadow chain reported."}
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {target.effectiveChanged === true
+          ? "A SQL mutation can change effective runtime behavior."
+          : target.effectiveChanged === false
+            ? "An explicit SQL mutation leaves effective runtime behavior unchanged while shadowed."
+            : "The effective runtime consequence is unknown."}
+      </p>
+    </div>
+  );
+}
+
+function parseManagementDraft(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new Error("Proposed host setting value must be valid JSON.");
+  }
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function objectField(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (!isUnknownRecord(value)) return undefined;
+  const field = value[key];
+  return isUnknownRecord(field) ? field : undefined;
+}
+
+function stringFieldFromRecord(
+  value: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const field = value?.[key];
+  return typeof field === "string" ? field : undefined;
+}
+
+function numberField(value: Record<string, unknown> | undefined, key: string): number | undefined {
+  const field = value?.[key];
+  return typeof field === "number" && Number.isSafeInteger(field) ? field : undefined;
+}
+
+function managementOutcomeStatus(value: unknown): string | undefined {
+  return stringFieldFromRecord(isUnknownRecord(value) ? value : undefined, "status");
+}
+
+function managementOutcomeDescription(
+  value: unknown,
+  receiptTarget: Record<string, unknown> | undefined,
+): string {
+  const status = managementOutcomeStatus(value);
+  if (status === "committed") {
+    if (objectField(value, "localApplicationError")) {
+      return "SQL committed, but local application is pending and requires recovery.";
+    }
+    return stringFieldFromRecord(receiptTarget, "consequence") ===
+      "no-effective-change-while-shadowed"
+      ? "Receipt: no effective runtime change while the filesystem override remains."
+      : "The receipt preserves the selected owner, source, and runtime consequence.";
+  }
+  if (status === "not_committed") {
+    return "The original identity is fenced as not committed. Resubmission requires a new operation ID.";
+  }
+  if (status === "unknown") {
+    return "No retry is allowed. Lookup remains pinned to the original authenticated target.";
+  }
+  return `No SQL commit was confirmed (${status ?? "unavailable"}).`;
+}
+
+function managementOutcomeTitle(value: unknown): string {
+  const status = managementOutcomeStatus(value);
+  if (status === "committed") return "Committed";
+  if (status === "unknown") return "Outcome unknown — lookup required";
+  return status ? humanizeToken(status) : "Current Host result";
 }
 
 function PageFrame({

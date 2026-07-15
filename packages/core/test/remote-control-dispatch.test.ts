@@ -850,6 +850,70 @@ describe("dispatchRemoteCliRequest", () => {
     expect(response).toMatchObject({ ok: false });
     expect(authFlowStore.get(flow.id)).toBeUndefined();
   });
+
+  it("pins operation lookup and a racing mutation to the exact remote binding", async () => {
+    const context = testContext();
+    const administration = currentHostAdministration(context);
+    const binding = {
+      operationId: "operation-remote-u9",
+      target: "remote" as const,
+      logicalHostId: "host-remote-u9",
+      storeId: "store-remote-u9",
+      operationNamespace: "namespace-remote-u9",
+      actorId: administration.principal.clientId,
+      requestIdentity: "request-remote-u9",
+      operationClass: "logical-state" as const,
+    };
+    const lookup = vi.spyOn(administration.operations, "lookupOperation").mockResolvedValue({
+      status: "not_committed",
+      binding,
+      retryReservationId: "retry-remote-u9",
+    });
+    const mutate = vi.spyOn(administration.operations, "mutate").mockResolvedValue({
+      status: "conflict",
+      binding,
+      reason: "operation-reservation",
+    });
+
+    const lookupResponse = await dispatchRemoteCliRequest(
+      {
+        command: "current_host_operation_lookup",
+        arguments: { binding },
+      },
+      context,
+      administration,
+    );
+    const mutateResponse = await dispatchRemoteCliRequest(
+      {
+        command: "current_host_mutate",
+        arguments: {
+          binding,
+          mutation: {
+            kind: "host-setting-set",
+            key: "telemetry",
+            value: false,
+            selector: "underlying-sql",
+          },
+        },
+      },
+      context,
+      administration,
+    );
+
+    expect(lookupResponse).toMatchObject({
+      ok: true,
+      result: { status: "not_committed", binding },
+    });
+    expect(mutateResponse).toMatchObject({
+      ok: true,
+      result: { status: "conflict", binding, reason: "operation-reservation" },
+    });
+    expect(lookup).toHaveBeenCalledWith(administration.principal, binding);
+    expect(mutate).toHaveBeenCalledWith(administration.principal, {
+      binding,
+      mutation: expect.objectContaining({ selector: "underlying-sql" }),
+    });
+  });
 });
 
 function testContext(options: { writeConfig?: boolean } = {}) {

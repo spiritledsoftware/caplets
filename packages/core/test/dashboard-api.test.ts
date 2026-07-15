@@ -7,6 +7,10 @@ import { RemoteServerCredentialStore } from "../src/remote/server-credential-sto
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
 import { FileVaultStore } from "../src/vault";
+import type {
+  CurrentHostManagementDependencies,
+  CurrentHostOperationReceipt,
+} from "../src/current-host/operations";
 
 const dirs: string[] = [];
 
@@ -128,10 +132,83 @@ describe("dashboard API read model", () => {
 
     await setup.engine.close();
   });
+
+  it("keeps injected SQL management behind operator cookie and CSRF checks with target-pinned receipts", async () => {
+    const management = dashboardManagementFixture();
+    const setup = await authenticatedDashboard(management.dependencies);
+
+    const listed = await dashboardGet(setup, "/dashboard/api/management?resource=host-setting");
+    expect(listed.status).toBe(200);
+    const listText = await listed.text();
+    expect(listText).toContain('"owner":"filesystem"');
+    expect(listText).toContain('"underlyingSqlAvailable":true');
+    expect(listText).not.toContain("/private/global/config.json");
+
+    const operation = {
+      operationId: "operation-dashboard-u9",
+      requestIdentity: "request-dashboard-u9",
+      mutation: {
+        kind: "host-setting-set",
+        key: "telemetry",
+        value: false,
+        selector: "underlying-sql",
+      },
+    };
+    const csrfRejected = await setup.app.request(
+      "http://127.0.0.1:5387/dashboard/api/management/mutate",
+      {
+        method: "POST",
+        headers: { cookie: setup.cookie, "content-type": "application/json" },
+        body: JSON.stringify(operation),
+      },
+    );
+    expect(csrfRejected.status).toBe(403);
+    expect(management.events).not.toContain("reserve");
+
+    const preview = await dashboardPost(setup, "/dashboard/api/management/preview", operation);
+    expect(preview.status).toBe(200);
+    await expect(preview.json()).resolves.toMatchObject({
+      status: "preview",
+      target: {
+        owner: "sql",
+        selector: "underlying-sql",
+        consequence: "no-effective-change-while-shadowed",
+      },
+    });
+
+    const mutated = await dashboardPost(setup, "/dashboard/api/management/mutate", operation);
+    expect(mutated.status).toBe(200);
+    await expect(mutated.json()).resolves.toMatchObject({
+      status: "committed",
+      receipt: {
+        binding: {
+          operationId: operation.operationId,
+          logicalHostId: "host-dashboard-u9",
+          storeId: "store-dashboard-u9",
+          operationNamespace: "namespace-dashboard-u9",
+        },
+        management: {
+          owner: "sql",
+          selector: "underlying-sql",
+          consequence: "no-effective-change-while-shadowed",
+        },
+      },
+    });
+
+    setup.store.revokeClient(setup.session.operatorClientId);
+    const eventCount = management.events.length;
+    const revoked = await dashboardGet(setup, "/dashboard/api/management?resource=host-setting");
+    expect(revoked.status).toBe(401);
+    expect(management.events).toHaveLength(eventCount);
+
+    await setup.engine.close();
+  });
 });
 
-async function authenticatedDashboard() {
-  const setup = testApp();
+async function authenticatedDashboard(
+  currentHostManagement?: CurrentHostManagementDependencies | undefined,
+) {
+  const setup = testApp(currentHostManagement);
   const vault = new FileVaultStore({ root: join(setup.authDir, "vault") });
   vault.set("GH_TOKEN", "super-secret-token");
   vault.grantAccess({
@@ -152,8 +229,12 @@ async function authenticatedDashboard() {
     pendingCompletionSecret: startBody.pendingCompletionSecret,
   });
   expect(completed.status).toBe(200);
+  const completedBody = (await completed.json()) as {
+    authenticated: boolean;
+    session: { operatorClientId: string; csrfToken: string };
+  };
   const cookie = completed.headers.get("set-cookie") ?? "";
-  return { ...setup, cookie };
+  return { ...setup, cookie, session: completedBody.session };
 }
 
 async function dashboardGet(
@@ -162,6 +243,26 @@ async function dashboardGet(
 ) {
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
     headers: { cookie: setup.cookie },
+  });
+}
+
+async function dashboardPost(
+  setup: {
+    app: ReturnType<typeof createHttpServeApp>;
+    cookie: string;
+    session: { csrfToken: string };
+  },
+  path: string,
+  body: unknown,
+) {
+  return await setup.app.request(`http://127.0.0.1:5387${path}`, {
+    method: "POST",
+    headers: {
+      cookie: setup.cookie,
+      "content-type": "application/json",
+      "x-caplets-csrf": setup.session.csrfToken,
+    },
+    body: JSON.stringify(body),
   });
 }
 
@@ -183,7 +284,7 @@ function approvalCode(command: string): string {
   return code;
 }
 
-function testApp() {
+function testApp(currentHostManagement?: CurrentHostManagementDependencies | undefined) {
   const stateDir = tempDir("caplets-dashboard-api-state-");
   const authDir = tempDir("caplets-dashboard-api-auth-");
   const context = testContext();
@@ -198,6 +299,7 @@ function testApp() {
     writeErr: () => {},
     control: { ...context, authDir },
     remoteCredentialStore: store,
+    currentHostManagement,
   });
   return { app, engine, store, stateDir, authDir, context };
 }
@@ -250,4 +352,116 @@ function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
   return dir;
+}
+
+function dashboardManagementFixture(): {
+  dependencies: CurrentHostManagementDependencies;
+  events: string[];
+} {
+  const events: string[] = [];
+  const identity = {
+    logicalHostId: "host-dashboard-u9",
+    storeId: "store-dashboard-u9",
+    operationNamespace: "namespace-dashboard-u9",
+  };
+  const snapshot = {
+    identity,
+    versions: { authorityGeneration: 1, effectiveGeneration: 2, securityEpoch: 3 },
+    caplets: [],
+    hostSettings: [
+      { version: 1, key: "telemetry", value: true, updatedAt: "2026-07-15T00:00:00.000Z" },
+    ],
+    hostSettingVersions: { telemetry: 1 },
+    encodedBytes: 0,
+    normalizedRows: 1,
+  } as const;
+  const target = {
+    resource: "host-setting",
+    id: "telemetry",
+    selector: "underlying-sql",
+    owner: "sql",
+    source: { kind: "sql" },
+    effective: true,
+    effectiveChanged: false,
+    shadowChain: [
+      { owner: "sql", source: { kind: "sql" } },
+      { owner: "filesystem", source: { kind: "global-config" } },
+    ],
+    underlyingSqlAvailable: true,
+    consequence: "no-effective-change-while-shadowed",
+  } as const;
+  const reservations = new Set<string>();
+  const dependencies: CurrentHostManagementDependencies = {
+    storage: {
+      identity,
+      async reserveOperation(binding) {
+        events.push("reserve");
+        reservations.add(binding.operationId);
+        return { status: "reserved", binding };
+      },
+      async loadSnapshot(binding) {
+        events.push("source-read");
+        return { status: "ok", binding, snapshot };
+      },
+      async mutateCaplet() {
+        throw new Error("unexpected Caplet mutation");
+      },
+      async mutateHostSetting(input) {
+        events.push("mutate");
+        const receipt: CurrentHostOperationReceipt = {
+          status: "committed",
+          binding: input.binding,
+          aggregateVersion: 2,
+          authorityToken: { authorityGeneration: 1, effectiveGeneration: 2 },
+          localApplication: "not-applicable",
+          convergence: { kind: "single-node" },
+          management: target,
+        };
+        return { status: "committed", receipt };
+      },
+      async lookupOperation(binding) {
+        events.push("lookup");
+        return reservations.has(binding.operationId)
+          ? { status: "unknown", binding }
+          : {
+              status: "not_committed",
+              binding,
+              retryReservationId: `retry_${binding.operationId}`,
+            };
+      },
+      async status(binding) {
+        return { status: "unavailable", binding };
+      },
+    },
+    async loadRuntimeSnapshot() {
+      events.push("target-query");
+      return {
+        identity,
+        authorityGeneration: 1,
+        effectiveGeneration: 2,
+        securityEpoch: 3,
+        caplets: {},
+        hostSettings: {
+          telemetry: {
+            key: "telemetry",
+            owner: "filesystem",
+            source: { kind: "global-config", path: "/private/global/config.json" },
+            effective: true,
+            shadowChain: [
+              { owner: "sql", source: { kind: "sql", path: "sql://private" } },
+              {
+                owner: "filesystem",
+                source: { kind: "global-config", path: "/private/global/config.json" },
+              },
+            ],
+            underlyingSql: {
+              owner: "sql",
+              source: { kind: "sql", path: "sql://private" },
+            },
+          },
+        },
+      } as never;
+    },
+  };
+  return { dependencies, events };
 }
