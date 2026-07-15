@@ -55,6 +55,18 @@
       "types": "./dist/code-mode/index.d.ts",
       "default": "./dist/code-mode.js"
     },
+    "./control-plane/model": {
+      "types": "./dist/control-plane/model/index.d.ts",
+      "default": "./dist/control-plane/model.js"
+    },
+    "./control-plane/caplets": {
+      "types": "./dist/control-plane/caplets/index.d.ts",
+      "default": "./dist/control-plane/caplets.js"
+    },
+    "./control-plane/migration/legacy-model": {
+      "types": "./dist/control-plane/migration/legacy-model.d.ts",
+      "default": "./dist/control-plane/migration/legacy-model.js"
+    },
     "./control-plane/storage": {
       "types": "./dist/control-plane/storage.d.ts",
       "default": "./dist/control-plane/storage.js"

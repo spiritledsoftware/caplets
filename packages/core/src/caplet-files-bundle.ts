@@ -925,7 +925,7 @@ export const capletFileSchema = z
     }
   });
 
-type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
+export type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 
 function pluralBackendChildIds(
   frontmatter: CapletFileFrontmatter,
@@ -1230,12 +1230,12 @@ function discoverCapletFileMapCandidates(paths: string[]): Array<{ id: string; p
   });
 }
 
-export function readCapletFileContent(
-  path: string,
-  text: string,
-  baseDir: string,
-  normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
-): unknown {
+export type CapletFileDocument = {
+  frontmatter: CapletFileFrontmatter;
+  body: string;
+};
+
+export function parseCapletFileDocument(path: string, text: string): CapletFileDocument {
   if (byteLength(text) > MAX_CAPLET_FILE_BYTES) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -1257,8 +1257,17 @@ export function readCapletFileContent(
       parsed.error.issues,
     );
   }
+  return { frontmatter: parsed.data, body };
+}
 
-  return capletToServerConfig(parsed.data, baseDir, normalizePath);
+export function readCapletFileContent(
+  path: string,
+  text: string,
+  baseDir: string,
+  normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
+): unknown {
+  const document = parseCapletFileDocument(path, text);
+  return capletToServerConfig(document.frontmatter, baseDir, normalizePath);
 }
 
 function capletToServerConfig(
