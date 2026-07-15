@@ -7,7 +7,7 @@ import {
   type ControlPlaneAuthorizer,
   type ControlPlaneAuthorizationDecision,
 } from "./authorization";
-import type { ControlPlaneStore } from "./store";
+import type { ControlPlaneSqlTransaction, ControlPlaneStore } from "./store";
 import type {
   CapletManagementMutation,
   ControlPlaneMutationResult,
@@ -26,6 +26,7 @@ export function createControlPlaneService(options: {
 }): ControlPlaneService {
   const authorize = async (
     binding: CurrentHostOperationBinding,
+    transaction?: ControlPlaneSqlTransaction,
   ): Promise<ControlPlaneAuthorizationDecision> => {
     const request = {
       actorId: binding.actorId,
@@ -34,10 +35,11 @@ export function createControlPlaneService(options: {
       operationNamespace: binding.operationNamespace,
       requiredRole: "operator" as const,
     };
-    return validateControlPlaneAuthorization(
-      request,
-      await options.authorization.authorize(request),
-    );
+    const decision =
+      transaction && options.authorization.authorizeInTransaction
+        ? await options.authorization.authorizeInTransaction(transaction, request)
+        : await options.authorization.authorize(request);
+    return validateControlPlaneAuthorization(request, decision);
   };
 
   const prepare = async <T extends CapletManagementMutation | HostSettingManagementMutation>(
@@ -70,8 +72,8 @@ export function createControlPlaneService(options: {
       ...input,
       expectedSecurityEpoch: decision.authorization.securityEpoch,
       writerFence: decision.authorization.writerFence,
-      finalAuthorization: async () => {
-        const finalDecision = await authorize(input.binding);
+      finalAuthorization: async (transaction: ControlPlaneSqlTransaction) => {
+        const finalDecision = await authorize(input.binding, transaction);
         if (finalDecision.status === "denied") {
           if (finalDecision.reason === "unavailable") return { status: "unavailable" } as const;
           if (finalDecision.reason === "namespace-mismatch") {

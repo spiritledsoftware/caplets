@@ -42,7 +42,7 @@ function environment(): MigrationEnvironment {
     verifiedSchemaAwareBackup: true,
     oldNodesDrained: true,
     retainedKeyVersions: [1],
-    hostAdministrator: false,
+    hostAdministrator: true,
     now: new Date(NOW),
   };
 }
@@ -90,7 +90,7 @@ async function fixture(options: { migrate?: boolean } = {}) {
   const registration = await store.registerNode({
     nodeId: "node-1",
     bootstrapFingerprint: "a".repeat(64),
-    compatibility: { binaryVersion: "0.34.1", schemaVersion: 2, keyVersion: 1, manifestVersion: 1 },
+    compatibility: { binaryVersion: "0.34.1", schemaVersion: 3, keyVersion: 1, manifestVersion: 1 },
     ttlMs: 60_000,
   });
   if (registration.status !== "ready") throw new Error("test node was not ready");

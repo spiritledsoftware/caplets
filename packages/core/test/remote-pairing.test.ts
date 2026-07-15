@@ -29,6 +29,13 @@ describe("self-hosted remote pairing", () => {
     expect(roleAllows("access", "operator")).toBe(false);
   });
 
+  it("keeps the production credential store file-backed until SQL activation", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pairing = store.createPairingCode({ hostUrl: "https://caplets.example.com" });
+    expect(pairing).not.toBeInstanceOf(Promise);
+    expect("issueClient" in store).toBe(false);
+  });
+
   it("classifies unreadable credential state as unavailable without deleting it", () => {
     const dir = tempDir();
     const path = join(dir, "remote-server-credentials.json");

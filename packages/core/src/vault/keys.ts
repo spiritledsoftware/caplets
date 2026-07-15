@@ -3,12 +3,32 @@ import { chmodSync, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { CapletsError } from "../errors";
+import type { FileV1KeyProvider } from "../control-plane/key-provider/file-v1";
 import { ensurePrivateDir, writePrivateFileAtomic } from "./store";
 import type { VaultKeySourceStatus } from "./types";
 
 const VAULT_KEY_PATTERN = /^[A-Z_][A-Z0-9_]{0,127}$/;
 const KEY_FILE_PREFIX = "caplets-vault-key-v1.";
 const KEY_BYTES = 32;
+
+export function assertSqlVaultKeyProvider(
+  provider: FileV1KeyProvider,
+  expected: Readonly<{ logicalHostId: string; storeId: string }>,
+): void {
+  if (
+    provider.manifest.provider !== "file-v1" ||
+    provider.manifest.profile !== "online" ||
+    provider.manifest.logicalHostId !== expected.logicalHostId ||
+    provider.manifest.storeId !== expected.storeId ||
+    !provider.hasCapability("vault-record", "encrypt") ||
+    !provider.hasCapability("vault-record", "decrypt")
+  ) {
+    throw new CapletsError(
+      "AUTH_FAILED",
+      "SQL Vault persistence requires an online file-v1 vault-record key provider.",
+    );
+  }
+}
 
 export function validateVaultKeyName(name: string): string {
   if (!VAULT_KEY_PATTERN.test(name)) {

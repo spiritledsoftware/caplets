@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { STORAGE_BENCHMARK_ENVELOPE, nearestRank } from "../src/control-plane/benchmarks/fixture";
+import {
+  STORAGE_BENCHMARK_ENVELOPE,
+  nearestRank,
+} from "../src/control-plane/storage-benchmark-envelope";
 
 describe("immutable storage benchmark envelope", () => {
   it("freezes the declared maximum workload and methodology", () => {

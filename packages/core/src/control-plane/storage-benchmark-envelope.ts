@@ -1,4 +1,4 @@
-import envelope from "../../../../../storage/benchmark-envelope.json";
+import envelope from "../../../../storage/benchmark-envelope.json";
 
 export type StorageBenchmarkEnvelope = Readonly<{
   version: 1;

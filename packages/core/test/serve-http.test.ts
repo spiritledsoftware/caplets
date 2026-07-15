@@ -805,6 +805,43 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("rechecks the live Operator role before the authenticated response leaves the request boundary", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const store = remoteCredentialStore();
+    const operator = pairedClient(store, "http://127.0.0.1:5387/", "operator");
+    const validate = store.validateAccessToken.bind(store);
+    let validations = 0;
+    store.validateAccessToken = (input) => {
+      validations += 1;
+      if (validations === 3) store.changeClientRole(operator.clientId, "access");
+      return validate(input);
+    };
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      control: context,
+      remoteCredentialStore: store,
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/admin", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${operator.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "list", arguments: {} }),
+    });
+
+    expect(validations).toBe(3);
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.toContain("operator role required");
+    await engine.close();
+  });
+
   it("records the validated Operator client for administrative Vault mutations", async () => {
     const context = testContext();
     const authDir = tempDir("caplets-http-admin-vault-auth-");
@@ -845,6 +882,44 @@ describe("createHttpServeApp", () => {
     expect(
       new DashboardActivityLog({ dir: store.dir }).list({ action: "vault_set" }).entries,
     ).toEqual([expect.objectContaining({ actorClientId: operator.clientId, action: "vault_set" })]);
+
+    const validate = store.validateAccessToken.bind(store);
+    let validations = 0;
+    store.validateAccessToken = (input) => {
+      validations += 1;
+      if (validations === 3) store.changeClientRole(operator.clientId, "access");
+      return validate(input);
+    };
+    const denied = await app.request("http://127.0.0.1:5387/v1/admin", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${operator.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        command: "vault_set",
+        arguments: { name: "DENIED_TOKEN", value: "must_not_commit" },
+      }),
+    });
+    expect(validations).toBe(4);
+    expect(denied.status).toBe(403);
+
+    const replacement = pairedClient(store, "http://127.0.0.1:5387/", "operator");
+    const listed = await app.request("http://127.0.0.1:5387/v1/admin", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${replacement.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "vault_list", arguments: {} }),
+    });
+    await expect(listed.json()).resolves.toMatchObject({
+      ok: true,
+      result: [{ key: "GH_TOKEN", present: true }],
+    });
+    expect(
+      new DashboardActivityLog({ dir: store.dir }).list({ action: "vault_set" }).entries,
+    ).toHaveLength(1);
 
     await engine.close();
   });

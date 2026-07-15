@@ -8,7 +8,7 @@ export {
   STORAGE_BENCHMARK_ENVELOPE,
   nearestRank,
   type StorageBenchmarkEnvelope,
-} from "./benchmarks/fixture";
+} from "./storage-benchmark-envelope";
 export {
   createArtifactProviderIdentity,
   type ArtifactObjectHead,
@@ -35,12 +35,23 @@ export {
 } from "./key-provider/manifest";
 export {
   FileV1KeyProvider,
+  assertFileV1ProfileCapability,
   bootstrapSqliteFileV1,
+  computeFileV1ShortCodeVerifier,
+  fileV1AssociatedData,
+  fileV1CompatibilityCommitment,
+  fileV1TransferAssociatedData,
+  fileV1VersionFloors,
+  hashFileV1HighEntropyVerifier,
   loadFileV1KeyProvider,
+  verifyFileV1ShortCode,
   type BootstrapSqliteFileV1Options,
+  type FileV1AssociatedDataInput,
   type FileV1Ciphertext,
+  type FileV1ShortCodeVerifier,
   type FileV1VersionedBytes,
   type LoadFileV1KeyProviderOptions,
+  type FileV1VersionFloors,
   type SqliteFileV1Bootstrap,
 } from "./key-provider/file-v1";
 export {

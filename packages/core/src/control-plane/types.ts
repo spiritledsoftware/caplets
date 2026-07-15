@@ -11,6 +11,7 @@ import type {
   CanonicalCapletRelationalProjection,
 } from "./caplets/model";
 import type { CanonicalHostSetting } from "./model";
+import type { ControlPlaneSqlTransaction } from "./store";
 
 export type ControlPlaneStoreIdentity = Readonly<{
   logicalHostId: string;
@@ -79,7 +80,9 @@ export type ControlPlaneMutationContext = Readonly<{
   expectedSecurityEpoch: number;
   writerFence: ControlPlaneWriterFence;
   activity: ControlPlaneActivity;
-  finalAuthorization?: (() => Promise<ControlPlaneFinalAuthorization>) | undefined;
+  finalAuthorization?:
+    | ((transaction: ControlPlaneSqlTransaction) => Promise<ControlPlaneFinalAuthorization>)
+    | undefined;
 }>;
 
 export type CapletManagementMutation = ControlPlaneMutationContext &

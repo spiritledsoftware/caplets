@@ -53,7 +53,7 @@ function migrationEnvironment(now = new Date("2026-07-14T00:00:00.000Z")): Migra
     verifiedSchemaAwareBackup: true,
     oldNodesDrained: true,
     retainedKeyVersions: [1],
-    hostAdministrator: false,
+    hostAdministrator: true,
     now,
   };
 }
@@ -83,6 +83,24 @@ async function copiedAssets() {
 }
 
 describe("control-plane migration registry and SQLite executor", () => {
+  it("requires explicit host administration for the U6 contract migration", async () => {
+    const fixture = await sqliteFixture();
+    await expect(
+      openSqliteControlPlaneDialect({
+        storage: fixture.storage,
+        environment: { ...migrationEnvironment(), hostAdministrator: false },
+        assetRoot: fixture.assetRoot,
+      }),
+    ).rejects.toThrow(/0002_colorful_maverick requires host administration/u);
+    await expect(
+      openSqliteControlPlaneDialect({
+        storage: fixture.storage,
+        environment: { ...migrationEnvironment(), oldNodesDrained: false },
+        assetRoot: fixture.assetRoot,
+      }),
+    ).rejects.toThrow(/0002_colorful_maverick requires old-node drain/u);
+  });
+
   it("migrates fresh/current databases idempotently, excludes a second writer, and rolls back", async () => {
     const fixture = await sqliteFixture();
     const environment = migrationEnvironment();
@@ -92,14 +110,18 @@ describe("control-plane migration registry and SQLite executor", () => {
       assetRoot: fixture.assetRoot,
     });
     expect(dialect.ready).toBe(false);
-    expect(dialect.migrate()).toEqual(["0000_orange_tusk", "0001_conscious_wilson_fisk"]);
+    expect(dialect.migrate()).toEqual([
+      "0000_orange_tusk",
+      "0001_conscious_wilson_fisk",
+      "0002_colorful_maverick",
+    ]);
     expect(dialect.ready).toBe(true);
     expect(dialect.migrate()).toEqual([]);
     const tables = dialect.query<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type = ? AND name LIKE ? ORDER BY name",
       ["table", "cp_%"],
     );
-    expect(tables).toHaveLength(39);
+    expect(tables).toHaveLength(41);
     expect(() =>
       dialect.execute(
         "INSERT INTO cp_host_setting (model_version,id,logical_host_id,store_id,created_at,updated_at,aggregate_version,authority_version,effective_version,security_version,key,value,ownership,activation,effective) VALUES (1,?,?,?,?,?,0,0,0,0,?,?,?,?,1)",
@@ -147,7 +169,7 @@ describe("control-plane migration registry and SQLite executor", () => {
     const backupPath = join(fixture.root, "backup.sqlite3");
     await dialect.onlineBackup(backupPath);
     expect((await stat(backupPath)).size).toBeGreaterThan(0);
-    expect(dialect.rollbackLatest()).toBe("0001_conscious_wilson_fisk");
+    expect(dialect.rollbackLatest()).toBe("0002_colorful_maverick");
     expect(dialect.ready).toBe(false);
     await dialect.close();
 
@@ -156,8 +178,115 @@ describe("control-plane migration registry and SQLite executor", () => {
       environment,
       assetRoot: fixture.assetRoot,
     });
-    expect(remigrated.migrate()).toEqual(["0001_conscious_wilson_fisk"]);
+    expect(remigrated.migrate()).toEqual(["0002_colorful_maverick"]);
     await remigrated.close();
+  });
+
+  it("invalidates legacy short-code approvals and sessions during the U6 migration", async () => {
+    const partialAssetRoot = await copiedAssets();
+    await Promise.all(
+      [
+        "0002_colorful_maverick.sql",
+        "0002_colorful_maverick.down.sql",
+        "0002_colorful_maverick.manifest.json",
+      ].map((file) => rm(join(partialAssetRoot, "sqlite", file))),
+    );
+    const fixture = await sqliteFixture(partialAssetRoot);
+    const legacy = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment: migrationEnvironment(),
+      assetRoot: partialAssetRoot,
+    });
+    expect(legacy.migrate()).toEqual(["0000_orange_tusk", "0001_conscious_wilson_fisk"]);
+    const now = "2026-07-14T00:00:00.000Z";
+    legacy.execute(
+      "INSERT INTO cp_client " +
+        "(model_version,id,logical_host_id,store_id,created_at,updated_at,aggregate_version," +
+        "authority_version,effective_version,security_version,client_id,role,status,owner_id," +
+        "last_authenticated_at,revoked_at) VALUES (1,?,?,?,?,?,0,0,0,0,?,?,?,NULL,NULL,NULL)",
+      ["client:legacy-u6", logicalHostId, storeId, now, now, "legacy-u6", "operator", "active"],
+    );
+    legacy.execute(
+      "INSERT INTO cp_pending_approval " +
+        "(model_version,id,logical_host_id,store_id,created_at,updated_at,aggregate_version," +
+        "authority_version,effective_version,security_version,approval_id,client_id,verifier," +
+        "actor_id,state,expires_at,consumed_at) VALUES (1,?,?,?,?,?,0,0,0,0,?,NULL,?,NULL,?,?,NULL)",
+      [
+        "pending-approval:legacy-u6",
+        logicalHostId,
+        storeId,
+        now,
+        now,
+        "legacy-u6",
+        Buffer.from("legacy-short-code"),
+        "pending",
+        "9999-12-31T23:59:59.999Z",
+      ],
+    );
+    legacy.execute(
+      "INSERT INTO cp_dashboard_session " +
+        "(model_version,id,logical_host_id,store_id,created_at,updated_at,aggregate_version," +
+        "authority_version,effective_version,security_version,session_id,client_id,verifier," +
+        "expires_at,last_seen_at,revoked_at) VALUES (1,?,?,?,?,?,0,0,0,0,?,?,?, ?,?,NULL)",
+      [
+        "dashboard-session:legacy-u6",
+        logicalHostId,
+        storeId,
+        now,
+        now,
+        "legacy-u6",
+        "legacy-u6",
+        Buffer.from("legacy-cookie-verifier"),
+        "9999-12-31T23:59:59.999Z",
+        now,
+      ],
+    );
+    await legacy.close();
+
+    const upgraded = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment: migrationEnvironment(),
+      assetRoot: sourceAssetRoot,
+    });
+    expect(upgraded.migrate()).toEqual(["0002_colorful_maverick"]);
+    expect(
+      upgraded.query(
+        "SELECT state, algorithm, verifier_version AS verifierVersion, key_version AS keyVersion, " +
+          "consumed_at AS consumedAt FROM cp_pending_approval WHERE approval_id = ?",
+        ["legacy-u6"],
+      ),
+    ).toEqual([
+      {
+        state: "invalidated",
+        algorithm: "legacy-invalidated",
+        verifierVersion: 0,
+        keyVersion: 0,
+        consumedAt: now,
+      },
+    ]);
+    expect(
+      upgraded.query(
+        "SELECT host_url AS hostUrl, client_label AS clientLabel FROM cp_client WHERE client_id = ?",
+        ["legacy-u6"],
+      ),
+    ).toEqual([{ hostUrl: "legacy-unbound", clientLabel: "legacy-u6" }]);
+    expect(
+      upgraded.query(
+        "SELECT revoked_at AS revokedAt, algorithm, csrf_algorithm AS csrfAlgorithm, " +
+          "absolute_expires_at AS absoluteExpiresAt, idle_expires_at AS idleExpiresAt " +
+          "FROM cp_dashboard_session WHERE session_id = ?",
+        ["legacy-u6"],
+      ),
+    ).toEqual([
+      {
+        revokedAt: now,
+        algorithm: "legacy-invalidated",
+        csrfAlgorithm: "legacy-invalidated",
+        absoluteExpiresAt: "9999-12-31T23:59:59.999Z",
+        idleExpiresAt: now,
+      },
+    ]);
+    await upgraded.close();
   });
 
   it("rolls back the additive SQLite migration without breaking populated child relations", async () => {
@@ -203,6 +332,42 @@ describe("control-plane migration registry and SQLite executor", () => {
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
       [fixture.storage.logicalHostId, "caplet-rollback", 1, 1, "CAPLET.md", "{}", "# Rollback"],
     );
+    dialect.execute(
+      "INSERT INTO cp_vault_grant " +
+        "(model_version,id,logical_host_id,store_id,created_at,updated_at,aggregate_version," +
+        "authority_version,effective_version,security_version,reference_name,caplet_id,origin," +
+        "stored_key,scope,owner_id) VALUES " +
+        "(1,?,?,?,?,?,0,0,0,0,?,?,?,?,NULL,NULL),(1,?,?,?,?,?,0,0,0,0,?,?,?,?,NULL,NULL)",
+      [
+        "grant-a",
+        fixture.storage.logicalHostId,
+        fixture.storage.storeId,
+        now,
+        now,
+        "ROLLBACK_REF",
+        "caplet-rollback",
+        '{"kind":"declared","path":"a"}',
+        "ROLLBACK_A",
+        "grant-b",
+        fixture.storage.logicalHostId,
+        fixture.storage.storeId,
+        now,
+        now,
+        "ROLLBACK_REF",
+        "caplet-rollback",
+        '{"kind":"declared","path":"b"}',
+        "ROLLBACK_B",
+      ],
+    );
+    expect(() => dialect.rollbackLatest()).toThrow(/UNIQUE constraint failed/u);
+    expect(
+      dialect.query<{ id: string }>(
+        "SELECT id FROM cp_vault_grant WHERE reference_name = ? ORDER BY id",
+        ["ROLLBACK_REF"],
+      ),
+    ).toEqual([{ id: "grant-a" }, { id: "grant-b" }]);
+    dialect.execute("DELETE FROM cp_vault_grant WHERE id = ?", ["grant-b"]);
+    expect(dialect.rollbackLatest()).toBe("0002_colorful_maverick");
     expect(dialect.rollbackLatest()).toBe("0001_conscious_wilson_fisk");
     await dialect.close();
 
@@ -215,6 +380,11 @@ describe("control-plane migration registry and SQLite executor", () => {
         .prepare("SELECT body FROM cp_caplet_document WHERE caplet_id = ?")
         .get("caplet-rollback"),
     ).toEqual({ body: "# Rollback" });
+    expect(
+      database
+        .prepare("SELECT id, stored_key AS storedKey FROM cp_vault_grant WHERE reference_name = ?")
+        .get("ROLLBACK_REF"),
+    ).toEqual({ id: "grant-a", storedKey: "ROLLBACK_A" });
     database.close();
   });
 
@@ -404,12 +574,12 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
         }),
       ]);
       const elected = await Promise.all([first.migrate(), second.migrate()]);
-      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 2]);
+      expect(elected.map((migrations) => migrations.length).sort()).toEqual([0, 3]);
       const tableCount = await admin.query(
         "SELECT count(*)::int AS count FROM information_schema.tables " +
           "WHERE table_schema = 'caplets' AND table_name LIKE 'cp_%'",
       );
-      expect(singleNumber(tableCount.rows, "count")).toBe(39);
+      expect(singleNumber(tableCount.rows, "count")).toBe(41);
 
       await admin.query(`
         GRANT USAGE ON SCHEMA caplets TO
@@ -420,8 +590,6 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
           FROM ${quoteSafeSqlIdentifier(runtimeRole)};
         REVOKE INSERT, UPDATE, DELETE ON caplets.cp_retention
           FROM ${quoteSafeSqlIdentifier(runtimeRole)};
-        GRANT SELECT, UPDATE, DELETE ON caplets.cp_retention
-          TO ${quoteSafeSqlIdentifier(maintenanceRole)};
       `);
       await expect(
         first.query("CREATE TABLE caplets.runtime_ddl_denied (id int)"),
@@ -437,8 +605,8 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
         `INSERT INTO caplets.cp_operator_activity (
           model_version,id,logical_host_id,store_id,created_at,updated_at,
           aggregate_version,authority_version,effective_version,security_version,
-          activity_id,actor_id,action,outcome,target,redacted_detail,occurred_at
-        ) VALUES (1,$1,$2,$3,$4,$4,0,0,0,0,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$4)`,
+          activity_id,actor_id,action,outcome,target,redacted_detail,occurred_at,expires_at
+        ) VALUES (1,$1,$2,$3,$4,$4,0,0,0,0,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$4,$4)`,
         [
           "activity-row",
           logicalHostId,
@@ -458,53 +626,46 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
           "activity-row",
         ]),
       ).rejects.toThrow();
-
-      await admin.query(
-        `INSERT INTO caplets.cp_retention (
-          model_version,id,logical_host_id,store_id,created_at,updated_at,
-          aggregate_version,authority_version,effective_version,security_version,
-          retention_id,resource_kind,resource_id,policy,purge_watermark,retain_until,destroyed_at
-        ) VALUES (1,$1,$2,$3,$4,$4,0,0,0,0,$5,$6,$7,$8,0,$9,NULL)`,
-        [
-          "retention-row",
-          logicalHostId,
-          storeId,
-          canonicalClock,
-          "retention-1",
-          "artifact",
-          "artifact-1",
-          "bounded",
-          "2026-07-13T00:00:00.000Z",
-        ],
-      );
       await expect(
-        first.query("UPDATE caplets.cp_retention SET destroyed_at = $1 WHERE id = $2", [
-          canonicalClock,
-          "retention-row",
-        ]),
+        first.query("DELETE FROM caplets.cp_operator_activity WHERE id = $1", ["activity-row"]),
       ).rejects.toThrow();
-      const maintained = await first.maintenanceQuery<{ id: string }>(
-        `WITH bounded AS (
-          SELECT logical_host_id, id FROM caplets.cp_retention
-          WHERE destroyed_at IS NULL AND retain_until < $1
-          ORDER BY retain_until LIMIT $2 FOR UPDATE SKIP LOCKED
-        )
-        UPDATE caplets.cp_retention AS retention SET destroyed_at = $3
-        FROM bounded
-        WHERE retention.logical_host_id = bounded.logical_host_id AND retention.id = bounded.id
-        RETURNING retention.id`,
-        [canonicalClock, 1, canonicalClock],
+
+      await expect(
+        first.maintenanceQuery("SELECT reference_name FROM caplets.cp_vault_value"),
+      ).rejects.toThrow();
+      const maintained = await first.maintenanceQuery<{
+        deletedCount: string;
+        occurredAt: string;
+      }>(
+        `SELECT deleted_count AS "deletedCount", occurred_at AS "occurredAt"
+         FROM caplets.cp_purge_expired_operator_activity($1, $2, $3, $4, $5)`,
+        [logicalHostId, storeId, "activity-purge-receipt", 1, 1],
       );
-      expect(maintained).toEqual([{ id: "retention-row" }]);
+      expect(maintained).toMatchObject([{ deletedCount: "1" }]);
+      expect(
+        (
+          await admin.query(
+            'SELECT resource_kind AS "resourceKind", policy, purge_watermark AS "watermark" ' +
+              "FROM caplets.cp_retention WHERE retention_id = $1",
+            ["activity-purge-receipt"],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          resourceKind: "operator-activity",
+          policy: "bounded-expired-only",
+          watermark: "1",
+        },
+      ]);
       await expect(
         first.maintenanceQuery("UPDATE caplets.cp_caplet SET description = 'unsafe'"),
       ).rejects.toThrow();
 
-      expect(await first.rollbackLatest()).toBe("0001_eager_thunderbird");
+      expect(await first.rollbackLatest()).toBe("0002_parched_sauron");
       expect(first.ready).toBe(false);
       await second.close();
       second = undefined;
-      expect(await first.migrate()).toEqual(["0001_eager_thunderbird"]);
+      expect(await first.migrate()).toEqual(["0002_parched_sauron"]);
       environment.now = new Date("2026-07-22T00:00:00.001Z");
       await expect(first.rollbackLatest()).rejects.toThrow(/Rollback window expired/u);
       expect(first.ready).toBe(true);

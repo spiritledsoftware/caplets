@@ -15,6 +15,7 @@ import {
 import { lstat, mkdir, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { CapletsError } from "../../errors";
+import { stableJsonStringify } from "../../stable-json";
 import {
   assertSecureStateDirectory,
   createOrOpenSecureStateRoot,
@@ -599,4 +600,138 @@ export function assertFileV1ProfileCapability(
       "file-v1 process profile denies the requested capability.",
     );
   }
+}
+
+export type FileV1AssociatedDataInput = Readonly<{
+  logicalHostId: string;
+  storeId: string;
+  purpose: FileV1Purpose;
+  recordId: string;
+  aadVersion?: 1 | undefined;
+  context?: Readonly<Record<string, string | number>> | undefined;
+}>;
+
+/** Canonical domain separation for every file-v1 protected SQL record. */
+export function fileV1AssociatedData(input: FileV1AssociatedDataInput): Buffer {
+  for (const [name, value] of [
+    ["logicalHostId", input.logicalHostId],
+    ["storeId", input.storeId],
+    ["recordId", input.recordId],
+  ] as const) {
+    if (!value || value.includes("\0")) {
+      throw new CapletsError("REQUEST_INVALID", `file-v1 ${name} binding is invalid.`);
+    }
+  }
+  if (!FILE_V1_PURPOSES.includes(input.purpose)) {
+    throw new CapletsError("REQUEST_INVALID", "file-v1 purpose binding is invalid.");
+  }
+  if (input.aadVersion !== undefined && input.aadVersion !== 1) {
+    throw new CapletsError("REQUEST_INVALID", "file-v1 AAD version is unsupported.");
+  }
+  for (const [name, value] of Object.entries(input.context ?? {})) {
+    if (
+      !name ||
+      name.includes("\0") ||
+      (typeof value === "string" ? value.includes("\0") : !Number.isSafeInteger(value))
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "file-v1 AAD context is invalid.");
+    }
+  }
+  const context = Object.fromEntries(
+    Object.entries(input.context ?? {}).toSorted(([left], [right]) => left.localeCompare(right)),
+  );
+  return Buffer.from(
+    stableJsonStringify({
+      domain: "caplets/file-v1/sql-record",
+      aadVersion: input.aadVersion ?? 1,
+      logicalHostId: input.logicalHostId,
+      storeId: input.storeId,
+      purpose: input.purpose,
+      recordId: input.recordId,
+      context,
+    }),
+    "utf8",
+  );
+}
+
+/** Transfer ciphertext is unusable outside its exact transfer and direction. */
+export function fileV1TransferAssociatedData(
+  input: Readonly<{
+    logicalHostId: string;
+    storeId: string;
+    transferId: string;
+    direction: "source-to-destination";
+    recordId: string;
+  }>,
+): Buffer {
+  if (!input.transferId || input.transferId.includes("\0")) {
+    throw new CapletsError("REQUEST_INVALID", "file-v1 transfer binding is invalid.");
+  }
+  return fileV1AssociatedData({
+    logicalHostId: input.logicalHostId,
+    storeId: input.storeId,
+    purpose: "transfer",
+    recordId: input.recordId,
+    context: { transferId: input.transferId, direction: input.direction },
+  });
+}
+
+/** SHA-256 verifiers are permitted only for high-entropy bearer material. */
+export function hashFileV1HighEntropyVerifier(
+  input: FileV1AssociatedDataInput & Readonly<{ secret: string }>,
+): Buffer {
+  if (Buffer.byteLength(input.secret, "utf8") < 32) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "High-entropy verifier material must contain at least 32 bytes.",
+    );
+  }
+  return createHash("sha256")
+    .update(fileV1AssociatedData(input))
+    .update("\0")
+    .update(input.secret, "utf8")
+    .digest();
+}
+
+export type FileV1ShortCodeVerifier = Readonly<{
+  algorithm: "HMAC-SHA-256";
+  keyVersion: number;
+  verifierVersion: 1;
+  bytes: Buffer;
+}>;
+
+/** Low-entropy approval codes are always protected by the versioned credential HMAC key. */
+export function computeFileV1ShortCodeVerifier(
+  provider: FileV1KeyProvider,
+  input: FileV1AssociatedDataInput & Readonly<{ code: string }>,
+): FileV1ShortCodeVerifier {
+  if (Buffer.byteLength(input.code, "utf8") < 6 || Buffer.byteLength(input.code, "utf8") > 64) {
+    throw new CapletsError("REQUEST_INVALID", "Short-code verifier material is invalid.");
+  }
+  const verifier = provider.compute(
+    "credential-verifier",
+    Buffer.concat([fileV1AssociatedData(input), Buffer.from([0]), Buffer.from(input.code, "utf8")]),
+  );
+  return {
+    algorithm: "HMAC-SHA-256",
+    keyVersion: verifier.keyVersion,
+    verifierVersion: 1,
+    bytes: verifier.bytes,
+  };
+}
+
+export function verifyFileV1ShortCode(
+  provider: FileV1KeyProvider,
+  input: FileV1AssociatedDataInput &
+    Readonly<{ code: string; keyVersion: number; expected: Uint8Array }>,
+): boolean {
+  if (Buffer.byteLength(input.code, "utf8") < 6 || Buffer.byteLength(input.code, "utf8") > 64) {
+    return false;
+  }
+  return provider.verify(
+    "credential-verifier",
+    input.keyVersion,
+    Buffer.concat([fileV1AssociatedData(input), Buffer.from([0]), Buffer.from(input.code, "utf8")]),
+    input.expected,
+  );
 }

@@ -26,6 +26,7 @@ import { createCurrentHostClientOperations } from "./client-operations";
 import { createCurrentHostVaultOperations } from "./vault-operations";
 
 const TRUSTED_DEVELOPMENT_PRINCIPAL = Symbol("trusted-development-principal");
+const FINAL_AUTHORIZATION = Symbol("current-host-final-authorization");
 
 export type CurrentHostPrincipal = {
   clientId: string;
@@ -37,7 +38,24 @@ export type CurrentHostPrincipal = {
 export type CurrentHostOperatorPrincipal = CurrentHostPrincipal & {
   role: "operator";
   [TRUSTED_DEVELOPMENT_PRINCIPAL]?: true;
+  [FINAL_AUTHORIZATION]?: (() => void | Promise<void>) | undefined;
 };
+
+export function withCurrentHostFinalAuthorization(
+  principal: CurrentHostOperatorPrincipal,
+  authorize: () => void | Promise<void>,
+): CurrentHostOperatorPrincipal {
+  return Object.defineProperty({ ...principal }, FINAL_AUTHORIZATION, {
+    value: authorize,
+    enumerable: false,
+  });
+}
+
+export function finalAuthorizeCurrentHostMutation(
+  principal: CurrentHostOperatorPrincipal,
+): void | Promise<void> {
+  return principal[FINAL_AUTHORIZATION]?.();
+}
 
 export function trustedDevelopmentOperatorPrincipal(hostUrl: string): CurrentHostOperatorPrincipal {
   if (!isHttpUrl(hostUrl)) {
@@ -599,6 +617,8 @@ export function createCurrentHostOperations(
       operation: TOperation,
     ): Promise<CurrentHostOperationOutcomeFor<TOperation>> {
       assertOperatorPrincipal(principal);
+      const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
+      if (finalAuthorization instanceof Promise) await finalAuthorization;
       const outcome = await executeCurrentHostOperation(
         dependencies,
         catalog,

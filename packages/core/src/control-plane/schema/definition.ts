@@ -7,7 +7,7 @@ import {
 } from "../model";
 
 export const CONTROL_PLANE_POSTGRES_SCHEMA = "caplets" as const;
-export const CONTROL_PLANE_SCHEMA_VERSION = 2 as const;
+export const CONTROL_PLANE_SCHEMA_VERSION = 3 as const;
 
 export type SqlColumnDefinition = {
   property: string;
@@ -55,11 +55,13 @@ const SEMANTIC_KEYS: Partial<Record<ControlPlaneEntityKind, readonly string[]>> 
   "project-binding-lease": ["workspaceId", "leaseId"],
   "project-binding-receipt": ["workspaceId", "receiptId"],
   "vault-value": ["referenceName"],
-  "vault-grant": ["referenceName", "capletId"],
+  "vault-grant": ["referenceName", "capletId", "origin"],
   "operator-activity": ["activityId"],
   "authority-version": ["generation"],
   "effective-version": ["generation"],
   "security-version": ["epoch"],
+  "key-inventory": ["purpose", "keyVersion"],
+  "key-canary": ["purpose", "keyVersion"],
   "cluster-node-lease": ["nodeId"],
   "writer-fence": ["leaseId", "writerEpoch"],
   migration: ["migrationId"],
@@ -78,6 +80,7 @@ export const ENTITY_RELATION_TARGET_KEYS: Partial<
   "operation-namespace": ["logicalHostId", "namespaceId"],
   confirmation: ["logicalHostId", "confirmationId"],
   client: ["logicalHostId", "clientId"],
+  "key-inventory": ["logicalHostId", "purpose", "keyVersion"],
   "project-binding-workspace": ["logicalHostId", "workspaceId"],
   backup: ["logicalHostId", "backupId"],
 };
@@ -101,8 +104,14 @@ const QUERY_INDEXES: Partial<Record<ControlPlaneEntityKind, readonly (readonly s
   "project-binding-lease": [["logicalHostId", "workspaceId", "expiresAt"]],
   "operator-activity": [
     ["logicalHostId", "occurredAt"],
+    ["logicalHostId", "expiresAt"],
     ["logicalHostId", "action"],
   ],
+  "key-inventory": [
+    ["logicalHostId", "purpose", "state"],
+    ["logicalHostId", "purgeWatermark"],
+  ],
+  "key-canary": [["logicalHostId", "purpose", "keyVersion", "state"]],
   "cluster-node-lease": [["logicalHostId", "state", "expiresAt"]],
   "writer-fence": [["logicalHostId", "state", "expiresAt"]],
   migration: [["logicalHostId", "phase"]],
@@ -185,6 +194,13 @@ const RELATIONS: Partial<
       columns: ["logicalHostId", "capletId"],
       target: "caplet",
       targetColumns: ["logicalHostId", "id"],
+    },
+  ],
+  "key-canary": [
+    {
+      columns: ["logicalHostId", "purpose", "keyVersion"],
+      target: "key-inventory",
+      targetColumns: ["logicalHostId", "purpose", "keyVersion"],
     },
   ],
   recovery: [

@@ -2,7 +2,7 @@ import { chmod, open, lstat, readFile, rm, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
-import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { AnySQLiteColumn, AnySQLiteTable } from "drizzle-orm/sqlite-core";
 import type { ResolvedSqliteStorage } from "../storage-config";
@@ -222,7 +222,9 @@ function createDialect(
   ) {
     if (!filter) return undefined;
     const predicates = [
-      ...Object.entries(filter.equals ?? {}).map(([column, value]) => eq(table[column]!, value)),
+      ...Object.entries(filter.equals ?? {}).map(([column, value]) =>
+        value === null ? isNull(table[column]!) : eq(table[column]!, value),
+      ),
       ...Object.entries(filter.greaterThan ?? {}).map(([column, value]) =>
         gt(table[column]!, value),
       ),
@@ -265,7 +267,9 @@ function createDialect(
       return ready;
     },
     migrate() {
+      requireOpen();
       assertMigrationEnvironment(registry, environment);
+      database.pragma("foreign_keys = OFF");
       try {
         const appliedIds = transaction("EXCLUSIVE", () => {
           ensureHistoryTable(database);
@@ -290,6 +294,10 @@ function createDialect(
               );
             activated.push(migration.manifest.migrationId);
           }
+          const violations = database.pragma("foreign_key_check");
+          if (Array.isArray(violations) && violations.length > 0) {
+            throw new Error("SQLite migration violates foreign-key integrity");
+          }
           return activated;
         });
         ready = true;
@@ -297,6 +305,8 @@ function createDialect(
       } catch (error) {
         ready = false;
         throw error;
+      } finally {
+        database.pragma("foreign_keys = ON");
       }
     },
     rollbackLatest() {

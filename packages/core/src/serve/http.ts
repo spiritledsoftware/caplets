@@ -25,6 +25,7 @@ import {
   createCurrentHostOperations,
   toCurrentHostSafeError,
   trustedDevelopmentOperatorPrincipal,
+  withCurrentHostFinalAuthorization,
   type CurrentHostOperatorPrincipal,
 } from "../current-host/operations";
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
@@ -212,8 +213,12 @@ export function createHttpServeApp(
     version: packageJsonVersion,
   });
   const authenticatedRemoteClients = new WeakMap<Request, ValidatedRemoteClient>();
+  const completedSelfRevocations = new WeakSet<Request>();
   const retainAuthenticatedRemoteClient = (request: Request, client: ValidatedRemoteClient) => {
     authenticatedRemoteClients.set(request, client);
+  };
+  const releaseAuthenticatedRemoteClient = (request: Request) => {
+    authenticatedRemoteClients.delete(request);
   };
   const projectBindingWorkspaceStore =
     io.projectBindingWorkspaceStore ?? new ProjectBindingWorkspaceStore();
@@ -234,6 +239,8 @@ export function createHttpServeApp(
     paths.base,
     undefined,
     retainAuthenticatedRemoteClient,
+    releaseAuthenticatedRemoteClient,
+    (request) => completedSelfRevocations.has(request),
   );
   const accessRouteAuth = routeAuth(
     options,
@@ -241,6 +248,7 @@ export function createHttpServeApp(
     paths.base,
     "access",
     retainAuthenticatedRemoteClient,
+    releaseAuthenticatedRemoteClient,
   );
   const operatorRouteAuth = routeAuth(
     options,
@@ -248,6 +256,7 @@ export function createHttpServeApp(
     paths.base,
     "operator",
     retainAuthenticatedRemoteClient,
+    releaseAuthenticatedRemoteClient,
   );
   const attachHostProtection = dnsRebindingProtection(options);
   app.use(
@@ -1081,10 +1090,9 @@ export function createHttpServeApp(
       const client = authenticatedRemoteClients.get(c.req.raw);
       if (!client) return c.text("Unauthorized", 401);
       try {
-        return c.json({
-          revoked: remoteCredentialStore.revokeClient(client.clientId),
-          clientId: client.clientId,
-        });
+        const revoked = remoteCredentialStore.revokeClient(client.clientId);
+        if (revoked) completedSelfRevocations.add(c.req.raw);
+        return c.json({ revoked, clientId: client.clientId });
       } catch (error) {
         return remoteCredentialErrorResponse(error);
       }
@@ -1204,6 +1212,7 @@ export function createHttpServeApp(
           onActivity: () => {
             if (attachSessionId) touchAttachSession(attachSessionId);
           },
+          authorize: projectBindingAuthorizationForRequest(c),
         });
       } catch (error) {
         const response = attachErrorResponse(error);
@@ -1345,12 +1354,20 @@ export function createHttpServeApp(
       options.trustProxy,
       (name) => c.req.header(name),
     );
-    return c.json(
-      await dispatchRemoteCliRequest(request, context, {
-        operations: currentHostOperations,
-        principal: controlOperatorPrincipal(c),
-      }),
-    );
+    let principal: CurrentHostOperatorPrincipal;
+    try {
+      principal = controlOperatorPrincipal(c);
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+    const response = await dispatchRemoteCliRequest(request, context, {
+      operations: currentHostOperations,
+      principal,
+    });
+    if (response.ok && isRecord(response.result) && response.result.sessionEnded === true) {
+      completedSelfRevocations.add(c.req.raw);
+    }
+    return c.json(response);
   });
 
   app.get(
@@ -1368,6 +1385,13 @@ export function createHttpServeApp(
       const validation = projectBindingSocketRecordForRequest(c);
       return {
         onOpen: (_event, ws) => {
+          if (
+            validation.ok &&
+            !isCurrentProjectBindingAccessOwner(validation.record, validation.durableClientId)
+          ) {
+            ws.close(1008, "Project Binding session is no longer authorized.");
+            return;
+          }
           if (!validation.ok) {
             ws.close(1008, "Project Binding session was not found.");
             return;
@@ -1853,6 +1877,25 @@ export function createHttpServeApp(
     return client.clientId;
   }
 
+  function projectBindingAuthorizationForRequest(
+    c: Parameters<MiddlewareHandler>[0],
+  ): () => boolean {
+    if (!remoteCredentialStore) return () => true;
+    const token = bearerToken(authorizationHeaderForRequest(c));
+    if (!token) return () => false;
+    const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+      c.req.header(name),
+    );
+    return () => {
+      try {
+        const client = remoteCredentialStore.validateAccessToken({ hostUrl, accessToken: token });
+        return roleAllows(client.role, "access");
+      } catch {
+        return false;
+      }
+    };
+  }
+
   function projectBindingRecordFor(
     bindingId: string,
     ownerKey: string,
@@ -1949,30 +1992,62 @@ export function createHttpServeApp(
     if (session.operatorClientId === "development_unauthenticated") {
       return trustedDevelopmentOperatorPrincipal(hostUrl);
     }
-    return {
-      clientId: session.operatorClientId,
-      hostUrl,
-      role: "operator",
+    const assertLiveOperator = () => {
+      const liveClient = remoteCredentialStore
+        ?.listClients()
+        .find((client) => client.clientId === session.operatorClientId);
+      if (!liveClient || liveClient.revokedAt || liveClient.role !== "operator") {
+        throw new CapletsError(
+          "AUTH_FAILED",
+          "Dashboard administration requires a live Operator principal.",
+        );
+      }
     };
+    assertLiveOperator();
+    return withCurrentHostFinalAuthorization(
+      {
+        clientId: session.operatorClientId,
+        hostUrl,
+        role: "operator",
+      },
+      assertLiveOperator,
+    );
   }
 
   function controlOperatorPrincipal(
     c: Parameters<MiddlewareHandler>[0],
   ): CurrentHostOperatorPrincipal {
-    const client = authenticatedRemoteClients.get(c.req.raw);
-    if (client) {
-      if (client.role !== "operator") {
-        throw new CapletsError(
-          "AUTH_FAILED",
-          "Current Host administration requires an Operator principal.",
-        );
-      }
-      return {
-        clientId: client.clientId,
-        clientLabel: client.clientLabel,
-        hostUrl: client.hostUrl,
-        role: "operator",
+    const retained = authenticatedRemoteClients.get(c.req.raw);
+    if (retained && remoteCredentialStore) {
+      const token = bearerToken(authorizationHeaderForRequest(c));
+      if (!token) throw new CapletsError("AUTH_FAILED", "Remote credential is unavailable.");
+      const validateOperator = () => {
+        const client = remoteCredentialStore.validateAccessToken({
+          hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+            c.req.header(name),
+          ),
+          accessToken: token,
+        });
+        if (client.clientId !== retained.clientId || client.role !== "operator") {
+          throw new CapletsError(
+            "AUTH_FAILED",
+            "Current Host administration requires a live Operator principal.",
+          );
+        }
+        return client;
       };
+      const client = validateOperator();
+      return withCurrentHostFinalAuthorization(
+        {
+          clientId: client.clientId,
+          clientLabel: client.clientLabel,
+          hostUrl: client.hostUrl,
+          role: "operator",
+        },
+        () => {
+          validateOperator();
+        },
+      );
     }
     if (
       options.auth.type === "development_unauthenticated" &&
@@ -2493,7 +2568,7 @@ function attachEventSource(
 function attachEventsResponse(
   source: AttachEventSource,
   activeStreams: Set<AttachEventStream>,
-  options: { onActivity?: () => void } = {},
+  options: { onActivity?: () => void; authorize?: () => boolean } = {},
 ): Response {
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
@@ -2502,6 +2577,11 @@ function attachEventsResponse(
   let closed = false;
   const readable = new ReadableStream<Uint8Array>({
     start(controller) {
+      if (options.authorize && !options.authorize()) {
+        closed = true;
+        controller.close();
+        return;
+      }
       activeStream = {
         close: () => {
           if (closed) return;
@@ -2521,6 +2601,10 @@ function attachEventsResponse(
       controller.enqueue(encoder.encode(": connected\n\n"));
       keepAliveTimer = setInterval(() => {
         if (closed) return;
+        if (options.authorize && !options.authorize()) {
+          activeStream?.close();
+          return;
+        }
         options.onActivity?.();
         try {
           controller.enqueue(encoder.encode(": keepalive\n\n"));
@@ -2530,10 +2614,18 @@ function attachEventsResponse(
       }, 30_000);
       keepAliveTimer.unref?.();
       unsubscribe = source.onManifestChanged(() => {
+        if (options.authorize && !options.authorize()) {
+          activeStream?.close();
+          return;
+        }
         options.onActivity?.();
         void source
           .manifestRevision()
           .then((revision) => {
+            if (options.authorize && !options.authorize()) {
+              activeStream?.close();
+              return;
+            }
             if (closed) return;
             controller.enqueue(
               encoder.encode(`event: manifest_changed\ndata: ${JSON.stringify({ revision })}\n\n`),
@@ -2860,6 +2952,8 @@ function routeAuth(
   retainAuthenticatedClient:
     | ((request: Request, client: ValidatedRemoteClient) => void)
     | undefined,
+  releaseAuthenticatedClient: ((request: Request) => void) | undefined,
+  skipFinalAuthorizationCheck?: (request: Request) => boolean,
 ): MiddlewareHandler {
   if (options.auth.type === "development_unauthenticated") {
     return async (_c, next) => {
@@ -2875,27 +2969,48 @@ function routeAuth(
   return async (c, next) => {
     const header = authorizationHeaderForRequest(c);
     const token = bearerToken(header);
-    if (!token) {
-      return c.text("Unauthorized", 401);
-    }
+    if (!token) return c.text("Unauthorized", 401);
+    const hostUrl = remoteCredentialHostUrl(c.req.url, basePath, options, (name) =>
+      c.req.header(name),
+    );
+    let client: ValidatedRemoteClient;
     try {
-      const client = remoteCredentialStore.validateAccessToken({
-        hostUrl: remoteCredentialHostUrl(c.req.url, basePath, options, (name) =>
-          c.req.header(name),
-        ),
+      client = remoteCredentialStore.validateAccessToken({
+        hostUrl,
         accessToken: token,
       });
-      if (requiredRole !== undefined && !roleAllows(client.role, requiredRole)) {
-        return c.text(`Forbidden: ${requiredRole} role required`, 403);
-      }
-      retainAuthenticatedClient?.(c.req.raw, client);
     } catch (error) {
       if (error instanceof CapletsError && error.code === "SERVER_UNAVAILABLE") {
         return c.text("Service Unavailable", 503);
       }
       return c.text("Unauthorized", 401);
     }
-    await next();
+    if (requiredRole !== undefined && !roleAllows(client.role, requiredRole)) {
+      return c.text(`Forbidden: ${requiredRole} role required`, 403);
+    }
+    retainAuthenticatedClient?.(c.req.raw, client);
+    try {
+      await next();
+      if (!skipFinalAuthorizationCheck?.(c.req.raw)) {
+        try {
+          const finalClient = remoteCredentialStore.validateAccessToken({
+            hostUrl,
+            accessToken: token,
+          });
+          if (requiredRole !== undefined && !roleAllows(finalClient.role, requiredRole)) {
+            c.res = c.text(`Forbidden: ${requiredRole} role required`, 403);
+          }
+        } catch (error) {
+          if (error instanceof CapletsError && error.code === "SERVER_UNAVAILABLE") {
+            c.res = c.text("Service Unavailable", 503);
+          } else {
+            c.res = c.text("Forbidden: authorization revoked", 403);
+          }
+        }
+      }
+    } finally {
+      releaseAuthenticatedClient?.(c.req.raw);
+    }
   };
 }
 

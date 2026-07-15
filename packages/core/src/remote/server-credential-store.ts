@@ -93,6 +93,46 @@ export type CompletePendingLoginInput = PendingLoginPossessionInput & {
   requiredRole?: RemoteClientRole | undefined;
 };
 
+export type RemotePendingApprovalResult = Readonly<{
+  approvalId: string;
+  state: "pending" | "approved" | "cancelled" | "expired" | "invalidated";
+  expiresAt: string;
+}>;
+
+/** Async persistence seam used by the internal SQL activation path; the file store remains live. */
+export interface RemoteCredentialRepository {
+  issueClient(
+    input: Readonly<{
+      hostUrl: string;
+      clientLabel: string;
+      role: RemoteClientRole;
+      accessTtlMs?: number | undefined;
+    }>,
+  ): Promise<IssuedRemoteClientCredentials>;
+  validateAccessToken(
+    input: ValidateAccessTokenInput & Readonly<{ requiredRole?: RemoteClientRole | undefined }>,
+  ): Promise<ValidatedRemoteClient>;
+  refreshClientCredentials(
+    input: RefreshClientCredentialsInput,
+  ): Promise<IssuedRemoteClientCredentials>;
+  revokeClient(clientId: string): Promise<boolean>;
+  changeClientRole(
+    clientId: string,
+    role: RemoteClientRole,
+  ): Promise<RemoteClientStatus | undefined>;
+  createPendingApproval(
+    input?: Readonly<{ ttlMs?: number | undefined }>,
+  ): Promise<RemotePendingApprovalResult & Readonly<{ code: string }>>;
+  resolvePendingApproval(
+    input: Readonly<{
+      approvalId: string;
+      code: string;
+      action: "approve" | "cancel";
+    }>,
+  ): Promise<RemotePendingApprovalResult>;
+  invalidatePendingApprovalsForMigration(): Promise<number>;
+}
+
 type StoredPairingCode = {
   codeId: string;
   hostUrl: string;

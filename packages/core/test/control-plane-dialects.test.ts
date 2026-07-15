@@ -39,7 +39,7 @@ function environment(): MigrationEnvironment {
     verifiedSchemaAwareBackup: true,
     oldNodesDrained: true,
     retainedKeyVersions: [1],
-    hostAdministrator: false,
+    hostAdministrator: true,
   };
 }
 

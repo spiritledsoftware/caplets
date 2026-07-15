@@ -17,6 +17,7 @@ export default defineConfig([
       "control-plane/dialect/migrations": "src/control-plane/dialect/migrations.ts",
       "control-plane/dialect/sqlite": "src/control-plane/dialect/sqlite.ts",
       "control-plane/dialect/postgres": "src/control-plane/dialect/postgres.ts",
+      "control-plane/security": "src/control-plane/security/index.ts",
       "generated-tool-input-schema": "src/generated-tool-input-schema.ts",
       native: "src/native.ts",
       "observed-output-shapes": "src/observed-output-shapes/index.ts",

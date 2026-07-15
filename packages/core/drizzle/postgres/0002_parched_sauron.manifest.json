@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0002_parched_sauron",
+  "order": 2,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 2,
+  "destinationSchemaVersion": 3,
+  "phase": "contract",
+  "classification": "incompatible-contract",
+  "executionPolicy": "host-admin",
+  "automatic": false,
+  "sql": {
+    "file": "0002_parched_sauron.sql",
+    "sha256": "07d9ce1ab2a901a1b73089ab252bf03f7d08b59c9312d5a2bc7f055a15874671"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 3
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": true,
+    "oldNodesDrained": true,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0002_parched_sauron.down.sql",
+      "sha256": "9f7c3d7ff12ead4e23d238761924d0fcd4373ee00ab5b678fcfa8c3cb09fb191"
+    },
+    "requiresVerifiedBackup": true,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "c550c075e92af36c367da53d0944317a3bc7782298088e50a35199d20788a26d"
+}

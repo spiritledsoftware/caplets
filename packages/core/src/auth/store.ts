@@ -29,6 +29,14 @@ export type StoredOAuthTokenBundle = {
   metadata?: Record<string, unknown>;
 };
 
+/** Async encrypted token repository used only by the internal SQL activation path. */
+export interface AuthTokenRepository {
+  readTokenBundle(server: string): Promise<StoredOAuthTokenBundle | undefined>;
+  listTokenBundles(): Promise<StoredOAuthTokenBundle[]>;
+  writeTokenBundle(bundle: StoredOAuthTokenBundle): Promise<void>;
+  deleteTokenBundle(server: string): Promise<boolean>;
+}
+
 export function authStorePath(server: string, authDir = DEFAULT_AUTH_DIR): string {
   if (!server || server.includes("/") || server.includes("\\") || server.includes("..")) {
     throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);

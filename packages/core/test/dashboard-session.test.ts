@@ -6,6 +6,10 @@ import { CapletsEngine } from "../src/engine";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
+import {
+  DASHBOARD_IDLE_TIMEOUT_MS,
+  isDashboardSessionIdleExpired,
+} from "../src/dashboard/session-store";
 
 const dirs: string[] = [];
 
@@ -14,6 +18,22 @@ afterEach(() => {
 });
 
 describe("dashboard sessions", () => {
+  it("treats the exact idle boundary as valid and the next millisecond as expired", () => {
+    const lastUsedAt = "2026-07-15T00:00:00.000Z";
+    expect(
+      isDashboardSessionIdleExpired(
+        { lastUsedAt },
+        new Date(Date.parse(lastUsedAt) + DASHBOARD_IDLE_TIMEOUT_MS),
+      ),
+    ).toBe(false);
+    expect(
+      isDashboardSessionIdleExpired(
+        { lastUsedAt },
+        new Date(Date.parse(lastUsedAt) + DASHBOARD_IDLE_TIMEOUT_MS + 1),
+      ),
+    ).toBe(true);
+  });
+
   it("serves the unauthenticated dashboard shell without operator data", async () => {
     const { app, engine } = testApp();
 

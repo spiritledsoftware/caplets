@@ -23,6 +23,21 @@ export type DashboardSessionStoreOptions = {
   dir: string;
 };
 
+export interface DashboardSessionRepository {
+  create(input: Readonly<{ operatorClientId: string }>): Promise<{
+    cookieValue: string;
+    session: DashboardSessionView;
+  }>;
+  validate(
+    input: Readonly<{
+      cookieValue: string;
+      csrfToken?: string | undefined;
+      requireCsrf?: boolean | undefined;
+    }>,
+  ): Promise<DashboardSessionView>;
+  deleteSession(cookieValue: string): Promise<boolean>;
+}
+
 type DashboardSessionState = {
   version: 1;
   sessions: DashboardSessionRecord[];
@@ -32,8 +47,15 @@ const STATE_FILE = "dashboard-sessions.json";
 const LOCK_DIR = "dashboard-sessions.lock";
 const LOCK_TIMEOUT_MS = 100;
 const LOCK_STALE_MS = 30_000;
-const ABSOLUTE_TIMEOUT_MS = 12 * 60 * 60_000;
-const IDLE_TIMEOUT_MS = 60 * 60_000;
+export const DASHBOARD_ABSOLUTE_TIMEOUT_MS = 12 * 60 * 60_000;
+export const DASHBOARD_IDLE_TIMEOUT_MS = 60 * 60_000;
+
+export function isDashboardSessionIdleExpired(
+  session: Pick<DashboardSessionRecord, "lastUsedAt">,
+  now: Date,
+): boolean {
+  return now.getTime() - Date.parse(session.lastUsedAt) > DASHBOARD_IDLE_TIMEOUT_MS;
+}
 
 export class DashboardSessionStore {
   readonly dir: string;
@@ -56,7 +78,7 @@ export class DashboardSessionStore {
         role: "operator",
         csrfToken: `csrf_${randomToken(32)}`,
         createdAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + ABSOLUTE_TIMEOUT_MS).toISOString(),
+        expiresAt: new Date(now.getTime() + DASHBOARD_ABSOLUTE_TIMEOUT_MS).toISOString(),
         lastUsedAt: now.toISOString(),
       };
       const state = this.loadState();
@@ -89,7 +111,7 @@ export class DashboardSessionStore {
         throw new CapletsError("AUTH_FAILED", "Dashboard session is invalid.");
       }
       const expired = Date.parse(session.expiresAt) <= now.getTime();
-      const idleExpired = now.getTime() - Date.parse(session.lastUsedAt) > IDLE_TIMEOUT_MS;
+      const idleExpired = isDashboardSessionIdleExpired(session, now);
       if (expired || idleExpired) {
         state.sessions = state.sessions.filter(
           (candidate) => candidate.sessionId !== session.sessionId,
@@ -237,7 +259,7 @@ function parseSessionRecord(value: unknown): DashboardSessionRecord[] {
 function cleanupSessions(state: DashboardSessionState, now: Date): void {
   state.sessions = state.sessions.filter((session) => {
     if (Date.parse(session.expiresAt) <= now.getTime()) return false;
-    return now.getTime() - Date.parse(session.lastUsedAt) <= IDLE_TIMEOUT_MS;
+    return !isDashboardSessionIdleExpired(session, now);
   });
 }
 

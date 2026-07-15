@@ -62,6 +62,26 @@ export type ListDashboardActivityInput = {
   action?: DashboardActivityAction | undefined;
 };
 
+/** Runtime can append/list only; mutation and deletion are intentionally absent. */
+export interface DashboardActivityRepository {
+  append(input: AppendDashboardActivityInput): Promise<DashboardActivityEntry>;
+  list(input?: ListDashboardActivityInput): Promise<{
+    entries: DashboardActivityEntry[];
+    nextCursor?: string | undefined;
+  }>;
+}
+
+/** The maintenance identity receives only the bounded expired-row purge capability. */
+export interface DashboardActivityMaintenanceRepository {
+  purgeExpired(input: Readonly<{ watermark: number; limit: number }>): Promise<
+    Readonly<{
+      deleted: number;
+      watermark: number;
+      receiptId: string;
+    }>
+  >;
+}
+
 const ACTIVITY_FILE = "dashboard-activity.jsonl";
 const MAX_ACTIVITY_ENTRIES = 10_000;
 const MAX_ACTIVITY_BYTES = 10 * 1024 * 1024;
@@ -76,7 +96,7 @@ export class DashboardActivityLog {
   }
 
   append(input: AppendDashboardActivityInput): DashboardActivityEntry {
-    const entry = sanitizeActivityEntry({
+    const entry = sanitizeDashboardActivityEntry({
       id: `act_${randomToken(12)}`,
       createdAt: (input.now ?? new Date()).toISOString(),
       actorClientId: input.actorClientId,
@@ -162,13 +182,15 @@ function boundedLimit(limit: number | undefined): number {
 
 function parseActivityEntry(line: string): DashboardActivityEntry[] {
   try {
-    return [sanitizeActivityEntry(JSON.parse(line) as Partial<DashboardActivityEntry>)];
+    return [sanitizeDashboardActivityEntry(JSON.parse(line) as Partial<DashboardActivityEntry>)];
   } catch {
     return [];
   }
 }
 
-function sanitizeActivityEntry(entry: Partial<DashboardActivityEntry>): DashboardActivityEntry {
+export function sanitizeDashboardActivityEntry(
+  entry: Partial<DashboardActivityEntry>,
+): DashboardActivityEntry {
   if (
     typeof entry.id !== "string" ||
     typeof entry.createdAt !== "string" ||
@@ -185,7 +207,7 @@ function sanitizeActivityEntry(entry: Partial<DashboardActivityEntry>): Dashboar
     actorClientId: entry.actorClientId,
     action: entry.action,
     outcome: entry.outcome,
-    target: entry.target,
+    target: sanitizeActivityTarget(entry.target),
     ...(entry.metadata ? { metadata: sanitizeMetadata(entry.metadata) } : {}),
   };
 }
@@ -201,8 +223,28 @@ function sanitizeMetadata(metadata: DashboardActivityMetadata): DashboardActivit
 function isSafeMetadataValue(value: unknown): value is string | number | boolean | null {
   if (value === null || typeof value === "number" || typeof value === "boolean") return true;
   if (typeof value !== "string") return false;
-  if (/(cap_remote_access_|cap_remote_refresh_|cap_pending_|cap_login_)/u.test(value)) return false;
-  return value.length <= 256;
+  return isSafeActivityString(value);
+}
+
+function sanitizeActivityTarget(target: DashboardActivityTarget): DashboardActivityTarget {
+  const id = isSafeActivityString(target.id) ? target.id : "[redacted]";
+  const label =
+    target.label === undefined
+      ? undefined
+      : isSafeActivityString(target.label)
+        ? target.label
+        : "[redacted]";
+  return { ...target, id, ...(label === undefined ? {} : { label }) };
+}
+
+function isSafeActivityString(value: string): boolean {
+  if (value.length > 256) return false;
+  return !(
+    /(cap_remote_access_|cap_remote_refresh_|cap_pending_|cap_login_)/u.test(value) ||
+    /\bcaplets_(?:access|refresh)\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/u.test(value) ||
+    /\bcsrf_[A-Za-z0-9_-]{20,}\b/u.test(value) ||
+    /\.[A-Za-z0-9_-]{32,}$/u.test(value)
+  );
 }
 
 function isActivityAction(value: unknown): value is DashboardActivityAction {
@@ -244,5 +286,7 @@ function isActivityTarget(value: unknown): value is DashboardActivityTarget {
 }
 
 function isSafeMetadataKey(key: string): boolean {
-  return !/(secret|token|credential|bearer|refresh|value|payload|argument|output|path)/iu.test(key);
+  return !/(secret|token|credential|bearer|refresh|value|payload|argument|output|path|password|passphrase|csrf|cookie|authorization|verifier|ciphertext|auth.?tag|code)/iu.test(
+    key,
+  );
 }

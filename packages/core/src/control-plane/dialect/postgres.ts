@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { AnyPgColumn, AnyPgTable } from "drizzle-orm/pg-core";
 import { createRequire } from "node:module";
@@ -204,6 +204,33 @@ function createDialect(
       if (!pool) throw new Error("Postgres maintenance pool is unavailable");
       return withRuntimeTransaction(pool, schema, work);
     },
+    async maintenancePurgeExpiredOperatorActivity(input) {
+      requireReady();
+      const pool = options.pools.maintenance;
+      if (!pool) throw new Error("Postgres maintenance pool is unavailable");
+      const rows = await queryWithFixedSearchPath<{
+        deletedCount: string | number;
+        occurredAt: string;
+      }>(
+        pool,
+        schema,
+        `SELECT deleted_count AS "deletedCount", occurred_at AS "occurredAt" FROM ` +
+          `${qualified(schema, "cp_purge_expired_operator_activity")}($1, $2, $3, $4, $5)`,
+        [input.logicalHostId, input.storeId, input.receiptId, input.watermark, input.limit],
+      );
+      const row = rows[0];
+      if (!row || rows.length !== 1) {
+        throw new Error("Postgres activity purge receipt is unavailable");
+      }
+      const deleted = Number(row.deletedCount);
+      if (!Number.isSafeInteger(deleted) || deleted < 0) {
+        throw new Error("Postgres activity purge count is invalid");
+      }
+      if (!Number.isFinite(Date.parse(row.occurredAt))) {
+        throw new Error("Postgres activity purge clock is invalid");
+      }
+      return { deleted, occurredAt: row.occurredAt };
+    },
     get ready() {
       return ready;
     },
@@ -235,6 +262,24 @@ function createDialect(
                 ],
               );
               migrationIds.push(migration.manifest.migrationId);
+            }
+            if (
+              options.roles.maintenance &&
+              options.registry.migrations.some(
+                (migration) => migration.manifest.migrationId === "0002_parched_sauron",
+              )
+            ) {
+              await client.query(
+                `GRANT USAGE ON SCHEMA ${quoteSafeSqlIdentifier(schema)} TO ` +
+                  quoteSafeSqlIdentifier(options.roles.maintenance),
+              );
+              await client.query(
+                `GRANT EXECUTE ON FUNCTION ${qualified(
+                  schema,
+                  "cp_purge_expired_operator_activity",
+                )}(text, text, text, bigint, integer) TO ` +
+                  quoteSafeSqlIdentifier(options.roles.maintenance),
+              );
             }
             await ensurePostgresStorageIdentity(
               client,
@@ -408,7 +453,9 @@ function postgresFilter(
 ) {
   if (!filter) return undefined;
   const predicates = [
-    ...Object.entries(filter.equals ?? {}).map(([column, value]) => eq(table[column]!, value)),
+    ...Object.entries(filter.equals ?? {}).map(([column, value]) =>
+      value === null ? isNull(table[column]!) : eq(table[column]!, value),
+    ),
     ...Object.entries(filter.greaterThan ?? {}).map(([column, value]) => gt(table[column]!, value)),
   ];
   return predicates.length === 0 ? undefined : and(...predicates);

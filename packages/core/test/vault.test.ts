@@ -29,6 +29,13 @@ afterEach(() => {
 });
 
 describe("Caplets Vault local store", () => {
+  it("keeps the production Vault file-backed until the SQL repository is activated", () => {
+    const store = new FileVaultStore({ root: tempDir() });
+    const status = store.set("ACTIVATION_BOUNDARY", "file-backed-value");
+    expect(status).not.toBeInstanceOf(Promise);
+    expect("setWithGrant" in store).toBe(false);
+  });
+
   it("rejects invalid Vault key names before mutations", () => {
     const invalid = [
       "",

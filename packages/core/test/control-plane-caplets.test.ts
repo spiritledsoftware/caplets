@@ -5,7 +5,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { STORAGE_BENCHMARK_ENVELOPE, nearestRank } from "../src/control-plane/benchmarks/fixture";
+import {
+  STORAGE_BENCHMARK_ENVELOPE,
+  nearestRank,
+} from "../src/control-plane/storage-benchmark-envelope";
 import { createArtifactProviderIdentity } from "../src/control-plane/artifacts/provider";
 import type { CurrentHostOperationBinding } from "../src/current-host/operations";
 import type {
@@ -14,6 +17,14 @@ import type {
 } from "../src/control-plane/caplets/model";
 import { encodePortableCaplet } from "../src/control-plane/caplets/portable-codec";
 import { createControlPlaneRepository } from "../src/control-plane/caplets/repository";
+import {
+  bootstrapSqliteFileV1,
+  loadFileV1KeyProvider,
+} from "../src/control-plane/key-provider/file-v1";
+import {
+  createControlPlaneActivityMaintenanceRepository,
+  createControlPlaneSecurityRepository,
+} from "../src/control-plane/security/repository";
 import {
   attachVerifiedPostgresPools,
   type PostgresControlPlaneDialect,
@@ -52,7 +63,7 @@ const migrationEnvironment: MigrationEnvironment = {
   verifiedSchemaAwareBackup: true,
   oldNodesDrained: true,
   retainedKeyVersions: [1],
-  hostAdministrator: false,
+  hostAdministrator: true,
   now: new Date("2026-07-14T00:00:00.000Z"),
 };
 
@@ -199,7 +210,7 @@ describe("transactional Caplet and host-setting repository", () => {
       bootstrapFingerprint: "fingerprint-1",
       compatibility: {
         binaryVersion: "0.34.1",
-        schemaVersion: 2,
+        schemaVersion: 3,
         keyVersion: 1,
         manifestVersion: 1,
       },
@@ -522,7 +533,7 @@ describe("transactional Caplet and host-setting repository", () => {
           bootstrapFingerprint: "postgres-fingerprint-1",
           compatibility: {
             binaryVersion: "0.34.1",
-            schemaVersion: 2,
+            schemaVersion: 3,
             keyVersion: 1,
             manifestVersion: 1,
           },
@@ -639,7 +650,7 @@ describe("transactional Caplet and host-setting repository", () => {
               bootstrapFingerprint: `postgres-fingerprint-${index + 1}`,
               compatibility: {
                 binaryVersion: "0.34.1",
-                schemaVersion: 2,
+                schemaVersion: 3,
                 keyVersion: 1,
                 manifestVersion: 1,
               },
@@ -653,7 +664,7 @@ describe("transactional Caplet and host-setting repository", () => {
             bootstrapFingerprint: "postgres-fingerprint-17",
             compatibility: {
               binaryVersion: "0.34.1",
-              schemaVersion: 2,
+              schemaVersion: 3,
               keyVersion: 1,
               manifestVersion: 1,
             },
@@ -661,6 +672,128 @@ describe("transactional Caplet and host-setting repository", () => {
           }),
         ).resolves.toEqual({ status: "capacity-rejected", readyNodes: 16 });
         expect(snapshot.caplets[0]?.projection).toEqual(projection);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+
+  it.skipIf(!postgresAdminUrl)(
+    "runs the U6 verifier, refresh replay, session, and encrypted OAuth seams on real Postgres",
+    async () => {
+      const fixture = await openPostgresRepository(postgresAdminUrl!);
+      const keyParent = await mkdtemp(join(tmpdir(), "caplets-u6-postgres-keys-"));
+      roots.push(keyParent);
+      const keyRoot = join(keyParent, "state");
+      try {
+        await fixture.store.initialize();
+        const bootstrap = await bootstrapSqliteFileV1({
+          root: keyRoot,
+          logicalHostId,
+          storeId,
+        });
+        const keyProvider = await loadFileV1KeyProvider({
+          manifestPath: bootstrap.profileManifestPaths.online,
+          expectedLogicalHostId: logicalHostId,
+          expectedStoreId: storeId,
+          expectedProfile: "online",
+        });
+        const repository = createControlPlaneSecurityRepository({
+          identity,
+          dialect: fixture.dialect,
+          keyProvider,
+        });
+        const client = await repository.issueClient({
+          hostUrl: "https://u6-postgres.example",
+          clientLabel: "postgres-u6",
+          role: "operator",
+        });
+        const session = await repository.create({ operatorClientId: client.clientId });
+        await expect(
+          repository.validate({
+            cookieValue: session.cookieValue,
+            requireCsrf: true,
+            csrfToken: session.session.csrfToken,
+          }),
+        ).resolves.toMatchObject({ operatorClientId: client.clientId });
+        const rotated = await repository.refreshClientCredentials({
+          hostUrl: client.hostUrl,
+          refreshToken: client.refreshToken,
+        });
+        await expect(
+          repository.refreshClientCredentials({
+            hostUrl: client.hostUrl,
+            refreshToken: client.refreshToken,
+          }),
+        ).rejects.toMatchObject({ code: "AUTH_FAILED" });
+        await repository.writeTokenBundle({
+          server: "u6-postgres",
+          accessToken: "u6-postgres-encrypted-sentinel",
+        });
+        await expect(repository.readTokenBundle("u6-postgres")).resolves.toEqual({
+          server: "u6-postgres",
+          accessToken: "u6-postgres-encrypted-sentinel",
+        });
+        await expect(
+          repository.validateAccessToken({
+            hostUrl: rotated.hostUrl,
+            accessToken: rotated.accessToken,
+          }),
+        ).rejects.toMatchObject({ code: "AUTH_FAILED" });
+        const expiredActivity = await repository.append({
+          actorClientId: client.clientId,
+          action: "dashboard_login_completed",
+          target: { type: "dashboard_session", id: "postgres-expired" },
+        });
+        const retainedActivity = await repository.append({
+          actorClientId: client.clientId,
+          action: "dashboard_logout",
+          target: { type: "dashboard_session", id: "postgres-retained" },
+        });
+        await fixture.adminQuery(
+          "ALTER TABLE caplets.cp_operator_activity DISABLE TRIGGER cp_operator_activity_no_update",
+        );
+        await fixture.adminQuery(
+          "UPDATE caplets.cp_operator_activity SET expires_at = $1 WHERE activity_id = $2",
+          ["1970-01-01T00:00:00.000Z", expiredActivity.id],
+        );
+        await fixture.adminQuery(
+          "ALTER TABLE caplets.cp_operator_activity ENABLE TRIGGER cp_operator_activity_no_update",
+        );
+        await expect(
+          fixture.dialect.query("DELETE FROM caplets.cp_operator_activity WHERE activity_id = $1", [
+            retainedActivity.id,
+          ]),
+        ).rejects.toThrow();
+        await expect(
+          fixture.dialect.query(
+            "UPDATE caplets.cp_operator_activity SET outcome = 'failure' WHERE activity_id = $1",
+            [retainedActivity.id],
+          ),
+        ).rejects.toThrow();
+        await expect(
+          fixture.dialect.maintenanceQuery("SELECT ciphertext FROM caplets.cp_vault_value LIMIT 1"),
+        ).rejects.toThrow();
+        const maintenance = createControlPlaneActivityMaintenanceRepository({
+          identity,
+          dialect: fixture.dialect,
+        });
+        await expect(maintenance.purgeExpired({ watermark: 7, limit: 10 })).resolves.toMatchObject({
+          deleted: 1,
+          watermark: 7,
+        });
+        await expect(maintenance.purgeExpired({ watermark: 6, limit: 10 })).rejects.toThrow();
+        await expect(
+          fixture.dialect.query<{ activityId: string }>(
+            'SELECT activity_id AS "activityId" FROM caplets.cp_operator_activity ORDER BY activity_id',
+          ),
+        ).resolves.toEqual([{ activityId: retainedActivity.id }]);
+        await expect(
+          fixture.dialect.maintenanceQuery<{ policy: string; purgeWatermark: string | number }>(
+            'SELECT policy, purge_watermark AS "purgeWatermark" FROM caplets.cp_retention ' +
+              "WHERE resource_kind = 'operator-activity'",
+          ),
+        ).resolves.toEqual([{ policy: "bounded-expired-only", purgeWatermark: "7" }]);
       } finally {
         await fixture.close();
       }
@@ -678,7 +811,7 @@ describe("transactional Caplet and host-setting repository", () => {
           bootstrapFingerprint: "benchmark-fingerprint-00",
           compatibility: {
             binaryVersion: "0.34.1",
-            schemaVersion: 2,
+            schemaVersion: 3,
             keyVersion: 1,
             manifestVersion: 1,
           },
@@ -691,7 +824,7 @@ describe("transactional Caplet and host-setting repository", () => {
             bootstrapFingerprint: `benchmark-fingerprint-${index.toString().padStart(2, "0")}`,
             compatibility: {
               binaryVersion: "0.34.1",
-              schemaVersion: 2,
+              schemaVersion: 3,
               keyVersion: 1,
               manifestVersion: 1,
             },
@@ -1044,6 +1177,7 @@ async function openPostgresRepository(adminUrl: string): Promise<
     store: ControlPlaneStore;
     dialect: PostgresControlPlaneDialect;
     close(): Promise<void>;
+    adminQuery<T>(sql: string, parameters?: readonly unknown[]): Promise<readonly T[]>;
   }>
 > {
   const moduleValue: unknown = require("pg");
@@ -1100,13 +1234,21 @@ async function openPostgresRepository(adminUrl: string): Promise<
         ${quoteSafeSqlIdentifier(runtimeRole)}, ${quoteSafeSqlIdentifier(maintenanceRole)};
       GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA caplets
         TO ${quoteSafeSqlIdentifier(runtimeRole)};
-      GRANT SELECT, INSERT, UPDATE, DELETE ON caplets.cp_retention
+      REVOKE UPDATE, DELETE ON caplets.cp_operator_activity
+        FROM ${quoteSafeSqlIdentifier(runtimeRole)};
+      REVOKE ALL ON ALL TABLES IN SCHEMA caplets
+        FROM ${quoteSafeSqlIdentifier(maintenanceRole)};
+      GRANT SELECT ON caplets.cp_retention
         TO ${quoteSafeSqlIdentifier(maintenanceRole)};
     `);
     const openDialect = dialect;
     return {
       dialect: openDialect,
       store: createControlPlaneRepository({ identity, dialect: openDialect }),
+      async adminQuery<T>(sql: string, parameters: readonly unknown[] = []) {
+        const result = await admin.query(sql, parameters);
+        return result.rows as readonly T[];
+      },
       async close() {
         await openDialect.close();
         await dropPostgresFixture(admin, runtimeRole, migratorRole, maintenanceRole);

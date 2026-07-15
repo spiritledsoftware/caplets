@@ -1,6 +1,10 @@
 import { Buffer } from "node:buffer";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { CapletsError } from "../errors";
+import {
+  fileV1AssociatedData,
+  type FileV1KeyProvider,
+} from "../control-plane/key-provider/file-v1";
 
 export type VaultEncryptedRecord = {
   version: 1;
@@ -12,6 +16,78 @@ export type VaultEncryptedRecord = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type SqlVaultEncryptedRecord = Readonly<{
+  algorithm: "AES-256-GCM";
+  keyVersion: number;
+  aadVersion: 1;
+  nonce: Buffer;
+  ciphertext: Buffer;
+  authTag: Buffer;
+  valueBytes: number;
+}>;
+
+export function encryptSqlVaultValue(
+  input: Readonly<{
+    plaintext: string;
+    provider: FileV1KeyProvider;
+    logicalHostId: string;
+    storeId: string;
+    referenceName: string;
+  }>,
+): SqlVaultEncryptedRecord {
+  const nonce = randomBytes(NONCE_BYTES);
+  const protectedValue = input.provider.encrypt(
+    "vault-record",
+    Buffer.from(input.plaintext, "utf8"),
+    nonce,
+    fileV1AssociatedData({
+      logicalHostId: input.logicalHostId,
+      storeId: input.storeId,
+      purpose: "vault-record",
+      recordId: input.referenceName,
+    }),
+  );
+  return {
+    algorithm: "AES-256-GCM",
+    keyVersion: protectedValue.keyVersion,
+    aadVersion: 1,
+    nonce,
+    ciphertext: protectedValue.ciphertext,
+    authTag: protectedValue.authenticationTag,
+    valueBytes: Buffer.byteLength(input.plaintext, "utf8"),
+  };
+}
+
+export function decryptSqlVaultValue(
+  record: SqlVaultEncryptedRecord,
+  input: Readonly<{
+    provider: FileV1KeyProvider;
+    logicalHostId: string;
+    storeId: string;
+    referenceName: string;
+  }>,
+): string {
+  if (record.algorithm !== "AES-256-GCM" || record.aadVersion !== 1) {
+    throw new CapletsError("CONFIG_INVALID", "SQL Vault protection metadata is unsupported.");
+  }
+  return input.provider
+    .decrypt(
+      "vault-record",
+      record.keyVersion,
+      record.ciphertext,
+      record.nonce,
+      record.authTag,
+      fileV1AssociatedData({
+        logicalHostId: input.logicalHostId,
+        storeId: input.storeId,
+        purpose: "vault-record",
+        recordId: input.referenceName,
+        aadVersion: record.aadVersion,
+      }),
+    )
+    .toString("utf8");
+}
 
 const NONCE_BYTES = 12;
 

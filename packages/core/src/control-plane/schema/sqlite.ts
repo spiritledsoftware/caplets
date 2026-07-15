@@ -150,6 +150,32 @@ function entityChecks(
       ),
     );
   }
+  if (definitionValue.kind === "key-inventory") {
+    checks.push(
+      check(
+        "cp_key_inventory_provider_check",
+        sql`${requireColumn(table, "provider")} = 'file-v1'`,
+      ),
+      check(
+        "cp_key_inventory_state_check",
+        sql`${requireColumn(table, "state")} IN ('active', 'decrypt-only', 'retired', 'destruction-intended', 'destroyed')`,
+      ),
+    );
+  }
+  if (definitionValue.kind === "key-canary") {
+    const protection = requireColumn(table, "protection");
+    const nonce = requireColumn(table, "nonce");
+    const ciphertext = requireColumn(table, "ciphertext");
+    const authTag = requireColumn(table, "authTag");
+    const verifier = requireColumn(table, "verifier");
+    checks.push(
+      check("cp_key_canary_state_check", sql`${requireColumn(table, "state")} = 'active'`),
+      check(
+        "cp_key_canary_protection_check",
+        sql`(${protection} = 'aead' AND ${nonce} IS NOT NULL AND ${ciphertext} IS NOT NULL AND ${authTag} IS NOT NULL AND ${verifier} IS NULL) OR (${protection} = 'hmac' AND ${nonce} IS NULL AND ${ciphertext} IS NULL AND ${authTag} IS NULL AND ${verifier} IS NOT NULL)`,
+      ),
+    );
+  }
   if (definitionValue.kind === "external-destruction") {
     checks.push(
       check(
@@ -241,6 +267,8 @@ export const operatorActivities = createEntityTable(definition("operator-activit
 export const authorityVersions = createEntityTable(definition("authority-version"));
 export const effectiveVersions = createEntityTable(definition("effective-version"));
 export const securityVersions = createEntityTable(definition("security-version"));
+export const keyInventory = createEntityTable(definition("key-inventory"));
+export const keyCanaries = createEntityTable(definition("key-canary"));
 export const clusterNodeLeases = createEntityTable(definition("cluster-node-lease"));
 export const writerFences = createEntityTable(definition("writer-fence"));
 export const migrations = createEntityTable(definition("migration"));
@@ -402,6 +430,8 @@ export const sqliteControlPlaneSchema = {
   authorityVersions,
   effectiveVersions,
   securityVersions,
+  keyInventory,
+  keyCanaries,
   clusterNodeLeases,
   writerFences,
   migrations,

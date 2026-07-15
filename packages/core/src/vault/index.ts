@@ -47,6 +47,32 @@ type SetOptions = {
   now?: Date | undefined;
 };
 
+/** Async transactional Vault seam; production stays on FileVaultStore until activation. */
+export interface VaultRepository {
+  setWithGrant(
+    input: Readonly<{
+      key: string;
+      value: string;
+      force?: boolean | undefined;
+      grant?: VaultAccessGrantInput | undefined;
+    }>,
+  ): Promise<VaultValueStatus>;
+  getStatus(key: string): Promise<VaultValueStatus>;
+  listValues(): Promise<VaultValueStatus[]>;
+  revealValue(key: string): Promise<string>;
+  deleteValue(key: string): Promise<VaultDeleteStatus>;
+  grantAccess(input: VaultAccessGrantInput): Promise<VaultAccessGrant>;
+  listAccess(filter?: VaultAccessGrantFilter): Promise<VaultAccessGrant[]>;
+  revokeAccess(filter: VaultAccessGrantFilter): Promise<VaultAccessGrant[]>;
+  resolveGrantedValue(
+    input: Readonly<{
+      referenceName: string;
+      capletId: string;
+      origin: VaultConfigOrigin;
+    }>,
+  ): Promise<VaultResolvedGrant>;
+}
+
 export class FileVaultStore {
   readonly root: string;
   readonly env: Record<string, string | undefined>;

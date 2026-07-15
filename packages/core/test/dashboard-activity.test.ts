@@ -15,6 +15,19 @@ afterEach(() => {
 });
 
 describe("dashboard activity and access actions", () => {
+  it("keeps file activity append/list separate from maintenance purge capabilities", () => {
+    const log = new DashboardActivityLog({ dir: tempDir("caplets-dashboard-boundary-") });
+    const entry = log.append({
+      actorClientId: "client-file-boundary",
+      action: "vault_set",
+      target: { type: "vault", id: "BOUNDARY" },
+    });
+    expect(entry).not.toBeInstanceOf(Promise);
+    expect("purgeExpired" in log).toBe(false);
+    expect("update" in log).toBe(false);
+    expect("delete" in log).toBe(false);
+  });
+
   it("approves and denies pending logins through operator actions and records redacted activity", async () => {
     const setup = await authenticatedDashboard();
     const approveTarget = setup.store.createPendingLogin({

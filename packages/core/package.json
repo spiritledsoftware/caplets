@@ -95,6 +95,10 @@
       "types": "./dist/control-plane/dialect/postgres.d.ts",
       "default": "./dist/control-plane/dialect/postgres.js"
     },
+    "./control-plane/security": {
+      "types": "./dist/control-plane/security/index.d.ts",
+      "default": "./dist/control-plane/security.js"
+    },
     "./observed-output-shapes": {
       "types": "./dist/observed-output-shapes/index.d.ts",
       "default": "./dist/observed-output-shapes.js"

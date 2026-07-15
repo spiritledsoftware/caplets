@@ -57,6 +57,8 @@ export type ControlPlaneEntityKind =
   | "authority-version"
   | "effective-version"
   | "security-version"
+  | "key-inventory"
+  | "key-canary"
   | "cluster-node-lease"
   | "writer-fence"
   | "migration"
@@ -217,6 +219,32 @@ export const CONTROL_PLANE_ENTITY_INVENTORY: readonly EntityInventoryEntry[] = [
   {
     kind: "security-version",
     fieldCategories: ["epoch", "key-floor", "revocation-watermark"],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "key-inventory",
+    fieldCategories: [
+      "provider-neutral-identity",
+      "purpose",
+      "algorithm",
+      "version",
+      "state",
+      "node-capability",
+      "purge-watermark",
+    ],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "key-canary",
+    fieldCategories: [
+      "purpose",
+      "algorithm",
+      "version",
+      "store-bound-label",
+      "ciphertext-or-verifier",
+    ],
     mutable: true,
     securityCritical: true,
   },

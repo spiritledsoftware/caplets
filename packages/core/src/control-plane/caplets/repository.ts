@@ -7,7 +7,7 @@ import type {
   CurrentHostOperationLookupOutcome,
   CurrentHostOperationReceipt,
 } from "../../current-host/operations";
-import { STORAGE_BENCHMARK_ENVELOPE } from "../benchmarks/fixture";
+import { STORAGE_BENCHMARK_ENVELOPE } from "../storage-benchmark-envelope";
 import {
   type CanonicalCapletAggregate,
   type CanonicalCapletRelationalProjection,
@@ -55,6 +55,7 @@ import type {
 
 const DEFAULT_RESERVATION_TTL_MS = 5 * 60_000;
 const EXTERNAL_DESTRUCTION_CLAIM_TTL_MS = 30_000;
+const OPERATOR_ACTIVITY_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const COMMON_COLUMNS = [
   "model_version",
   "id",
@@ -1135,7 +1136,7 @@ async function runManagementMutation(
       await fail("after-generation");
       await fail("before-fence-guard");
       if (input.finalAuthorization) {
-        const finalAuthorization = await input.finalAuthorization();
+        const finalAuthorization = await input.finalAuthorization(transaction);
         if (finalAuthorization.status === "unavailable") {
           throw new StoreResultError({ status: "unavailable" });
         }
@@ -1550,6 +1551,7 @@ async function writeActivity(
       "target",
       "redacted_detail",
       "occurred_at",
+      "expires_at",
     ],
     [
       ...common,
@@ -1560,6 +1562,7 @@ async function writeActivity(
       encodeCanonicalJson(sanitizeActivityDetail(input.activity.target)),
       encodeCanonicalJson(detail),
       state.now,
+      new Date(Date.parse(state.now) + OPERATOR_ACTIVITY_RETENTION_MS).toISOString(),
     ],
   );
 }

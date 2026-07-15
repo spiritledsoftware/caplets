@@ -34,15 +34,31 @@ export type ControlPlaneTable =
   | "operationOutcomes"
   | "operationTombstones"
   | "confirmations"
+  | "oauthTokens"
+  | "clients"
+  | "credentials"
+  | "pendingApprovals"
+  | "dashboardSessions"
+  | "projectBindingWorkspaces"
+  | "projectBindingLeases"
+  | "projectBindingReceipts"
+  | "vaultValues"
+  | "vaultGrants"
   | "operatorActivities"
   | "authorityVersions"
   | "effectiveVersions"
   | "securityVersions"
+  | "keyInventory"
+  | "keyCanaries"
   | "clusterNodeLeases"
   | "writerFences"
   | "migrations"
+  | "backups"
+  | "recoveries"
   | "retentions"
   | "externalDestructions"
+  | "recoveryCheckpoints"
+  | "quarantines"
   | "capletDocuments"
   | "capletBackends"
   | "capletCatalogs"
@@ -102,6 +118,16 @@ export interface ControlPlaneTransactionalDialect {
   maintenanceTransaction<T>(
     work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
   ): Promise<T>;
+  /** Postgres SECURITY DEFINER primitive; omitted by SQLite, which uses typed transaction CRUD. */
+  maintenancePurgeExpiredOperatorActivity?(
+    input: Readonly<{
+      logicalHostId: string;
+      storeId: string;
+      receiptId: string;
+      watermark: number;
+      limit: number;
+    }>,
+  ): Promise<Readonly<{ deleted: number; occurredAt: string }>>;
 }
 
 export type ControlPlaneFailurePoint =

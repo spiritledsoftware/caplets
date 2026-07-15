@@ -16,12 +16,13 @@ import {
   currentHostInstalledCaplets,
   type CurrentHostSetupAction,
 } from "./catalog";
-import type {
-  CurrentHostControlContext,
-  CurrentHostOperation,
-  CurrentHostOperationOutcome,
-  CurrentHostOperatorPrincipal,
-  CurrentHostOperationsDependencies,
+import {
+  finalAuthorizeCurrentHostMutation,
+  type CurrentHostControlContext,
+  type CurrentHostOperation,
+  type CurrentHostOperationOutcome,
+  type CurrentHostOperatorPrincipal,
+  type CurrentHostOperationsDependencies,
 } from "./operations";
 
 type CapletsListOperation = Extract<CurrentHostOperation, { kind: "caplets_list" }>;
@@ -126,6 +127,8 @@ async function catalogInstallOutcome(
       ...(capletIds === undefined ? {} : { capletIds }),
       ...(operation.force === undefined ? {} : { force: operation.force }),
     };
+    const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
+    if (finalAuthorization instanceof Promise) await finalAuthorization;
     const installed = repo
       ? installCaplets(repo, installOptions).installed
       : restoreCapletsFromLockfile(installOptions).installed;

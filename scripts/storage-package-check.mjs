@@ -167,7 +167,7 @@ if (STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets !== 2000 || nearestRank([1, 2
 }
 for (const dialect of ["sqlite", "postgres"]) {
   const registry = await loadMigrationRegistry({ dialect });
-  if (registry.migrations.length !== 2 || registry.migrations.some((migration) => !migration.sql || !migration.downSql)) {
+  if (registry.migrations.length !== 3 || registry.migrations.some((migration) => !migration.sql || !migration.downSql)) {
     throw new Error("packed " + dialect + " migration history is unavailable");
   }
 }

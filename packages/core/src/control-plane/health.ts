@@ -1,4 +1,4 @@
-import { STORAGE_BENCHMARK_ENVELOPE, nearestRank } from "./benchmarks/fixture";
+import { STORAGE_BENCHMARK_ENVELOPE, nearestRank } from "./storage-benchmark-envelope";
 import type { ControlPlaneHealthSummary, ControlPlaneSnapshot } from "./types";
 
 export function assertRedactedControlPlaneHealth(

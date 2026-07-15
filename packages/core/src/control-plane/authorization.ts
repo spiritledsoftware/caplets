@@ -1,4 +1,5 @@
 import { roleAllows, type RemoteClientRole } from "../remote/server-credentials";
+import type { ControlPlaneSqlTransaction } from "./store";
 import type { ControlPlaneAuthorization } from "./types";
 
 export type ControlPlaneAuthorizationRequest = Readonly<{
@@ -23,6 +24,10 @@ export type ControlPlaneAuthorizationDecision =
 
 export interface ControlPlaneAuthorizer {
   authorize(request: ControlPlaneAuthorizationRequest): Promise<ControlPlaneAuthorizationDecision>;
+  authorizeInTransaction?(
+    transaction: ControlPlaneSqlTransaction,
+    request: ControlPlaneAuthorizationRequest,
+  ): Promise<ControlPlaneAuthorizationDecision>;
 }
 
 export function validateControlPlaneAuthorization(

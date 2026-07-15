@@ -3,7 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { STORAGE_BENCHMARK_ENVELOPE, nearestRank } from "../src/control-plane/benchmarks/fixture";
+import {
+  STORAGE_BENCHMARK_ENVELOPE,
+  nearestRank,
+} from "../src/control-plane/storage-benchmark-envelope";
 import type {
   CanonicalCapletAggregate,
   CanonicalCapletRelationalProjection,
@@ -39,7 +42,7 @@ const migrationEnvironment: MigrationEnvironment = {
   verifiedSchemaAwareBackup: true,
   oldNodesDrained: true,
   retainedKeyVersions: [1],
-  hostAdministrator: false,
+  hostAdministrator: true,
   now: new Date("2026-07-14T00:00:00.000Z"),
 };
 
@@ -57,7 +60,7 @@ describe("supported control-plane snapshot envelope", () => {
       bootstrapFingerprint: "snapshot-writer-fingerprint",
       compatibility: {
         binaryVersion: "0.34.1",
-        schemaVersion: 2,
+        schemaVersion: 3,
         keyVersion: 1,
         manifestVersion: 1,
       },
@@ -204,7 +207,7 @@ describe("supported control-plane snapshot envelope", () => {
         bootstrapFingerprint: `fingerprint-${index.toString().padStart(2, "0")}`,
         compatibility: {
           binaryVersion: "0.34.1",
-          schemaVersion: 2,
+          schemaVersion: 3,
           keyVersion: 1,
           manifestVersion: 1,
         },
@@ -221,7 +224,7 @@ describe("supported control-plane snapshot envelope", () => {
       bootstrapFingerprint: "different-fingerprint",
       compatibility: {
         binaryVersion: "0.34.1",
-        schemaVersion: 2,
+        schemaVersion: 3,
         keyVersion: 1,
         manifestVersion: 1,
       },
@@ -237,7 +240,7 @@ describe("supported control-plane snapshot envelope", () => {
       bootstrapFingerprint: "fingerprint-16",
       compatibility: {
         binaryVersion: "0.34.1",
-        schemaVersion: 2,
+        schemaVersion: 3,
         keyVersion: 1,
         manifestVersion: 1,
       },
@@ -254,7 +257,7 @@ describe("supported control-plane snapshot envelope", () => {
         bootstrapFingerprint: `fingerprint-${index.toString().padStart(2, "0")}`,
         compatibility: {
           binaryVersion: "0.34.1",
-          schemaVersion: 2,
+          schemaVersion: 3,
           keyVersion: 1,
           manifestVersion: 1,
         },
@@ -285,7 +288,7 @@ describe("supported control-plane snapshot envelope", () => {
         bootstrapFingerprint: "fingerprint-16",
         compatibility: {
           binaryVersion: "0.34.1",
-          schemaVersion: 2,
+          schemaVersion: 3,
           keyVersion: 1,
           manifestVersion: 1,
         },

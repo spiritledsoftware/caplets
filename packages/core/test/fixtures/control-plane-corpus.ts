@@ -25,6 +25,8 @@ export const CANONICAL_ENTITY_KINDS_FIXTURE = [
   "authority-version",
   "effective-version",
   "security-version",
+  "key-inventory",
+  "key-canary",
   "cluster-node-lease",
   "writer-fence",
   "migration",
