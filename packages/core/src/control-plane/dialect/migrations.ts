@@ -198,36 +198,10 @@ export function assertMigrationEnvironment(
   registry: LoadedMigrationRegistry,
   environment: MigrationEnvironment,
 ): void {
-  if (
-    !Number.isSafeInteger(environment.supportedSchemaVersion) ||
-    environment.supportedSchemaVersion < 0
-  ) {
-    throw new Error("Supported schema version is invalid");
-  }
+  assertSupportedSchemaVersion(environment);
   const retainedKeys = new Set(environment.retainedKeyVersions);
   for (const migration of registry.migrations) {
-    const compatibility = migration.manifest.compatibility;
-    if (
-      !satisfies(
-        environment.binaryVersion,
-        `>=${compatibility.binary.minimum} <${compatibility.binary.maximumExclusive}`,
-      )
-    ) {
-      throw new Error(`Binary version is incompatible with ${migration.manifest.migrationId}`);
-    }
-    assertInRange(
-      environment.supportedSchemaVersion,
-      compatibility.schema,
-      "schema",
-      migration.manifest.migrationId,
-    );
-    assertInRange(environment.keyVersion, compatibility.key, "key", migration.manifest.migrationId);
-    assertInRange(
-      environment.manifestVersion,
-      compatibility.manifest,
-      "manifest",
-      migration.manifest.migrationId,
-    );
+    assertMigrationCompatibility(migration, environment);
     for (const keyVersion of migration.manifest.activationRequirements.retainedKeyVersions) {
       if (!retainedKeys.has(keyVersion)) {
         throw new Error(`Required retained key ${keyVersion} is unavailable`);
@@ -257,12 +231,49 @@ export function assertMigrationEnvironment(
   }
 }
 
+function assertSupportedSchemaVersion(environment: MigrationEnvironment): void {
+  if (
+    !Number.isSafeInteger(environment.supportedSchemaVersion) ||
+    environment.supportedSchemaVersion < 0
+  ) {
+    throw new Error("Supported schema version is invalid");
+  }
+}
+
+function assertMigrationCompatibility(
+  migration: LoadedMigration,
+  environment: MigrationEnvironment,
+): void {
+  const compatibility = migration.manifest.compatibility;
+  if (
+    !satisfies(
+      environment.binaryVersion,
+      `>=${compatibility.binary.minimum} <${compatibility.binary.maximumExclusive}`,
+    )
+  ) {
+    throw new Error(`Binary version is incompatible with ${migration.manifest.migrationId}`);
+  }
+  assertInRange(
+    environment.supportedSchemaVersion,
+    compatibility.schema,
+    "schema",
+    migration.manifest.migrationId,
+  );
+  assertInRange(environment.keyVersion, compatibility.key, "key", migration.manifest.migrationId);
+  assertInRange(
+    environment.manifestVersion,
+    compatibility.manifest,
+    "manifest",
+    migration.manifest.migrationId,
+  );
+}
+
 export function planPendingMigrations(
   registry: LoadedMigrationRegistry,
   applied: readonly AppliedMigration[],
   environment: MigrationEnvironment,
 ): readonly LoadedMigration[] {
-  assertMigrationEnvironment(registry, environment);
+  assertSupportedSchemaVersion(environment);
   if (applied.length > registry.migrations.length) {
     throw new Error("Database schema is newer than this binary");
   }
@@ -282,6 +293,9 @@ export function planPendingMigrations(
     }
   }
   const pending = registry.migrations.slice(applied.length);
+  const current = registry.migrations[applied.length - 1];
+  if (current) assertMigrationCompatibility(current, environment);
+  assertMigrationEnvironment({ ...registry, migrations: pending }, environment);
   for (const migration of pending) {
     if (!migration.manifest.automatic && !environment.hostAdministrator) {
       throw new Error(

@@ -28,6 +28,22 @@ import type {
   ControlPlaneRuntimeSnapshot,
   ControlPlaneRuntimeSnapshotLoader,
 } from "./control-plane/snapshot";
+import type {
+  ActivatedControlPlaneRead,
+  ControlPlaneLiveOperationClass,
+  ControlPlaneMaintenanceCoordinator,
+  ControlPlaneStaleReadClass,
+} from "./control-plane/service";
+import {
+  bindProductionSnapshotPublisher,
+  createProductionControlPlane,
+} from "./control-plane/production-runtime";
+import type { ControlPlaneSecurityRepository } from "./control-plane/security/repository";
+import type { CurrentHostManagementDependencies } from "./current-host/operations";
+import type {
+  ControlPlaneDetailedDiagnostics,
+  ControlPlaneHealthSummary,
+} from "./control-plane/types";
 import { DownstreamManager } from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
@@ -72,6 +88,7 @@ export type CapletsEngineOptions = {
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
+  env?: NodeJS.ProcessEnv | undefined;
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
   mediaInlineThresholdBytes?: number;
@@ -120,21 +137,108 @@ type WatchedPath = {
 type InternalCapletsEngineInitialization = Readonly<{
   snapshot: ControlPlaneRuntimeSnapshot;
   loader: ControlPlaneRuntimeSnapshotLoader;
+  close?: (() => Promise<void>) | undefined;
+  management?: CurrentHostManagementDependencies | undefined;
+  security?: ControlPlaneSecurityRepository | undefined;
+  maintenance?: ControlPlaneMaintenanceCoordinator | undefined;
+  health?: (() => Promise<ControlPlaneHealthSummary>) | undefined;
+  detailedDiagnostics?:
+    | ((reauthorize: () => Promise<boolean>) => Promise<ControlPlaneDetailedDiagnostics>)
+    | undefined;
+  vaultResolver?: ConfigVaultResolver | undefined;
+  requireLive?: ((operation: ControlPlaneLiveOperationClass) => Promise<unknown>) | undefined;
+  refresh?: (() => Promise<ControlPlaneRuntimeSnapshot>) | undefined;
+  read?: ((operation: ControlPlaneStaleReadClass) => ActivatedControlPlaneRead) | undefined;
 }>;
+type NonActivatedCapletsEngineInitialization = Readonly<{
+  mode: "filesystem-overlay" | "test";
+}>;
+type CapletsEngineInitialization =
+  | InternalCapletsEngineInitialization
+  | NonActivatedCapletsEngineInitialization;
 
 /**
- * Internal U8 injection seam. Production callers continue to construct the legacy filesystem
- * engine until U10; injected callers cannot receive an engine before hydration completes.
+ * Production factory. Storage resolution, migrations, key/provider compatibility,
+ * convergence registration, and the first complete SQL snapshot all finish before
+ * the engine can be observed by any caller.
  */
+export async function createCapletsEngine(
+  options: CapletsEngineOptions = {},
+): Promise<CapletsEngine> {
+  const production = await createProductionControlPlane({
+    configPath: options.configPath,
+    projectConfigPath: options.projectConfigPath,
+    authDir: options.authDir,
+    env: options.env,
+  });
+  try {
+    const engine = await createInternalCapletsEngine(
+      { ...options, watch: false },
+      production.loader,
+      production.initialSnapshot,
+      production.close,
+      production.management,
+      production.activated.health,
+      production.activated.requireLive,
+      production.security,
+      production.activated.refresh,
+      production.vaultResolver,
+      production.activated.read,
+      production.activated.detailedDiagnostics,
+      production.maintenance,
+    );
+    bindProductionSnapshotPublisher(production, async (snapshot, publication) => {
+      if (!(await engine.publishActivatedSnapshot(snapshot, publication.signal))) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Activated SQL snapshot could not be published atomically.",
+        );
+      }
+    });
+    return engine;
+  } catch (error) {
+    await production.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Awaited internal/production seam. No engine is returned before a complete SQL snapshot exists. */
 export async function createInternalCapletsEngine(
   options: CapletsEngineOptions,
   loader: ControlPlaneRuntimeSnapshotLoader,
   initializedSnapshot?: ControlPlaneRuntimeSnapshot,
+  close?: (() => Promise<void>) | undefined,
+  management?: CurrentHostManagementDependencies | undefined,
+  health?: (() => Promise<ControlPlaneHealthSummary>) | undefined,
+  requireLive?: ((operation: ControlPlaneLiveOperationClass) => Promise<unknown>) | undefined,
+  security?: ControlPlaneSecurityRepository | undefined,
+  refresh?: (() => Promise<ControlPlaneRuntimeSnapshot>) | undefined,
+  vaultResolver?: ConfigVaultResolver | undefined,
+  read?: ((operation: ControlPlaneStaleReadClass) => ActivatedControlPlaneRead) | undefined,
+  detailedDiagnostics?:
+    | ((reauthorize: () => Promise<boolean>) => Promise<ControlPlaneDetailedDiagnostics>)
+    | undefined,
+  maintenance?: ControlPlaneMaintenanceCoordinator | undefined,
 ): Promise<CapletsEngine> {
   const snapshot =
     initializedSnapshot ??
-    (await loader.initialize({ vaultResolver: vaultResolverForAuthDir(options.authDir) }));
-  return new CapletsEngine(options, { snapshot, loader });
+    (await loader.initialize({
+      vaultResolver: vaultResolver ?? vaultResolverForAuthDir(options.authDir, options.env),
+    }));
+  return new CapletsEngine(options, {
+    snapshot,
+    loader,
+    close,
+    management,
+    health,
+    detailedDiagnostics,
+    requireLive,
+    security,
+    maintenance,
+    refresh,
+    vaultResolver,
+    read,
+  });
 }
 
 export class CapletsEngine {
@@ -172,26 +276,55 @@ export class CapletsEngine {
   private resolvedExecutionFingerprint: string;
   private runtimeSnapshot: ControlPlaneRuntimeSnapshot | undefined;
   private readonly runtimeSnapshotLoader: ControlPlaneRuntimeSnapshotLoader | undefined;
+  private readonly closeActivatedControlPlane: (() => Promise<void>) | undefined;
+  private readonly currentHostManagement: CurrentHostManagementDependencies | undefined;
+  private readonly controlPlaneSecurity: ControlPlaneSecurityRepository | undefined;
+  private readonly controlPlaneMaintenance: ControlPlaneMaintenanceCoordinator | undefined;
   private readonly runtimeVaultResolver: ConfigVaultResolver;
+  private readonly activatedHealth: (() => Promise<ControlPlaneHealthSummary>) | undefined;
+  private readonly activatedDetailedDiagnostics:
+    | ((reauthorize: () => Promise<boolean>) => Promise<ControlPlaneDetailedDiagnostics>)
+    | undefined;
+  private readonly requireActivatedLive:
+    | ((operation: ControlPlaneLiveOperationClass) => Promise<unknown>)
+    | undefined;
+  private readonly refreshActivatedControlPlane:
+    | (() => Promise<ControlPlaneRuntimeSnapshot>)
+    | undefined;
+  private readonly activatedRead:
+    | ((operation: ControlPlaneStaleReadClass) => ActivatedControlPlaneRead)
+    | undefined;
 
-  constructor(options: CapletsEngineOptions = {}, internal?: InternalCapletsEngineInitialization) {
+  constructor(options: CapletsEngineOptions, internal: CapletsEngineInitialization) {
+    const activated = "snapshot" in internal ? internal : undefined;
     this.paths = {
       configPath: resolveConfigPath(options.configPath),
       projectConfigPath: options.projectConfigPath ?? resolveProjectConfigPath(),
     };
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
+    this.runtimeVaultResolver =
+      activated?.vaultResolver ?? vaultResolverForAuthDir(options.authDir, options.env);
     this.configLoader =
-      options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
-    this.runtimeVaultResolver = vaultResolverForAuthDir(options.authDir);
+      options.configLoader ??
+      runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget, this.runtimeVaultResolver);
     this.declaredInputReader = options.declaredInputReader;
     this.requireValidCustomFingerprint = options.configLoader !== undefined;
-    this.runtimeSnapshot = internal?.snapshot;
-    this.runtimeSnapshotLoader = internal?.loader;
-    const config = internal?.snapshot.config ?? this.loadConfigWithWarnings();
+    this.runtimeSnapshot = activated?.snapshot;
+    this.runtimeSnapshotLoader = activated?.loader;
+    this.closeActivatedControlPlane = activated?.close;
+    this.currentHostManagement = activated?.management;
+    this.controlPlaneSecurity = activated?.security;
+    this.controlPlaneMaintenance = activated?.maintenance;
+    const config = activated?.snapshot.config ?? this.loadConfigWithWarnings();
+    this.activatedHealth = activated?.health;
+    this.activatedDetailedDiagnostics = activated?.detailedDiagnostics;
+    this.requireActivatedLive = activated?.requireLive;
+    this.activatedRead = activated?.read;
     this.stableHostConfigurationFingerprint =
       runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
     this.resolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(config);
-    this.registry = new ServerRegistry(config, internal?.snapshot.caplets);
+    this.refreshActivatedControlPlane = activated?.refresh;
+    this.registry = new ServerRegistry(config, activated?.snapshot.caplets);
     this.telemetry = createRuntimeTelemetryContext({
       config: this.registry.config,
       env: options.telemetryEnv,
@@ -205,21 +338,27 @@ export class CapletsEngine {
     });
     this.telemetryExecuteExposureMode =
       options.telemetrySurface === "code_mode" ? "code_mode" : "progressive";
+    const authOptions = activated
+      ? activated.security
+        ? { authTokenRepository: activated.security }
+        : {}
+      : selectAuthOptions(options.authDir);
+    const httpLikeOptions = selectHttpLikeOptions(options, activated?.security);
     this.downstream = new DownstreamManager(this.registry, {
-      ...selectAuthOptions(options.authDir),
+      ...authOptions,
       projectBindingContext: options.projectBindingContext,
     });
-    this.openapi = new OpenApiManager(this.registry, selectHttpLikeOptions(options));
-    this.googleDiscovery = new GoogleDiscoveryManager(
-      this.registry,
-      selectHttpLikeOptions(options),
-    );
-    this.graphql = new GraphQLManager(this.registry, selectHttpLikeOptions(options));
-    this.http = new HttpActionManager(this.registry, selectHttpLikeOptions(options));
+    this.openapi = new OpenApiManager(this.registry, httpLikeOptions);
+    this.googleDiscovery = new GoogleDiscoveryManager(this.registry, httpLikeOptions);
+    this.graphql = new GraphQLManager(this.registry, httpLikeOptions);
+    this.http = new HttpActionManager(this.registry, httpLikeOptions);
     this.cli = new CliToolsManager(this.registry, {
       projectBindingContext: options.projectBindingContext,
     });
-    this.capletSets = new CapletSetManager(this.registry, selectHttpLikeOptions(options));
+    this.capletSets = new CapletSetManager(this.registry, {
+      ...httpLikeOptions,
+      vaultResolver: this.runtimeVaultResolver,
+    });
     this.backendRuntime = createBackendOperationRuntime({
       mcp: this.downstream,
       openapi: this.openapi,
@@ -244,12 +383,73 @@ export class CapletsEngine {
     }
   }
 
+  /** @internal Explicit read-only filesystem overlay for remote/project composition. */
+  static createFilesystemOverlay(options: CapletsEngineOptions): CapletsEngine {
+    return new CapletsEngine(options, { mode: "filesystem-overlay" });
+  }
+
+  /** @internal Test-only unactivated engine seam. Production callers must use createCapletsEngine. */
+  static unactivatedForTests(options: CapletsEngineOptions = {}): CapletsEngine {
+    return new CapletsEngine(options, { mode: "test" });
+  }
+
   currentConfig(): CapletsConfig {
     return this.registry.config;
   }
 
   currentControlPlaneRuntimeSnapshot(): ControlPlaneRuntimeSnapshot | undefined {
     return this.runtimeSnapshot;
+  }
+
+  currentHostManagementDependencies(): CurrentHostManagementDependencies | undefined {
+    return this.currentHostManagement;
+  }
+
+  controlPlaneSecurityRepository(): ControlPlaneSecurityRepository | undefined {
+    return this.controlPlaneSecurity;
+  }
+
+  /** @internal Local production orchestration only; never project into callable Caplet surfaces. */
+  controlPlaneMaintenanceCoordinator(): ControlPlaneMaintenanceCoordinator | undefined {
+    return this.controlPlaneMaintenance;
+  }
+  async controlPlaneHealth(): Promise<ControlPlaneHealthSummary | undefined> {
+    return this.activatedHealth?.();
+  }
+
+  hasActivatedControlPlaneAuthority(): boolean {
+    return this.runtimeSnapshotLoader !== undefined;
+  }
+
+  async requireLiveControlPlane(operation: ControlPlaneLiveOperationClass): Promise<void> {
+    await this.requireActivatedLive?.(operation);
+  }
+
+  async controlPlaneDetailedDiagnostics(
+    reauthorize: () => Promise<boolean>,
+  ): Promise<ControlPlaneDetailedDiagnostics> {
+    if (!this.activatedDetailedDiagnostics) {
+      throw new CapletsError("SERVER_UNAVAILABLE", "Activated SQL diagnostics are unavailable.");
+    }
+    await this.requireLiveControlPlane("admin");
+    return this.activatedDetailedDiagnostics(reauthorize);
+  }
+
+  controlPlaneRead(operation: ControlPlaneStaleReadClass): ActivatedControlPlaneRead | undefined {
+    return this.activatedRead?.(operation);
+  }
+
+  async publishActivatedSnapshot(
+    snapshot: ControlPlaneRuntimeSnapshot,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (!this.runtimeSnapshotLoader) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Activated SQL snapshot publication requires the awaited runtime loader.",
+      );
+    }
+    return this.applyReloadCandidate(snapshot.config, snapshot, false, signal);
   }
 
   enabledServers(): CapletConfig[] {
@@ -341,6 +541,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.requireActivatedLive?.("mutation");
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       const result = await handleServerTool(caplet, request, this.registry, this.backendRuntime, {
@@ -382,6 +583,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.requireActivatedLive?.("mutation");
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       const result = await this.backendRuntime.operations.callTool(caplet, toolName, args);
@@ -405,6 +607,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.requireActivatedLive?.("mutation");
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP completions`);
@@ -427,6 +630,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.requireActivatedLive?.("mutation");
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP resources`);
@@ -450,6 +654,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.requireActivatedLive?.("mutation");
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP prompts`);
@@ -466,6 +671,7 @@ export class CapletsEngine {
   }
 
   async completeCliWords(words: string[]): Promise<string[]> {
+    await this.requireActivatedLive?.("mutation");
     const { completeCliWords } = await import("./cli/completion");
     return await completeCliWords(words, {
       config: this.registry.config,
@@ -528,6 +734,7 @@ export class CapletsEngine {
       await this.downstream.close();
       await this.capletSets.close();
       await this.telemetry.dispatcher.shutdown();
+      await this.closeActivatedControlPlane?.();
       this.reloadListeners.clear();
     }
   }
@@ -588,6 +795,10 @@ export class CapletsEngine {
     let nextConfig: CapletsConfig;
     let nextRuntimeSnapshot: ControlPlaneRuntimeSnapshot | undefined;
     try {
+      if (this.refreshActivatedControlPlane) {
+        await this.refreshActivatedControlPlane();
+        return true;
+      }
       nextRuntimeSnapshot = this.runtimeSnapshotLoader
         ? await this.runtimeSnapshotLoader.reload({
             vaultResolver: this.runtimeVaultResolver,
@@ -599,8 +810,16 @@ export class CapletsEngine {
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
       return false;
     }
-    if (this.closed) return false;
+    return this.applyReloadCandidate(nextConfig, nextRuntimeSnapshot, true);
+  }
 
+  private async applyReloadCandidate(
+    nextConfig: CapletsConfig,
+    nextRuntimeSnapshot: ControlPlaneRuntimeSnapshot | undefined,
+    commitSnapshot: boolean,
+    publicationSignal?: AbortSignal,
+  ): Promise<boolean> {
+    if (this.closed) return false;
     const nextStableHostConfigurationFingerprint =
       runtimeFingerprintForConfig(nextConfig).hostConfigurationFingerprint;
     const nextResolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(nextConfig);
@@ -608,31 +827,24 @@ export class CapletsEngine {
       nextStableHostConfigurationFingerprint === this.stableHostConfigurationFingerprint &&
       nextResolvedExecutionFingerprint === this.resolvedExecutionFingerprint
     ) {
+      if (publicationSignal?.aborted) return false;
       if (nextRuntimeSnapshot) {
-        if (!this.runtimeSnapshotLoader?.commit(nextRuntimeSnapshot)) return false;
+        if (commitSnapshot && !this.runtimeSnapshotLoader?.commit(nextRuntimeSnapshot)) {
+          return false;
+        }
         const nextRegistry = this.registry.withRuntimeMetadata(
           nextConfig,
           nextRuntimeSnapshot.caplets,
         );
         this.registry = nextRegistry;
         this.runtimeSnapshot = nextRuntimeSnapshot;
-        this.downstream.updateRegistry(nextRegistry);
-        this.openapi.updateRegistry(nextRegistry);
-        this.googleDiscovery.updateRegistry(nextRegistry);
-        this.graphql.updateRegistry(nextRegistry);
-        this.http.updateRegistry(nextRegistry);
-        this.cli.updateRegistry(nextRegistry);
-        this.capletSets.updateRegistry(nextRegistry);
+        this.updateManagerRegistries(nextRegistry);
       }
       return true;
     }
 
     const previousConfig = this.registry.config;
-    const previousRegistry = this.registry;
     const nextRegistry = new ServerRegistry(nextConfig, nextRuntimeSnapshot?.caplets);
-    // Fence new calls against the candidate registry before awaiting connection shutdown. Engine
-    // lookups still use the previous registry, so they fail stale rather than reconnecting old state.
-    this.updateManagerRegistries(nextRegistry);
     let invalidated = true;
     try {
       await this.invalidateChangedBackends(previousConfig, nextConfig);
@@ -644,21 +856,25 @@ export class CapletsEngine {
       this.writeErr(`${message}\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "INTERNAL_ERROR"), null, 2)}\n`);
       if (nextRuntimeSnapshot) {
-        this.updateManagerRegistries(previousRegistry);
         return false;
       }
     }
     if (this.closed) {
-      this.updateManagerRegistries(previousRegistry);
       return false;
     }
-
-    if (nextRuntimeSnapshot && !this.runtimeSnapshotLoader?.commit(nextRuntimeSnapshot)) {
-      this.updateManagerRegistries(previousRegistry);
+    if (publicationSignal?.aborted) {
+      return false;
+    }
+    if (
+      nextRuntimeSnapshot &&
+      commitSnapshot &&
+      !this.runtimeSnapshotLoader?.commit(nextRuntimeSnapshot)
+    ) {
       return false;
     }
     this.registry = nextRegistry;
     this.runtimeSnapshot = nextRuntimeSnapshot;
+    this.updateManagerRegistries(nextRegistry);
     this.exposureGeneration += 1;
     this.telemetry.config = nextConfig;
     this.stableHostConfigurationFingerprint = nextStableHostConfigurationFingerprint;
@@ -873,8 +1089,8 @@ export class CapletsEngine {
 function runtimeConfigLoader(
   authDir: string | undefined,
   vaultRecoveryTarget: CapletsEngineOptions["vaultRecoveryTarget"],
+  vaultResolver: ConfigVaultResolver = vaultResolverForAuthDir(authDir),
 ): NonNullable<CapletsEngineOptions["configLoader"]> {
-  const vaultResolver = vaultResolverForAuthDir(authDir);
   return (configPath, projectConfigPath, options) =>
     loadLocalRuntimeConfig(configPath, projectConfigPath, {
       ...options,
@@ -887,15 +1103,19 @@ function selectAuthOptions(authDir: string | undefined): { authDir?: string } {
   return authDir ? { authDir } : {};
 }
 
-function selectHttpLikeOptions(options: CapletsEngineOptions): {
+function selectHttpLikeOptions(
+  options: CapletsEngineOptions,
+  authTokenRepository?: ControlPlaneSecurityRepository,
+): {
   authDir?: string;
+  authTokenRepository?: ControlPlaneSecurityRepository;
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
   mediaInlineThresholdBytes?: number;
   mediaArtifactMaxBytes?: number;
 } {
   return {
-    ...selectAuthOptions(options.authDir),
+    ...(authTokenRepository ? { authTokenRepository } : selectAuthOptions(options.authDir)),
     ...(options.artifactDir ? { artifactDir: options.artifactDir } : {}),
     ...(options.exposeLocalArtifactPaths === false ? { exposeLocalArtifactPaths: false } : {}),
     ...(options.mediaInlineThresholdBytes === undefined

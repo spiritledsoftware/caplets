@@ -143,9 +143,10 @@ function createDialect(
         if (where) query = query.where(where);
         if (order.length > 0) {
           query = query.orderBy(
-            ...order.map((entry) =>
-              entry.direction === "desc" ? desc(table[entry.column]!) : asc(table[entry.column]!),
-            ),
+            ...order.map((entry) => {
+              const column = sqliteColumn(table, entry.column);
+              return entry.direction === "desc" ? desc(column) : asc(column);
+            }),
           );
         }
         if (limit !== undefined) query = query.limit(limit);
@@ -200,6 +201,152 @@ function createDialect(
       async lock() {
         // BEGIN IMMEDIATE is the single-writer serialization point for SQLite.
       },
+      async finalWriterFenceGuard(input) {
+        const table = sqliteControlPlaneSchema.writerFences;
+        const now = sql<string>`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+        const result = await orm
+          .update(table)
+          .set({ updatedAt: now })
+          .where(
+            and(
+              eq(table.logicalHostId!, input.logicalHostId),
+              eq(table.storeId!, input.storeId),
+              eq(table.leaseId!, input.leaseId),
+              eq(table.writerEpoch!, input.writerEpoch),
+              eq(table.authorityGeneration!, input.authorityGeneration),
+              eq(table.state!, input.state ?? "active"),
+              gt(table.expiresAt!, now),
+            ),
+          )
+          .run();
+        return Number(result.changes);
+      },
+      async advanceSnapshotEnvelope(input) {
+        const result = database
+          .prepare(
+            `UPDATE cp_snapshot_envelope
+             SET caplet_count = caplet_count + ?,
+                 normalized_row_count = normalized_row_count + ?,
+                 encoded_byte_count = encoded_byte_count + ?,
+                 aggregate_version = (
+                   SELECT generation FROM cp_effective_version
+                   WHERE logical_host_id = ? AND store_id = ?
+                   ORDER BY generation DESC LIMIT 1
+                 ),
+                 authority_version = ?,
+                 effective_version = (
+                   SELECT generation FROM cp_effective_version
+                   WHERE logical_host_id = ? AND store_id = ?
+                   ORDER BY generation DESC LIMIT 1
+                 ),
+                 security_version = ?,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE logical_host_id = ?
+               AND store_id = ?
+               AND envelope_id = ?
+               AND caplet_count + ? BETWEEN 0 AND ?
+               AND normalized_row_count + ? BETWEEN 0 AND ?
+               AND encoded_byte_count + ? BETWEEN 0 AND ?
+               AND (
+                 SELECT generation FROM cp_authority_version
+                 WHERE logical_host_id = ?
+                   AND store_id = ?
+                 ORDER BY generation DESC LIMIT 1
+               ) = ?
+               AND (
+                 SELECT epoch FROM cp_security_version
+                 WHERE logical_host_id = ?
+                   AND store_id = ?
+                 ORDER BY epoch DESC LIMIT 1
+               ) = ?
+               AND EXISTS (
+                 SELECT 1 FROM cp_writer_fence
+                 WHERE logical_host_id = ?
+                   AND store_id = ?
+                   AND lease_id = ?
+                   AND writer_epoch = ?
+                   AND authority_generation = ?
+                   AND state = ?
+                   AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+               )`,
+          )
+          .run(
+            input.capletDelta,
+            input.normalizedRowDelta,
+            input.encodedByteDelta,
+            input.logicalHostId,
+            input.storeId,
+            input.expectedAuthorityGeneration,
+            input.logicalHostId,
+            input.storeId,
+            input.expectedSecurityEpoch,
+            input.logicalHostId,
+            input.storeId,
+            input.envelopeId,
+            input.capletDelta,
+            input.maxCaplets,
+            input.normalizedRowDelta,
+            input.maxNormalizedRows,
+            input.encodedByteDelta,
+            input.maxEncodedBytes,
+            input.logicalHostId,
+            input.storeId,
+            input.expectedAuthorityGeneration,
+            input.logicalHostId,
+            input.storeId,
+            input.expectedSecurityEpoch,
+            input.logicalHostId,
+            input.storeId,
+            input.leaseId,
+            input.writerEpoch,
+            input.fenceAuthorityGeneration,
+            input.fenceState,
+          );
+        return Number(result.changes);
+      },
+      async settleConvergenceReceipts(input) {
+        const result = database
+          .prepare(
+            `UPDATE cp_operation_outcome
+             SET convergence_class = CASE
+                   WHEN json_extract(receipt, '$.convergence.deadline') <=
+                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     THEN 'overdue'
+                   ELSE 'converged'
+                 END,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE rowid IN (
+               SELECT rowid
+               FROM cp_operation_outcome
+               WHERE logical_host_id = ?
+                 AND store_id = ?
+                 AND convergence_class = 'pending'
+                 AND (
+                   json_extract(receipt, '$.convergence.deadline') <=
+                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                   OR (
+                     json_extract(receipt, '$.convergence.requiredNodes') <= ?
+                     AND json_extract(receipt, '$.authorityToken.authorityGeneration') = ?
+                     AND json_extract(receipt, '$.authorityToken.effectiveGeneration') <= ?
+                     AND security_version <= ?
+                   )
+                 )
+               ORDER BY operation_id
+               LIMIT ?
+             )
+             AND convergence_class = 'pending'`,
+          )
+          .run(
+            input.logicalHostId,
+            input.storeId,
+            input.appliedNodes,
+            input.authorityGeneration,
+            input.effectiveGeneration,
+            input.securityEpoch,
+            input.limit,
+          );
+        return Number(result.changes);
+      },
     };
     try {
       const result = await work(scoped);
@@ -209,7 +356,7 @@ function createDialect(
       try {
         database.exec("ROLLBACK");
       } catch {
-        // The original transaction failure remains authoritative.
+        // Preserve the operation error when rollback cannot make progress.
       }
       throw error;
     } finally {
@@ -222,14 +369,24 @@ function createDialect(
   ) {
     if (!filter) return undefined;
     const predicates = [
-      ...Object.entries(filter.equals ?? {}).map(([column, value]) =>
-        value === null ? isNull(table[column]!) : eq(table[column]!, value),
-      ),
+      ...Object.entries(filter.equals ?? {}).map(([column, value]) => {
+        const target = sqliteColumn(table, column);
+        return value === null ? isNull(target) : eq(target, value);
+      }),
       ...Object.entries(filter.greaterThan ?? {}).map(([column, value]) =>
-        gt(table[column]!, value),
+        gt(sqliteColumn(table, column), value),
       ),
     ];
     return predicates.length === 0 ? undefined : and(...predicates);
+  }
+
+  function sqliteColumn(
+    table: AnySQLiteTable & Record<string, AnySQLiteColumn>,
+    name: string,
+  ): AnySQLiteColumn {
+    const column = table[name];
+    if (!column) throw new Error(`Unknown SQLite control-plane column: ${name}`);
+    return column;
   }
 
   const transaction = <T>(mode: "IMMEDIATE" | "EXCLUSIVE", work: () => T): T => {

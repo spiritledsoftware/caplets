@@ -37,7 +37,7 @@ import { ThemeProvider, useTheme } from "next-themes";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button as BaseButton } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -88,6 +88,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import {
   dashboardApi,
   dashboardManagementMutation,
+  dashboardStorageHealth,
   dashboardManagementPreview,
   isDashboardUnauthorized,
   dashboardManagementRecoveryNoticesAcknowledged,
@@ -97,13 +98,265 @@ import {
   type DashboardManagementMutation,
   type DashboardManagementOperation,
   type DashboardSession,
+  type DashboardStorageHealth,
 } from "@/lib/api";
 import { EPHEMERAL_REVEAL_TTL_MS, createEphemeralRevealExpiry } from "@/lib/ephemeral-reveal";
 import { dashboardBasePath, dashboardPath } from "@/lib/paths";
+import { cn } from "@/lib/utils";
 
 import { CatalogPage } from "@/components/catalog/CatalogPage";
 const REVEAL_DURATION_SECONDS = EPHEMERAL_REVEAL_TTL_MS / 1_000;
 const ACTION_DISCARDED = Symbol("dashboard-action-discarded");
+const STORAGE_HEALTH_POLL_MS = 2_000;
+const STORAGE_HEALTH_DEADLINE_MS = 3_000;
+const LIVE_AUTHORITY_DISABLED_REASON_ID = "live-authority-disabled-reason";
+const LIVE_AUTHORITY_DISABLED_REASON =
+  "Live SQL authority is unavailable. This action is disabled until storage is ready.";
+const LiveAuthorityContext = createContext(false);
+
+type DashboardButtonProps = ComponentProps<typeof BaseButton> & {
+  requiresLiveAuthority?: boolean;
+  suppressLiveAuthorityTooltip?: boolean;
+};
+
+function Button({
+  requiresLiveAuthority = false,
+  suppressLiveAuthorityTooltip = false,
+  className,
+  disabled,
+  onClick,
+  title,
+  "aria-disabled": ariaDisabled,
+  "aria-describedby": ariaDescribedBy,
+  ...props
+}: DashboardButtonProps) {
+  const liveAuthorityAvailable = useContext(LiveAuthorityContext);
+  const liveAuthorityDisabled = requiresLiveAuthority && !liveAuthorityAvailable;
+  const control = (
+    <BaseButton
+      {...props}
+      className={cn(className, liveAuthorityDisabled && "cursor-not-allowed opacity-50")}
+      disabled={liveAuthorityDisabled ? false : disabled}
+      aria-disabled={liveAuthorityDisabled ? true : ariaDisabled}
+      aria-describedby={
+        liveAuthorityDisabled
+          ? [ariaDescribedBy, LIVE_AUTHORITY_DISABLED_REASON_ID].filter(Boolean).join(" ")
+          : ariaDescribedBy
+      }
+      title={liveAuthorityDisabled ? LIVE_AUTHORITY_DISABLED_REASON : title}
+      onClick={
+        liveAuthorityDisabled
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          : onClick
+      }
+    />
+  );
+  if (!liveAuthorityDisabled || suppressLiveAuthorityTooltip) return control;
+  return (
+    <Tooltip>
+      <TooltipTrigger render={control} />
+      <TooltipContent>{LIVE_AUTHORITY_DISABLED_REASON}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+type DashboardReadMode = "live-required" | "snapshot-allowed";
+type DashboardReadResult =
+  | {
+      name: string;
+      mode: DashboardReadMode;
+      status: "available";
+      value: unknown;
+    }
+  | {
+      name: string;
+      mode: DashboardReadMode;
+      status: "unavailable";
+      value: { error: string };
+      error: string;
+    };
+
+type DashboardRefreshAvailability = {
+  status: "complete" | "partial";
+  unavailableLiveReads: string[];
+  staleSnapshotReads: string[];
+};
+
+type DashboardRefreshResult =
+  | { status: "complete" }
+  | { status: "partial"; unavailableLiveReads: string[] };
+
+const DASHBOARD_READS: ReadonlyArray<{
+  name: string;
+  path: string;
+  mode: DashboardReadMode;
+}> = [
+  { name: "summary", path: "summary", mode: "live-required" },
+  { name: "caplets", path: "caplets", mode: "snapshot-allowed" },
+  { name: "clients", path: "access/clients", mode: "live-required" },
+  { name: "pending", path: "access/pending-logins", mode: "live-required" },
+  { name: "vault", path: "vault", mode: "live-required" },
+  { name: "runtime", path: "runtime", mode: "snapshot-allowed" },
+  { name: "diagnostics", path: "diagnostics", mode: "live-required" },
+  { name: "activity", path: "activity?limit=50", mode: "live-required" },
+  { name: "logs", path: "logs?limit=100", mode: "snapshot-allowed" },
+  { name: "projectBinding", path: "project-binding", mode: "live-required" },
+  { name: "updates", path: "catalog/updates", mode: "snapshot-allowed" },
+  { name: "managementCaplets", path: "management?resource=caplet", mode: "live-required" },
+  {
+    name: "managementSettings",
+    path: "management?resource=host-setting",
+    mode: "live-required",
+  },
+  { name: "managementStatus", path: "management/status", mode: "live-required" },
+];
+
+function liveAuthorityAvailable(
+  health: DashboardStorageHealth | undefined,
+  refresh: DashboardRefreshAvailability | undefined,
+): boolean {
+  const authorityToken = health?.authorityToken;
+  return (
+    health?.readiness === "ready" &&
+    health.connectivity === "connected" &&
+    health.migration === "current" &&
+    health.bootstrapCompatibility !== "incompatible" &&
+    health.convergence !== "overdue" &&
+    Number.isSafeInteger(authorityToken?.authorityGeneration) &&
+    Number(authorityToken?.authorityGeneration) >= 0 &&
+    Number.isSafeInteger(authorityToken?.effectiveGeneration) &&
+    Number(authorityToken?.effectiveGeneration) >= 0 &&
+    (refresh?.unavailableLiveReads.length ?? 0) === 0
+  );
+}
+
+type DashboardHealthCoordinator = {
+  read: (options?: { supersede?: boolean }) => Promise<DashboardStorageHealth | undefined>;
+  stop: () => void;
+};
+
+function createDashboardHealthCoordinator(
+  publish: (health: DashboardStorageHealth) => void,
+  publishFailure: (error: unknown) => void,
+): DashboardHealthCoordinator {
+  let stopped = false;
+  let requestGeneration = 0;
+  let active:
+    | {
+        controller: AbortController;
+        generation: number;
+        promise: Promise<DashboardStorageHealth | undefined>;
+      }
+    | undefined;
+
+  return {
+    read(options = {}) {
+      if (stopped) return Promise.resolve(undefined);
+      if (active && !options.supersede) return active.promise;
+
+      active?.controller.abort();
+      const generation = ++requestGeneration;
+      const controller = new AbortController();
+      let deadlineExpired = false;
+      const { promise: deadlinePromise, resolve: resolveDeadline } =
+        Promise.withResolvers<undefined>();
+      const deadline = window.setTimeout(() => {
+        deadlineExpired = true;
+        controller.abort();
+        if (!stopped && generation === requestGeneration) {
+          publishFailure(new Error("Storage health request exceeded its hard deadline."));
+        }
+        resolveDeadline(undefined);
+      }, STORAGE_HEALTH_DEADLINE_MS);
+      const requestPromise = dashboardStorageHealth({ signal: controller.signal })
+        .then((health) => {
+          if (!deadlineExpired && !stopped && generation === requestGeneration) publish(health);
+          return !deadlineExpired && !stopped && generation === requestGeneration
+            ? health
+            : undefined;
+        })
+        .catch((error: unknown) => {
+          if (
+            !deadlineExpired &&
+            !controller.signal.aborted &&
+            !stopped &&
+            generation === requestGeneration
+          ) {
+            publishFailure(error);
+          }
+          return undefined;
+        });
+      const promise = Promise.race([requestPromise, deadlinePromise]).finally(() => {
+        window.clearTimeout(deadline);
+        if (active?.generation === generation) active = undefined;
+      });
+      active = { controller, generation, promise };
+      return promise;
+    },
+    stop() {
+      stopped = true;
+      requestGeneration += 1;
+      active?.controller.abort();
+      active = undefined;
+    },
+  };
+}
+
+function sameDashboardStorageHealth(
+  left: DashboardStorageHealth | undefined,
+  right: DashboardStorageHealth,
+): boolean {
+  return (
+    left?.backend === right.backend &&
+    left?.authorityToken?.authorityGeneration === right.authorityToken?.authorityGeneration &&
+    left?.authorityToken?.effectiveGeneration === right.authorityToken?.effectiveGeneration &&
+    left?.readiness === right.readiness &&
+    left?.connectivity === right.connectivity &&
+    left?.migration === right.migration &&
+    left?.bootstrapCompatibility === right.bootstrapCompatibility &&
+    left?.staleAgeMs === right.staleAgeMs &&
+    left?.convergence === right.convergence &&
+    left?.guidanceCode === right.guidanceCode &&
+    left?.error === right.error
+  );
+}
+function invalidateLiveDashboardData(
+  current: DashboardData,
+  health: DashboardStorageHealth,
+): DashboardData {
+  const unavailable = Object.fromEntries(
+    DASHBOARD_READS.filter((read) => read.mode === "live-required").map((read) => [
+      read.name,
+      { error: "Live SQL authority is unavailable." },
+    ]),
+  ) as Partial<DashboardData>;
+  const unavailableLiveReads = DASHBOARD_READS.filter((read) => read.mode === "live-required").map(
+    (read) => read.name,
+  );
+  return {
+    ...current,
+    ...unavailable,
+    updates: current.updates
+      ? {
+          ...current.updates,
+          ready: false,
+          reason: "Live SQL authority is unavailable.",
+        }
+      : undefined,
+    managementRecoveries: { error: "Live SQL authority is unavailable." },
+    storageHealth: health,
+    refresh: {
+      status: "partial",
+      unavailableLiveReads: [...unavailableLiveReads, "managementRecoveries"],
+      staleSnapshotReads: DASHBOARD_READS.filter((read) => read.mode === "snapshot-allowed").map(
+        (read) => read.name,
+      ),
+    },
+  };
+}
 
 type CatalogMutationStatus = "installed" | "restored" | "updated" | "content_updated" | "noop";
 
@@ -187,7 +440,19 @@ type DashboardData = {
     error?: string;
   };
   runtime?: { runtime?: Record<string, string>; daemon?: Record<string, unknown>; error?: string };
-  diagnostics?: { status?: string; checks?: Array<Record<string, string>>; error?: string };
+  diagnostics?: {
+    status?: string;
+    diagnostics?: {
+      backend?: "sqlite" | "postgres";
+      fingerprint?: { nextFingerprint?: string };
+      keyCompatibility?: { status?: "compatible" | "incompatible" };
+      readyNodes?: number;
+      overdueNodes?: number;
+    };
+    guidance?: { code?: string; summary?: string; actions?: string[] };
+    checks?: Array<Record<string, string>>;
+    error?: string;
+  };
   activity?: { entries?: Array<Record<string, unknown>>; error?: string };
   logs?: { entries?: Array<Record<string, unknown>>; error?: string };
   projectBinding?: {
@@ -203,7 +468,9 @@ type DashboardData = {
   managementCaplets?: { status?: string; items?: ManagementTarget[]; error?: string };
   managementSettings?: { status?: string; items?: ManagementTarget[]; error?: string };
   managementStatus?: { status?: string; health?: Record<string, unknown>; error?: string };
+  storageHealth?: DashboardStorageHealth;
   managementRecoveries?: { outcomes?: unknown[]; error?: string };
+  refresh?: DashboardRefreshAvailability;
 };
 
 const routes: Array<{
@@ -295,6 +562,8 @@ function useActionConfirm() {
 export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: RouteKey }) {
   const [route, setRoute] = useState<RouteKey>(initialRoute);
   const [session, setSession] = useState<DashboardSession>();
+  const sessionRef = useRef<DashboardSession | undefined>(session);
+  sessionRef.current = session;
   const [data, setData] = useState<DashboardData>({});
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(true);
@@ -302,6 +571,77 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   const [authMessage, setAuthMessage] = useState("Restoring dashboard session…");
   const [confirmation, setConfirmation] = useState<ConfirmationRequest>();
   const confirmationRef = useRef<ConfirmationRequest | undefined>(undefined);
+  const sessionRestoreTimerRef = useRef<number | undefined>(undefined);
+  const sessionRestoreControllerRef = useRef<AbortController | undefined>(undefined);
+  const authorizationPollTimerRef = useRef<number | undefined>(undefined);
+  const authorizationPollControllerRef = useRef<AbortController | undefined>(undefined);
+  const authorizationPollGenerationRef = useRef(0);
+  const refreshGenerationRef = useRef(0);
+  const storageHealthRef = useRef<DashboardStorageHealth | undefined>(undefined);
+  const refreshAvailabilityRef = useRef<DashboardRefreshAvailability | undefined>(data.refresh);
+  refreshAvailabilityRef.current = data.refresh;
+  const refreshInFlightRef = useRef(false);
+  const healthCoordinatorRef = useRef<DashboardHealthCoordinator | undefined>(undefined);
+  const recoveryRefreshRef = useRef<Promise<DashboardRefreshResult | undefined> | undefined>(
+    undefined,
+  );
+  if (!healthCoordinatorRef.current) {
+    healthCoordinatorRef.current = createDashboardHealthCoordinator(
+      (health) => {
+        const previous = storageHealthRef.current;
+        const recovered =
+          !liveAuthorityAvailable(previous, undefined) && liveAuthorityAvailable(health, undefined);
+        const authorityUnavailable = !liveAuthorityAvailable(health, undefined);
+        const retryPartialRefresh =
+          !authorityUnavailable && refreshAvailabilityRef.current?.status === "partial";
+        storageHealthRef.current = health;
+        setData((current) => {
+          if (authorityUnavailable) return invalidateLiveDashboardData(current, health);
+          if (recovered && !sessionRef.current) {
+            return {
+              ...current,
+              storageHealth: health,
+              refresh: {
+                status: "complete",
+                unavailableLiveReads: [],
+                staleSnapshotReads: [],
+              },
+            };
+          }
+          return sameDashboardStorageHealth(current.storageHealth, health)
+            ? current
+            : { ...current, storageHealth: health };
+        });
+        if (
+          (recovered || retryPartialRefresh) &&
+          sessionRef.current &&
+          !refreshInFlightRef.current &&
+          !recoveryRefreshRef.current
+        ) {
+          const recovery = refresh();
+          recoveryRefreshRef.current = recovery;
+          void recovery.finally(() => {
+            if (recoveryRefreshRef.current === recovery) recoveryRefreshRef.current = undefined;
+          });
+        }
+      },
+      (error) => {
+        const currentHealth = storageHealthRef.current;
+        const unavailableHealth: DashboardStorageHealth = {
+          ...currentHealth,
+          readiness:
+            currentHealth?.readiness === "ready"
+              ? "stale-read-only"
+              : (currentHealth?.readiness ?? "not-ready"),
+          connectivity: "unavailable",
+          guidanceCode: "storage-unavailable",
+          error: error instanceof Error ? error.message : String(error),
+        };
+        storageHealthRef.current = unavailableHealth;
+        setData((current) => invalidateLiveDashboardData(current, unavailableHealth));
+      },
+    );
+  }
 
   const resolveConfirmation = useCallback((confirmed: ConfirmationResult) => {
     const activeConfirmation = confirmationRef.current;
@@ -328,17 +668,44 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   const dismissConfirmation = useCallback(() => resolveConfirmation(false), [resolveConfirmation]);
 
   useEffect(() => {
+    const coordinator = healthCoordinatorRef.current;
+    if (!coordinator) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await coordinator.read();
+      if (!cancelled) timer = window.setTimeout(() => void poll(), STORAGE_HEALTH_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      coordinator.stop();
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void restoreDashboardSession(0, () => cancelled);
     return () => {
       cancelled = true;
+      if (sessionRestoreTimerRef.current !== undefined) {
+        window.clearTimeout(sessionRestoreTimerRef.current);
+        sessionRestoreTimerRef.current = undefined;
+      }
+      sessionRestoreControllerRef.current?.abort();
+      sessionRestoreControllerRef.current = undefined;
+      cancelAuthorizationPolling();
     };
   }, []);
 
   function endDashboardSession(message = "Authorization required.") {
+    refreshGenerationRef.current += 1;
+    refreshInFlightRef.current = false;
+    cancelAuthorizationPolling();
     setSession(undefined);
     setDashboardSession(undefined);
-    setData({});
+    setData((current) => ({ storageHealth: current.storageHealth }));
     setAuthCommand("");
     setAuthMessage(message);
     setLoading(false);
@@ -347,79 +714,174 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
 
   async function restoreDashboardSession(attempt: number, cancelled: () => boolean) {
     setLoading(true);
+    const controller = new AbortController();
+    sessionRestoreControllerRef.current?.abort();
+    sessionRestoreControllerRef.current = controller;
     try {
       const result = await dashboardApi<{ authenticated: boolean; session: DashboardSession }>(
         "session",
+        { signal: controller.signal },
       );
-      if (cancelled()) return;
+      if (cancelled() || controller.signal.aborted) return;
       setSession(result.session);
       setDashboardSession(result.session);
       const refreshed = await refresh();
       if (!cancelled() && refreshed) setLoading(false);
     } catch (error) {
-      if (cancelled()) return;
+      if (cancelled() || controller.signal.aborted) return;
       if (isDashboardUnauthorized(error)) {
         endDashboardSession();
         return;
       }
       setAuthMessage("Reconnecting to the Current Host…");
-      window.setTimeout(
-        () => restoreDashboardSession(attempt + 1, cancelled),
+      sessionRestoreTimerRef.current = window.setTimeout(
+        () => void restoreDashboardSession(attempt + 1, cancelled),
         Math.min(10_000, 1_000 + attempt * 1_000),
       );
+    } finally {
+      if (sessionRestoreControllerRef.current === controller) {
+        sessionRestoreControllerRef.current = undefined;
+      }
     }
   }
 
-  async function refresh(): Promise<boolean> {
+  async function refresh(): Promise<DashboardRefreshResult | undefined> {
+    const refreshGeneration = ++refreshGenerationRef.current;
+    refreshInFlightRef.current = true;
     setDataLoading(true);
+    const healthRead =
+      healthCoordinatorRef.current?.read({ supersede: true }) ?? Promise.resolve(undefined);
     try {
-      const loaded = await Promise.all([
-        load("summary", "summary"),
-        load("caplets", "caplets"),
-        load("clients", "access/clients"),
-        load("pending", "access/pending-logins"),
-        load("vault", "vault"),
-        load("runtime", "runtime"),
-        load("diagnostics", "diagnostics"),
-        load("activity", "activity?limit=50"),
-        load("logs", "logs?limit=100"),
-        load("projectBinding", "project-binding"),
-        load("updates", "catalog/updates"),
-        load("managementCaplets", "management?resource=caplet"),
-        load("managementSettings", "management?resource=host-setting"),
-        load("managementStatus", "management/status"),
-        recoverDashboardManagementOperations()
-          .then((outcomes) => ({ name: "managementRecoveries", value: { outcomes } }))
-          .catch((error: unknown) => ({
-            name: "managementRecoveries",
-            value: { error: error instanceof Error ? error.message : String(error) },
-          })),
+      const [loaded, refreshedHealth] = await Promise.all([
+        Promise.all([
+          ...DASHBOARD_READS.map(({ name, path, mode }) => load(name, path, mode)),
+          recoverDashboardManagementOperations()
+            .then(
+              (outcomes): DashboardReadResult => ({
+                name: "managementRecoveries",
+                mode: "live-required",
+                status: "available",
+                value: { outcomes },
+              }),
+            )
+            .catch(
+              (error: unknown): DashboardReadResult => ({
+                name: "managementRecoveries",
+                mode: "live-required",
+                status: "unavailable",
+                value: { error: error instanceof Error ? error.message : String(error) },
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            ),
+        ]),
+        healthRead,
       ]);
-      setData(
-        Object.fromEntries(loaded.map((entry) => [entry.name, entry.value])) as DashboardData,
-      );
-      return true;
+      if (refreshGeneration !== refreshGenerationRef.current) return undefined;
+
+      const currentHealth = refreshedHealth ?? storageHealthRef.current;
+      const hasLiveAuthority = liveAuthorityAvailable(currentHealth, undefined);
+      const unavailableLiveReads = loaded
+        .filter(
+          (entry) =>
+            entry.mode === "live-required" && (entry.status === "unavailable" || !hasLiveAuthority),
+        )
+        .map((entry) => entry.name);
+      const staleSnapshotReads = loaded
+        .filter(
+          (entry) =>
+            entry.mode === "snapshot-allowed" &&
+            (!hasLiveAuthority || entry.status === "unavailable"),
+        )
+        .map((entry) => entry.name);
+      const refreshAvailability: DashboardRefreshAvailability = {
+        status: unavailableLiveReads.length ? "partial" : "complete",
+        unavailableLiveReads,
+        staleSnapshotReads,
+      };
+      setData((current) => {
+        const refreshedData = Object.fromEntries(
+          loaded.map((entry) => [
+            entry.name,
+            entry.mode === "snapshot-allowed" && entry.status === "unavailable"
+              ? (current[entry.name as keyof DashboardData] ?? entry.value)
+              : entry.mode === "live-required" && !hasLiveAuthority
+                ? {
+                    error:
+                      entry.status === "unavailable"
+                        ? entry.error
+                        : "Live SQL authority is unavailable.",
+                  }
+                : entry.value,
+          ]),
+        ) as DashboardData;
+        refreshedData.refresh = refreshAvailability;
+        const next = {
+          ...refreshedData,
+          storageHealth: currentHealth ?? current.storageHealth,
+        };
+        if (!unavailableLiveReads.length) return next;
+        return invalidateLiveDashboardData(
+          next,
+          currentHealth ??
+            current.storageHealth ?? {
+              readiness: "not-ready",
+              connectivity: "unavailable",
+              guidanceCode: "storage-unavailable",
+            },
+        );
+      });
+      return unavailableLiveReads.length
+        ? { status: "partial", unavailableLiveReads }
+        : { status: "complete" };
     } catch (error) {
       if (isDashboardUnauthorized(error)) {
         endDashboardSession();
-        return false;
+        return undefined;
       }
       throw error;
     } finally {
-      setDataLoading(false);
+      if (refreshGeneration === refreshGenerationRef.current) {
+        refreshInFlightRef.current = false;
+        setDataLoading(false);
+      }
     }
   }
 
-  async function load(name: string, path: string) {
+  async function load(
+    name: string,
+    path: string,
+    mode: DashboardReadMode,
+  ): Promise<DashboardReadResult> {
     try {
-      return { name, value: await dashboardApi(path) };
+      return { name, mode, status: "available", value: await dashboardApi(path) };
     } catch (error) {
       if (isDashboardUnauthorized(error)) throw error;
-      return { name, value: { error: error instanceof Error ? error.message : String(error) } };
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        name,
+        mode,
+        status: "unavailable",
+        value: { error: message },
+        error: message,
+      };
     }
+  }
+
+  function cancelAuthorizationPolling() {
+    authorizationPollGenerationRef.current += 1;
+    if (authorizationPollTimerRef.current !== undefined) {
+      window.clearTimeout(authorizationPollTimerRef.current);
+      authorizationPollTimerRef.current = undefined;
+    }
+    authorizationPollControllerRef.current?.abort();
+    authorizationPollControllerRef.current = undefined;
   }
 
   async function startAuthorization() {
+    cancelAuthorizationPolling();
+    const generation = authorizationPollGenerationRef.current;
+    const controller = new AbortController();
+    authorizationPollControllerRef.current = controller;
     setLoading(true);
     try {
       const pending = await dashboardApi<{
@@ -430,26 +892,41 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
       }>("login/start", {
         method: "POST",
         body: JSON.stringify({ clientLabel: "Browser Dashboard" }),
+        signal: controller.signal,
       });
+      if (generation !== authorizationPollGenerationRef.current) return;
       setAuthCommand(pending.approvalCommand);
       setAuthMessage(
         "Run this command on the Current Host. This page will finish automatically after approval.",
       );
-      window.setTimeout(
-        () => void pollAuthorization(pending),
+      authorizationPollTimerRef.current = window.setTimeout(
+        () => void pollAuthorization(pending, generation),
         Math.max(1, pending.intervalSeconds || 5) * 1000,
       );
     } catch (error) {
+      if (controller.signal.aborted || generation !== authorizationPollGenerationRef.current)
+        return;
       setAuthMessage(error instanceof Error ? error.message : String(error));
       setLoading(false);
+    } finally {
+      if (authorizationPollControllerRef.current === controller) {
+        authorizationPollControllerRef.current = undefined;
+      }
     }
   }
 
-  async function pollAuthorization(pending: {
-    flowId: string;
-    pendingCompletionSecret: string;
-    intervalSeconds: number;
-  }) {
+  async function pollAuthorization(
+    pending: {
+      flowId: string;
+      pendingCompletionSecret: string;
+      intervalSeconds: number;
+    },
+    generation: number,
+  ) {
+    if (generation !== authorizationPollGenerationRef.current) return;
+    authorizationPollTimerRef.current = undefined;
+    const controller = new AbortController();
+    authorizationPollControllerRef.current = controller;
     try {
       const result = await dashboardApi<{ status: string }>("login/poll", {
         method: "POST",
@@ -457,16 +934,19 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
           flowId: pending.flowId,
           pendingCompletionSecret: pending.pendingCompletionSecret,
         }),
+        signal: controller.signal,
       });
+      if (generation !== authorizationPollGenerationRef.current) return;
       if (result.status !== "approved") {
         if (result.status === "denied" || result.status === "expired") {
+          cancelAuthorizationPolling();
           setAuthCommand("");
           setAuthMessage(`Pending login was ${result.status}. Start a new browser approval.`);
           setLoading(false);
           return;
         }
-        window.setTimeout(
-          () => void pollAuthorization(pending),
+        authorizationPollTimerRef.current = window.setTimeout(
+          () => void pollAuthorization(pending, generation),
           Math.max(1, pending.intervalSeconds || 5) * 1000,
         );
         return;
@@ -477,27 +957,41 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
           flowId: pending.flowId,
           pendingCompletionSecret: pending.pendingCompletionSecret,
         }),
+        signal: controller.signal,
       });
+      if (generation !== authorizationPollGenerationRef.current) return;
       setSession(completed.session);
       setDashboardSession(completed.session);
       const refreshed = await refresh();
-      if (refreshed) setLoading(false);
+      if (generation === authorizationPollGenerationRef.current && refreshed) setLoading(false);
     } catch (error) {
+      if (controller.signal.aborted || generation !== authorizationPollGenerationRef.current)
+        return;
       setAuthMessage(error instanceof Error ? error.message : String(error));
       setLoading(false);
+    } finally {
+      if (authorizationPollControllerRef.current === controller) {
+        authorizationPollControllerRef.current = undefined;
+      }
     }
   }
 
   const action: DashboardAction = async (label, callback) => {
+    if (!liveAuthorityAvailable(storageHealthRef.current, data.refresh)) {
+      toast.error("Live SQL authority is unavailable. Wait for storage to become ready.");
+      return;
+    }
     try {
       const result = await callback();
       if (result === ACTION_DISCARDED) return;
       const refreshed = await refresh();
-      if (refreshed) {
+      if (refreshed?.status === "complete") {
         toast.success(typeof label === "function" ? label(result) : label);
-        if (catalogIndexingUnavailable(result)) {
-          toast.warning("Catalog indexing unavailable; the committed update is still installed.");
-        }
+      } else if (refreshed?.status === "partial") {
+        toast.warning("Action completed, but live dashboard data could not be refreshed.");
+      }
+      if (catalogIndexingUnavailable(result)) {
+        toast.warning("Catalog indexing unavailable; the committed update is still installed.");
       }
     } catch (error) {
       if (isDashboardUnauthorized(error)) {
@@ -505,8 +999,21 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         return;
       }
       toast.error(error instanceof Error ? error.message : String(error));
+      await healthCoordinatorRef.current?.read({ supersede: true });
     }
   };
+
+  async function refreshDashboard() {
+    try {
+      const refreshed = await refresh();
+      if (refreshed?.status === "complete") toast.success("Dashboard refreshed");
+      if (refreshed?.status === "partial") {
+        toast.warning("Dashboard refresh incomplete; live data remains unavailable.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   async function logout() {
     try {
@@ -537,171 +1044,201 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     document.title = `${routeLabel(route)} · Caplets Dashboard`;
   }, [route]);
 
+  const hasLiveAuthority = liveAuthorityAvailable(data.storageHealth, data.refresh);
+  useEffect(() => {
+    if (!hasLiveAuthority) resolveConfirmation(false);
+  }, [hasLiveAuthority, resolveConfirmation]);
+
   let content: ReactNode;
   if (!session) {
     content = (
       <main id="caplets-dashboard" className="flex min-h-screen items-center justify-center p-6">
-        <Card className="w-full max-w-xl">
-          <CardHeader>
-            <Badge className="w-fit" variant="secondary">
-              Operator Client required
-            </Badge>
-            <CardTitle className="text-3xl">Caplets Admin Dashboard</CardTitle>
-            <CardDescription role="status" aria-live="polite" aria-busy={loading}>
-              {authMessage}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <Button onClick={startAuthorization} disabled={loading || Boolean(authCommand)}>
-              <ShieldCheckIcon data-icon="inline-start" />
-              Authorize this browser
-            </Button>
-            {authCommand ? (
-              <>
-                <div className="grid gap-2 rounded-lg border bg-muted p-3">
-                  <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-all text-sm text-foreground">
-                    <code>{authCommand}</code>
-                  </pre>
+        <div className="flex w-full max-w-xl flex-col gap-4">
+          <StorageHealthBanner health={data.storageHealth} />
+          {!hasLiveAuthority ? (
+            <p id={LIVE_AUTHORITY_DISABLED_REASON_ID} className="sr-only">
+              {LIVE_AUTHORITY_DISABLED_REASON}
+            </p>
+          ) : null}
+          <Card>
+            <CardHeader>
+              <Badge className="w-fit" variant="secondary">
+                Operator Client required
+              </Badge>
+              <CardTitle className="text-3xl">Caplets Admin Dashboard</CardTitle>
+              <CardDescription role="status" aria-live="polite" aria-busy={loading}>
+                {authMessage}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <Button
+                requiresLiveAuthority
+                onClick={startAuthorization}
+                disabled={loading || Boolean(authCommand)}
+              >
+                <ShieldCheckIcon data-icon="inline-start" />
+                Authorize this browser
+              </Button>
+              {authCommand ? (
+                <>
+                  <div className="grid gap-2 rounded-lg border bg-muted p-3">
+                    <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-all text-sm text-foreground">
+                      <code>{authCommand}</code>
+                    </pre>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      aria-label="Copy browser approval command"
+                      onClick={() => void copyToClipboard(authCommand, "Approval command copied")}
+                    >
+                      <ClipboardListIcon data-icon="inline-start" />
+                      Copy command
+                    </Button>
+                  </div>
                   <Button
                     type="button"
                     variant="outline"
-                    aria-label="Copy browser approval command"
-                    onClick={() => void copyToClipboard(authCommand, "Approval command copied")}
+                    onClick={() => {
+                      cancelAuthorizationPolling();
+                      setAuthCommand("");
+                      setAuthMessage("Authorization required.");
+                      setLoading(false);
+                    }}
                   >
-                    <ClipboardListIcon data-icon="inline-start" />
-                    Copy command
+                    Start over
                   </Button>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setAuthCommand("");
-                    setAuthMessage("Authorization required.");
-                    setLoading(false);
-                  }}
-                >
-                  Start over
-                </Button>
-              </>
-            ) : null}
-          </CardContent>
-        </Card>
+                </>
+              ) : null}
+            </CardContent>
+          </Card>
+        </div>
         <Toaster />
       </main>
     );
   } else {
     const isDevelopmentSession = session.operatorClientId === "development_unauthenticated";
     content = (
-      <ConfirmContext.Provider value={confirm}>
-        <ConfirmDismissContext.Provider value={dismissConfirmation}>
-          <TooltipProvider>
-            <SidebarProvider>
-              <a
-                href="#dashboard-main"
-                className="sr-only z-50 rounded-lg bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
-              >
-                Skip to dashboard content
-              </a>
-              <Sidebar id="dashboard-sidebar">
-                <SidebarHeader>
-                  <div className="flex items-center gap-2 px-2 py-1">
-                    <img
-                      src={dashboardPath("icon-header-dark.png")}
-                      alt=""
-                      className="size-8 rounded-lg border border-border bg-card object-cover"
-                      width={32}
-                      height={32}
-                    />
-                    <div>
-                      <div className="font-semibold">Caplets</div>
-                      <div className="text-xs text-muted-foreground">Operator console</div>
+      <LiveAuthorityContext.Provider value={hasLiveAuthority}>
+        <ConfirmContext.Provider value={confirm}>
+          {!hasLiveAuthority ? (
+            <p id={LIVE_AUTHORITY_DISABLED_REASON_ID} className="sr-only">
+              {LIVE_AUTHORITY_DISABLED_REASON}
+            </p>
+          ) : null}
+          <ConfirmDismissContext.Provider value={dismissConfirmation}>
+            <TooltipProvider>
+              <SidebarProvider>
+                <a
+                  href="#dashboard-main"
+                  className="sr-only z-50 rounded-lg bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
+                >
+                  Skip to dashboard content
+                </a>
+                <Sidebar id="dashboard-sidebar">
+                  <SidebarHeader>
+                    <div className="flex items-center gap-2 px-2 py-1">
+                      <img
+                        src={dashboardPath("icon-header-dark.png")}
+                        alt=""
+                        className="size-8 rounded-lg border border-border bg-card object-cover"
+                        width={32}
+                        height={32}
+                      />
+                      <div>
+                        <div className="font-semibold">Caplets</div>
+                        <div className="text-xs text-muted-foreground">Operator console</div>
+                      </div>
                     </div>
-                  </div>
-                </SidebarHeader>
-                <SidebarContent>
-                  <SidebarGroup>
-                    <SidebarGroupLabel>Dashboard</SidebarGroupLabel>
-                    <SidebarGroupContent>
-                      <nav aria-label="Dashboard">
-                        <SidebarMenu>
-                          {routes.map((item) => (
-                            <DashboardNavItem
-                              key={item.key}
-                              item={item}
-                              active={route === item.key}
-                              onNavigate={navigate}
-                            />
-                          ))}
-                        </SidebarMenu>
-                      </nav>
-                    </SidebarGroupContent>
-                  </SidebarGroup>
-                </SidebarContent>
-                <SidebarFooter>
-                  <div className="grid gap-3">
-                    <DashboardThemeSelect />
-                    {isDevelopmentSession ? (
-                      <div className="rounded-lg border bg-secondary px-3 py-2 text-xs text-secondary-foreground">
-                        <div className="font-mono font-bold">No-auth mode</div>
-                        <div className="mt-1 text-muted-foreground">
-                          Operator checks are bypassed locally.
+                  </SidebarHeader>
+                  <SidebarContent>
+                    <SidebarGroup>
+                      <SidebarGroupLabel>Dashboard</SidebarGroupLabel>
+                      <SidebarGroupContent>
+                        <nav aria-label="Dashboard">
+                          <SidebarMenu>
+                            {routes.map((item) => (
+                              <DashboardNavItem
+                                key={item.key}
+                                item={item}
+                                active={route === item.key}
+                                onNavigate={navigate}
+                              />
+                            ))}
+                          </SidebarMenu>
+                        </nav>
+                      </SidebarGroupContent>
+                    </SidebarGroup>
+                  </SidebarContent>
+                  <SidebarFooter>
+                    <div className="grid gap-3">
+                      <DashboardThemeSelect />
+                      {isDevelopmentSession ? (
+                        <div className="rounded-lg border bg-secondary px-3 py-2 text-xs text-secondary-foreground">
+                          <div className="font-mono font-bold">No-auth mode</div>
+                          <div className="mt-1 text-muted-foreground">
+                            Operator checks are bypassed locally.
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="flex justify-end px-2">
-                        <TooltipIconButton
-                          variant="ghost"
-                          size="icon"
-                          label="Logout"
-                          onClick={() => void logout()}
-                        >
-                          <LogOutIcon />
-                        </TooltipIconButton>
-                      </div>
-                    )}
-                  </div>
-                </SidebarFooter>
-              </Sidebar>
-              <SidebarInset id="dashboard-main" tabIndex={-1}>
-                <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-                  <SidebarTrigger className="md:size-11" aria-controls="dashboard-sidebar">
-                    <MenuIcon />
-                  </SidebarTrigger>
-                  <Separator orientation="vertical" className="h-6" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm text-muted-foreground">
-                      {data.summary?.host?.baseUrl ?? "Current Host"}
+                      ) : (
+                        <div className="flex justify-end px-2">
+                          <TooltipIconButton
+                            requiresLiveAuthority
+                            variant="ghost"
+                            size="icon"
+                            label="Logout"
+                            onClick={() => void logout()}
+                          >
+                            <LogOutIcon />
+                          </TooltipIconButton>
+                        </div>
+                      )}
                     </div>
+                  </SidebarFooter>
+                </Sidebar>
+                <SidebarInset id="dashboard-main" tabIndex={-1}>
+                  <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                    <SidebarTrigger className="md:size-11" aria-controls="dashboard-sidebar">
+                      <MenuIcon />
+                    </SidebarTrigger>
+                    <Separator orientation="vertical" className="h-6" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-muted-foreground">
+                        {data.summary?.host?.baseUrl ?? "Current Host"}
+                      </div>
+                    </div>
+                    <TooltipIconButton
+                      variant="outline"
+                      size="icon"
+                      className="md:size-11"
+                      label={dataLoading ? "Refreshing dashboard" : "Refresh dashboard"}
+                      disabled={dataLoading}
+                      aria-busy={dataLoading}
+                      onClick={() => void refreshDashboard()}
+                    >
+                      <RefreshCwIcon className={dataLoading ? "animate-spin" : undefined} />
+                    </TooltipIconButton>
+                  </header>
+                  <div className="flex flex-col gap-4 p-4 md:p-6">
+                    <StorageHealthBanner health={data.storageHealth} refresh={data.refresh} />
+                    <RefreshAvailabilityNotice availability={data.refresh} />
+                    <ManagementRecoveryNotices recoveries={data.managementRecoveries?.outcomes} />
+                    <Page
+                      route={route}
+                      data={data}
+                      loading={dataLoading}
+                      action={action}
+                      session={session}
+                      onUnauthorized={endDashboardSession}
+                    />
                   </div>
-                  <TooltipIconButton
-                    variant="outline"
-                    size="icon"
-                    className="md:size-11"
-                    label={dataLoading ? "Refreshing dashboard" : "Refresh dashboard"}
-                    disabled={dataLoading}
-                    aria-busy={dataLoading}
-                    onClick={() => action("Dashboard refreshed", refresh)}
-                  >
-                    <RefreshCwIcon className={dataLoading ? "animate-spin" : undefined} />
-                  </TooltipIconButton>
-                </header>
-                <div className="flex flex-col gap-4 p-4 md:p-6">
-                  <Page
-                    route={route}
-                    data={data}
-                    loading={dataLoading}
-                    action={action}
-                    session={session}
-                  />
-                </div>
-              </SidebarInset>
-              <Toaster />
-              <ConfirmationDialog request={confirmation} onResolve={resolveConfirmation} />
-            </SidebarProvider>
-          </TooltipProvider>
-        </ConfirmDismissContext.Provider>
-      </ConfirmContext.Provider>
+                </SidebarInset>
+                <Toaster />
+                <ConfirmationDialog request={confirmation} onResolve={resolveConfirmation} />
+              </SidebarProvider>
+            </TooltipProvider>
+          </ConfirmDismissContext.Provider>
+        </ConfirmContext.Provider>
+      </LiveAuthorityContext.Provider>
     );
   }
 
@@ -713,9 +1250,204 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
       disableTransitionOnChange
       storageKey="caplets-dashboard-theme"
     >
-      {content}
+      <LiveAuthorityContext.Provider value={hasLiveAuthority}>
+        <TooltipProvider>{content}</TooltipProvider>
+      </LiveAuthorityContext.Provider>
     </ThemeProvider>
   );
+}
+
+function StorageHealthBanner({
+  health,
+  refresh,
+}: {
+  health: DashboardData["storageHealth"];
+  refresh?: DashboardRefreshAvailability;
+}) {
+  if (!health) return null;
+  const backend = health.backend ? humanizeToken(health.backend) : "SQL";
+  const authorityToken = health.authorityToken;
+  const healthyAuthority =
+    Number.isSafeInteger(authorityToken?.authorityGeneration) &&
+    Number(authorityToken?.authorityGeneration) >= 0 &&
+    Number.isSafeInteger(authorityToken?.effectiveGeneration) &&
+    Number(authorityToken?.effectiveGeneration) >= 0;
+  const stale = health.readiness === "stale-read-only";
+  const convergencePending = health.convergence === "pending";
+  const convergenceOverdue = health.convergence === "overdue";
+  const stagedBootstrap = health.bootstrapCompatibility === "staged";
+  const liveReadsUnavailable = Boolean(refresh?.unavailableLiveReads.length);
+  const currentAuthorityAvailable =
+    !liveReadsUnavailable &&
+    healthyAuthority &&
+    health.connectivity === "connected" &&
+    health.readiness === "ready" &&
+    health.migration === "current" &&
+    health.bootstrapCompatibility !== "incompatible" &&
+    !convergenceOverdue;
+  const severe = Boolean(health.error) || !currentAuthorityAvailable;
+  const staleAge =
+    typeof health.staleAgeMs === "number"
+      ? ` Snapshot age: ${formatStaleAge(health.staleAgeMs)}.`
+      : "";
+
+  let title = `${backend} storage not ready`;
+  let description =
+    "The health response did not prove that one live SQL authority is ready. Live operations remain unavailable.";
+  let announcement = description;
+  if (stale || health.connectivity === "unavailable") {
+    title = `${backend} storage degraded`;
+    announcement = stale
+      ? `${backend} disconnected — stale read-only. Live operations are unavailable; declared snapshot reads remain available.`
+      : `Connectivity to ${backend} storage is unavailable. Live operations remain unavailable.`;
+    description = stale
+      ? `${backend} disconnected — stale read-only. The last complete SQL snapshot is frozen.${staleAge} Only declared non-security reads remain available. Authentication, administration, Project Binding, Attach, Vault, import/export, and mutations fail with 503 until one rehydrated generation is published.`
+      : `Connectivity to ${backend} storage is unavailable. Live operations remain unavailable. Guidance: ${humanizeToken(health.guidanceCode ?? "storage-unavailable")}.`;
+  } else if (liveReadsUnavailable) {
+    title = `${backend} live data unavailable`;
+    description =
+      "Storage health was reachable, but one or more required live dashboard reads failed. Their prior or empty values are not treated as current authority.";
+    announcement = description;
+  } else if (convergenceOverdue) {
+    title = `${backend} convergence overdue`;
+    description =
+      "The Current Host is connected, but at least one required node missed the convergence deadline. Live operations remain unavailable until the overdue node is fenced and convergence recovers.";
+    announcement = description;
+  } else if (health.readiness === "not-ready") {
+    title = `${backend} storage not ready`;
+    description = `The Current Host is connected, but a complete SQL snapshot has not been published. Guidance: ${humanizeToken(health.guidanceCode ?? "storage-not-ready")}.`;
+    announcement = description;
+  } else if (health.migration === "blocked") {
+    title = `${backend} migration blocked`;
+    description =
+      "The Current Host is connected, but migration state prevents this node from becoming ready.";
+    announcement = description;
+  } else if (health.bootstrapCompatibility === "incompatible") {
+    title = `${backend} bootstrap incompatible`;
+    description =
+      "The connected node cannot activate against the current bootstrap fingerprint and remains not ready.";
+    announcement = description;
+  } else if (currentAuthorityAvailable) {
+    title = convergencePending ? `${backend} convergence pending` : `${backend} storage ready`;
+    description = convergencePending
+      ? "The Current Host is connected and serving the current authority while cluster application is still pending."
+      : stagedBootstrap
+        ? "The current authority remains available. A staged-compatible bootstrap is awaiting coordinated activation."
+        : "Live SQL authority and a complete snapshot are available.";
+    announcement = description;
+  }
+
+  return (
+    <Alert
+      variant={severe ? "destructive" : "default"}
+      role="region"
+      aria-label="Storage health"
+      aria-live="off"
+    >
+      <p className="sr-only" role={severe ? "alert" : "status"} data-storage-health-announcement>
+        {title}. {announcement}
+      </p>
+      {severe ? <AlertTriangleIcon /> : <DatabaseIcon />}
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription>
+        <p>{description}</p>
+        <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+          <HealthDimension
+            label="Connectivity"
+            value={humanizeToken(health.connectivity ?? "unknown")}
+          />
+          <HealthDimension
+            label="Readiness"
+            value={
+              health.readiness === "stale-read-only"
+                ? "Stale read-only"
+                : humanizeToken(health.readiness ?? "unknown")
+            }
+          />
+          <HealthDimension
+            label="Convergence"
+            value={humanizeToken(health.convergence ?? "unknown")}
+          />
+          <HealthDimension
+            label="Bootstrap"
+            value={
+              stagedBootstrap
+                ? "Staged compatible"
+                : humanizeToken(health.bootstrapCompatibility ?? "unknown")
+            }
+          />
+          <HealthDimension label="Migration" value={humanizeToken(health.migration ?? "unknown")} />
+          {healthyAuthority ? (
+            <HealthDimension
+              label="Authority"
+              value={`${authorityToken?.authorityGeneration} / ${authorityToken?.effectiveGeneration}`}
+            />
+          ) : null}
+        </dl>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {currentAuthorityAvailable ? (
+            <Badge variant="outline">Current authority available</Badge>
+          ) : null}
+          {health.guidanceCode ? (
+            <Badge variant="outline">{humanizeToken(health.guidanceCode)}</Badge>
+          ) : null}
+        </div>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function RefreshAvailabilityNotice({
+  availability,
+}: {
+  availability?: DashboardRefreshAvailability;
+}) {
+  if (!availability) return null;
+  if (availability.unavailableLiveReads.length) {
+    return (
+      <Alert variant="destructive">
+        <AlertTriangleIcon />
+        <AlertTitle>Live dashboard data unavailable</AlertTitle>
+        <AlertDescription>
+          Required live reads could not be refreshed:{" "}
+          {availability.unavailableLiveReads.map(humanizeToken).join(", ")}. Empty or previous
+          values are not current authority. Retrying automatically while storage reports ready; use
+          Refresh dashboard for an immediate retry.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  if (availability.staleSnapshotReads.length) {
+    return (
+      <Alert role="note" aria-live="off">
+        <DatabaseIcon />
+        <AlertTitle>Cached snapshot reads</AlertTitle>
+        <AlertDescription>
+          Showing the last complete snapshot for{" "}
+          {availability.staleSnapshotReads.map(humanizeToken).join(", ")}. These reads are labeled
+          stale and remain non-authoritative for live operations.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  return null;
+}
+
+function HealthDimension({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs font-medium">{label}</dt>
+      <dd className="text-sm text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function formatStaleAge(staleAgeMs: number): string {
+  const seconds = Math.max(0, Math.floor(staleAgeMs / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 function DashboardThemeSelect() {
@@ -809,22 +1541,42 @@ function Page({
   loading,
   action,
   session,
+  onUnauthorized,
 }: {
   route: RouteKey;
   data: DashboardData;
   loading: boolean;
   session: DashboardSession;
   action: DashboardAction;
+  onUnauthorized: () => void;
 }) {
   const { confirmTyped } = useActionConfirm();
+  const hasLiveAuthority = useContext(LiveAuthorityContext);
   if (route === "access") return <AccessPage data={data} loading={loading} action={action} />;
-  if (route === "caplets") return <CapletsPage data={data} loading={loading} action={action} />;
-  if (route === "catalog")
-    return <CatalogPage data={data} action={action} confirmTyped={confirmTyped} />;
+  if (route === "caplets") {
+    return (
+      <CapletsPage data={data} loading={loading} action={action} onUnauthorized={onUnauthorized} />
+    );
+  }
+  if (route === "catalog") {
+    return (
+      <CatalogPage
+        data={data}
+        action={action}
+        confirmTyped={confirmTyped}
+        liveAuthorityAvailable={hasLiveAuthority}
+        liveAuthorityUnavailableReason={LIVE_AUTHORITY_DISABLED_REASON}
+      />
+    );
+  }
   if (route === "vault") return <VaultPage data={data} loading={loading} action={action} />;
   if (route === "runtime") return <RuntimePage data={data} loading={loading} action={action} />;
   if (route === "activity") return <ActivityPage data={data} loading={loading} />;
-  if (route === "settings") return <SettingsPage session={session} data={data} action={action} />;
+  if (route === "settings") {
+    return (
+      <SettingsPage session={session} data={data} action={action} onUnauthorized={onUnauthorized} />
+    );
+  }
   return <OverviewPage data={data} loading={loading} />;
 }
 
@@ -866,6 +1618,7 @@ function ConfirmationDialog({
             Cancel
           </Button>
           <Button
+            requiresLiveAuthority
             variant={request.destructive ? "destructive" : "default"}
             disabled={disabled}
             onClick={() => onResolve(request.expectedPhrase ? typed : true)}
@@ -899,16 +1652,21 @@ function TooltipIconButton({
   children: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
 }) {
+  const liveAuthorityAvailable = useContext(LiveAuthorityContext);
+  const liveAuthorityDisabled = props.requiresLiveAuthority && !liveAuthorityAvailable;
+  const tooltipLabel = liveAuthorityDisabled
+    ? `${label} unavailable. ${LIVE_AUTHORITY_DISABLED_REASON}`
+    : label;
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          <Button {...props} size={size} aria-label={label}>
+          <Button {...props} suppressLiveAuthorityTooltip size={size} aria-label={label}>
             {children}
           </Button>
         }
       />
-      <TooltipContent side={side}>{label}</TooltipContent>
+      <TooltipContent side={side}>{tooltipLabel}</TooltipContent>
     </Tooltip>
   );
 }
@@ -945,14 +1703,34 @@ function TooltipIconBadge({
 }
 
 function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean }) {
+  const unavailableLiveReads = new Set(data.refresh?.unavailableLiveReads ?? []);
+  const staleSnapshotReads = new Set(data.refresh?.staleSnapshotReads ?? []);
+  const liveDataUnavailable = unavailableLiveReads.size > 0;
   const attention = data.summary?.attention ?? [];
   const pendingCount = data.pending?.pendingLogins?.length ?? 0;
   const updateSummary = catalogUpdateSummary(data.updates?.updates ?? []);
-  const runtimeStatus = data.runtime?.runtime?.status ?? data.diagnostics?.status ?? "unknown";
-  const projectBindingState = data.projectBinding?.projectBinding?.state ?? "not configured";
+  const runtimeStatus = unavailableLiveReads.has("runtime")
+    ? "Unavailable"
+    : staleSnapshotReads.has("runtime")
+      ? "Stale snapshot — non-authoritative"
+      : String(data.runtime?.runtime?.status ?? data.diagnostics?.status ?? "unknown");
+  const projectBindingState = unavailableLiveReads.has("projectBinding")
+    ? "unavailable"
+    : (data.projectBinding?.projectBinding?.state ?? "not configured");
   const vaultGrantCount = data.vault?.grants?.length ?? 0;
   const inventoryCount = (data.caplets?.caplets ?? []).length;
   const attentionItems = [
+    ...(liveDataUnavailable
+      ? [
+          {
+            label: "Live dashboard data unavailable",
+            href: routeHref("overview"),
+            detail:
+              "Required live reads failed. Empty and previous values are not current authority.",
+            severity: "warning" as const,
+          },
+        ]
+      : []),
     ...(pendingCount
       ? [
           {
@@ -1037,18 +1815,41 @@ function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean
         </CardContent>
       </Card>
       <div className="grid gap-3 sm:grid-cols-3">
-        <Metric title="Caplets" value={String(inventoryCount)} />
-        <Metric title="Clients" value={String((data.clients?.clients ?? []).length)} />
-        <Metric title="Vault values" value={String((data.vault?.values ?? []).length)} />
+        <Metric
+          title="Caplets"
+          value={`${staleSnapshotReads.has("caplets") ? "Snapshot: " : ""}${inventoryCount}`}
+        />
+        <Metric
+          title="Clients"
+          value={
+            unavailableLiveReads.has("clients")
+              ? "Unavailable"
+              : String(data.clients?.clients?.length ?? 0)
+          }
+        />
+        <Metric
+          title="Vault values"
+          value={
+            unavailableLiveReads.has("vault")
+              ? "Unavailable"
+              : String(data.vault?.values?.length ?? 0)
+          }
+        />
       </div>
       <section className="grid gap-3 lg:grid-cols-3" aria-label="Operator triage">
         <TriageCard
           title="Pending approvals"
-          status={pendingCount ? `${pendingCount} waiting` : "Clear"}
+          status={
+            unavailableLiveReads.has("pending")
+              ? "Unavailable"
+              : pendingCount
+                ? `${pendingCount} waiting`
+                : "Clear"
+          }
           detail="Approve, deny, or downgrade browser and client requests."
           href={routeHref("access")}
           actionLabel="Open approvals"
-          severity={pendingCount ? "warning" : "ok"}
+          severity={unavailableLiveReads.has("pending") || pendingCount ? "warning" : "ok"}
         />
         <TriageCard
           title="Catalog updates"
@@ -1064,7 +1865,13 @@ function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean
           detail="Check whether local project context is attached."
           href={routeHref("runtime")}
           actionLabel="Inspect binding"
-          severity={projectBindingState === "bound" ? "ok" : "info"}
+          severity={
+            projectBindingState === "unavailable"
+              ? "warning"
+              : projectBindingState === "bound"
+                ? "ok"
+                : "info"
+          }
         />
         <TriageCard
           title="Runtime health"
@@ -1076,11 +1883,11 @@ function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean
         />
         <TriageCard
           title="Vault grants"
-          status={`${vaultGrantCount} grants`}
+          status={unavailableLiveReads.has("vault") ? "Unavailable" : `${vaultGrantCount} grants`}
           detail="Inspect stored values and grant metadata before installs."
           href={routeHref("vault")}
           actionLabel="Inspect grants"
-          severity={vaultGrantCount ? "info" : "ok"}
+          severity={unavailableLiveReads.has("vault") ? "warning" : vaultGrantCount ? "info" : "ok"}
         />
         <TriageCard
           title="Installed Caplets"
@@ -1185,7 +1992,13 @@ function AccessPage({
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
-          {pending.length ? (
+          {data.pending?.error ? (
+            <Alert variant="destructive">
+              <AlertTriangleIcon />
+              <AlertTitle>Pending logins unavailable</AlertTitle>
+              <AlertDescription>{data.pending.error}</AlertDescription>
+            </Alert>
+          ) : pending.length ? (
             pending.map((login) => (
               <Row
                 key={login.flowId}
@@ -1194,6 +2007,7 @@ function AccessPage({
                 actions={
                   <>
                     <Button
+                      requiresLiveAuthority
                       size="sm"
                       aria-label={`Approve ${login.clientLabel || login.flowId} as operator`}
                       onClick={async () => {
@@ -1215,6 +2029,7 @@ function AccessPage({
                       Approve operator
                     </Button>
                     <Button
+                      requiresLiveAuthority
                       size="sm"
                       variant="outline"
                       aria-label={`Approve ${login.clientLabel || login.flowId} as access-only`}
@@ -1237,6 +2052,7 @@ function AccessPage({
                       Approve access
                     </Button>
                     <Button
+                      requiresLiveAuthority
                       size="sm"
                       variant="destructive"
                       aria-label={`Deny pending login ${login.flowId}`}
@@ -1277,8 +2093,15 @@ function AccessPage({
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
+          {data.clients?.error ? (
+            <Alert variant="destructive">
+              <AlertTriangleIcon />
+              <AlertTitle>Clients unavailable</AlertTitle>
+              <AlertDescription>{data.clients.error}</AlertDescription>
+            </Alert>
+          ) : null}
           <div className="grid gap-3 md:hidden">
-            {clients.length ? (
+            {data.clients?.error ? null : clients.length ? (
               clients.map((client) => (
                 <ClientCard
                   key={client.clientId}
@@ -1293,7 +2116,7 @@ function AccessPage({
             )}
           </div>
           <div className="hidden md:block">
-            {clients.length ? (
+            {data.clients?.error ? null : clients.length ? (
               <Table aria-labelledby="access-clients-heading">
                 <TableCaption>Approved remote clients</TableCaption>
                 <TableHeader>
@@ -1379,6 +2202,7 @@ function ClientActions({
   return (
     <>
       <Button
+        requiresLiveAuthority
         size="sm"
         variant="outline"
         aria-label={`Change ${label} to ${nextRole} role`}
@@ -1396,6 +2220,7 @@ function ClientActions({
         Change to {nextRole}
       </Button>
       <Button
+        requiresLiveAuthority
         size="sm"
         variant="destructive"
         aria-label={`Revoke ${label}`}
@@ -1426,10 +2251,12 @@ function CapletsPage({
   data,
   loading,
   action,
+  onUnauthorized,
 }: {
   data: DashboardData;
   loading: boolean;
   action: DashboardAction;
+  onUnauthorized: () => void;
 }) {
   const { confirmTyped } = useActionConfirm();
   const caplets = data.caplets?.caplets ?? [];
@@ -1454,6 +2281,7 @@ function CapletsPage({
                     actions={
                       update ? (
                         <TooltipIconButton
+                          requiresLiveAuthority
                           size="icon-sm"
                           variant="outline"
                           label={`Review update for ${capletId}`}
@@ -1502,8 +2330,8 @@ function CapletsPage({
         items={data.managementCaplets?.items}
         error={data.managementCaplets?.error}
         action={action}
+        onUnauthorized={onUnauthorized}
       />
-      <ManagementRecoveryNotices recoveries={data.managementRecoveries?.outcomes} />
     </PageFrame>
   );
 }
@@ -1655,6 +2483,7 @@ function VaultPage({
   const confirm = useConfirm();
   const dismissConfirmation = useDismissConfirmation();
   const { confirmTyped } = useActionConfirm();
+  const hasLiveAuthority = useContext(LiveAuthorityContext);
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
   const [revealed, setRevealed] = useState<{ key: string; value: string; expiresAt: number }>();
@@ -1677,6 +2506,12 @@ function VaultPage({
       expiry.cancel();
     };
   }, [dismissConfirmation, expiry]);
+  useEffect(() => {
+    if (hasLiveAuthority) return;
+    revealGeneration.current += 1;
+    expiry.cancel();
+    setRevealed(undefined);
+  }, [hasLiveAuthority, expiry]);
   useEffect(() => {
     if (!revealed) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -1707,6 +2542,13 @@ function VaultPage({
       title="Vault"
       description="Manage stored values without exposing secrets by default."
     >
+      {data.vault?.error ? (
+        <Alert variant="destructive">
+          <AlertTriangleIcon />
+          <AlertTitle>Vault unavailable</AlertTitle>
+          <AlertDescription>{data.vault.error}</AlertDescription>
+        </Alert>
+      ) : null}
       <Card>
         <CardHeader>
           <h2 className="text-base font-medium leading-snug">Set value</h2>
@@ -1745,7 +2587,12 @@ function VaultPage({
                 required
               />
             </label>
-            <Button type="submit" disabled={!key || !value} aria-label="Set Vault value">
+            <Button
+              type="submit"
+              requiresLiveAuthority
+              disabled={!key || !value}
+              aria-label="Set Vault value"
+            >
               {values.some((entry) => String(entry.key) === key) ? "Replace value" : "Set"}
             </Button>
             <p id="vault-form-help" className="text-sm text-muted-foreground md:col-span-3">
@@ -1769,7 +2616,7 @@ function VaultPage({
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
-          {values.length ? (
+          {data.vault?.error ? null : values.length ? (
             values.map((entry) => {
               const rawKey = String(entry.key);
               const presentation = vaultKeyPresentation(rawKey);
@@ -1792,6 +2639,7 @@ function VaultPage({
                   actions={
                     <>
                       <TooltipIconButton
+                        requiresLiveAuthority
                         size="icon-sm"
                         variant="outline"
                         label={`Reveal vault value ${rawKey}`}
@@ -1842,6 +2690,7 @@ function VaultPage({
                         <EyeIcon />
                       </TooltipIconButton>
                       <TooltipIconButton
+                        requiresLiveAuthority
                         size="icon-sm"
                         variant="ghost"
                         className="text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -1969,9 +2818,12 @@ function RuntimePage({
 }) {
   const confirm = useConfirm();
   const runtime = data.runtime?.runtime ?? {};
+  const diagnostics = data.diagnostics?.diagnostics;
+  const guidance = data.diagnostics?.guidance;
   const checks = data.diagnostics?.checks ?? [];
   const runtimeStatus = String(runtime.status ?? "unknown");
-  const healthy = runtimeStatus === "ok" || runtimeStatus === "healthy";
+  const runtimeSnapshotStale = data.refresh?.staleSnapshotReads.includes("runtime") ?? false;
+  const healthy = !runtimeSnapshotStale && (runtimeStatus === "ok" || runtimeStatus === "healthy");
   if (loading && !data.runtime) return <DashboardLoadingState title="Runtime" />;
   return (
     <PageFrame title="Runtime" description="Health, diagnostics, and daemon actions.">
@@ -1981,14 +2833,20 @@ function RuntimePage({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="text-base font-medium leading-snug">
-                  {healthy ? "Runtime healthy" : "Runtime needs review"}
+                  {runtimeSnapshotStale
+                    ? "Runtime snapshot is stale"
+                    : healthy
+                      ? "Runtime healthy"
+                      : "Runtime needs review"}
                 </h2>
                 <CardDescription role="status" aria-live="polite">
-                  Runtime status: {humanizeToken(runtimeStatus)}.
+                  {runtimeSnapshotStale
+                    ? "Retained runtime status is stale and non-authoritative. Retrying automatically for live data."
+                    : `Runtime status: ${humanizeToken(runtimeStatus)}.`}
                 </CardDescription>
               </div>
               <Badge variant={healthy ? "secondary" : "destructive"}>
-                {humanizeToken(runtimeStatus)}
+                {runtimeSnapshotStale ? "Stale snapshot" : humanizeToken(runtimeStatus)}
               </Badge>
             </div>
           </CardHeader>
@@ -2007,6 +2865,7 @@ function RuntimePage({
             </Alert>
             <div className="flex flex-wrap gap-2">
               <Button
+                requiresLiveAuthority
                 variant="destructive"
                 className="md:h-11 md:min-h-11"
                 onClick={async () => {
@@ -2040,9 +2899,53 @@ function RuntimePage({
         <Card>
           <CardHeader>
             <h2 className="text-base font-medium leading-snug">Diagnostics</h2>
-            <CardDescription>Runtime and dashboard checks for the Current Host.</CardDescription>
+            <CardDescription>
+              Reauthorized SQL storage guidance and runtime checks for the Current Host.
+            </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-2">
+          <CardContent className="flex flex-col gap-3">
+            {data.diagnostics?.error ? (
+              <Alert variant="destructive">
+                <AlertTriangleIcon />
+                <AlertTitle>Live diagnostics unavailable</AlertTitle>
+                <AlertDescription>{data.diagnostics.error}</AlertDescription>
+              </Alert>
+            ) : guidance?.summary ? (
+              <Alert>
+                {guidance.code === "ok" ? <CheckIcon /> : <AlertTriangleIcon />}
+                <AlertTitle>{guidance.summary}</AlertTitle>
+                <AlertDescription>
+                  <span className="font-mono text-xs">{guidance.code ?? "diagnostics"}</span>
+                  {guidance.actions?.length ? (
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {guidance.actions.map((nextAction) => (
+                        <li key={nextAction}>{nextAction}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {diagnostics ? (
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <RecordRow
+                  label="Storage backend"
+                  value={humanizeToken(diagnostics.backend ?? "unknown")}
+                />
+                <RecordRow
+                  label="Key compatibility"
+                  value={humanizeToken(diagnostics.keyCompatibility?.status ?? "unknown")}
+                />
+                <RecordRow
+                  label="Ready nodes"
+                  value={String(diagnostics.readyNodes ?? "Unknown")}
+                />
+                <RecordRow
+                  label="Overdue nodes"
+                  value={String(diagnostics.overdueNodes ?? "Unknown")}
+                />
+              </dl>
+            ) : null}
             {checks.length ? (
               checks.map((check) => (
                 <Row
@@ -2058,9 +2961,9 @@ function RuntimePage({
                   detail={`Status: ${humanizeToken(String(check.status ?? "unknown"))}`}
                 />
               ))
-            ) : (
+            ) : !data.diagnostics?.error && !guidance?.summary ? (
               <EmptyLine text="No diagnostics were reported." />
-            )}
+            ) : null}
           </CardContent>
         </Card>
       </div>
@@ -2240,12 +3143,15 @@ function SettingsPage({
   session,
   data,
   action,
+  onUnauthorized,
 }: {
   session: DashboardSession;
   data: DashboardData;
   action: DashboardAction;
+  onUnauthorized: () => void;
 }) {
   const isDevelopmentSession = session.operatorClientId === "development_unauthenticated";
+  const hasLiveAuthority = useContext(LiveAuthorityContext);
   return (
     <PageFrame
       title="Settings"
@@ -2281,6 +3187,15 @@ function SettingsPage({
                 : "This browser can administer the Current Host until the session expires or is revoked."}
             </AlertDescription>
           </Alert>
+          {!hasLiveAuthority ? (
+            <Alert variant="destructive">
+              <AlertTriangleIcon />
+              <AlertTitle>Live security details unavailable</AlertTitle>
+              <AlertDescription>
+                Session identifiers and CSRF material stay hidden until SQL authority is current.
+              </AlertDescription>
+            </Alert>
+          ) : null}
           <dl className="grid gap-3 sm:grid-cols-2">
             <RecordRow
               label="Authentication mode"
@@ -2289,26 +3204,32 @@ function SettingsPage({
               }
             />
             <RecordRow label="Current Host" value={data.summary?.host?.baseUrl ?? "Current Host"} />
-            <RecordRow label="Operator client ID" value={session.operatorClientId} />
-            <RecordRow label="CSRF token" value={session.csrfToken} />
-          </dl>
-          <div className="flex flex-wrap gap-2">
-            <TooltipIconButton
-              variant="outline"
-              size="icon"
-              label="Copy operator client ID"
-              onClick={() =>
-                void copyToClipboard(session.operatorClientId, "Operator client ID copied")
-              }
-            >
-              <ClipboardListIcon />
-            </TooltipIconButton>
-            {isDevelopmentSession ? (
-              <Button variant="secondary" disabled aria-label="No logout in no-auth mode">
-                No logout in no-auth mode
-              </Button>
+            {hasLiveAuthority ? (
+              <>
+                <RecordRow label="Operator client ID" value={session.operatorClientId} />
+                <RecordRow label="CSRF token" value={session.csrfToken} />
+              </>
             ) : null}
-          </div>
+          </dl>
+          {hasLiveAuthority ? (
+            <div className="flex flex-wrap gap-2">
+              <TooltipIconButton
+                variant="outline"
+                size="icon"
+                label="Copy operator client ID"
+                onClick={() =>
+                  void copyToClipboard(session.operatorClientId, "Operator client ID copied")
+                }
+              >
+                <ClipboardListIcon />
+              </TooltipIconButton>
+              {isDevelopmentSession ? (
+                <Button variant="secondary" disabled aria-label="No logout in no-auth mode">
+                  No logout in no-auth mode
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           {isDevelopmentSession ? (
             <p className="text-sm text-muted-foreground">
               Restart the server without no-auth mode to require browser approval again. Manage
@@ -2322,8 +3243,8 @@ function SettingsPage({
         items={data.managementSettings?.items}
         action={action}
         error={data.managementSettings?.error}
+        onUnauthorized={onUnauthorized}
       />
-      <ManagementRecoveryNotices recoveries={data.managementRecoveries?.outcomes} />
     </PageFrame>
   );
 }
@@ -2343,11 +3264,13 @@ function ManagementOwnershipList({
   items,
   error,
   action,
+  onUnauthorized,
 }: {
   resource: "caplet" | "host-setting";
   items: ManagementTarget[] | undefined;
   error?: string | undefined;
   action: DashboardAction;
+  onUnauthorized: () => void;
 }) {
   const [inspection, setInspection] = useState<ManagementInspection>();
   const [draft, setDraft] = useState("");
@@ -2357,6 +3280,16 @@ function ManagementOwnershipList({
   const [managementError, setManagementError] = useState<string>();
   const detailRef = useRef<HTMLDivElement>(null);
   const detailId = `management-detail-${resource}`;
+  const hasLiveAuthority = useContext(LiveAuthorityContext);
+  useEffect(() => {
+    if (hasLiveAuthority) return;
+    setInspection(undefined);
+    setDraft("");
+    setPrepared(undefined);
+    setOutcome(undefined);
+    setBusy(undefined);
+    setManagementError(undefined);
+  }, [hasLiveAuthority]);
   if (!items && !error) return null;
 
   async function inspectUnderlying(item: ManagementTarget) {
@@ -2379,6 +3312,10 @@ function ManagementOwnershipList({
         setDraft(JSON.stringify(result.record.value));
       }
     } catch (error) {
+      if (isDashboardUnauthorized(error)) {
+        onUnauthorized();
+        return;
+      }
       setManagementError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(undefined);
@@ -2418,6 +3355,10 @@ function ManagementOwnershipList({
       const preview = await dashboardManagementPreview(mutation);
       setPrepared({ mutation, operation: preview.operation, result: preview.result });
     } catch (error) {
+      if (isDashboardUnauthorized(error)) {
+        onUnauthorized();
+        return;
+      }
       setManagementError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(undefined);
@@ -2460,6 +3401,10 @@ function ManagementOwnershipList({
         toast.error(`Current Host SQL change ${status ?? "failed"}.`);
       }
     } catch (error) {
+      if (isDashboardUnauthorized(error)) {
+        onUnauthorized();
+        return;
+      }
       setManagementError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(undefined);
@@ -2507,6 +3452,7 @@ function ManagementOwnershipList({
               <OwnershipSummary target={item} />
               {item.underlyingSqlAvailable ? (
                 <Button
+                  requiresLiveAuthority
                   type="button"
                   variant="outline"
                   size="sm"
@@ -2576,6 +3522,7 @@ function ManagementOwnershipList({
             ) : null}
             <div className="flex flex-wrap gap-2">
               <Button
+                requiresLiveAuthority
                 type="button"
                 variant="outline"
                 disabled={busy !== undefined}
@@ -2586,6 +3533,7 @@ function ManagementOwnershipList({
               </Button>
               {prepared ? (
                 <Button
+                  requiresLiveAuthority
                   type="button"
                   disabled={busy !== undefined}
                   aria-busy={busy === "apply"}
@@ -2638,11 +3586,15 @@ function ManagementRecoveryNotices({ recoveries }: { recoveries: unknown[] | und
         {visibleRecoveries.map((outcome, index) => {
           const status = managementOutcomeStatus(outcome);
           const receiptTarget = objectField(objectField(outcome, "receipt"), "management");
+          const operation = objectField(outcome, "operation");
           const binding =
             objectField(outcome, "binding") ??
-            objectField(objectField(outcome, "receipt"), "binding");
+            objectField(objectField(outcome, "receipt"), "binding") ??
+            objectField(operation, "binding");
           const operationId =
-            stringFieldFromRecord(binding, "operationId") ?? `recovered-operation-${index + 1}`;
+            stringFieldFromRecord(binding, "operationId") ??
+            stringFieldFromRecord(operation, "operationId") ??
+            `recovered-operation-${index + 1}`;
           return (
             <Alert key={operationId} variant={status === "committed" ? "default" : "destructive"}>
               {status === "committed" ? <CheckIcon /> : <AlertTriangleIcon />}
@@ -2740,6 +3692,13 @@ function managementOutcomeDescription(
   receiptTarget: Record<string, unknown> | undefined,
 ): string {
   const status = managementOutcomeStatus(value);
+  const record = isUnknownRecord(value) ? value : undefined;
+  const errorBody = objectField(record, "error");
+  const outcomeMessage =
+    stringFieldFromRecord(record, "message") ?? stringFieldFromRecord(errorBody, "message");
+  const originalTargetOnly =
+    record?.retryAllowed === false &&
+    stringFieldFromRecord(record, "guidance") === "lookup-original-target";
   if (status === "committed") {
     if (objectField(value, "localApplicationError")) {
       return "SQL committed, but local application is pending and requires recovery.";
@@ -2754,6 +3713,9 @@ function managementOutcomeDescription(
   }
   if (status === "unknown") {
     return "No retry is allowed. Lookup remains pinned to the original authenticated target.";
+  }
+  if (originalTargetOnly) {
+    return `${outcomeMessage ? `${outcomeMessage} ` : ""}No mutation retry is allowed; recovery remains pinned to the original target.`;
   }
   return `No SQL commit was confirmed (${status ?? "unavailable"}).`;
 }

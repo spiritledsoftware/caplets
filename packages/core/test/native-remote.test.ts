@@ -20,6 +20,7 @@ import {
 } from "../src/native/remote";
 import {
   createNativeCapletsService,
+  createUnactivatedNativeCapletsServiceForTests,
   type NativeCapletTool,
   type NativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
@@ -3128,7 +3129,7 @@ describe("createNativeCapletsService remote mode", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({
+    const service = createUnactivatedNativeCapletsServiceForTests({
       configPath,
       projectConfigPath,
     });
@@ -3577,11 +3578,14 @@ describe("createNativeCapletsService remote mode", () => {
     });
     const localConfig = tempConfig({ options: { exposure: "code_mode" } });
     dirs.push(remoteConfig.dir, localConfig.dir);
-    const remoteEngine = new CapletsEngine({
+    const remoteEngine = CapletsEngine.unactivatedForTests({
       configPath: remoteConfig.configPath,
       projectConfigPath: remoteConfig.projectConfigPath,
       watch: false,
     });
+    (remoteEngine as unknown as { runtimeSnapshot: { securityEpoch: number } }).runtimeSnapshot = {
+      securityEpoch: 1,
+    };
     const app = createHttpServeApp(httpOptions(), remoteEngine, { writeErr: () => {} });
     const fetchFromApp: typeof fetch = async (input, init) => {
       const request = new Request(input, init);

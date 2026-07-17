@@ -1,5 +1,10 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
-import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
+import {
+  CapletsEngine,
+  createCapletsEngine,
+  createInternalCapletsEngine,
+  type CapletsEngineOptions,
+} from "../engine";
 import { CapletsMcpSession } from "./session";
 import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
 
@@ -21,7 +26,7 @@ export async function createInternalStdioRuntime(
 }
 
 export async function serveStdio(options: ServeStdioOptions = {}): Promise<void> {
-  const engine = new CapletsEngine(options);
+  const engine = await createCapletsEngine(options);
   return serveStdioWithRuntime(options, { engine, session: new CapletsMcpSession(engine) });
 }
 

@@ -192,7 +192,7 @@ describe("storage deployment resolution", () => {
         );
         resolvedSecrets.push(reference.kind === "env" ? reference.name : "file-reference");
         if (reference.kind === "env" && reference.name === "CAPLETS_PG_RUNTIME_URL") {
-          return "postgresql://caplets_runtime:sentinel-password@postgres.internal/caplets";
+          return "postgresql://caplets_runtime:sentinel-password@postgres.internal/caplets?sslmode=require";
         }
         if (reference.kind === "env" && reference.name === "CAPLETS_S3_CANARY") {
           return "a".repeat(64);
@@ -238,7 +238,7 @@ describe("storage deployment resolution", () => {
       resolveStorageDeployment(postgresConfig(stateRoot, manifestPath), {
         resolveSecret: async (reference) => {
           if (reference.kind === "env" && reference.name === "CAPLETS_PG_RUNTIME_URL") {
-            return `postgresql://caplets_runtime:${databasePassword}@postgres.internal/caplets`;
+            return `postgresql://caplets_runtime:${databasePassword}@postgres.internal/caplets?sslmode=verify-full`;
           }
           if (reference.kind === "env" && reference.name === "CAPLETS_S3_CANARY") {
             return "a".repeat(64);
@@ -292,7 +292,7 @@ describe("storage deployment resolution", () => {
           resolveSecret: async (reference) =>
             reference.kind === "env" && reference.name === "CAPLETS_S3_CANARY"
               ? "a".repeat(64)
-              : "postgresql://wrong_role:password@postgres.internal/caplets",
+              : "postgresql://wrong_role:password@postgres.internal/caplets?sslmode=require",
           verifyPostgres: async () => {
             verifierCalled = true;
             throw new Error("must not verify");
@@ -332,7 +332,7 @@ describe("storage deployment resolution", () => {
             resolveSecret: async (reference) =>
               reference.kind === "env" && reference.name === "CAPLETS_S3_CANARY"
                 ? "a".repeat(64)
-                : "postgresql://caplets_runtime:password@postgres.internal/caplets",
+                : "postgresql://caplets_runtime:password@postgres.internal/caplets?sslmode=require",
             verifyPostgres: async () => ({
               logicalHostId,
               storeId,
@@ -356,7 +356,7 @@ describe("storage deployment resolution", () => {
           resolveSecret: async (reference) =>
             reference.kind === "env" && reference.name === "CAPLETS_S3_CANARY"
               ? "a".repeat(64)
-              : "postgresql://caplets_runtime:password@postgres.internal/caplets",
+              : "postgresql://caplets_runtime:password@postgres.internal/caplets?sslmode=require",
           verifyPostgres: async ({ tls, role }) => ({
             logicalHostId,
             databaseIdentity,
@@ -372,6 +372,70 @@ describe("storage deployment resolution", () => {
         },
       ),
     ).rejects.toThrow(/canary/i);
+  });
+  it("accepts only one explicit production TLS mode without exposing credentials", async () => {
+    const keyRoot = tempPath("postgres-tls-keys");
+    const keyBootstrap = await bootstrapSqliteFileV1({ root: keyRoot, logicalHostId, storeId });
+    const password = "diagnostic-secret-password";
+    const resolveWithUrl = (connectionString: string, includeNamespace = true) =>
+      resolveStorageDeployment(
+        postgresConfig(tempPath("postgres-tls-node"), keyBootstrap.profileManifestPaths.online),
+        {
+          resolveSecret: async (reference) => {
+            if (reference.kind === "env" && reference.name === "CAPLETS_S3_CANARY") {
+              return "a".repeat(64);
+            }
+            return connectionString;
+          },
+          verifyPostgres: async ({ connectionString: verifiedUrl, tls, role }) => {
+            expect(verifiedUrl).toBe(connectionString);
+            return {
+              logicalHostId,
+              storeId,
+              tlsPeerServerName: tls.serverName,
+              databaseRole: role,
+              canSetRole: false,
+              inheritedRoles: [],
+              privileges: leastPrivileges,
+              ...(includeNamespace ? { operationNamespace } : {}),
+              databaseIdentity,
+            };
+          },
+          verifyS3Canary: async ({ identity }) => ({ identity, matches: true }),
+        },
+      );
+
+    for (const sslMode of ["require", "verify-full"]) {
+      await expect(
+        resolveWithUrl(
+          `postgresql://caplets_runtime:${password}@postgres.internal/caplets?sslmode=${sslMode}`,
+        ),
+      ).resolves.toMatchObject({ backend: "postgres" });
+    }
+
+    await expect(
+      resolveWithUrl(
+        `postgresql://caplets_runtime:${password}@postgres.internal/caplets?sslmode=require`,
+        false,
+      ),
+    ).resolves.toMatchObject({
+      backend: "postgres",
+      operationNamespace: expect.stringMatching(/^operations_[0-9A-HJKMNP-TV-Z]{26}$/u),
+    });
+
+    for (const query of [
+      "sslmode=disable",
+      "sslmode=require&sslmode=verify-full",
+      "sslmode=require&application_name=caplets",
+      "sslmode=require&user=caplets_migrator",
+      "SSLMode=require",
+    ]) {
+      const result = resolveWithUrl(
+        `postgresql://caplets_runtime:${password}@postgres.internal/caplets?${query}`,
+      );
+      await expect(result).rejects.toThrow(/credential reference is invalid/u);
+      await expect(result).rejects.not.toThrow(password);
+    }
   });
 });
 

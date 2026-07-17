@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { StoredOAuthTokenBundle, AuthTokenRepository } from "../../auth/store";
 import {
@@ -7,6 +8,8 @@ import {
 } from "../../dashboard/session-store";
 import {
   sanitizeDashboardActivityEntry,
+  roleChangeMetadata,
+  type AppendDashboardActivityInput,
   type DashboardActivityEntry,
   type DashboardActivityMaintenanceRepository,
   type DashboardActivityRepository,
@@ -14,17 +17,36 @@ import {
 } from "../../dashboard/activity-log";
 import type { DashboardSessionView } from "../../dashboard/types";
 import { CapletsError } from "../../errors";
+import type { SetupApproval, SetupAttempt } from "../../setup/types";
+import type {
+  SetupApprovalInput,
+  SetupExecutionLease,
+  SetupExecutionRequest,
+  SetupStore,
+  LegacyLocalSetupState,
+} from "../../setup/local-store";
 import {
+  type ApprovePendingLoginInput,
+  type ApprovedPendingLogin,
+  type CompletePendingLoginInput,
+  type CreatePendingLoginInput,
+  type CreatedPendingLogin,
+  type DashboardPendingLoginActionInput,
+  type PendingLoginPossessionInput,
+  type RefreshPendingLoginInput,
   type RemoteCredentialRepository,
   type RemotePendingApprovalResult,
+  type RemotePendingLoginRepository,
 } from "../../remote/server-credential-store";
 import {
   roleAllows,
   type IssuedRemoteClientCredentials,
   type RemoteClientRole,
   type RemoteClientStatus,
+  type RemotePendingLoginStatus,
   type ValidatedRemoteClient,
 } from "../../remote/server-credentials";
+import { normalizeRemoteProfileHostUrl } from "../../remote/options";
 import { normalizeVaultGrant, sameOrigin } from "../../vault/access";
 import {
   decryptSqlVaultValue,
@@ -53,7 +75,7 @@ import type {
   ControlPlaneSqlTransaction,
   ControlPlaneTransactionalDialect,
 } from "../store";
-import type { ControlPlaneStoreIdentity } from "../types";
+import type { ControlPlaneStoreIdentity, ControlPlaneWriterFence } from "../types";
 import type {
   ControlPlaneAuthorizationDecision,
   ControlPlaneAuthorizationRequest,
@@ -67,35 +89,62 @@ const ACTIVITY_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const MAX_ACTIVITY_LIMIT = 500;
 const VAULT_MAX_VALUE_BYTES = 64 * 1024;
 
+export type ControlPlaneSecurityAdmission = Readonly<{
+  securityEpoch: number;
+}>;
+
+const securityAdmission = new AsyncLocalStorage<ControlPlaneSecurityAdmission>();
+
+export function runWithControlPlaneSecurityAdmission<T>(
+  admission: ControlPlaneSecurityAdmission,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return securityAdmission.run(admission, operation);
+}
+
 export type ControlPlaneSecurityFailurePoint =
   | "after-vault-value"
   | "after-vault-grant"
   | "after-refresh-consume";
 
+export type ControlPlaneSecurityMutationAuthority = Readonly<{
+  securityEpoch: number;
+  writerFence: ControlPlaneWriterFence;
+}>;
+
 export type ControlPlaneSecurityRepositoryOptions = Readonly<{
   identity: ControlPlaneStoreIdentity;
   dialect: ControlPlaneTransactionalDialect;
   keyProvider: FileV1KeyProvider;
+  mutationAuthority?: (() => ControlPlaneSecurityMutationAuthority | undefined) | undefined;
   failureInjector?: ((point: ControlPlaneSecurityFailurePoint) => void | Promise<void>) | undefined;
 }>;
 
 export interface ControlPlaneSecurityRepository
   extends
     RemoteCredentialRepository,
+    RemotePendingLoginRepository,
     DashboardSessionRepository,
     DashboardActivityRepository,
     AuthTokenRepository,
     VaultRepository,
+    SetupStore,
     ControlPlaneAuthorizer {
   readonly identity: ControlPlaneStoreIdentity;
   readonly backend: "sqlite" | "postgres";
+  updateActiveKeyProvider(provider: FileV1KeyProvider): void;
   reencryptVaultValues(): Promise<number>;
+  listClients(): Promise<RemoteClientStatus[]>;
+  importLegacySetupState(
+    state: Pick<LegacyLocalSetupState, "approvals" | "attempts">,
+  ): Promise<void>;
 }
 
 export function createControlPlaneSecurityRepository(
   options: ControlPlaneSecurityRepositoryOptions,
 ): ControlPlaneSecurityRepository {
-  const { identity, dialect, keyProvider } = options;
+  const { identity, dialect } = options;
+  let keyProvider = options.keyProvider;
   assertSqlVaultKeyProvider(keyProvider, identity);
   const fail = async (point: ControlPlaneSecurityFailurePoint): Promise<void> => {
     await options.failureInjector?.(point);
@@ -110,6 +159,37 @@ export function createControlPlaneSecurityRepository(
       purpose,
       recordId,
     }) as const;
+  const mutate = <T>(
+    work: (
+      transaction: ControlPlaneSqlTransaction,
+      authority: ControlPlaneSecurityMutationAuthority | undefined,
+      commitSecurityEpoch: (securityEpoch: number) => void,
+    ) => Promise<T>,
+  ): Promise<T> =>
+    dialect.runtimeTransaction(async (transaction) => {
+      const authority = options.mutationAuthority
+        ? await beginSqlSecurityMutation(transaction, identity, options.mutationAuthority)
+        : undefined;
+      let finalAuthority = authority;
+      const admission = securityAdmission.getStore();
+      if (authority && admission && authority.securityEpoch !== admission.securityEpoch) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Security authority changed after request admission.",
+        );
+      }
+      const result = await work(transaction, authority, (securityEpoch) => {
+        if (!authority) return;
+        if (!Number.isSafeInteger(securityEpoch) || securityEpoch !== authority.securityEpoch + 1) {
+          throw unavailableSecurityMutation();
+        }
+        finalAuthority = { ...authority, securityEpoch };
+      });
+      if (finalAuthority) {
+        await guardSqlSecurityMutation(transaction, identity, finalAuthority);
+      }
+      return result;
+    });
 
   const authorizeInTransaction = async (
     transaction: ControlPlaneSqlTransaction,
@@ -174,7 +254,7 @@ export function createControlPlaneSecurityRepository(
     }>,
   ): Promise<IssuedRemoteClientCredentials> => {
     const now = await transaction.databaseTime();
-    const clientId = input.clientId ?? opaqueId("client");
+    const clientId = input.clientId ?? `rcli_${randomToken(12)}`;
     const refreshFamilyId = input.refreshFamilyId ?? opaqueId("refresh-family");
     const accessCredentialId = opaqueId("credential");
     const refreshCredentialId = opaqueId("credential");
@@ -233,15 +313,18 @@ export function createControlPlaneSecurityRepository(
     identity,
     backend: dialect.backend,
 
+    updateActiveKeyProvider(provider) {
+      assertSqlVaultKeyProvider(provider, identity);
+      keyProvider = provider;
+    },
+
     async issueClient(input) {
       validateClientIssue(input);
-      return dialect.runtimeTransaction((transaction) =>
-        issueClientInTransaction(transaction, input),
-      );
+      return mutate((transaction) => issueClientInTransaction(transaction, input));
     },
 
     async validateAccessToken(input) {
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction) => {
         await transaction.lock(securityEpochLock(identity));
         const now = await transaction.databaseTime();
         const match = await findCredentialBySecret(transaction, identity, {
@@ -263,7 +346,7 @@ export function createControlPlaneSecurityRepository(
     },
 
     async refreshClientCredentials(input) {
-      const outcome = await dialect.runtimeTransaction(async (transaction) => {
+      const outcome = await mutate(async (transaction, _authority, commitSecurityEpoch) => {
         await transaction.lock(securityEpochLock(identity));
         const now = await transaction.databaseTime();
         const match = await findCredentialBySecret(transaction, identity, {
@@ -284,7 +367,9 @@ export function createControlPlaneSecurityRepository(
             match.clientId,
             now,
           );
-          if (revoked > 0) await advanceSecurityEpoch(transaction, identity, now);
+          if (revoked > 0) {
+            commitSecurityEpoch(await advanceSecurityEpoch(transaction, identity, now));
+          }
           return { status: "replayed" } as const;
         }
         const client = await liveClient(transaction, identity, current.clientId, input.hostUrl);
@@ -302,7 +387,9 @@ export function createControlPlaneSecurityRepository(
             current.clientId,
             now,
           );
-          if (revoked > 0) await advanceSecurityEpoch(transaction, identity, now);
+          if (revoked > 0) {
+            commitSecurityEpoch(await advanceSecurityEpoch(transaction, identity, now));
+          }
           return { status: "replayed" } as const;
         }
         await transaction.update(
@@ -330,37 +417,189 @@ export function createControlPlaneSecurityRepository(
       return outcome.credentials;
     },
 
-    async revokeClient(clientId) {
-      return dialect.runtimeTransaction(async (transaction) => {
+    async revokeClient(clientId, audit) {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
         const now = await transaction.databaseTime();
         await transaction.lock(securityEpochLock(identity));
+        const [client] = await transaction.select<ClientRow>(
+          "clients",
+          scope(identity, { clientId }),
+          [],
+          1,
+        );
         const changed = await revokeClientInTransaction(transaction, identity, clientId, now);
-        if (changed > 0) await advanceSecurityEpoch(transaction, identity, now);
+        if (changed > 0) {
+          commitSecurityEpoch(await advanceSecurityEpoch(transaction, identity, now));
+          if (audit) {
+            await insertActivityInTransaction(
+              transaction,
+              identity,
+              {
+                actorClientId: audit.actorClientId,
+                action: "remote_client_revoked",
+                target: { type: "remote_client", id: clientId },
+                metadata: { role: client?.role ?? null },
+              },
+              now,
+            );
+          }
+        }
         return changed > 0;
       });
     },
 
-    async changeClientRole(clientId, role) {
+    async changeClientRole(clientId, role, audit) {
       if (role !== "access" && role !== "operator") {
         throw new CapletsError("REQUEST_INVALID", "Remote client role is invalid.");
       }
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
         const now = await transaction.databaseTime();
         await transaction.lock(securityEpochLock(identity));
+        const [before] = await transaction.select<ClientRow>(
+          "clients",
+          scope(identity, { clientId, status: "active" }),
+          [],
+          1,
+        );
         const changed = await transaction.update(
           "clients",
           { role, updatedAt: now },
           scope(identity, { clientId, status: "active" }),
         );
         if (changed !== 1) return undefined;
-        await advanceSecurityEpoch(transaction, identity, now);
+        commitSecurityEpoch(await advanceSecurityEpoch(transaction, identity, now));
         const [row] = await transaction.select<ClientRow>("clients", scope(identity, { clientId }));
+        if (audit && before && row) {
+          await insertActivityInTransaction(
+            transaction,
+            identity,
+            {
+              actorClientId: audit.actorClientId,
+              action: "remote_client_role_changed",
+              target: { type: "remote_client", id: clientId },
+              metadata: roleChangeMetadata(before.role, row.role),
+            },
+            now,
+          );
+        }
         return row ? remoteClientStatus(row) : undefined;
       });
     },
 
+    async listClients() {
+      return dialect.snapshotTransaction(async (transaction) => {
+        const rows = await transaction.select<ClientRow>("clients", scope(identity), [
+          { column: "createdAt" },
+          { column: "clientId" },
+        ]);
+        return rows.map(remoteClientStatus);
+      });
+    },
+
+    async createPendingLogin(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        createSqlPendingLogin(transaction, identity, keyProvider, options.mutationAuthority, input),
+      );
+    },
+
+    async pollPendingLogin(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        pollSqlPendingLogin(transaction, identity, keyProvider, options.mutationAuthority, input),
+      );
+    },
+
+    async refreshPendingLogin(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        refreshSqlPendingLogin(
+          transaction,
+          identity,
+          keyProvider,
+          options.mutationAuthority,
+          input,
+        ),
+      );
+    },
+
+    async approvePendingLogin(input) {
+      const status = await dialect.runtimeTransaction((transaction) =>
+        decideSqlPendingLoginByCode(
+          transaction,
+          identity,
+          keyProvider,
+          options.mutationAuthority,
+          input,
+          "approve",
+        ),
+      );
+      return approvedSqlPendingLogin(status);
+    },
+
+    async approvePendingLoginFlow(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        decideSqlPendingLoginByFlow(
+          transaction,
+          identity,
+          keyProvider,
+          options.mutationAuthority,
+          input,
+          "approve",
+        ),
+      );
+    },
+
+    async denyPendingLogin(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        decideSqlPendingLoginByCode(
+          transaction,
+          identity,
+          keyProvider,
+          options.mutationAuthority,
+          input,
+          "deny",
+        ),
+      );
+    },
+
+    async denyPendingLoginFlow(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        decideSqlPendingLoginByFlow(
+          transaction,
+          identity,
+          keyProvider,
+          options.mutationAuthority,
+          input,
+          "deny",
+        ),
+      );
+    },
+
+    async cancelPendingLogin(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        cancelSqlPendingLogin(transaction, identity, keyProvider, options.mutationAuthority, input),
+      );
+    },
+
+    async completePendingLogin(input) {
+      return dialect.runtimeTransaction((transaction) =>
+        completeSqlPendingLogin(
+          transaction,
+          identity,
+          keyProvider,
+          options.mutationAuthority,
+          input,
+          issueClientInTransaction,
+        ),
+      );
+    },
+
+    async listPendingLogins() {
+      return dialect.snapshotTransaction((transaction) =>
+        listSqlPendingLogins(transaction, identity, keyProvider),
+      );
+    },
+
     async createPendingApproval(input = {}) {
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction) => {
         const now = await transaction.databaseTime();
         const approvalId = opaqueId("approval");
         const code = randomToken(8).toUpperCase();
@@ -392,7 +631,7 @@ export function createControlPlaneSecurityRepository(
     },
 
     async resolvePendingApproval(input) {
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction) => {
         const now = await transaction.databaseTime();
         await transaction.lock(`pending-approval:${input.approvalId}`);
         const [row] = await transaction.select<PendingApprovalRow>(
@@ -460,7 +699,7 @@ export function createControlPlaneSecurityRepository(
     },
 
     async create(input) {
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction) => {
         await transaction.lock(securityEpochLock(identity));
         const now = await transaction.databaseTime();
         const client = await liveClient(transaction, identity, input.operatorClientId);
@@ -507,7 +746,7 @@ export function createControlPlaneSecurityRepository(
     async validate(input) {
       const parsed = parseSessionCookie(input.cookieValue);
       if (!parsed) throw authFailed();
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction) => {
         await transaction.lock(securityEpochLock(identity));
         const now = await transaction.databaseTime();
         const [row] = await transaction.select<DashboardSessionRow>(
@@ -564,43 +803,25 @@ export function createControlPlaneSecurityRepository(
     async deleteSession(cookieValue) {
       const parsed = parseSessionCookie(cookieValue);
       if (!parsed) return false;
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
+        await transaction.lock(securityEpochLock(identity));
         const now = await transaction.databaseTime();
-        return (
-          (await transaction.update(
-            "dashboardSessions",
-            { revokedAt: now, updatedAt: now },
-            scope(identity, { sessionId: parsed.sessionId, revokedAt: null }),
-          )) === 1
+        const changed = await transaction.update(
+          "dashboardSessions",
+          { revokedAt: now, updatedAt: now },
+          scope(identity, { sessionId: parsed.sessionId, revokedAt: null }),
         );
+        if (changed === 1) {
+          commitSecurityEpoch(await advanceSecurityEpoch(transaction, identity, now));
+        }
+        return changed === 1;
       });
     },
 
     async append(input) {
-      return dialect.runtimeTransaction(async (transaction) => {
-        const now = await transaction.databaseTime();
-        const entry = sanitizeDashboardActivityEntry({
-          id: opaqueId("activity"),
-          createdAt: now,
-          actorClientId: input.actorClientId,
-          action: input.action,
-          outcome: input.outcome ?? "success",
-          target: input.target,
-          ...(input.metadata ? { metadata: input.metadata } : {}),
-        });
-        await transaction.insert("operatorActivities", {
-          ...baseRow(identity, `operator-activity:${entry.id}`, now),
-          activityId: entry.id,
-          actorId: entry.actorClientId,
-          action: entry.action,
-          outcome: entry.outcome,
-          target: encodeCanonicalJson(entry.target),
-          redactedDetail: encodeCanonicalJson(entry.metadata ?? {}),
-          occurredAt: now,
-          expiresAt: addMilliseconds(now, ACTIVITY_RETENTION_MS),
-        });
-        return entry;
-      });
+      return mutate(async (transaction) =>
+        insertActivityInTransaction(transaction, identity, input, await transaction.databaseTime()),
+      );
     },
 
     async list(input: ListDashboardActivityInput = {}) {
@@ -624,7 +845,7 @@ export function createControlPlaneSecurityRepository(
 
     async writeTokenBundle(bundle) {
       validateOAuthBundle(bundle);
-      await dialect.runtimeTransaction(async (transaction) => {
+      await mutate(async (transaction) => {
         const now = await transaction.databaseTime();
         const [existing] = await transaction.select<OAuthRow>(
           "oauthTokens",
@@ -702,18 +923,18 @@ export function createControlPlaneSecurityRepository(
     },
 
     async deleteTokenBundle(server) {
-      return dialect.runtimeTransaction(
+      return mutate(
         async (transaction) =>
           (await transaction.delete("oauthTokens", scope(identity, { serverName: server }))) === 1,
       );
     },
 
-    async setWithGrant(input) {
+    async setWithGrant(input, audit) {
       const key = validateVaultKeyName(input.key);
       if (Buffer.byteLength(input.value, "utf8") > VAULT_MAX_VALUE_BYTES) {
         throw new CapletsError("REQUEST_INVALID", "Vault value exceeds the maximum size.");
       }
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
         const now = await transaction.databaseTime();
         await transaction.lock(`vault:${key}`);
         const [existing] = await transaction.select<VaultValueRow>(
@@ -752,6 +973,37 @@ export function createControlPlaneSecurityRepository(
           await upsertGrant(transaction, identity, input.grant, now);
           await fail("after-vault-grant");
         }
+        commitSecurityEpoch(await advanceSecurityEpoch(transaction, identity, now));
+        if (audit) {
+          await insertActivityInTransaction(
+            transaction,
+            identity,
+            {
+              actorClientId: audit.actorClientId,
+              action: "vault_set",
+              target: { type: "vault", id: key },
+              metadata: { bytesWritten: encrypted.valueBytes },
+            },
+            now,
+          );
+          if (input.grant) {
+            await insertActivityInTransaction(
+              transaction,
+              identity,
+              {
+                actorClientId: audit.actorClientId,
+                action: "vault_grant_added",
+                target: { type: "vault", id: input.grant.storedKey },
+                metadata: {
+                  referenceName: input.grant.referenceName,
+                  capletId: input.grant.capletId,
+                  originKind: input.grant.origin.kind,
+                },
+              },
+              now,
+            );
+          }
+        }
         return vaultStatus(key, encrypted.valueBytes, existing?.createdAt ?? now, now);
       });
     },
@@ -789,27 +1041,64 @@ export function createControlPlaneSecurityRepository(
           scope(identity, { referenceName }),
         );
         if (!row)
-          throw new CapletsError("CONFIG_INVALID", `Vault key ${referenceName} is missing.`);
+          throw new CapletsError("CONFIG_NOT_FOUND", `Vault key ${referenceName} is missing.`);
         return decryptVaultRow(row, keyProvider, identity);
       });
     },
 
-    async deleteValue(key) {
+    async deleteValue(key, audit) {
       const referenceName = validateVaultKeyName(key);
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
         const deleted = await transaction.delete("vaultValues", scope(identity, { referenceName }));
+        if (deleted === 1) {
+          commitSecurityEpoch(
+            await advanceSecurityEpoch(transaction, identity, await transaction.databaseTime()),
+          );
+        }
         const grants = await transaction.select<VaultGrantRow>(
           "vaultGrants",
           scope(identity, { storedKey: referenceName }),
         );
+        if (audit) {
+          await insertActivityInTransaction(
+            transaction,
+            identity,
+            {
+              actorClientId: audit.actorClientId,
+              action: "vault_deleted",
+              target: { type: "vault", id: referenceName },
+              metadata: { deleted: deleted === 1, grantsRetained: grants.length },
+            },
+            await transaction.databaseTime(),
+          );
+        }
         return { key: referenceName, deleted: deleted === 1, grantsRetained: grants.length };
       });
     },
 
-    async grantAccess(input) {
-      return dialect.runtimeTransaction(async (transaction) => {
+    async grantAccess(input, audit) {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
         const now = await transaction.databaseTime();
-        return upsertGrant(transaction, identity, input, now);
+        const grant = await upsertGrant(transaction, identity, input, now);
+        commitSecurityEpoch(await advanceSecurityEpoch(transaction, identity, now));
+        if (audit) {
+          await insertActivityInTransaction(
+            transaction,
+            identity,
+            {
+              actorClientId: audit.actorClientId,
+              action: "vault_grant_added",
+              target: { type: "vault", id: grant.storedKey },
+              metadata: {
+                referenceName: grant.referenceName,
+                capletId: grant.capletId,
+                originKind: grant.origin.kind,
+              },
+            },
+            now,
+          );
+        }
+        return grant;
       });
     },
 
@@ -819,14 +1108,38 @@ export function createControlPlaneSecurityRepository(
         return rows.map(grantFromRow).filter((grant) => grantMatches(grant, filter));
       });
     },
-
-    async revokeAccess(filter) {
-      return dialect.runtimeTransaction(async (transaction) => {
+    async revokeAccess(filter, audit) {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
         await transaction.lock(vaultGrantLock(identity));
         const rows = await transaction.select<VaultGrantRow>("vaultGrants", scope(identity));
         const removed = rows.map(grantFromRow).filter((grant) => grantMatches(grant, filter));
         for (const grant of removed) {
           await transaction.delete("vaultGrants", scope(identity, { id: grantRowId(grant) }));
+        }
+        if (removed.length > 0) {
+          commitSecurityEpoch(
+            await advanceSecurityEpoch(transaction, identity, await transaction.databaseTime()),
+          );
+        }
+        if (audit) {
+          const activityAt = await transaction.databaseTime();
+          for (const grant of removed) {
+            await insertActivityInTransaction(
+              transaction,
+              identity,
+              {
+                actorClientId: audit.actorClientId,
+                action: "vault_grant_revoked",
+                target: { type: "vault", id: grant.storedKey },
+                metadata: {
+                  referenceName: grant.referenceName,
+                  capletId: grant.capletId,
+                  originKind: grant.origin.kind,
+                },
+              },
+              activityAt,
+            );
+          }
         }
         return removed;
       });
@@ -856,7 +1169,7 @@ export function createControlPlaneSecurityRepository(
     },
 
     async reencryptVaultValues() {
-      return dialect.runtimeTransaction(async (transaction) => {
+      return mutate(async (transaction, _authority, commitSecurityEpoch) => {
         const rows = await transaction.select<VaultValueRow>("vaultValues", scope(identity));
         let changed = 0;
         for (const row of rows) {
@@ -882,8 +1195,371 @@ export function createControlPlaneSecurityRepository(
             scope(identity, { referenceName: row.referenceName, keyVersion: row.keyVersion }),
           );
         }
+        if (changed > 0) {
+          commitSecurityEpoch(
+            await advanceSecurityEpoch(transaction, identity, await transaction.databaseTime()),
+          );
+        }
         return changed;
       });
+    },
+    async getApproval(projectFingerprint, capletId, contentHash, targetKind) {
+      return dialect.snapshotTransaction(async (transaction) => {
+        const [row] = await transaction.select<SetupApprovalRow>(
+          "setupApprovals",
+          scope(identity, { projectFingerprint, capletId, contentHash, targetKind }),
+          [{ column: "approvedAt", direction: "desc" }],
+          1,
+        );
+        return row ? setupApprovalFromRow(row) : undefined;
+      });
+    },
+
+    async approve(input: SetupApprovalInput) {
+      const projectFingerprint = input.projectFingerprint ?? "default";
+      return mutate(async (transaction) => {
+        const approval: SetupApproval = { ...input, projectFingerprint };
+        const approvalId = setupRecordId("approval", [
+          projectFingerprint,
+          input.capletId,
+          input.contentHash,
+          input.targetKind,
+        ]);
+        await transaction.lock(`setup-approval:${identity.logicalHostId}:${approvalId}`);
+        const [existing] = await transaction.select<SetupApprovalRow>(
+          "setupApprovals",
+          scope(identity, { approvalId }),
+          undefined,
+          1,
+        );
+        if (existing) {
+          const changed = await transaction.update(
+            "setupApprovals",
+            {
+              actor: input.actor,
+              approvedAt: input.approvedAt,
+              updatedAt: await transaction.databaseTime(),
+            },
+            scope(identity, { approvalId, approvedAt: existing.approvedAt }),
+          );
+          if (changed !== 1) {
+            throw new CapletsError("SERVER_UNAVAILABLE", "Setup approval changed concurrently.");
+          }
+          return approval;
+        }
+        const now = await transaction.databaseTime();
+        await transaction.insert("setupApprovals", {
+          ...baseRow(identity, setupRecordId("setup-approval-row", [approvalId]), now),
+          approvalId,
+          projectFingerprint,
+          capletId: input.capletId,
+          contentHash: input.contentHash,
+          targetKind: input.targetKind,
+          actor: input.actor,
+          approvedAt: input.approvedAt,
+        });
+        return approval;
+      });
+    },
+
+    async importLegacySetupState(state) {
+      await mutate(async (transaction) => {
+        await transaction.lock(`setup-legacy-import:${identity.logicalHostId}`);
+        const now = await transaction.databaseTime();
+        for (const approval of state.approvals) {
+          const approvalId = setupRecordId("approval", [
+            approval.projectFingerprint,
+            approval.capletId,
+            approval.contentHash,
+            approval.targetKind,
+          ]);
+          const [existing] = await transaction.select<SetupApprovalRow>(
+            "setupApprovals",
+            scope(identity, { approvalId }),
+            [],
+            1,
+          );
+          if (existing) continue;
+          await transaction.insert("setupApprovals", {
+            ...baseRow(identity, setupRecordId("setup-approval-row", [approvalId]), now),
+            approvalId,
+            projectFingerprint: approval.projectFingerprint,
+            capletId: approval.capletId,
+            contentHash: approval.contentHash,
+            targetKind: approval.targetKind,
+            actor: approval.actor,
+            approvedAt: approval.approvedAt,
+          });
+        }
+        for (const attempt of state.attempts) {
+          assertSetupRetention(attempt.retention.maxAttempts, attempt.retention.days);
+          const [existing] = await transaction.select<SetupAttemptRow>(
+            "setupAttempts",
+            scope(identity, {
+              attemptId: attempt.attemptId,
+              projectFingerprint: attempt.projectFingerprint,
+              capletId: attempt.capletId,
+            }),
+            [],
+            1,
+          );
+          if (existing) continue;
+          const persistedAttempt = redactSetupAttemptForPersistence(attempt);
+          const detail = encodeCanonicalJson(persistedAttempt);
+          if (Buffer.byteLength(detail, "utf8") > 1024 * 1024) {
+            throw new CapletsError(
+              "REQUEST_INVALID",
+              "Legacy SQL setup attempt exceeds the 1 MiB limit.",
+            );
+          }
+          await transaction.insert("setupAttempts", {
+            ...baseRow(
+              identity,
+              setupRecordId("setup-attempt-row", [
+                attempt.projectFingerprint,
+                attempt.capletId,
+                attempt.attemptId,
+              ]),
+              now,
+            ),
+            attemptId: attempt.attemptId,
+            projectFingerprint: attempt.projectFingerprint,
+            capletId: attempt.capletId,
+            contentHash: attempt.contentHash,
+            setupHash: attempt.setupHash ?? null,
+            targetKind: attempt.targetKind,
+            status: attempt.status,
+            detail,
+            finishedAt: attempt.finishedAt,
+          });
+          await pruneSetupAttempts(
+            transaction,
+            identity,
+            attempt.projectFingerprint,
+            attempt.capletId,
+            attempt.retention.maxAttempts,
+            attempt.retention.days,
+            now,
+          );
+        }
+      });
+    },
+
+    async reserveExecution(input: SetupExecutionRequest) {
+      assertSetupLeaseTtl(input.ttlMs);
+      const executionId = setupRecordId("execution", [
+        input.projectFingerprint,
+        input.capletId,
+        input.contentHash,
+        input.setupHash ?? "",
+        input.targetKind,
+      ]);
+      return mutate(async (transaction, authority) => {
+        await transaction.lock(`setup-execution:${identity.logicalHostId}:${executionId}`);
+        const now = await transaction.databaseTime();
+        const token = await currentSetupExecutionToken(transaction, identity, authority);
+        if (
+          (authority && !input.snapshotToken) ||
+          (input.snapshotToken &&
+            (input.snapshotToken.authorityGeneration !== token.authorityGeneration ||
+              input.snapshotToken.effectiveGeneration !== token.effectiveGeneration ||
+              input.snapshotToken.securityEpoch !== token.securityEpoch))
+        ) {
+          throw new CapletsError("SERVER_UNAVAILABLE", "Setup plan snapshot authority is stale.");
+        }
+        const [existing] = await transaction.select<SetupExecutionRow>(
+          "setupExecutions",
+          scope(identity, { executionId }),
+          [],
+          1,
+        );
+        if (
+          existing &&
+          existing.state === "active" &&
+          Date.parse(existing.expiresAt) > Date.parse(now) &&
+          Number(existing.authorityVersion) === token.authorityGeneration &&
+          Number(existing.effectiveVersion) === token.effectiveGeneration &&
+          Number(existing.securityVersion) === token.securityEpoch
+        ) {
+          throw new CapletsError("SERVER_UNAVAILABLE", "Setup execution is already reserved.");
+        }
+        if (existing) {
+          await transaction.delete(
+            "setupExecutions",
+            scope(identity, { executionId, leaseId: existing.leaseId }),
+          );
+        }
+        const leaseId = opaqueId("setup_lease");
+        const expiresAt = addMilliseconds(now, input.ttlMs);
+        await transaction.insert("setupExecutions", {
+          ...baseRow(identity, setupRecordId("setup-execution-row", [executionId]), now),
+          authorityVersion: token.authorityGeneration,
+          effectiveVersion: token.effectiveGeneration,
+          securityVersion: token.securityEpoch,
+          executionId,
+          projectFingerprint: input.projectFingerprint,
+          capletId: input.capletId,
+          contentHash: input.contentHash,
+          setupHash: input.setupHash ?? null,
+          targetKind: input.targetKind,
+          leaseId,
+          reservedAt: now,
+          expiresAt,
+          state: "active",
+        });
+        return { ...input, executionId, leaseId, expiresAt };
+      });
+    },
+
+    async renewExecution(lease: SetupExecutionLease, ttlMs: number) {
+      assertSetupLeaseTtl(ttlMs);
+      return mutate(async (transaction, authority) => {
+        await transaction.lock(`setup-execution:${identity.logicalHostId}:${lease.executionId}`);
+        const now = await transaction.databaseTime();
+        const row = await requireSetupExecutionLease(transaction, identity, lease, now, authority);
+        const expiresAt = addMilliseconds(now, ttlMs);
+        const changed = await transaction.update(
+          "setupExecutions",
+          {
+            expiresAt,
+            updatedAt: now,
+            aggregateVersion: Number(row.aggregateVersion) + 1,
+          },
+          scope(identity, {
+            executionId: lease.executionId,
+            leaseId: lease.leaseId,
+            expiresAt: row.expiresAt,
+            state: "active",
+          }),
+        );
+        if (changed !== 1) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Setup execution reservation changed concurrently.",
+          );
+        }
+        return { ...lease, ttlMs, expiresAt };
+      });
+    },
+
+    async releaseExecution(lease: SetupExecutionLease) {
+      await mutate(async (transaction) => {
+        await transaction.lock(`setup-execution:${identity.logicalHostId}:${lease.executionId}`);
+        await transaction.delete(
+          "setupExecutions",
+          scope(identity, {
+            executionId: lease.executionId,
+            leaseId: lease.leaseId,
+            state: "active",
+          }),
+        );
+      });
+    },
+
+    async recordAttempt(attempt, lease) {
+      assertSetupRetention(attempt.retention.maxAttempts, attempt.retention.days);
+      const persistedAttempt = redactSetupAttemptForPersistence(attempt);
+      const detail = encodeCanonicalJson(persistedAttempt);
+      if (Buffer.byteLength(detail, "utf8") > 1024 * 1024) {
+        throw new CapletsError("REQUEST_INVALID", "SQL setup attempt exceeds the 1 MiB limit.");
+      }
+      await mutate(async (transaction, authority) => {
+        await transaction.lock(
+          `setup-attempt:${identity.logicalHostId}:${attempt.projectFingerprint}:${attempt.capletId}`,
+        );
+        const now = await transaction.databaseTime();
+        if (lease) {
+          await transaction.lock(`setup-execution:${identity.logicalHostId}:${lease.executionId}`);
+          await requireSetupExecutionLease(transaction, identity, lease, now, authority);
+          if (
+            lease.projectFingerprint !== attempt.projectFingerprint ||
+            lease.capletId !== attempt.capletId ||
+            lease.contentHash !== attempt.contentHash ||
+            (lease.setupHash ?? undefined) !== (attempt.setupHash ?? undefined) ||
+            lease.targetKind !== attempt.targetKind
+          ) {
+            throw new CapletsError(
+              "SERVER_UNAVAILABLE",
+              "Setup execution reservation does not match the attempt.",
+            );
+          }
+        } else if (options.mutationAuthority) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Activated SQL setup attempts require a live execution reservation.",
+          );
+        }
+        await transaction.insert("setupAttempts", {
+          ...baseRow(
+            identity,
+            setupRecordId("setup-attempt-row", [
+              attempt.projectFingerprint,
+              attempt.capletId,
+              attempt.attemptId,
+            ]),
+            now,
+          ),
+          attemptId: attempt.attemptId,
+          projectFingerprint: attempt.projectFingerprint,
+          capletId: attempt.capletId,
+          contentHash: attempt.contentHash,
+          setupHash: attempt.setupHash ?? null,
+          targetKind: attempt.targetKind,
+          status: attempt.status,
+          detail,
+          finishedAt: attempt.finishedAt,
+        });
+        await pruneSetupAttempts(
+          transaction,
+          identity,
+          attempt.projectFingerprint,
+          attempt.capletId,
+          attempt.retention.maxAttempts,
+          attempt.retention.days,
+          now,
+        );
+      });
+    },
+
+    async listAttempts(projectFingerprint, capletId) {
+      return dialect.snapshotTransaction(async (transaction) =>
+        (
+          await transaction.select<SetupAttemptRow>(
+            "setupAttempts",
+            scope(identity, { projectFingerprint, capletId }),
+            [{ column: "createdAt" }],
+          )
+        ).map(setupAttemptFromRow),
+      );
+    },
+
+    async pruneAttempts(projectFingerprint, capletId) {
+      await mutate(async (transaction) => {
+        await transaction.lock(
+          `setup-attempt:${identity.logicalHostId}:${projectFingerprint}:${capletId}`,
+        );
+        const rows = await transaction.select<SetupAttemptRow>(
+          "setupAttempts",
+          scope(identity, { projectFingerprint, capletId }),
+          [{ column: "createdAt" }],
+        );
+        const latest = rows.at(-1);
+        const retention = latest
+          ? setupAttemptFromRow(latest).retention
+          : { maxAttempts: 3, days: 7 };
+        await pruneSetupAttempts(
+          transaction,
+          identity,
+          projectFingerprint,
+          capletId,
+          retention.maxAttempts,
+          retention.days,
+          await transaction.databaseTime(),
+        );
+      });
+    },
+    retention() {
+      return { maxAttempts: 3, days: 7 };
     },
 
     async authorize(
@@ -900,6 +1576,764 @@ export function createControlPlaneSecurityRepository(
     authorizeInTransaction,
   };
   return Object.freeze(repository);
+}
+
+const SQL_PENDING_OPERATOR_CODE_TTL_MS = 10 * 60_000;
+const SQL_PENDING_FLOW_TTL_MS = 24 * 60 * 60_000;
+const SQL_PENDING_POLL_INTERVAL_SECONDS = 5;
+const SQL_PENDING_MAX_ACTIVE_FLOWS = 64;
+const SQL_PENDING_MAX_ACTIVE_FLOWS_PER_SOURCE = 8;
+
+type SqlPendingLoginMetadata = Readonly<{
+  version: 1;
+  operatorCodeHash: string;
+  pendingCompletionHash: string;
+  pendingRefreshHash: string;
+  codeExpiresAt: string;
+  hostIdentity?: string | undefined;
+  clientFingerprint?: string | undefined;
+  sourceHint?: string | undefined;
+}>;
+
+type MutationAuthorityProvider =
+  | (() => ControlPlaneSecurityMutationAuthority | undefined)
+  | undefined;
+
+async function createSqlPendingLogin(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  authorityProvider: MutationAuthorityProvider,
+  input: CreatePendingLoginInput,
+): Promise<CreatedPendingLogin> {
+  const mutationAuthority = await beginSqlSecurityMutation(
+    transaction,
+    identity,
+    authorityProvider,
+  );
+  await transaction.lock(sqlPendingLoginSetLock(identity));
+  const now = await transaction.databaseTime();
+  const rows = await transaction.select<PendingApprovalRow>(
+    "pendingApprovals",
+    scope(identity, { purpose: "pending-login" }),
+  );
+  const active: Array<{ row: PendingApprovalRow; metadata: SqlPendingLoginMetadata }> = [];
+  for (const row of rows) {
+    if (row.state !== "pending" && row.state !== "approved") continue;
+    if (isExpired(row.expiresAt, now)) {
+      await transaction.update(
+        "pendingApprovals",
+        { state: "expired", consumedAt: now, updatedAt: now },
+        scope(identity, { approvalId: row.approvalId, state: row.state }),
+      );
+      continue;
+    }
+    active.push({ row, metadata: decryptSqlPendingLoginMetadata(row, identity, keyProvider) });
+  }
+  const sourceHint = boundedPendingValue(input.sourceHint, 256);
+  if (active.length >= SQL_PENDING_MAX_ACTIVE_FLOWS) {
+    throw new CapletsError("AUTH_FAILED", "Too many active pending logins.");
+  }
+  if (
+    sourceHint &&
+    active.filter(({ metadata }) => (metadata.sourceHint ?? "") === sourceHint).length >=
+      SQL_PENDING_MAX_ACTIVE_FLOWS_PER_SOURCE
+  ) {
+    throw new CapletsError("AUTH_FAILED", "Too many active pending logins for this source.");
+  }
+
+  const flowId = `rlogin_${randomToken(12)}`;
+  const operatorCode = `cap_login_${randomToken(5)}`;
+  const pendingRefreshSecret = `cap_pending_refresh_${randomToken(32)}`;
+  const pendingCompletionSecret = `cap_pending_complete_${randomToken(32)}`;
+  const codeExpiresAt = addMilliseconds(now, SQL_PENDING_OPERATOR_CODE_TTL_MS);
+  const flowExpiresAt = addMilliseconds(now, SQL_PENDING_FLOW_TTL_MS);
+  const clientLabel = boundedPendingValue(input.clientLabel, 120) ?? "Caplets Remote Client";
+  const metadata: SqlPendingLoginMetadata = {
+    version: 1,
+    operatorCodeHash: hashPendingSecret(operatorCode),
+    pendingCompletionHash: hashPendingSecret(pendingCompletionSecret),
+    pendingRefreshHash: hashPendingSecret(pendingRefreshSecret),
+    codeExpiresAt,
+    ...(input.hostIdentity ? { hostIdentity: boundedPendingValue(input.hostIdentity, 256) } : {}),
+    ...(input.clientFingerprint
+      ? { clientFingerprint: boundedPendingValue(input.clientFingerprint, 256) }
+      : {}),
+    ...(sourceHint ? { sourceHint } : {}),
+  };
+  const protectedMetadata = encryptSqlPendingLoginMetadata(flowId, metadata, identity, keyProvider);
+  await transaction.insert("pendingApprovals", {
+    ...baseRow(identity, `pending-login:${flowId}`, now),
+    approvalId: flowId,
+    clientId: null,
+    verifier: protectedMetadata.verifier,
+    purpose: "pending-login",
+    algorithm: protectedMetadata.algorithm,
+    verifierVersion: 1,
+    keyVersion: protectedMetadata.keyVersion,
+    requestedRole: input.requestedRole ?? "access",
+    grantedRole: null,
+    hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+    clientLabel,
+    actorId: null,
+    state: "pending",
+    expiresAt: flowExpiresAt,
+    consumedAt: null,
+  });
+  await guardSqlSecurityMutation(transaction, identity, mutationAuthority);
+  return {
+    flowId,
+    operatorCode,
+    operatorCodeFingerprint: pendingCodeFingerprint(operatorCode),
+    pendingRefreshSecret,
+    pendingCompletionSecret,
+    codeExpiresAt,
+    flowExpiresAt,
+    intervalSeconds: SQL_PENDING_POLL_INTERVAL_SECONDS,
+  };
+}
+
+async function pollSqlPendingLogin(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  authorityProvider: MutationAuthorityProvider,
+  input: PendingLoginPossessionInput,
+): Promise<Readonly<{ flowId: string; status: RemotePendingLoginStatus["status"] }>> {
+  await transaction.lock(sqlPendingLoginLock(input.flowId));
+  const { row, now } = await requireSqlPendingLogin(
+    transaction,
+    identity,
+    keyProvider,
+    input.flowId,
+    input.pendingCompletionSecret,
+  );
+  if ((row.state === "pending" || row.state === "approved") && isExpired(row.expiresAt, now)) {
+    const mutationAuthority = await beginSqlSecurityMutation(
+      transaction,
+      identity,
+      authorityProvider,
+    );
+    await transaction.update(
+      "pendingApprovals",
+      { state: "expired", consumedAt: now, updatedAt: now },
+      scope(identity, { approvalId: row.approvalId, state: row.state }),
+    );
+    await guardSqlSecurityMutation(transaction, identity, mutationAuthority);
+    return { flowId: row.approvalId, status: "expired" };
+  }
+  return { flowId: row.approvalId, status: sqlPendingState(row.state) };
+}
+
+async function refreshSqlPendingLogin(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  authorityProvider: MutationAuthorityProvider,
+  input: RefreshPendingLoginInput,
+): Promise<Omit<CreatedPendingLogin, "pendingCompletionSecret">> {
+  const mutationAuthority = await beginSqlSecurityMutation(
+    transaction,
+    identity,
+    authorityProvider,
+  );
+  await transaction.lock(sqlPendingLoginLock(input.flowId));
+  const { row, metadata, now } = await requireSqlPendingLogin(
+    transaction,
+    identity,
+    keyProvider,
+    input.flowId,
+    input.pendingCompletionSecret,
+  );
+  if (
+    row.state !== "pending" ||
+    isExpired(row.expiresAt, now) ||
+    !pendingSecretMatches(input.pendingRefreshSecret, metadata.pendingRefreshHash)
+  ) {
+    throw authFailed();
+  }
+  const operatorCode = `cap_login_${randomToken(5)}`;
+  const pendingRefreshSecret = `cap_pending_refresh_${randomToken(32)}`;
+  const codeExpiresAt = addMilliseconds(now, SQL_PENDING_OPERATOR_CODE_TTL_MS);
+  const nextMetadata: SqlPendingLoginMetadata = {
+    ...metadata,
+    operatorCodeHash: hashPendingSecret(operatorCode),
+    pendingRefreshHash: hashPendingSecret(pendingRefreshSecret),
+    codeExpiresAt,
+  };
+  const protectedMetadata = encryptSqlPendingLoginMetadata(
+    row.approvalId,
+    nextMetadata,
+    identity,
+    keyProvider,
+  );
+  const changed = await transaction.update(
+    "pendingApprovals",
+    {
+      verifier: protectedMetadata.verifier,
+      algorithm: protectedMetadata.algorithm,
+      keyVersion: protectedMetadata.keyVersion,
+      updatedAt: now,
+    },
+    scope(identity, { approvalId: row.approvalId, state: "pending" }),
+  );
+  if (changed !== 1) throw authFailed();
+  await guardSqlSecurityMutation(transaction, identity, mutationAuthority);
+  return {
+    flowId: row.approvalId,
+    operatorCode,
+    operatorCodeFingerprint: pendingCodeFingerprint(operatorCode),
+    pendingRefreshSecret,
+    codeExpiresAt,
+    flowExpiresAt: row.expiresAt,
+    intervalSeconds: SQL_PENDING_POLL_INTERVAL_SECONDS,
+  };
+}
+
+async function decideSqlPendingLoginByCode(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  authorityProvider: MutationAuthorityProvider,
+  input: ApprovePendingLoginInput,
+  decision: "approve" | "deny",
+): Promise<RemotePendingLoginStatus> {
+  const mutationAuthority = await beginSqlSecurityMutation(
+    transaction,
+    identity,
+    authorityProvider,
+  );
+  await transaction.lock(sqlPendingLoginSetLock(identity));
+  const now = await transaction.databaseTime();
+  const rows = await transaction.select<PendingApprovalRow>(
+    "pendingApprovals",
+    scope(identity, { purpose: "pending-login", state: "pending" }),
+    [{ column: "createdAt" }],
+    SQL_PENDING_MAX_ACTIVE_FLOWS,
+  );
+  const match = rows.find((row) => {
+    const metadata = decryptSqlPendingLoginMetadata(row, identity, keyProvider);
+    return pendingSecretMatches(input.operatorCode, metadata.operatorCodeHash);
+  });
+  if (!match) throw authFailed();
+  return decideSqlPendingLogin(
+    transaction,
+    identity,
+    keyProvider,
+    mutationAuthority,
+    match,
+    now,
+    decision,
+    true,
+    input.grantedRole,
+  );
+}
+
+async function decideSqlPendingLoginByFlow(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  authorityProvider: MutationAuthorityProvider,
+  input: DashboardPendingLoginActionInput,
+  decision: "approve" | "deny",
+): Promise<RemotePendingLoginStatus> {
+  const mutationAuthority = await beginSqlSecurityMutation(
+    transaction,
+    identity,
+    authorityProvider,
+  );
+  await transaction.lock(sqlPendingLoginLock(input.flowId));
+  const now = await transaction.databaseTime();
+  const [row] = await transaction.select<PendingApprovalRow>(
+    "pendingApprovals",
+    scope(identity, { approvalId: input.flowId, purpose: "pending-login" }),
+    [],
+    1,
+  );
+  if (!row) throw authFailed();
+  return decideSqlPendingLogin(
+    transaction,
+    identity,
+    keyProvider,
+    mutationAuthority,
+    row,
+    now,
+    decision,
+    false,
+    input.grantedRole,
+  );
+}
+
+async function decideSqlPendingLogin(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  mutationAuthority: ControlPlaneSecurityMutationAuthority,
+  row: PendingApprovalRow,
+  now: string,
+  decision: "approve" | "deny",
+  requireFreshOperatorCode: boolean,
+  grantedRole?: RemoteClientRole | undefined,
+): Promise<RemotePendingLoginStatus> {
+  const metadata = decryptSqlPendingLoginMetadata(row, identity, keyProvider);
+  if (
+    row.state !== "pending" ||
+    isExpired(row.expiresAt, now) ||
+    (requireFreshOperatorCode && isExpired(metadata.codeExpiresAt, now))
+  ) {
+    throw authFailed();
+  }
+  const role = grantedRole ?? row.requestedRole ?? "access";
+  if (role !== "access" && role !== "operator") throw authFailed();
+  const state = decision === "approve" ? "approved" : "denied";
+  const changed = await transaction.update(
+    "pendingApprovals",
+    {
+      state,
+      grantedRole: decision === "approve" ? role : null,
+      consumedAt: decision === "deny" ? now : null,
+      updatedAt: now,
+    },
+    scope(identity, { approvalId: row.approvalId, state: "pending" }),
+  );
+  if (changed !== 1) throw authFailed();
+  await guardSqlSecurityMutation(transaction, identity, mutationAuthority);
+  return sqlPendingLoginStatus(
+    {
+      ...row,
+      state,
+      grantedRole: decision === "approve" ? role : null,
+      consumedAt: decision === "deny" ? now : null,
+      updatedAt: now,
+    },
+    metadata,
+    now,
+  );
+}
+
+async function cancelSqlPendingLogin(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  authorityProvider: MutationAuthorityProvider,
+  input: PendingLoginPossessionInput,
+): Promise<Readonly<{ flowId: string; status: "cancelled" }>> {
+  const mutationAuthority = await beginSqlSecurityMutation(
+    transaction,
+    identity,
+    authorityProvider,
+  );
+  await transaction.lock(sqlPendingLoginLock(input.flowId));
+  const { row, now } = await requireSqlPendingLogin(
+    transaction,
+    identity,
+    keyProvider,
+    input.flowId,
+    input.pendingCompletionSecret,
+  );
+  if (row.state !== "pending" && row.state !== "approved") throw authFailed();
+  const changed = await transaction.update(
+    "pendingApprovals",
+    { state: "cancelled", consumedAt: now, updatedAt: now },
+    scope(identity, { approvalId: row.approvalId, state: row.state }),
+  );
+  if (changed !== 1) throw authFailed();
+  await guardSqlSecurityMutation(transaction, identity, mutationAuthority);
+  return { flowId: row.approvalId, status: "cancelled" };
+}
+
+async function completeSqlPendingLogin(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  authorityProvider: MutationAuthorityProvider,
+  input: CompletePendingLoginInput,
+  issueClient: (
+    transaction: ControlPlaneSqlTransaction,
+    input: Readonly<{
+      hostUrl: string;
+      clientLabel: string;
+      role: RemoteClientRole;
+      accessTtlMs?: number | undefined;
+      clientId?: string | undefined;
+      refreshFamilyId?: string | undefined;
+    }>,
+  ) => Promise<IssuedRemoteClientCredentials>,
+): Promise<IssuedRemoteClientCredentials> {
+  const mutationAuthority = await beginSqlSecurityMutation(
+    transaction,
+    identity,
+    authorityProvider,
+  );
+  await transaction.lock(sqlPendingLoginLock(input.flowId));
+  const { row, now } = await requireSqlPendingLogin(
+    transaction,
+    identity,
+    keyProvider,
+    input.flowId,
+    input.pendingCompletionSecret,
+  );
+  if (
+    row.state !== "approved" ||
+    isExpired(row.expiresAt, now) ||
+    row.hostUrl !== normalizeRemoteProfileHostUrl(input.hostUrl)
+  ) {
+    throw authFailed();
+  }
+  const role = row.grantedRole ?? row.requestedRole ?? "access";
+  if (
+    (role !== "access" && role !== "operator") ||
+    (input.requiredRole !== undefined && !roleAllows(role, input.requiredRole))
+  ) {
+    throw authFailed();
+  }
+  const credentials = await issueClient(transaction, {
+    hostUrl: row.hostUrl,
+    clientLabel: row.clientLabel ?? "Caplets Remote Client",
+    role,
+  });
+  const changed = await transaction.update(
+    "pendingApprovals",
+    { state: "exchanged", consumedAt: now, updatedAt: now },
+    scope(identity, { approvalId: row.approvalId, state: "approved" }),
+  );
+  if (changed !== 1) throw authFailed();
+  await guardSqlSecurityMutation(transaction, identity, mutationAuthority);
+  return credentials;
+}
+
+async function listSqlPendingLogins(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+): Promise<RemotePendingLoginStatus[]> {
+  const now = await transaction.databaseTime();
+  const rows = await transaction.select<PendingApprovalRow>(
+    "pendingApprovals",
+    scope(identity, { purpose: "pending-login" }),
+    [{ column: "createdAt", direction: "desc" }],
+    SQL_PENDING_MAX_ACTIVE_FLOWS,
+  );
+  return rows.map((row) =>
+    sqlPendingLoginStatus(row, decryptSqlPendingLoginMetadata(row, identity, keyProvider), now),
+  );
+}
+
+async function requireSqlPendingLogin(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+  flowId: string,
+  pendingCompletionSecret: string,
+): Promise<
+  Readonly<{
+    row: PendingApprovalRow;
+    metadata: SqlPendingLoginMetadata;
+    now: string;
+  }>
+> {
+  const now = await transaction.databaseTime();
+  const [row] = await transaction.select<PendingApprovalRow>(
+    "pendingApprovals",
+    scope(identity, { approvalId: flowId, purpose: "pending-login" }),
+    [],
+    1,
+  );
+  if (!row) throw authFailed();
+  const metadata = decryptSqlPendingLoginMetadata(row, identity, keyProvider);
+  if (!pendingSecretMatches(pendingCompletionSecret, metadata.pendingCompletionHash)) {
+    throw authFailed();
+  }
+  return { row, metadata, now };
+}
+
+async function beginSqlSecurityMutation(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  authorityProvider: (() => ControlPlaneSecurityMutationAuthority | undefined) | undefined,
+): Promise<ControlPlaneSecurityMutationAuthority> {
+  const authority = authorityProvider?.();
+  if (
+    !authority ||
+    !Number.isSafeInteger(authority.securityEpoch) ||
+    authority.securityEpoch < 0 ||
+    !Number.isSafeInteger(authority.writerFence.writerEpoch) ||
+    authority.writerFence.writerEpoch < 1 ||
+    !Number.isSafeInteger(authority.writerFence.authorityGeneration) ||
+    authority.writerFence.authorityGeneration < 0
+  ) {
+    throw unavailableSecurityMutation();
+  }
+  await checkSqlSecurityMutation(transaction, identity, authority);
+  return authority;
+}
+
+async function checkSqlSecurityMutation(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  authority: ControlPlaneSecurityMutationAuthority,
+): Promise<void> {
+  const now = await transaction.databaseTime();
+  const [[authorityRow], [security], [fence]] = await Promise.all([
+    transaction.select<ControlPlaneDatabaseRow & { generation: number; bindingState: string }>(
+      "authorityVersions",
+      scope(identity, {
+        generation: authority.writerFence.authorityGeneration,
+        bindingState: "active",
+      }),
+      [],
+      1,
+    ),
+    transaction.select<SecurityVersionRow>(
+      "securityVersions",
+      scope(identity),
+      [{ column: "epoch", direction: "desc" }],
+      1,
+    ),
+    transaction.select<WriterFenceRow>(
+      "writerFences",
+      scope(identity, {
+        leaseId: authority.writerFence.leaseId,
+        writerEpoch: authority.writerFence.writerEpoch,
+        authorityGeneration: authority.writerFence.authorityGeneration,
+        state: "active",
+      }),
+      [],
+      1,
+    ),
+  ]);
+  if (
+    !authorityRow ||
+    !security ||
+    Number(security.epoch) !== authority.securityEpoch ||
+    !fence ||
+    isExpired(fence.expiresAt, now)
+  ) {
+    throw unavailableSecurityMutation();
+  }
+}
+
+async function guardSqlSecurityMutation(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  authority: ControlPlaneSecurityMutationAuthority,
+): Promise<void> {
+  const [authorityRow] = await transaction.select<
+    ControlPlaneDatabaseRow & { generation: number; bindingState: string }
+  >(
+    "authorityVersions",
+    scope(identity, {
+      generation: authority.writerFence.authorityGeneration,
+      bindingState: "active",
+    }),
+    [],
+    1,
+  );
+  const [security] = await transaction.select<SecurityVersionRow>(
+    "securityVersions",
+    scope(identity),
+    [{ column: "epoch", direction: "desc" }],
+    1,
+  );
+  if (!authorityRow || !security || Number(security.epoch) !== authority.securityEpoch) {
+    throw unavailableSecurityMutation();
+  }
+  const changed = await transaction.finalWriterFenceGuard({
+    logicalHostId: identity.logicalHostId,
+    storeId: identity.storeId,
+    leaseId: authority.writerFence.leaseId,
+    writerEpoch: authority.writerFence.writerEpoch,
+    authorityGeneration: authority.writerFence.authorityGeneration,
+  });
+  if (changed !== 1) throw unavailableSecurityMutation();
+}
+
+function encryptSqlPendingLoginMetadata(
+  flowId: string,
+  metadata: SqlPendingLoginMetadata,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+): Readonly<{ verifier: Buffer; algorithm: string; keyVersion: number }> {
+  const encrypted = encryptSqlVaultValue({
+    plaintext: encodeCanonicalJson(metadata),
+    provider: keyProvider,
+    logicalHostId: identity.logicalHostId,
+    storeId: identity.storeId,
+    referenceName: `pending-login:${flowId}`,
+  });
+  return {
+    verifier: Buffer.from(
+      encodeCanonicalJson({
+        version: 1,
+        nonce: encrypted.nonce.toString("base64url"),
+        ciphertext: encrypted.ciphertext.toString("base64url"),
+        authTag: encrypted.authTag.toString("base64url"),
+        valueBytes: encrypted.valueBytes,
+      }),
+      "utf8",
+    ),
+    algorithm: "AES-256-GCM-BUNDLE",
+    keyVersion: encrypted.keyVersion,
+  };
+}
+
+function decryptSqlPendingLoginMetadata(
+  row: PendingApprovalRow,
+  identity: ControlPlaneStoreIdentity,
+  keyProvider: FileV1KeyProvider,
+): SqlPendingLoginMetadata {
+  if (row.algorithm !== "AES-256-GCM-BUNDLE" || row.verifierVersion !== 1) {
+    throw authFailed();
+  }
+  const decoded = decodeCanonicalJson(bytes(row.verifier).toString("utf8"));
+  if (!isRecord(decoded)) throw authFailed();
+  const plaintext = decryptSqlVaultValue(
+    {
+      algorithm: "AES-256-GCM",
+      keyVersion: row.keyVersion,
+      aadVersion: 1,
+      nonce: Buffer.from(requiredMetadataString(decoded, "nonce"), "base64url"),
+      ciphertext: Buffer.from(requiredMetadataString(decoded, "ciphertext"), "base64url"),
+      authTag: Buffer.from(requiredMetadataString(decoded, "authTag"), "base64url"),
+      valueBytes: requiredMetadataNumber(decoded, "valueBytes"),
+    },
+    {
+      provider: keyProvider,
+      logicalHostId: identity.logicalHostId,
+      storeId: identity.storeId,
+      referenceName: `pending-login:${row.approvalId}`,
+    },
+  );
+  const metadata = decodeCanonicalJson(plaintext);
+  if (
+    !isRecord(metadata) ||
+    metadata.version !== 1 ||
+    typeof metadata.operatorCodeHash !== "string" ||
+    typeof metadata.pendingCompletionHash !== "string" ||
+    typeof metadata.pendingRefreshHash !== "string" ||
+    typeof metadata.codeExpiresAt !== "string"
+  ) {
+    throw authFailed();
+  }
+  return {
+    version: 1,
+    operatorCodeHash: metadata.operatorCodeHash,
+    pendingCompletionHash: metadata.pendingCompletionHash,
+    pendingRefreshHash: metadata.pendingRefreshHash,
+    codeExpiresAt: metadata.codeExpiresAt,
+    ...(typeof metadata.hostIdentity === "string" ? { hostIdentity: metadata.hostIdentity } : {}),
+    ...(typeof metadata.clientFingerprint === "string"
+      ? { clientFingerprint: metadata.clientFingerprint }
+      : {}),
+    ...(typeof metadata.sourceHint === "string" ? { sourceHint: metadata.sourceHint } : {}),
+  };
+}
+
+function sqlPendingLoginStatus(
+  row: PendingApprovalRow,
+  metadata: SqlPendingLoginMetadata,
+  now: string,
+): RemotePendingLoginStatus {
+  const status =
+    (row.state === "pending" || row.state === "approved") && isExpired(row.expiresAt, now)
+      ? "expired"
+      : sqlPendingState(row.state);
+  const transitionAt = row.consumedAt ?? row.updatedAt;
+  return {
+    flowId: row.approvalId,
+    hostUrl: row.hostUrl ?? "",
+    ...(metadata.hostIdentity ? { hostIdentity: metadata.hostIdentity } : {}),
+    status,
+    requestedRole: row.requestedRole ?? "access",
+    ...(row.grantedRole ? { grantedRole: row.grantedRole } : {}),
+    operatorCodeFingerprint: metadata.operatorCodeHash.slice(0, 8),
+    clientLabel: row.clientLabel ?? "Caplets Remote Client",
+    ...(metadata.clientFingerprint ? { clientFingerprint: metadata.clientFingerprint } : {}),
+    ...(metadata.sourceHint ? { sourceHint: metadata.sourceHint } : {}),
+    createdAt: row.createdAt,
+    codeExpiresAt: metadata.codeExpiresAt,
+    flowExpiresAt: row.expiresAt,
+    ...(status === "approved" ? { approvedAt: row.updatedAt } : {}),
+    ...(status === "denied" ? { deniedAt: transitionAt } : {}),
+    ...(status === "cancelled" ? { cancelledAt: transitionAt } : {}),
+    ...(status === "exchanged" ? { exchangedAt: transitionAt } : {}),
+  };
+}
+
+function approvedSqlPendingLogin(status: RemotePendingLoginStatus): ApprovedPendingLogin {
+  if (status.status !== "approved" || !status.grantedRole) throw authFailed();
+  return {
+    flowId: status.flowId,
+    status: "approved",
+    clientLabel: status.clientLabel,
+    requestedRole: status.requestedRole,
+    grantedRole: status.grantedRole,
+    ...(status.clientFingerprint ? { clientFingerprint: status.clientFingerprint } : {}),
+    ...(status.sourceHint ? { sourceHint: status.sourceHint } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sqlPendingState(state: string): RemotePendingLoginStatus["status"] {
+  if (
+    state === "pending" ||
+    state === "approved" ||
+    state === "denied" ||
+    state === "cancelled" ||
+    state === "expired" ||
+    state === "exchanged"
+  ) {
+    return state;
+  }
+  throw authFailed();
+}
+
+function sqlPendingLoginSetLock(identity: ControlPlaneStoreIdentity): string {
+  return `pending-logins:${identity.logicalHostId}:${identity.storeId}`;
+}
+
+function sqlPendingLoginLock(flowId: string): string {
+  return `pending-login:${flowId}`;
+}
+
+function hashPendingSecret(secret: string): string {
+  return createHash("sha256").update(secret).digest("base64url");
+}
+
+function pendingSecretMatches(secret: string, expected: string): boolean {
+  return safeEqual(Buffer.from(hashPendingSecret(secret)), Buffer.from(expected));
+}
+
+function pendingCodeFingerprint(code: string): string {
+  return hashPendingSecret(code).slice(0, 8);
+}
+
+function boundedPendingValue(value: string | undefined, maxLength: number): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, maxLength);
+}
+
+function requiredMetadataString(value: Readonly<Record<string, unknown>>, key: string): string {
+  const item = value[key];
+  if (typeof item !== "string") throw authFailed();
+  return item;
+}
+
+function requiredMetadataNumber(value: Readonly<Record<string, unknown>>, key: string): number {
+  const item = value[key];
+  if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 0) throw authFailed();
+  return item;
+}
+
+function unavailableSecurityMutation(): CapletsError {
+  return new CapletsError(
+    "SERVER_UNAVAILABLE",
+    "Control-plane live authority changed before the security mutation committed.",
+  );
 }
 
 export function createControlPlaneActivityMaintenanceRepository(
@@ -1011,11 +2445,19 @@ type CredentialRow = ControlPlaneDatabaseRow & {
 type PendingApprovalRow = ControlPlaneDatabaseRow & {
   approvalId: string;
   verifier: Buffer;
+  purpose: string;
   algorithm: string;
   verifierVersion: number;
   keyVersion: number;
-  state: RemotePendingApprovalResult["state"];
+  requestedRole: RemoteClientRole | null;
+  grantedRole: RemoteClientRole | null;
+  hostUrl: string | null;
+  clientLabel: string | null;
+  state: RemotePendingApprovalResult["state"] | RemotePendingLoginStatus["status"];
   expiresAt: string;
+  consumedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 type DashboardSessionRow = ControlPlaneDatabaseRow & {
   sessionId: string;
@@ -1071,6 +2513,40 @@ type VaultGrantRow = ControlPlaneDatabaseRow & {
   createdAt: string;
   updatedAt: string;
 };
+type SetupExecutionRow = ControlPlaneDatabaseRow & {
+  executionId: string;
+  projectFingerprint: string;
+  capletId: string;
+  contentHash: string;
+  setupHash: string | null;
+  targetKind: SetupAttempt["targetKind"];
+  leaseId: string;
+  reservedAt: string;
+  expiresAt: string;
+  state: string;
+};
+type SetupApprovalRow = ControlPlaneDatabaseRow & {
+  approvalId: string;
+  projectFingerprint: string;
+  capletId: string;
+  contentHash: string;
+  targetKind: SetupApproval["targetKind"];
+  actor: SetupApproval["actor"];
+  approvedAt: string;
+};
+type SetupAttemptRow = ControlPlaneDatabaseRow & {
+  id: string;
+  createdAt: string;
+  attemptId: string;
+  projectFingerprint: string;
+  capletId: string;
+  contentHash: string;
+  setupHash: string | null;
+  targetKind: SetupAttempt["targetKind"];
+  status: SetupAttempt["status"];
+  detail: string;
+  finishedAt: string;
+};
 type SecurityVersionRow = ControlPlaneDatabaseRow & {
   epoch: number;
   minimumKeyVersion: number;
@@ -1081,6 +2557,7 @@ type WriterFenceRow = ControlPlaneDatabaseRow & {
   writerEpoch: number;
   authorityGeneration: number;
   expiresAt: string;
+  state: string;
 };
 type RetentionRow = ControlPlaneDatabaseRow & { purgeWatermark: number };
 
@@ -1141,6 +2618,225 @@ function scope(
   equals: Readonly<Record<string, unknown>> = {},
 ) {
   return { equals: { logicalHostId: identity.logicalHostId, ...equals } } as const;
+}
+function setupRecordId(prefix: string, parts: readonly string[]): string {
+  const digest = createHash("sha256").update(encodeCanonicalJson(parts), "utf8").digest("hex");
+  return `${prefix}:${digest}`;
+}
+
+async function insertActivityInTransaction(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  input: AppendDashboardActivityInput,
+  now: string,
+): Promise<DashboardActivityEntry> {
+  const entry = sanitizeDashboardActivityEntry({
+    id: opaqueId("activity"),
+    createdAt: now,
+    actorClientId: input.actorClientId,
+    action: input.action,
+    outcome: input.outcome ?? "success",
+    target: input.target,
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+  });
+  await transaction.insert("operatorActivities", {
+    ...baseRow(identity, `operator-activity:${entry.id}`, now),
+    activityId: entry.id,
+    actorId: entry.actorClientId,
+    action: entry.action,
+    outcome: entry.outcome,
+    target: encodeCanonicalJson(entry.target),
+    redactedDetail: encodeCanonicalJson(entry.metadata ?? {}),
+    occurredAt: now,
+    expiresAt: addMilliseconds(now, ACTIVITY_RETENTION_MS),
+  });
+  return entry;
+}
+
+function setupApprovalFromRow(row: SetupApprovalRow): SetupApproval {
+  return {
+    projectFingerprint: row.projectFingerprint,
+    capletId: row.capletId,
+    contentHash: row.contentHash,
+    targetKind: row.targetKind,
+    actor: row.actor,
+    approvedAt: row.approvedAt,
+  };
+}
+
+async function currentSetupExecutionToken(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  authority: ControlPlaneSecurityMutationAuthority | undefined,
+): Promise<
+  Readonly<{
+    authorityGeneration: number;
+    effectiveGeneration: number;
+    securityEpoch: number;
+  }>
+> {
+  await transaction.lock(`effective-generation:${identity.logicalHostId}:${identity.storeId}`);
+  await transaction.lock(`authority-generation:${identity.logicalHostId}:${identity.storeId}`);
+  await transaction.lock(securityEpochLock(identity));
+  const [[authorityRow], [effectiveRow], [securityRow]] = await Promise.all([
+    transaction.select<ControlPlaneDatabaseRow & { generation: number; bindingState: string }>(
+      "authorityVersions",
+      scope(identity, { bindingState: "active" }),
+      [{ column: "generation", direction: "desc" }],
+      1,
+    ),
+    transaction.select<ControlPlaneDatabaseRow & { generation: number }>(
+      "effectiveVersions",
+      scope(identity),
+      [{ column: "generation", direction: "desc" }],
+      1,
+    ),
+    transaction.select<SecurityVersionRow>(
+      "securityVersions",
+      scope(identity),
+      [{ column: "epoch", direction: "desc" }],
+      1,
+    ),
+  ]);
+  if (!authorityRow || !effectiveRow || !securityRow) throw unavailableSecurityMutation();
+  const token = {
+    authorityGeneration: Number(authorityRow.generation),
+    effectiveGeneration: Number(effectiveRow.generation),
+    securityEpoch: Number(securityRow.epoch),
+  };
+  if (
+    authority &&
+    (token.authorityGeneration !== authority.writerFence.authorityGeneration ||
+      token.securityEpoch !== authority.securityEpoch)
+  ) {
+    throw unavailableSecurityMutation();
+  }
+  return token;
+}
+
+async function requireSetupExecutionLease(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  lease: SetupExecutionLease,
+  now: string,
+  authority: ControlPlaneSecurityMutationAuthority | undefined,
+): Promise<SetupExecutionRow> {
+  const [row] = await transaction.select<SetupExecutionRow>(
+    "setupExecutions",
+    scope(identity, {
+      executionId: lease.executionId,
+      leaseId: lease.leaseId,
+      state: "active",
+    }),
+    [],
+    1,
+  );
+  const token = await currentSetupExecutionToken(transaction, identity, authority);
+  if (
+    !row ||
+    Date.parse(row.expiresAt) <= Date.parse(now) ||
+    row.projectFingerprint !== lease.projectFingerprint ||
+    row.capletId !== lease.capletId ||
+    row.contentHash !== lease.contentHash ||
+    (row.setupHash ?? undefined) !== (lease.setupHash ?? undefined) ||
+    row.targetKind !== lease.targetKind ||
+    (authority && !lease.snapshotToken) ||
+    (lease.snapshotToken &&
+      (lease.snapshotToken.authorityGeneration !== token.authorityGeneration ||
+        lease.snapshotToken.effectiveGeneration !== token.effectiveGeneration ||
+        lease.snapshotToken.securityEpoch !== token.securityEpoch)) ||
+    Number(row.authorityVersion) !== token.authorityGeneration ||
+    Number(row.effectiveVersion) !== token.effectiveGeneration ||
+    Number(row.securityVersion) !== token.securityEpoch
+  ) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Setup execution reservation is expired, revoked, or stale.",
+    );
+  }
+  return row;
+}
+
+function redactSetupAttemptForPersistence(attempt: SetupAttempt): SetupAttempt {
+  return {
+    ...attempt,
+    argv: attempt.argv.map(() => "[REDACTED]"),
+    stdout: attempt.stdout.length > 0 ? "[REDACTED]" : "",
+    stderr: attempt.stderr.length > 0 ? "[REDACTED]" : "",
+    redacted: true,
+  };
+}
+
+function assertSetupLeaseTtl(ttlMs: number): void {
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 24 * 60 * 60_000) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Setup execution lease duration is outside safe bounds.",
+    );
+  }
+}
+
+function setupAttemptFromRow(row: SetupAttemptRow): SetupAttempt {
+  const decoded = decodeCanonicalJson(row.detail);
+  if (
+    !isRecord(decoded) ||
+    decoded.attemptId !== row.attemptId ||
+    decoded.projectFingerprint !== row.projectFingerprint ||
+    decoded.capletId !== row.capletId ||
+    decoded.contentHash !== row.contentHash ||
+    decoded.targetKind !== row.targetKind ||
+    decoded.status !== row.status ||
+    decoded.finishedAt !== row.finishedAt ||
+    typeof decoded.redacted !== "boolean" ||
+    !isRecord(decoded.retention) ||
+    !Number.isSafeInteger(decoded.retention.maxAttempts) ||
+    !Number.isSafeInteger(decoded.retention.days)
+  ) {
+    throw new CapletsError("CONFIG_INVALID", "SQL setup attempt state is malformed.");
+  }
+  assertSetupRetention(decoded.retention.maxAttempts as number, decoded.retention.days as number);
+  return decoded as SetupAttempt;
+}
+
+function assertSetupRetention(maxAttempts: number, days: number): void {
+  if (
+    !Number.isSafeInteger(maxAttempts) ||
+    maxAttempts < 1 ||
+    maxAttempts > 100 ||
+    !Number.isSafeInteger(days) ||
+    days < 1 ||
+    days > 365
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Setup attempt retention is outside safe bounds.");
+  }
+}
+
+async function pruneSetupAttempts(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  projectFingerprint: string,
+  capletId: string,
+  maxAttempts: number,
+  days: number,
+  now: string,
+): Promise<void> {
+  assertSetupRetention(maxAttempts, days);
+  const rows = await transaction.select<SetupAttemptRow>(
+    "setupAttempts",
+    scope(identity, { projectFingerprint, capletId }),
+    [{ column: "createdAt" }],
+  );
+  const cutoff = Date.parse(now) - days * 24 * 60 * 60_000;
+  const retainedIds = new Set(
+    rows
+      .filter((row) => Date.parse(row.createdAt) >= cutoff)
+      .slice(-maxAttempts)
+      .map((row) => row.id),
+  );
+  for (const row of rows) {
+    if (retainedIds.has(row.id)) continue;
+    await transaction.delete("setupAttempts", scope(identity, { id: row.id }));
+  }
 }
 
 function opaqueId(prefix: string): string {
@@ -1335,9 +3031,17 @@ function validatedClient(row: ClientRow, lastUsedAt: string): ValidatedRemoteCli
 }
 
 function pendingApprovalResult(row: PendingApprovalRow): RemotePendingApprovalResult {
+  if (
+    row.state !== "pending" &&
+    row.state !== "approved" &&
+    row.state !== "cancelled" &&
+    row.state !== "expired" &&
+    row.state !== "invalidated"
+  ) {
+    throw authFailed();
+  }
   return { approvalId: row.approvalId, state: row.state, expiresAt: row.expiresAt };
 }
-
 function parseSessionCookie(
   cookieValue: string,
 ): { sessionId: string; secret: string } | undefined {

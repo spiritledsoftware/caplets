@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   allocateCurrentHostOperationBinding,
   createCurrentHostOperationIndeterminateOutcome,
@@ -107,6 +107,156 @@ describe("Current Host administration operations", () => {
     } finally {
       await setup.engine.close();
     }
+  });
+
+  it("writes activated Vault operations only through the injected SQL repository", async () => {
+    const setup = testOperations();
+    const setWithGrant = vi.fn(async ({ key, value }: { key: string; value: string }) => ({
+      key,
+      present: true as const,
+      valueBytes: Buffer.byteLength(value),
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    }));
+    const loadRuntimeSnapshot = vi.fn(async () => ({
+      caplets: {
+        status: {
+          id: "status",
+          owner: "sql",
+          source: { kind: "sql", path: "" },
+          effective: true,
+          runtimeStatus: "effective",
+          shadowChain: [],
+        },
+      },
+    }));
+    const operations = createCurrentHostOperations({
+      engine: setup.engine,
+      activityLog: setup.activity,
+      remoteCredentialStore: setup.store,
+      vaultRepository: {
+        setWithGrant,
+        getStatus: vi.fn(),
+        listValues: vi.fn(async () => []),
+        revealValue: vi.fn(),
+        deleteValue: vi.fn(),
+        grantAccess: vi.fn(),
+        listAccess: vi.fn(async () => []),
+        revokeAccess: vi.fn(),
+        resolveGrantedValue: vi.fn(),
+      },
+      management: {
+        storage: {} as never,
+        loadRuntimeSnapshot: loadRuntimeSnapshot as never,
+      },
+      version: "test-version",
+    });
+
+    await expect(
+      operations.execute(setup.principal, {
+        kind: "vault_set",
+        name: "SQL_ONLY",
+        value: "sql-authority",
+        grant: "status",
+        referenceName: "API_TOKEN",
+      }),
+    ).resolves.toMatchObject({
+      kind: "vault_set",
+      status: { key: "SQL_ONLY", present: true },
+    });
+    expect(setWithGrant).toHaveBeenCalledOnce();
+    expect(loadRuntimeSnapshot).toHaveBeenCalledOnce();
+    expect(setWithGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        grant: expect.objectContaining({
+          capletId: "status",
+          origin: { kind: "sql", path: "" },
+        }),
+      }),
+      { actorClientId: setup.principal.clientId },
+    );
+    await setup.engine.close();
+  });
+
+  it("does not fall back to filesystem Caplet origins when SQL authority is unavailable", async () => {
+    const setup = testOperations();
+    const setWithGrant = vi.fn();
+    const operations = createCurrentHostOperations({
+      engine: setup.engine,
+      activityLog: setup.activity,
+      vaultRepository: {
+        setWithGrant,
+        getStatus: vi.fn(),
+        listValues: vi.fn(async () => []),
+        revealValue: vi.fn(),
+        deleteValue: vi.fn(),
+        grantAccess: vi.fn(),
+        listAccess: vi.fn(async () => []),
+        revokeAccess: vi.fn(),
+        resolveGrantedValue: vi.fn(),
+      },
+      management: {
+        storage: {} as never,
+        loadRuntimeSnapshot: vi.fn(async () => {
+          throw new CapletsError("SERVER_UNAVAILABLE", "SQL authority unavailable");
+        }),
+      },
+      version: "test-version",
+    });
+
+    await expect(
+      operations.execute(setup.principal, {
+        kind: "vault_set",
+        name: "SQL_ONLY",
+        value: "must-not-persist",
+        grant: "status",
+      }),
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    expect(setWithGrant).not.toHaveBeenCalled();
+    await setup.engine.close();
+  });
+
+  it("prefers injected SQL client authority over a legacy credential store", async () => {
+    const setup = testOperations();
+    const legacyRevoke = vi.spyOn(setup.store, "revokeClient");
+    const sqlRevoke = vi.fn(async () => true);
+    const operations = createCurrentHostOperations({
+      engine: setup.engine,
+      activityLog: setup.activity,
+      remoteCredentialStore: setup.store,
+      remoteCredentialRepository: {
+        issueClient: vi.fn(),
+        validateAccessToken: vi.fn(),
+        refreshClientCredentials: vi.fn(),
+        revokeClient: sqlRevoke,
+        changeClientRole: vi.fn(),
+        createPendingApproval: vi.fn(),
+        resolvePendingApproval: vi.fn(),
+        invalidatePendingApprovalsForMigration: vi.fn(),
+        listClients: vi.fn(async () => [
+          {
+            clientId: setup.principal.clientId,
+            clientLabel: setup.principal.clientLabel ?? "SQL client",
+            hostUrl: setup.principal.hostUrl,
+            role: "operator" as const,
+            createdAt: new Date(0).toISOString(),
+          },
+        ]),
+      },
+      version: "test-version",
+    });
+
+    await expect(
+      operations.execute(setup.principal, {
+        kind: "client_revoke",
+        clientId: setup.principal.clientId,
+      }),
+    ).resolves.toMatchObject({ kind: "client_revoke", revoked: true, sessionEnded: true });
+    expect(sqlRevoke).toHaveBeenCalledWith(setup.principal.clientId, {
+      actorClientId: setup.principal.clientId,
+    });
+    expect(legacyRevoke).not.toHaveBeenCalled();
+    await setup.engine.close();
   });
 
   it("shares catalog installation and update policy with actor-attributed activity", async () => {
@@ -755,7 +905,7 @@ function testOperations() {
       },
     }),
   );
-  const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+  const engine = CapletsEngine.unactivatedForTests({ configPath, projectConfigPath, watch: false });
   const store = new RemoteServerCredentialStore({ dir: join(root, "remote-state") });
   const operator = issueOperator(store, "Direct Operator");
   const activity = new DashboardActivityLog({ dir: join(root, "activity") });

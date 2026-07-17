@@ -10,6 +10,7 @@ import {
 import {
   assertLoginTarget,
   listAuthRows,
+  listLocalAuthRowsFromRepository,
   logoutAuthResult,
   refreshAuthResult,
   resolveAuthTarget,
@@ -18,13 +19,19 @@ import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { listCaplets } from "./../cli/inspection";
 import { loadConfigWithSources, vaultBootstrapResolver, vaultResolverForAuthDir } from "../config";
-import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
+import {
+  CapletsEngine,
+  createCapletsEngine,
+  createInternalCapletsEngine,
+  type CapletsEngineOptions,
+} from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import type {
   ControlPlaneRuntimeSnapshot,
   ControlPlaneRuntimeSnapshotLoader,
 } from "../control-plane/snapshot";
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
+import type { AuthTokenRepository } from "../auth/store";
 import type { RemoteAuthFlowStore } from "./auth-flow";
 import {
   parseCurrentHostManagementMutation,
@@ -43,6 +50,7 @@ export type RemoteControlDispatchContext = CapletsEngineOptions & {
   authFlowStore?: RemoteAuthFlowStore;
   controlCallbackBaseUrl?: string;
   internalRuntimeSnapshotLoader?: ControlPlaneRuntimeSnapshotLoader | undefined;
+  engine?: CapletsEngine | undefined;
 };
 
 type AddKind =
@@ -107,8 +115,19 @@ async function dispatch(
   assertObject(request, "remote control request");
   assertObject(request.arguments, "remote control request arguments");
   let initializedRuntime: ControlPlaneRuntimeSnapshot | undefined;
-  const initializeRuntime = async () => {
-    if (initializedRuntime || !context.internalRuntimeSnapshotLoader) return initializedRuntime;
+  const initializeRuntime = async (
+    liveOperation?: Parameters<CapletsEngine["requireLiveControlPlane"]>[0],
+  ) => {
+    if (context.engine) {
+      const snapshot = context.engine.currentControlPlaneRuntimeSnapshot();
+      if (snapshot && liveOperation) {
+        await context.engine.requireLiveControlPlane(liveOperation);
+      }
+      return snapshot;
+    }
+    if (initializedRuntime || !context.internalRuntimeSnapshotLoader) {
+      return initializedRuntime;
+    }
     initializedRuntime = await context.internalRuntimeSnapshotLoader.initialize({
       vaultResolver: vaultResolverForAuthDir(context.authDir),
     });
@@ -123,9 +142,9 @@ async function dispatch(
   }
 
   if (request.command === "list") {
-    await initializeRuntime();
+    const runtime = await initializeRuntime("admin");
     const config =
-      initializedRuntime?.configWithSources ??
+      runtime?.configWithSources ??
       loadConfigWithSources(context.configPath, context.projectConfigPath, {
         vaultResolver: vaultBootstrapResolver,
       });
@@ -142,7 +161,7 @@ async function dispatch(
     try {
       return await engine.execute(caplet, toolRequest);
     } finally {
-      await engine.close();
+      if (engine !== context.engine) await engine.close();
     }
   }
 
@@ -198,11 +217,19 @@ async function dispatch(
     try {
       return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
     } finally {
-      await engine.close();
+      if (engine !== context.engine) await engine.close();
     }
   }
 
   if (request.command === "auth_list") {
+    const runtime = await initializeRuntime("auth");
+    const repository = activatedAuthRepository(context, runtime);
+    if (runtime && repository) {
+      return listLocalAuthRowsFromRepository(
+        { effectiveConfig: runtime.configWithSources },
+        repository,
+      );
+    }
     return listAuthRows({
       ...optionalProp("configPath", context.configPath),
       ...optionalProp("authDir", context.authDir),
@@ -226,24 +253,41 @@ async function dispatch(
   }
 
   if (request.command === "auth_logout") {
+    const runtime = await initializeRuntime("auth");
+    const repository = activatedAuthRepository(context, runtime);
     return logoutAuthResult(requiredString(request.arguments, "server"), {
       ...optionalProp("configPath", context.configPath),
       ...optionalProp("authDir", context.authDir),
+      ...(runtime ? { config: runtime.config } : {}),
+      ...(repository ? { tokenRepository: repository } : {}),
     });
   }
 
   if (request.command === "auth_refresh") {
+    const runtime = await initializeRuntime("auth");
+    const repository = activatedAuthRepository(context, runtime);
     return refreshAuthResult(requiredString(request.arguments, "server"), {
       ...optionalProp("configPath", context.configPath),
       ...optionalProp("authDir", context.authDir),
+      ...(runtime ? { config: runtime.config } : {}),
+      ...(repository ? { tokenRepository: repository } : {}),
     });
   }
 
   if (request.command === "auth_login_start") {
-    return startRemoteAuthLogin(requiredString(request.arguments, "server"), context);
+    const runtime = await initializeRuntime("auth");
+    return startRemoteAuthLogin(
+      requiredString(request.arguments, "server"),
+      context,
+      runtime,
+      activatedAuthRepository(context, runtime),
+    );
   }
 
   if (request.command === "auth_login_complete") {
+    if (context.engine?.currentControlPlaneRuntimeSnapshot()) {
+      await context.engine.requireLiveControlPlane("auth");
+    }
     return completeRemoteAuthLogin(
       requiredString(request.arguments, "flowId"),
       requiredString(request.arguments, "callbackUrl"),
@@ -261,8 +305,9 @@ async function createDispatchEngine(
   context: RemoteControlDispatchContext,
   initializedRuntime: ControlPlaneRuntimeSnapshot | undefined,
 ): Promise<CapletsEngine> {
-  const { internalRuntimeSnapshotLoader, ...engineOptions } = context;
-  if (!internalRuntimeSnapshotLoader) return new CapletsEngine(engineOptions);
+  const { engine, internalRuntimeSnapshotLoader, ...engineOptions } = context;
+  if (engine) return engine;
+  if (!internalRuntimeSnapshotLoader) return createCapletsEngine(engineOptions);
   if (!initializedRuntime) {
     throw new CapletsError("SERVER_UNAVAILABLE", "Control-plane runtime was not initialized");
   }
@@ -403,13 +448,33 @@ async function dispatchCurrentHostVault(
   }
 }
 
-async function startRemoteAuthLogin(serverId: string, context: RemoteControlDispatchContext) {
+function activatedAuthRepository(
+  context: RemoteControlDispatchContext,
+  runtime: ControlPlaneRuntimeSnapshot | undefined,
+): AuthTokenRepository | undefined {
+  if (!runtime) return undefined;
+  const repository = context.engine?.controlPlaneSecurityRepository();
+  if (repository) return repository;
+  throw new CapletsError(
+    "SERVER_UNAVAILABLE",
+    "Activated SQL credential authority is unavailable.",
+  );
+}
+
+async function startRemoteAuthLogin(
+  serverId: string,
+  context: RemoteControlDispatchContext,
+  runtime: ControlPlaneRuntimeSnapshot | undefined,
+  tokenRepository: AuthTokenRepository | undefined,
+) {
   if (!context.authFlowStore || !context.controlCallbackBaseUrl) {
     throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
   }
-  const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
-    vaultResolver: vaultResolverForAuthDir(context.authDir),
-  }).config;
+  const config =
+    runtime?.config ??
+    loadConfigWithSources(context.configPath, context.projectConfigPath, {
+      vaultResolver: vaultResolverForAuthDir(context.authDir),
+    }).config;
   const target = await resolveAuthTarget(serverId, config, context.authDir);
   assertLoginTarget(target, serverId);
   const flowId = randomUUID();
@@ -422,10 +487,12 @@ async function startRemoteAuthLogin(serverId: string, context: RemoteControlDisp
       ? await startOAuthFlow(target, {
           redirectUri,
           ...optionalProp("authDir", context.authDir),
+          ...(tokenRepository ? { tokenRepository } : {}),
         })
       : await startGenericOAuthFlow(target, {
           redirectUri,
           ...optionalProp("authDir", context.authDir),
+          ...(tokenRepository ? { tokenRepository } : {}),
         });
   if (!started.authorizationUrl) {
     return { server: serverId, authenticated: true };

@@ -15,6 +15,7 @@ import {
   isTokenBundleExpired,
   readTokenBundle,
   writeTokenBundle,
+  type AuthTokenRepository,
   type StoredOAuthTokenBundle,
 } from "./auth/store";
 import type { CapletServerConfig } from "./config";
@@ -69,11 +70,12 @@ export function staticRemoteHeaders(server: CapletServerConfig): Record<string, 
 export async function oauthHeaders(
   server: CapletServerConfig,
   authDir?: string,
+  tokenRepository?: AuthTokenRepository,
 ): Promise<Record<string, string>> {
   if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
     return {};
   }
-  let bundle = readTokenBundle(server.server, authDir);
+  let bundle = await loadTokenBundle(server.server, authDir, tokenRepository);
   if (!bundle?.accessToken && !bundle?.refreshToken) {
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
       server: server.server,
@@ -103,6 +105,7 @@ export async function oauthHeaders(
           bundle.protectedResourceOrigin ?? (server.url ? new URL(server.url).origin : undefined),
       },
       authDir,
+      tokenRepository,
     );
   }
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
@@ -118,12 +121,13 @@ export async function oauthHeaders(
 export async function genericOAuthHeaders(
   target: GenericAuthTarget,
   authDir?: string,
+  tokenRepository?: AuthTokenRepository,
 ): Promise<Record<string, string>> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     return {};
   }
   const authConfig = target.auth as OAuthLikeAuthConfig;
-  let bundle = readTokenBundle(target.server, authDir);
+  let bundle = await loadTokenBundle(target.server, authDir, tokenRepository);
   if (!bundle?.accessToken && !bundle?.refreshToken) {
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${target.server}`, {
       server: target.server,
@@ -134,7 +138,7 @@ export async function genericOAuthHeaders(
   }
   assertTokenBundleMatchesTarget(bundle, target, authConfig);
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
-    bundle = await refreshGenericOAuthBundle(target, authConfig, bundle, authDir);
+    bundle = await refreshGenericOAuthBundle(target, authConfig, bundle, authDir, tokenRepository);
   }
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
@@ -150,6 +154,7 @@ export async function genericOAuthHeaders(
 export async function refreshOAuthTokenBundle(
   target: CapletServerConfig | GenericAuthTarget,
   authDir?: string,
+  tokenRepository?: AuthTokenRepository,
 ): Promise<StoredOAuthTokenBundle> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     throw new CapletsError("AUTH_REFRESH_FAILED", `${target.server} is not configured for OAuth`, {
@@ -158,7 +163,7 @@ export async function refreshOAuthTokenBundle(
   }
   const genericTarget = authRefreshTarget(target);
   const authConfig = target.auth as OAuthLikeAuthConfig;
-  const bundle = readTokenBundle(target.server, authDir);
+  const bundle = await loadTokenBundle(target.server, authDir, tokenRepository);
   if (!bundle?.refreshToken) {
     throw new CapletsError(
       "AUTH_REFRESH_FAILED",
@@ -181,7 +186,7 @@ export async function refreshOAuthTokenBundle(
       bundle.protectedResourceOrigin ?? protectedResourceOrigin(genericTarget, authConfig),
   }) as StoredOAuthTokenBundle;
   assertTokenBundleMatchesTarget(normalized, genericTarget, authConfig);
-  return refreshGenericOAuthBundle(genericTarget, authConfig, normalized, authDir);
+  return refreshGenericOAuthBundle(genericTarget, authConfig, normalized, authDir, tokenRepository);
 }
 
 function authRefreshTarget(target: CapletServerConfig | GenericAuthTarget): GenericAuthTarget {
@@ -209,6 +214,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     private readonly onRedirect: (url: URL) => void,
     private readonly authDir?: string,
     private readonly options: { ignoreLegacyDynamicTokens?: boolean } = {},
+    private readonly tokenRepository?: AuthTokenRepository,
   ) {
     if (
       (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
@@ -240,7 +246,10 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return this.stateValue;
   }
 
-  clientInformation(): OAuthClientInformationMixed | undefined {
+  clientInformation():
+    | OAuthClientInformationMixed
+    | undefined
+    | Promise<OAuthClientInformationMixed | undefined> {
     if (this.clientInfo) {
       return this.clientInfo;
     }
@@ -254,38 +263,46 @@ export class FileOAuthProvider implements OAuthClientProvider {
         ...(this.server.auth.clientSecret ? { client_secret: this.server.auth.clientSecret } : {}),
       };
     }
-    const bundle = readTokenBundle(this.server.server, this.authDir);
-    if (bundle?.clientId) {
-      return {
-        ...this.clientMetadata,
-        client_id: bundle.clientId,
-        ...(bundle.clientSecret ? { client_secret: bundle.clientSecret } : {}),
-      };
+    const resolveBundle = (bundle: StoredOAuthTokenBundle | undefined) =>
+      bundle?.clientId
+        ? {
+            ...this.clientMetadata,
+            client_id: bundle.clientId,
+            ...(bundle.clientSecret ? { client_secret: bundle.clientSecret } : {}),
+          }
+        : undefined;
+    if (this.tokenRepository) {
+      return this.tokenRepository.readTokenBundle(this.server.server).then(resolveBundle);
     }
-    return undefined;
+    return resolveBundle(readTokenBundle(this.server.server, this.authDir));
   }
 
   saveClientInformation(clientInformation: OAuthClientInformationMixed): void {
     this.clientInfo = clientInformation;
   }
 
-  tokens(): OAuthTokens | undefined {
-    const bundle = readTokenBundle(this.server.server, this.authDir);
-    if (!bundle) {
-      return undefined;
+  tokens(): OAuthTokens | undefined | Promise<OAuthTokens | undefined> {
+    const resolveBundle = (bundle: StoredOAuthTokenBundle | undefined) => {
+      if (!bundle) {
+        return undefined;
+      }
+      if (this.options.ignoreLegacyDynamicTokens && this.isLegacyDynamicTokenBundle(bundle)) {
+        return undefined;
+      }
+      return stripUndefined({
+        access_token: bundle.accessToken,
+        token_type: bundle.tokenType,
+        refresh_token: bundle.refreshToken,
+        expires_in: bundle.expiresAt
+          ? Math.max(0, Math.floor((Date.parse(bundle.expiresAt) - Date.now()) / 1000))
+          : undefined,
+        scope: bundle.scope,
+      }) as OAuthTokens;
+    };
+    if (this.tokenRepository) {
+      return this.tokenRepository.readTokenBundle(this.server.server).then(resolveBundle);
     }
-    if (this.options.ignoreLegacyDynamicTokens && this.isLegacyDynamicTokenBundle(bundle)) {
-      return undefined;
-    }
-    return stripUndefined({
-      access_token: bundle.accessToken,
-      token_type: bundle.tokenType,
-      refresh_token: bundle.refreshToken,
-      expires_in: bundle.expiresAt
-        ? Math.max(0, Math.floor((Date.parse(bundle.expiresAt) - Date.now()) / 1000))
-        : undefined,
-      scope: bundle.scope,
-    }) as OAuthTokens;
+    return resolveBundle(readTokenBundle(this.server.server, this.authDir));
   }
 
   private isLegacyDynamicTokenBundle(bundle: StoredOAuthTokenBundle): boolean {
@@ -298,10 +315,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
     );
   }
 
-  saveTokens(tokens: OAuthTokens): void {
-    const clientInformation = this.clientInformation();
-    writeTokenBundle(
-      stripUndefined({
+  saveTokens(tokens: OAuthTokens): void | Promise<void> {
+    const save = (clientInformation: OAuthClientInformationMixed | undefined) => {
+      const bundle = stripUndefined({
         server: this.server.server,
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token,
@@ -312,9 +328,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
         scope: tokens.scope,
         clientId: clientInformation?.client_id,
         clientSecret: clientInformation?.client_secret,
-      }),
-      this.authDir,
-    );
+      });
+      if (this.tokenRepository) return this.tokenRepository.writeTokenBundle(bundle);
+      writeTokenBundle(bundle, this.authDir);
+    };
+    const clientInformation = this.clientInformation();
+    return clientInformation instanceof Promise
+      ? clientInformation.then(save)
+      : save(clientInformation);
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
@@ -333,7 +354,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     if (this.server.auth?.type !== "oauth2" && this.server.auth?.type !== "oidc") {
       return;
     }
-    const clientInformation = this.clientInformation();
+    const clientInformation = await this.clientInformation();
     const clientId = clientInformation?.client_id;
     const clientSecret = clientInformation?.client_secret;
     if (clientId) {
@@ -353,7 +374,12 @@ export type StartedOAuthFlow = {
 
 export async function startOAuthFlow(
   server: CapletServerConfig,
-  options: { redirectUri: string; authDir?: string; print?: (line: string) => void },
+  options: {
+    redirectUri: string;
+    authDir?: string;
+    print?: (line: string) => void;
+    tokenRepository?: AuthTokenRepository;
+  },
 ): Promise<StartedOAuthFlow> {
   if (
     server.transport === "stdio" ||
@@ -376,6 +402,7 @@ export async function startOAuthFlow(
     },
     options.authDir,
     { ignoreLegacyDynamicTokens: true },
+    options.tokenRepository,
   );
   const scope = scopesFor(server.auth);
   try {
@@ -422,6 +449,7 @@ export async function runOAuthFlow(
     readManualInput?: () => Promise<string | undefined>;
     open?: (url: string) => Promise<void>;
     print?: (line: string) => void;
+    tokenRepository?: AuthTokenRepository;
   } = {},
 ): Promise<AuthResult> {
   let callbackCode: string | undefined;
@@ -443,6 +471,7 @@ export async function runOAuthFlow(
       redirectUri: callback.redirectUri,
       ...(options.authDir ? { authDir: options.authDir } : {}),
       ...(options.print ? { print: options.print } : {}),
+      ...(options.tokenRepository ? { tokenRepository: options.tokenRepository } : {}),
     });
     if (!started.authorizationUrl) {
       return "AUTHORIZED";
@@ -531,7 +560,12 @@ type AuthorizationServerMetadata = {
 
 export async function startGenericOAuthFlow(
   target: GenericAuthTarget,
-  options: { redirectUri: string; authDir?: string; print?: (line: string) => void },
+  options: {
+    redirectUri: string;
+    authDir?: string;
+    print?: (line: string) => void;
+    tokenRepository?: AuthTokenRepository;
+  },
 ): Promise<StartedOAuthFlow> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
@@ -601,7 +635,7 @@ export async function startGenericOAuthFlow(
       const idToken = asString(tokenResponse.id_token);
       const idClaims = parseJwtPayload(idToken);
       validateOidcToken(authConfig, metadata, idToken, idClaims, client.clientId);
-      writeTokenBundle(
+      await persistTokenBundle(
         stripUndefined({
           server: target.server,
           authType: authConfig.type,
@@ -627,6 +661,7 @@ export async function startGenericOAuthFlow(
           }) as Record<string, unknown>,
         }),
         options.authDir,
+        options.tokenRepository,
       );
     },
   };
@@ -641,6 +676,7 @@ export async function runGenericOAuthFlow(
     readManualInput?: () => Promise<string | undefined>;
     open?: (url: string) => Promise<void>;
     print?: (line: string) => void;
+    tokenRepository?: AuthTokenRepository;
   } = {},
 ): Promise<StoredOAuthTokenBundle> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
@@ -761,7 +797,7 @@ export async function runGenericOAuthFlow(
         dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
       }) as Record<string, unknown>,
     });
-    writeTokenBundle(bundle, options.authDir);
+    await persistTokenBundle(bundle, options.authDir, options.tokenRepository);
     return bundle;
   } finally {
     await callback.close();
@@ -1014,6 +1050,7 @@ async function refreshGenericOAuthBundle(
   authConfig: OAuthLikeAuthConfig,
   bundle: StoredOAuthTokenBundle,
   authDir?: string,
+  tokenRepository?: AuthTokenRepository,
 ): Promise<StoredOAuthTokenBundle> {
   if (!bundle.refreshToken) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
@@ -1110,8 +1147,30 @@ async function refreshGenericOAuthBundle(
     clientSecret,
     protectedResourceOrigin: protectedResourceOrigin(target, authConfig),
   });
-  writeTokenBundle(refreshed, authDir);
+  await persistTokenBundle(refreshed, authDir, tokenRepository);
   return refreshed;
+}
+
+async function loadTokenBundle(
+  server: string,
+  authDir?: string,
+  tokenRepository?: AuthTokenRepository,
+): Promise<StoredOAuthTokenBundle | undefined> {
+  return tokenRepository
+    ? tokenRepository.readTokenBundle(server)
+    : readTokenBundle(server, authDir);
+}
+
+async function persistTokenBundle(
+  bundle: StoredOAuthTokenBundle,
+  authDir?: string,
+  tokenRepository?: AuthTokenRepository,
+): Promise<void> {
+  if (tokenRepository) {
+    await tokenRepository.writeTokenBundle(bundle);
+    return;
+  }
+  writeTokenBundle(bundle, authDir);
 }
 
 function refreshedExpiresAt(expiresIn: unknown, fallback?: string): string | undefined {

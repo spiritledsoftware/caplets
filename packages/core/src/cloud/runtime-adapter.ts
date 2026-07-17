@@ -1,9 +1,20 @@
-import { runtimeFingerprintForConfig, type CapletConfig } from "../config";
-import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
+import { runtimeFingerprintForConfig, type CapletConfig, type CapletSetupConfig } from "../config";
+import {
+  CapletsEngine,
+  createCapletsEngine,
+  createInternalCapletsEngine,
+  type CapletsEngineOptions,
+} from "../engine";
 import { CapletsError } from "../errors";
 import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
+import type {
+  ActivatedControlPlaneRead,
+  ControlPlaneLiveOperationClass,
+  ControlPlaneStaleReadClass,
+} from "../control-plane/service";
+import type { ControlPlaneHealthSummary } from "../control-plane/types";
 import { capletSetupContentHash } from "../setup/hash";
-import { LocalSetupStore } from "../setup/local-store";
+import type { SetupSnapshotToken, SetupStore } from "../setup/local-store";
 import { runCapletSetup } from "../setup/runner";
 import type { SetupActor, SetupAttempt, SetupPlan } from "../setup/types";
 
@@ -14,11 +25,11 @@ export type CloudRuntimeAdapterOptions = {
   runtimeId: string;
   sandboxId?: string;
   executionKind: "cloud" | "local-fallback";
-  setupStore?: LocalSetupStore;
 };
 
 export type CloudRuntimeAdapter = {
   listTools(): Promise<unknown>;
+  health(): Promise<ControlPlaneHealthSummary | undefined>;
   callTool(name: string, args: unknown): Promise<unknown>;
   checkBackend(capletId: string): Promise<unknown>;
   setupPlan(capletId: string): Promise<SetupPlan>;
@@ -28,46 +39,85 @@ export type CloudRuntimeAdapter = {
   ): Promise<SetupAttempt[]>;
   close(): Promise<void>;
 };
+type InternalCloudRuntimeActivation = Readonly<{
+  requireLive?: ((operation: ControlPlaneLiveOperationClass) => Promise<unknown>) | undefined;
+  read?: ((operation: ControlPlaneStaleReadClass) => ActivatedControlPlaneRead) | undefined;
+  security?:
+    | import("../control-plane/security/repository").ControlPlaneSecurityRepository
+    | undefined;
+}>;
 
-export function createCloudRuntimeAdapter(
+export async function createCloudRuntimeAdapter(
   options: CloudRuntimeAdapterOptions,
-): CloudRuntimeAdapter {
-  return new DefaultCloudRuntimeAdapter(options);
+): Promise<CloudRuntimeAdapter> {
+  const engine = await createCapletsEngine(cloudEngineOptions(options));
+  return new DefaultCloudRuntimeAdapter(options, engine);
 }
 
 export async function createInternalCloudRuntimeAdapter(
   options: CloudRuntimeAdapterOptions,
   loader: ControlPlaneRuntimeSnapshotLoader,
+  activation: InternalCloudRuntimeActivation = {},
 ): Promise<CloudRuntimeAdapter> {
-  const engine = await createInternalCapletsEngine(cloudEngineOptions(options), loader);
+  const engine = await createInternalCapletsEngine(
+    cloudEngineOptions(options),
+    loader,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    activation.requireLive,
+    activation.security,
+    undefined,
+    undefined,
+    activation.read,
+  );
   return new DefaultCloudRuntimeAdapter(options, engine);
 }
 
 class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
   private readonly engine: CapletsEngine;
-  private readonly setupStore: LocalSetupStore;
 
   constructor(
     private readonly options: CloudRuntimeAdapterOptions,
-    engine?: CapletsEngine,
+    engine: CapletsEngine,
   ) {
-    this.engine = engine ?? new CapletsEngine(cloudEngineOptions(options));
-    this.setupStore = options.setupStore ?? new LocalSetupStore();
+    this.engine = engine;
+  }
+
+  health(): Promise<ControlPlaneHealthSummary | undefined> {
+    return this.engine.controlPlaneHealth();
   }
 
   async listTools(): Promise<unknown> {
+    const availability = this.engine.controlPlaneRead("runtime-metadata-read");
+    const metadata = {
+      execution: this.executionMetadata(),
+      ...(availability
+        ? {
+            availability: {
+              stale: availability.stale,
+              ...(availability.staleAgeMs === undefined
+                ? {}
+                : { staleAgeMs: availability.staleAgeMs }),
+            },
+          }
+        : {}),
+    };
     return {
       tools: this.enabledCaplets().map((caplet) => ({
         name: caplet.server,
         title: caplet.name,
         description: caplet.description,
         inputSchema: { type: "object", additionalProperties: true },
-        _meta: { caplets: { execution: this.executionMetadata() } },
+        _meta: { caplets: metadata },
       })),
+      _meta: { caplets: metadata },
     };
   }
 
   async callTool(name: string, args: unknown): Promise<unknown> {
+    await this.engine.requireLiveControlPlane("mutation");
     const request =
       isRecord(args) && typeof args.operation === "string"
         ? args
@@ -77,6 +127,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
   }
 
   async checkBackend(capletId: string): Promise<unknown> {
+    await this.engine.requireLiveControlPlane("mutation");
     return annotateExecution(
       await this.engine.execute(capletId, { operation: "check" }),
       this.executionMetadata(),
@@ -84,46 +135,20 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
   }
 
   async setupPlan(capletId: string): Promise<SetupPlan> {
-    const caplet = this.requireCaplet(capletId);
-    const runtimeFingerprint = runtimeFingerprintForConfig(this.engine.currentConfig())?.caplets[
-      capletId
-    ];
-    const contentHash = capletSetupContentHash(runtimeFingerprint);
-    const projectFingerprint = "hosted";
-    const targetKind = "hosted_sandbox";
-    const approved =
-      runtimeFingerprint?.persistenceEligible === false
-        ? false
-        : Boolean(
-            await this.setupStore.getApproval(
-              projectFingerprint,
-              capletId,
-              contentHash,
-              targetKind,
-            ),
-          );
-    return {
-      projectFingerprint,
-      capletId,
-      name: caplet.name,
-      contentHash,
-      targetKind,
-      setup: caplet.setup ?? {},
-      approved,
-      persistenceEligible: runtimeFingerprint?.persistenceEligible ?? true,
-      commands: caplet.setup?.commands ?? [],
-      verify: caplet.setup?.verify ?? [],
-    };
+    await this.engine.requireLiveControlPlane("admin");
+    return (await this.prepareSetup(capletId)).plan;
   }
 
   async runSetup(
     capletId: string,
     input: { approved: boolean; actor: SetupActor },
   ): Promise<SetupAttempt[]> {
-    const plan = await this.setupPlan(capletId);
-    const persistenceEligible = plan.persistenceEligible;
-    if (input.approved && !plan.approved && persistenceEligible) {
-      await this.setupStore.approve({
+    await this.engine.requireLiveControlPlane("mutation");
+    const prepared = await this.prepareSetup(capletId);
+    const { plan } = prepared;
+    const setupStore = this.requireSetupStore();
+    if (input.approved && !plan.approved && plan.persistenceEligible) {
+      await setupStore.approve({
         projectFingerprint: plan.projectFingerprint,
         capletId,
         contentHash: plan.contentHash,
@@ -136,12 +161,75 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
       capletId,
       projectFingerprint: plan.projectFingerprint,
       contentHash: plan.contentHash,
+      setupHash: plan.contentHash,
+      snapshotToken: prepared.snapshotToken,
       targetKind: plan.targetKind,
-      setup: plan.setup,
+      setup: prepared.setup,
       actor: input.actor,
       approved: input.approved || plan.approved,
-      store: this.setupStore,
+      store: setupStore,
     });
+  }
+
+  private async prepareSetup(capletId: string): Promise<{
+    plan: SetupPlan;
+    setup: CapletSetupConfig;
+    snapshotToken: SetupSnapshotToken;
+  }> {
+    const snapshot = this.engine.currentControlPlaneRuntimeSnapshot();
+    if (!snapshot) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Cloud setup configuration is unavailable until SQL activation completes.",
+      );
+    }
+    const caplet = Object.values({
+      ...snapshot.config.mcpServers,
+      ...snapshot.config.openapiEndpoints,
+      ...snapshot.config.googleDiscoveryApis,
+      ...snapshot.config.graphqlEndpoints,
+      ...snapshot.config.httpApis,
+      ...snapshot.config.cliTools,
+      ...snapshot.config.capletSets,
+    }).find((entry) => entry.server === capletId);
+    if (!caplet || caplet.disabled) {
+      throw new CapletsError("CONFIG_INVALID", `Unknown Caplet ID: ${capletId}`);
+    }
+    const runtimeFingerprint =
+      snapshot.configWithSources.runtimeFingerprint?.caplets[capletId] ??
+      runtimeFingerprintForConfig(snapshot.config).caplets[capletId];
+    const contentHash = capletSetupContentHash(runtimeFingerprint);
+    const setupStore = this.requireSetupStore();
+    const projectFingerprint = "hosted";
+    const targetKind = "hosted_sandbox";
+    const approved =
+      runtimeFingerprint?.persistenceEligible === false
+        ? false
+        : Boolean(
+            await setupStore.getApproval(projectFingerprint, capletId, contentHash, targetKind),
+          );
+    const setup = caplet.setup ?? {};
+    const publicSetup = redactSetupConfig(setup);
+    return {
+      plan: {
+        projectFingerprint,
+        capletId,
+        name: caplet.name,
+        contentHash,
+        targetKind,
+        setup: publicSetup,
+        approved,
+        persistenceEligible: runtimeFingerprint?.persistenceEligible ?? true,
+        commands: publicSetup.commands ?? [],
+        verify: publicSetup.verify ?? [],
+      },
+      setup,
+      snapshotToken: {
+        authorityGeneration: snapshot.authorityGeneration,
+        effectiveGeneration: snapshot.effectiveGeneration,
+        securityEpoch: snapshot.securityEpoch,
+      },
+    };
   }
 
   async close(): Promise<void> {
@@ -160,10 +248,15 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     }).filter((caplet) => !caplet.disabled);
   }
 
-  private requireCaplet(capletId: string): CapletConfig {
-    const caplet = this.enabledCaplets().find((entry) => entry.server === capletId);
-    if (!caplet) throw new CapletsError("CONFIG_INVALID", `Unknown Caplet ID: ${capletId}`);
-    return caplet;
+  private requireSetupStore(): SetupStore {
+    const repository = this.engine.controlPlaneSecurityRepository();
+    if (!repository) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Cloud setup persistence is unavailable until SQL activation completes.",
+      );
+    }
+    return repository;
   }
 
   private executionMetadata() {
@@ -201,6 +294,22 @@ function annotateExecution(result: unknown, execution: Record<string, unknown>):
         execution,
       },
     },
+  };
+}
+
+function redactSetupConfig(setup: CapletSetupConfig): CapletSetupConfig {
+  const redactCommands = (commands: CapletSetupConfig["commands"]) =>
+    commands?.map((command) => ({
+      ...command,
+      ...(command.args ? { args: command.args.map(() => "[REDACTED]") } : {}),
+      ...(command.env
+        ? { env: Object.fromEntries(Object.keys(command.env).map((key) => [key, "[REDACTED]"])) }
+        : {}),
+    }));
+  return {
+    ...setup,
+    ...(setup.commands ? { commands: redactCommands(setup.commands) } : {}),
+    ...(setup.verify ? { verify: redactCommands(setup.verify) } : {}),
   };
 }
 

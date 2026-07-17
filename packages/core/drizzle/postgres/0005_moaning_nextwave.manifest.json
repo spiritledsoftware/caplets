@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0005_moaning_nextwave",
+  "order": 5,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0005_moaning_nextwave.sql",
+    "sha256": "62358230eec9fb7282cf5803bddf080080562427276685a807f15af70a1e3c71"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.35.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 3
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0005_moaning_nextwave.down.sql",
+      "sha256": "7dcd295f9ef95e74aa33bcf299aa8ae567e9c713193373e970bb53b79b7f18fc"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "a62468a119bf9202eafb2f933187d348d8b48b131242c8b22046e76c724f848f"
+}

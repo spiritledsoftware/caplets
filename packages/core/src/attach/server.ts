@@ -1,5 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
-import { createNativeCapletsService } from "../native/service";
+import { createActivatedNativeCapletsService } from "../native/service";
 import { serveHttpWithSessionFactory } from "../serve/http";
 import { NativeCapletsMcpSession } from "../serve/native-session";
 import type { AttachServeOptions } from "./options";
@@ -13,7 +13,7 @@ export async function attachResolvedCaplets(
   io: AttachServeIo = {},
 ): Promise<void> {
   if (options.transport === "stdio") {
-    const service = createAttachNativeService(options, io);
+    const service = await createAttachNativeService(options, io);
     const session = new NativeCapletsMcpSession(service);
     await service.reload();
     await session.connect(new StdioServerTransport());
@@ -23,7 +23,7 @@ export async function attachResolvedCaplets(
   await serveHttpWithSessionFactory(
     options,
     async () => {
-      const service = createAttachNativeService(options, io);
+      const service = await createAttachNativeService(options, io);
       await service.reload();
       return new NativeCapletsMcpSession(service);
     },
@@ -31,8 +31,8 @@ export async function attachResolvedCaplets(
   );
 }
 
-function createAttachNativeService(options: AttachServeOptions, io: AttachServeIo) {
-  return createNativeCapletsService({
+async function createAttachNativeService(options: AttachServeOptions, io: AttachServeIo) {
+  return createActivatedNativeCapletsService({
     mode: options.selection.kind === "hosted_cloud" ? "cloud" : "remote",
     configPath: options.configPath,
     projectRoot: options.projectRoot,

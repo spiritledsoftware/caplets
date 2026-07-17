@@ -16,7 +16,10 @@ import type {
   CanonicalCapletRelationalProjection,
 } from "../src/control-plane/caplets/model";
 import { encodePortableCaplet } from "../src/control-plane/caplets/portable-codec";
-import { createControlPlaneRepository } from "../src/control-plane/caplets/repository";
+import {
+  createControlPlaneRepository,
+  writeCanonicalCapletRows,
+} from "../src/control-plane/caplets/repository";
 import {
   bootstrapSqliteFileV1,
   loadFileV1KeyProvider,
@@ -52,6 +55,11 @@ const operationNamespace = "namespace_01J00000000000000000000";
 const assetRoot = resolve(import.meta.dirname, "..", "drizzle");
 const require = createRequire(import.meta.url);
 const postgresAdminUrl = process.env.CAPLETS_TEST_POSTGRES_URL;
+const POSTGRES_DISTRIBUTED_COMPATIBILITY = Object.freeze({
+  providerCommitment: "1".repeat(64),
+  keyCanaryCommitment: "2".repeat(64),
+  capabilities: ["ordered-tuple-polling", "writer-fence-v1", "complete-snapshot-v1"] as const,
+});
 const roots: string[] = [];
 const openDialects: SqliteControlPlaneDialect[] = [];
 
@@ -208,16 +216,36 @@ describe("transactional Caplet and host-setting repository", () => {
     const node = await first.store.registerNode({
       nodeId: "node-1",
       bootstrapFingerprint: "fingerprint-1",
+      effectiveRuntimeFingerprint: "fingerprint-1",
       compatibility: {
         binaryVersion: "0.34.1",
         schemaVersion: 3,
         keyVersion: 1,
         manifestVersion: 1,
       },
+      appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
       ttlMs: 60_000,
     });
     expect(node.status).toBe("ready");
     if (node.status !== "ready") throw new Error("fixture node did not become ready");
+    await expect(
+      first.store.acknowledgeNode({
+        nodeId: "node-1",
+        bootstrapFingerprint: "fingerprint-1",
+        effectiveRuntimeFingerprint: "fingerprint-1",
+        appliedToken: initial,
+        writerFence: { ...node.writerFence, leaseId: "writer:node-other" },
+      }),
+    ).resolves.toEqual({ status: "rejected", reason: "lease-revoked" });
+    await expect(
+      first.store.acknowledgeNode({
+        nodeId: "node-1",
+        bootstrapFingerprint: "fingerprint-1",
+        effectiveRuntimeFingerprint: "fingerprint-1",
+        appliedToken: initial,
+        writerFence: node.writerFence,
+      }),
+    ).resolves.toEqual({ status: "applied", appliedNodes: 1 });
 
     const capletInput = {
       binding: binding("operation-caplet", "caplet-corpus-v1"),
@@ -276,6 +304,245 @@ describe("transactional Caplet and host-setting repository", () => {
     expect(afterRestart.caplets[0]?.aggregate.portable).toEqual(aggregate.portable);
     expect(afterRestart.caplets[0]?.projection).toEqual(projection);
     expect(afterRestart.hostSettings).toEqual([hostSetting]);
+  });
+
+  it("serializes runtime fingerprint activation by logical host and store", async () => {
+    const fixture = await createSqliteFixture();
+    const opened = await openRepository(fixture.storage);
+    const locks: string[] = [];
+    const dialect = new Proxy(opened.dialect, {
+      get(target, property, receiver) {
+        if (property !== "runtimeTransaction") return Reflect.get(target, property, receiver);
+        return async (work: Parameters<typeof target.runtimeTransaction>[0]) =>
+          target.runtimeTransaction((transaction) =>
+            work({
+              ...transaction,
+              async lock(serialKey) {
+                locks.push(serialKey);
+                await transaction.lock(serialKey);
+              },
+            }),
+          );
+      },
+    });
+    const store = createControlPlaneRepository({
+      identity: {
+        logicalHostId,
+        storeId,
+        operationNamespace,
+      },
+      dialect,
+    });
+
+    await store.initialize();
+    await store.initializeActivationFingerprint("f".repeat(64));
+
+    expect(locks).toContain(`runtime-activation:${logicalHostId}:${storeId}`);
+  });
+
+  it("purges and drains historical fingerprint cohorts with bounded set-based writes", async () => {
+    const fixture = await createSqliteFixture();
+    const opened = await openRepository(fixture.storage);
+    const token = await opened.store.initialize();
+    const currentFingerprint = "a".repeat(64);
+    const nextFingerprint = "b".repeat(64);
+    const compatibility = {
+      binaryVersion: "0.34.1",
+      schemaVersion: 3,
+      keyVersion: 1,
+      manifestVersion: 1,
+    } as const;
+    await opened.store.initializeActivationFingerprint(currentFingerprint);
+    await opened.store.stageNextFingerprint(nextFingerprint);
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        opened.store.registerNode({
+          nodeId: `purged-next-${index}`,
+          bootstrapFingerprint: nextFingerprint,
+          effectiveRuntimeFingerprint: nextFingerprint,
+          compatibility,
+          appliedToken: token,
+          ttlMs: 60_000,
+        }),
+      ),
+    );
+
+    let nodeDeletes = 0;
+    let nodeUpdates = 0;
+    const boundedDialect = new Proxy(opened.dialect, {
+      get(target, property, receiver) {
+        if (property !== "runtimeTransaction") return Reflect.get(target, property, receiver);
+        return async (work: Parameters<typeof target.runtimeTransaction>[0]) =>
+          target.runtimeTransaction((transaction) =>
+            work({
+              ...transaction,
+              async delete(table, filter) {
+                if (table === "clusterNodeLeases") nodeDeletes += 1;
+                return transaction.delete(table, filter);
+              },
+              async update(table, values, filter) {
+                if (table === "clusterNodeLeases") nodeUpdates += 1;
+                return transaction.update(table, values, filter);
+              },
+            }),
+          );
+      },
+    });
+    const boundedStore = createControlPlaneRepository({ identity, dialect: boundedDialect });
+    await boundedStore.abortNextFingerprint(nextFingerprint);
+    expect(nodeDeletes).toBe(1);
+    expect(
+      opened.dialect.query<{ count: number }>(
+        "SELECT count(*) AS count FROM cp_cluster_node_lease WHERE bootstrap_fingerprint = ?",
+        [nextFingerprint],
+      ),
+    ).toEqual([{ count: 0 }]);
+
+    await opened.store.stageNextFingerprint(nextFingerprint);
+    await Promise.all([
+      ...Array.from({ length: 8 }, (_, index) =>
+        opened.store.registerNode({
+          nodeId: `drained-current-${index}`,
+          bootstrapFingerprint: currentFingerprint,
+          effectiveRuntimeFingerprint: currentFingerprint,
+          compatibility,
+          appliedToken: token,
+          ttlMs: 60_000,
+        }),
+      ),
+      ...Array.from({ length: 8 }, (_, index) =>
+        opened.store.registerNode({
+          nodeId: `admitted-next-${index}`,
+          bootstrapFingerprint: nextFingerprint,
+          effectiveRuntimeFingerprint: nextFingerprint,
+          compatibility,
+          appliedToken: token,
+          ttlMs: 60_000,
+        }),
+      ),
+    ]);
+    nodeUpdates = 0;
+    await boundedStore.activateNextFingerprint(nextFingerprint);
+    expect(nodeUpdates).toBe(2);
+    expect(
+      opened.dialect.query<{ state: string; count: number }>(
+        "SELECT state, count(*) AS count FROM cp_cluster_node_lease GROUP BY state ORDER BY state",
+      ),
+    ).toEqual([
+      { state: "activation-drained", count: 8 },
+      { state: "catching-up", count: 8 },
+    ]);
+  });
+
+  it("rolls back fingerprint activation when its final DB-time fence expires while paused", async () => {
+    const fixture = await createSqliteFixture();
+    const opened = await openRepository(fixture.storage);
+    const token = await opened.store.initialize();
+    const currentFingerprint = "c".repeat(64);
+    const nextFingerprint = "d".repeat(64);
+    await opened.store.initializeActivationFingerprint(currentFingerprint);
+    const registration = await opened.store.registerNode({
+      nodeId: "activation-fence-node",
+      bootstrapFingerprint: currentFingerprint,
+      effectiveRuntimeFingerprint: currentFingerprint,
+      compatibility: {
+        binaryVersion: "0.34.1",
+        schemaVersion: 3,
+        keyVersion: 1,
+        manifestVersion: 1,
+      },
+      appliedToken: token,
+      ttlMs: 60_000,
+    });
+    if (registration.status !== "ready") {
+      throw new Error(`activation fence node was ${registration.status}`);
+    }
+    await opened.store.acknowledgeNode({
+      nodeId: "activation-fence-node",
+      bootstrapFingerprint: currentFingerprint,
+      effectiveRuntimeFingerprint: currentFingerprint,
+      appliedToken: token,
+      writerFence: registration.writerFence,
+    });
+    await opened.store.stageNextFingerprint(nextFingerprint);
+
+    const guardEntered = Promise.withResolvers<void>();
+    const releaseGuard = Promise.withResolvers<void>();
+    const postgresFenceDialect = new Proxy(opened.dialect, {
+      get(target, property, receiver) {
+        if (property !== "runtimeTransaction") return Reflect.get(target, property, receiver);
+        return async (work: Parameters<typeof target.runtimeTransaction>[0]) =>
+          target.runtimeTransaction((transaction) =>
+            work({
+              ...transaction,
+              backend: "postgres" as const,
+              async finalWriterFenceGuard() {
+                guardEntered.resolve();
+                await releaseGuard.promise;
+                return 0;
+              },
+            }),
+          );
+      },
+    });
+    const fencedStore = createControlPlaneRepository({
+      identity,
+      dialect: postgresFenceDialect,
+    });
+    const activation = fencedStore.activateNextFingerprint(nextFingerprint, {
+      securityEpoch: token.securityEpoch,
+      writerFence: registration.writerFence,
+    });
+    await guardEntered.promise;
+    releaseGuard.resolve();
+    await expect(activation).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    await expect(opened.store.activationState()).resolves.toEqual({
+      generation: 0,
+      currentFingerprint,
+      nextFingerprint,
+    });
+    expect(
+      opened.dialect.query<{ nodeState: string; fenceState: string }>(
+        `SELECT node.state AS nodeState, fence.state AS fenceState
+         FROM cp_cluster_node_lease AS node
+         JOIN cp_writer_fence AS fence ON fence.lease_id = ?
+         WHERE node.node_id = ?`,
+        [registration.writerFence.leaseId, "activation-fence-node"],
+      ),
+    ).toEqual([{ nodeState: "ready", fenceState: "active" }]);
+    await expect(opened.store.convergenceToken()).resolves.toEqual(token);
+  });
+
+  it("atomically adopts an unset SQLite fingerprint and rejects a stale convergence fence", async () => {
+    const fixture = await createSqliteFixture();
+    const { store } = await openRepository(fixture.storage);
+    const versions = await store.initialize();
+    const firstFingerprint = "a".repeat(64);
+    const secondFingerprint = "b".repeat(64);
+    const request = {
+      nextFingerprint: firstFingerprint,
+      expectedEffectiveRuntimeFingerprint: "c".repeat(64),
+      expectedAuthorityGeneration: versions.authorityGeneration,
+      expectedEffectiveGeneration: versions.effectiveGeneration,
+      expectedSecurityEpoch: versions.securityEpoch,
+    };
+
+    await expect(store.adoptSqliteActivationFingerprint!(request)).resolves.toEqual({
+      generation: 0,
+      currentFingerprint: firstFingerprint,
+    });
+    await expect(
+      store.adoptSqliteActivationFingerprint!({
+        ...request,
+        previousFingerprint: firstFingerprint,
+        nextFingerprint: secondFingerprint,
+        expectedEffectiveGeneration: versions.effectiveGeneration + 1,
+      }),
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    await expect(store.activationState()).resolves.toEqual({
+      generation: 0,
+      currentFingerprint: firstFingerprint,
+    });
   });
 
   it("keeps confirmation previews side-effect free and consume-plus-action atomic", async () => {
@@ -522,25 +789,95 @@ describe("transactional Caplet and host-setting repository", () => {
   });
 
   it.skipIf(!postgresAdminUrl)(
+    "serializes a real Postgres migration drain against old-node reentry",
+    async () => {
+      if (!postgresAdminUrl) throw new Error("Postgres fixture URL is unavailable");
+      const fixture = await openPostgresRepository(postgresAdminUrl);
+      const fingerprint = "migration-drain-race";
+      const gateId = "migration-drain-race-gate";
+      try {
+        const token = await fixture.store.initialize();
+        const [registrationResult, drainResult] = await Promise.allSettled([
+          fixture.store.registerNode({
+            nodeId: "old-node-racing-drain",
+            bootstrapFingerprint: fingerprint,
+            effectiveRuntimeFingerprint: fingerprint,
+            compatibility: {
+              binaryVersion: "0.34.1",
+              schemaVersion: 3,
+              keyVersion: 1,
+              manifestVersion: 1,
+              ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+            },
+            appliedToken: token,
+            ttlMs: 60_000,
+          }),
+          fixture.dialect.beginMigrationDrain(gateId),
+        ]);
+        const registrationSucceeded =
+          registrationResult.status === "fulfilled" && registrationResult.value.status === "ready";
+        const drainSucceeded =
+          drainResult.status === "fulfilled" && drainResult.value.status === "active";
+        expect(Number(registrationSucceeded) + Number(drainSucceeded)).toBe(1);
+
+        if (drainSucceeded) {
+          await fixture.dialect.releaseMigrationDrain(gateId, "rolled-back");
+          await expect(
+            fixture.store.registerNode({
+              nodeId: "node-after-exact-drain-rollback",
+              bootstrapFingerprint: fingerprint,
+              effectiveRuntimeFingerprint: fingerprint,
+              compatibility: {
+                binaryVersion: "0.34.1",
+                schemaVersion: 3,
+                keyVersion: 1,
+                manifestVersion: 1,
+                ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+              },
+              appliedToken: token,
+              ttlMs: 60_000,
+            }),
+          ).resolves.toMatchObject({ status: "ready" });
+        }
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+
+  it.skipIf(!postgresAdminUrl)(
     "persists the canonical corpus through the real Postgres dialect",
     async () => {
       if (!postgresAdminUrl) throw new Error("Postgres fixture URL is unavailable");
       const fixture = await openPostgresRepository(postgresAdminUrl);
+      const postgresFingerprint = "postgres-fingerprint";
       try {
         const initial = await fixture.store.initialize();
         const node = await fixture.store.registerNode({
           nodeId: "postgres-node-1",
-          bootstrapFingerprint: "postgres-fingerprint-1",
+          bootstrapFingerprint: postgresFingerprint,
+          effectiveRuntimeFingerprint: postgresFingerprint,
           compatibility: {
             binaryVersion: "0.34.1",
             schemaVersion: 3,
             keyVersion: 1,
             manifestVersion: 1,
+            ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
           },
+          appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
           ttlMs: 60_000,
         });
         expect(node.status).toBe("ready");
         if (node.status !== "ready") throw new Error("Postgres fixture node did not become ready");
+        await expect(
+          fixture.store.acknowledgeNode({
+            nodeId: "postgres-node-1",
+            bootstrapFingerprint: postgresFingerprint,
+            effectiveRuntimeFingerprint: postgresFingerprint,
+            appliedToken: initial,
+            writerFence: node.writerFence,
+          }),
+        ).resolves.toEqual({ status: "applied", appliedNodes: 1 });
         const input = {
           binding: binding("operation-postgres-caplet", "postgres-caplet-corpus-v1"),
           aggregateId: aggregate.id,
@@ -563,6 +900,15 @@ describe("transactional Caplet and host-setting repository", () => {
         });
         const snapshot = await fixture.store.loadSnapshot();
         expect(snapshot.caplets).toHaveLength(1);
+        await expect(
+          fixture.store.acknowledgeNode({
+            nodeId: "postgres-node-1",
+            bootstrapFingerprint: postgresFingerprint,
+            effectiveRuntimeFingerprint: postgresFingerprint,
+            appliedToken: initial,
+            writerFence: node.writerFence,
+          }),
+        ).resolves.toEqual({ status: "rejected", reason: "token-behind" });
         expect(snapshot.caplets[0]?.aggregate).toEqual(aggregate);
         const replacements = ["a", "b"].map((suffix) => ({
           ...input,
@@ -643,35 +989,380 @@ describe("transactional Caplet and host-setting repository", () => {
           "committed",
           "conflict",
         ]);
+        const capacityToken = await fixture.store.convergenceToken();
         for (let index = 1; index < 16; index += 1) {
-          await expect(
-            fixture.store.registerNode({
-              nodeId: `postgres-node-${index + 1}`,
-              bootstrapFingerprint: `postgres-fingerprint-${index + 1}`,
-              compatibility: {
-                binaryVersion: "0.34.1",
-                schemaVersion: 3,
-                keyVersion: 1,
-                manifestVersion: 1,
-              },
-              ttlMs: 60_000,
-            }),
-          ).resolves.toMatchObject({ status: "ready", readyNodes: index + 1 });
-        }
-        await expect(
-          fixture.store.registerNode({
-            nodeId: "postgres-node-17",
-            bootstrapFingerprint: "postgres-fingerprint-17",
+          const registration = await fixture.store.registerNode({
+            nodeId: `postgres-node-${index + 1}`,
+            bootstrapFingerprint: postgresFingerprint,
+            effectiveRuntimeFingerprint: postgresFingerprint,
             compatibility: {
               binaryVersion: "0.34.1",
               schemaVersion: 3,
               keyVersion: 1,
               manifestVersion: 1,
+              ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
             },
+            appliedToken: capacityToken,
+            ttlMs: 60_000,
+          });
+          expect(registration).toMatchObject({ status: "ready", readyNodes: index + 1 });
+          if (registration.status !== "ready") throw new Error("capacity node was not ready");
+          await expect(
+            fixture.store.acknowledgeNode({
+              nodeId: `postgres-node-${index + 1}`,
+              bootstrapFingerprint: postgresFingerprint,
+              effectiveRuntimeFingerprint: postgresFingerprint,
+              appliedToken: capacityToken,
+              writerFence: registration.writerFence,
+            }),
+          ).resolves.toEqual({ status: "applied", appliedNodes: index });
+        }
+        await expect(
+          fixture.store.registerNode({
+            nodeId: "postgres-node-17",
+            bootstrapFingerprint: postgresFingerprint,
+            effectiveRuntimeFingerprint: postgresFingerprint,
+            compatibility: {
+              binaryVersion: "0.34.1",
+              schemaVersion: 3,
+              keyVersion: 1,
+              manifestVersion: 1,
+              ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+            },
+            appliedToken: capacityToken,
             ttlMs: 60_000,
           }),
         ).resolves.toEqual({ status: "capacity-rejected", readyNodes: 16 });
         expect(snapshot.caplets[0]?.projection).toEqual(projection);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+
+  it.skipIf(!postgresAdminUrl)(
+    "admits only one of two concurrent acknowledgements at the 16-node capacity fence",
+    async () => {
+      if (!postgresAdminUrl) throw new Error("Postgres fixture URL is unavailable");
+      const fixture = await openPostgresRepository(postgresAdminUrl);
+      const fingerprint = "postgres-capacity-race";
+      const compatibility = {
+        binaryVersion: "0.34.1",
+        schemaVersion: 3,
+        keyVersion: 1,
+        manifestVersion: 1,
+        ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+      } as const;
+      try {
+        const token = await fixture.store.initialize();
+        for (let index = 0; index < 15; index += 1) {
+          const nodeId = `capacity-ready-${index}`;
+          const registration = await fixture.store.registerNode({
+            nodeId,
+            bootstrapFingerprint: fingerprint,
+            effectiveRuntimeFingerprint: fingerprint,
+            compatibility,
+            appliedToken: token,
+            ttlMs: 60_000,
+          });
+          if (registration.status !== "ready") {
+            throw new Error(`${nodeId} was ${registration.status}`);
+          }
+          await expect(
+            fixture.store.acknowledgeNode({
+              nodeId,
+              bootstrapFingerprint: fingerprint,
+              effectiveRuntimeFingerprint: fingerprint,
+              appliedToken: token,
+              writerFence: registration.writerFence,
+            }),
+          ).resolves.toMatchObject({ status: "applied" });
+        }
+        const pendingNodeIds = ["capacity-race-a", "capacity-race-b"] as const;
+        const pending = await Promise.all(
+          pendingNodeIds.map((nodeId) =>
+            fixture.store.registerNode({
+              nodeId,
+              bootstrapFingerprint: fingerprint,
+              effectiveRuntimeFingerprint: fingerprint,
+              compatibility,
+              appliedToken: token,
+              ttlMs: 60_000,
+            }),
+          ),
+        );
+        expect(pending.every((registration) => registration.status === "ready")).toBe(true);
+        const acknowledgements = await Promise.all(
+          pending.map((registration, index) => {
+            if (registration.status !== "ready") {
+              throw new Error(`${pendingNodeIds[index]} was ${registration.status}`);
+            }
+            return fixture.store.acknowledgeNode({
+              nodeId: pendingNodeIds[index]!,
+              bootstrapFingerprint: fingerprint,
+              effectiveRuntimeFingerprint: fingerprint,
+              appliedToken: token,
+              writerFence: registration.writerFence,
+            });
+          }),
+        );
+        expect(acknowledgements.filter((result) => result.status === "applied")).toHaveLength(1);
+        expect(acknowledgements.filter((result) => result.status === "rejected")).toHaveLength(1);
+        expect(
+          await fixture.adminQuery<{ count: string }>(
+            `SELECT count(*)::text AS count
+             FROM caplets.cp_cluster_node_lease
+             WHERE logical_host_id = $1 AND store_id = $2
+               AND state = 'ready' AND expires_at::timestamptz > clock_timestamp()`,
+            [logicalHostId, storeId],
+          ),
+        ).toEqual([{ count: "16" }]);
+
+        const rejectedIndex = acknowledgements.findIndex((result) => result.status === "rejected");
+        await expect(
+          fixture.store.registerNode({
+            nodeId: pendingNodeIds[rejectedIndex]!,
+            bootstrapFingerprint: fingerprint,
+            effectiveRuntimeFingerprint: fingerprint,
+            compatibility,
+            appliedToken: token,
+            ttlMs: 60_000,
+          }),
+        ).resolves.toEqual({ status: "capacity-rejected", readyNodes: 16 });
+        expect(
+          await fixture.adminQuery<{ count: string }>(
+            `SELECT count(*)::text AS count
+             FROM caplets.cp_cluster_node_lease
+             WHERE logical_host_id = $1 AND store_id = $2 AND state = 'capacity-rejected'`,
+            [logicalHostId, storeId],
+          ),
+        ).toEqual([{ count: "1" }]);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+
+  it.skipIf(!postgresAdminUrl)(
+    "serializes concurrent Postgres tuple-fingerprint binding as one idempotent row",
+    async () => {
+      if (!postgresAdminUrl) throw new Error("Postgres fixture URL is unavailable");
+      const fixture = await openPostgresRepository(postgresAdminUrl);
+      const fingerprint = "postgres-concurrent-tuple";
+      try {
+        const token = await fixture.store.initialize();
+        const registrations = [];
+        for (let index = 0; index < 16; index += 1) {
+          const registration = await fixture.store.registerNode({
+            nodeId: `postgres-concurrent-node-${index + 1}`,
+            bootstrapFingerprint: fingerprint,
+            effectiveRuntimeFingerprint: fingerprint,
+            compatibility: {
+              binaryVersion: "0.34.1",
+              schemaVersion: 3,
+              keyVersion: 1,
+              manifestVersion: 1,
+              ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+            },
+            appliedToken: token,
+            ttlMs: 60_000,
+          });
+          expect(registration.status).toBe("ready");
+          if (registration.status !== "ready") {
+            throw new Error("Concurrent Postgres fixture node did not become ready");
+          }
+          registrations.push(registration);
+        }
+
+        const acknowledgements = await Promise.all(
+          registrations.map((registration, index) =>
+            fixture.store.acknowledgeNode({
+              nodeId: `postgres-concurrent-node-${index + 1}`,
+              bootstrapFingerprint: fingerprint,
+              effectiveRuntimeFingerprint: fingerprint,
+              appliedToken: token,
+              writerFence: registration.writerFence,
+            }),
+          ),
+        );
+        expect(acknowledgements.every((result) => result.status === "applied")).toBe(true);
+        await expect(
+          fixture.adminQuery<{ count: string }>(
+            `SELECT COUNT(*)::text AS count
+               FROM caplets.cp_migration
+              WHERE logical_host_id = $1
+                AND store_id = $2
+                AND migration_id = $3`,
+            [
+              logicalHostId,
+              storeId,
+              `u10-runtime-tuple:${token.authorityGeneration}:${token.effectiveGeneration}:${token.securityEpoch}`,
+            ],
+          ),
+        ).resolves.toEqual([{ count: "1" }]);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+
+  it.skipIf(!postgresAdminUrl)(
+    "rolls back domain, activity, provenance, generation, and receipt rows when the final Postgres fence is revoked",
+    async () => {
+      const paused = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const fixture = await openPostgresRepository(postgresAdminUrl!, async (point) => {
+        if (point !== "before-fence-guard") return;
+        paused.resolve();
+        await release.promise;
+      });
+      try {
+        const versions = await fixture.store.initialize();
+        const registration = await fixture.store.registerNode({
+          nodeId: "postgres-final-fence",
+          bootstrapFingerprint: "postgres-final-fence",
+          effectiveRuntimeFingerprint: "postgres-final-fence",
+          compatibility: {
+            binaryVersion: "0.34.1",
+            schemaVersion: 3,
+            keyVersion: 1,
+            manifestVersion: 1,
+            ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+          },
+          appliedToken: versions,
+          ttlMs: 60_000,
+        });
+        if (registration.status !== "ready")
+          throw new Error("Postgres final-fence node was not ready");
+        await expect(
+          fixture.store.acknowledgeNode({
+            nodeId: "postgres-final-fence",
+            bootstrapFingerprint: "postgres-final-fence",
+            effectiveRuntimeFingerprint: "postgres-final-fence",
+            appliedToken: versions,
+            writerFence: registration.writerFence,
+          }),
+        ).resolves.toEqual({ status: "applied", appliedNodes: 1 });
+        const input = {
+          binding: binding("operation-postgres-final-fence", "postgres-final-fence"),
+          aggregateId: aggregate.id,
+          expectedAggregateVersion: 0,
+          expectedAuthorityGeneration: versions.authorityGeneration,
+          expectedSecurityEpoch: versions.securityEpoch,
+          writerFence: registration.writerFence,
+          activity: {
+            id: "activity-postgres-final-fence",
+            action: "caplet.install",
+            target: { capletId: aggregate.id },
+          },
+          aggregate,
+          projection,
+          provenance: provenance("provenance-caplet", assetHash),
+        } as const;
+        await fixture.store.reserveOperation(input.binding, input.aggregateId);
+        const mutation = fixture.store.mutateCaplet(input);
+        await paused.promise;
+        await fixture.store.revokeNode("postgres-final-fence");
+        release.resolve();
+
+        await expect(mutation).resolves.toEqual({ status: "conflict", reason: "writer-fence" });
+        expect((await fixture.store.loadSnapshot()).caplets).toEqual([]);
+        const residue = await fixture.adminQuery<{
+          caplets: string;
+          provenance: string;
+          activity: string;
+          receipts: string;
+        }>(`
+          SELECT
+            (SELECT count(*) FROM caplets.cp_caplet)::text AS caplets,
+            (SELECT count(*) FROM caplets.cp_caplet_provenance)::text AS provenance,
+            (SELECT count(*) FROM caplets.cp_operator_activity)::text AS activity,
+            (SELECT count(*) FROM caplets.cp_operation_outcome)::text AS receipts
+        `);
+        expect(residue).toEqual([{ caplets: "0", provenance: "0", activity: "0", receipts: "0" }]);
+        const replacement = await fixture.store.registerNode({
+          nodeId: "postgres-final-fence",
+          bootstrapFingerprint: "postgres-final-fence",
+          effectiveRuntimeFingerprint: "postgres-final-fence",
+          compatibility: {
+            binaryVersion: "0.34.1",
+            schemaVersion: 3,
+            keyVersion: 1,
+            manifestVersion: 1,
+            ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+          },
+          appliedToken: versions,
+          ttlMs: 60_000,
+        });
+        expect(replacement).toMatchObject({
+          status: "ready",
+          writerFence: {
+            leaseId: registration.writerFence.leaseId,
+            writerEpoch: registration.writerFence.writerEpoch + 1,
+          },
+        });
+      } finally {
+        release.resolve();
+        await fixture.close();
+      }
+    },
+  );
+
+  it.skipIf(!postgresAdminUrl)(
+    "enforces the real Postgres 16-ready-node ceiling without displacing existing leases",
+    async () => {
+      const fixture = await openPostgresRepository(postgresAdminUrl!);
+      try {
+        const versions = await fixture.store.initialize();
+        const registrations = [];
+        for (let index = 0; index < 16; index += 1) {
+          const registration = await fixture.store.registerNode({
+            nodeId: `postgres-capacity-${index}`,
+            bootstrapFingerprint: "postgres-capacity",
+            effectiveRuntimeFingerprint: "postgres-capacity",
+            compatibility: {
+              ...fixture.dialect.compatibility,
+              ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+            },
+            appliedToken: versions,
+            ttlMs: 60_000,
+          });
+          expect(registration).toMatchObject({ status: "ready", readyNodes: index + 1 });
+          if (registration.status !== "ready") throw new Error("capacity node was not ready");
+          await expect(
+            fixture.store.acknowledgeNode({
+              nodeId: `postgres-capacity-${index}`,
+              bootstrapFingerprint: "postgres-capacity",
+              effectiveRuntimeFingerprint: "postgres-capacity",
+              appliedToken: versions,
+              writerFence: registration.writerFence,
+            }),
+          ).resolves.toEqual({ status: "applied", appliedNodes: index + 1 });
+          registrations.push(registration);
+        }
+
+        await expect(
+          fixture.store.registerNode({
+            nodeId: "postgres-capacity-17",
+            bootstrapFingerprint: "postgres-capacity",
+            effectiveRuntimeFingerprint: "postgres-capacity",
+            compatibility: {
+              ...fixture.dialect.compatibility,
+              ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+            },
+            appliedToken: versions,
+            ttlMs: 60_000,
+          }),
+        ).resolves.toEqual({ status: "capacity-rejected", readyNodes: 16 });
+        await expect(
+          fixture.store.acknowledgeNode({
+            nodeId: "postgres-capacity-0",
+            bootstrapFingerprint: "postgres-capacity",
+            effectiveRuntimeFingerprint: "postgres-capacity",
+            appliedToken: versions,
+            writerFence: registrations[0]!.writerFence,
+          }),
+        ).resolves.toMatchObject({ status: "applied", appliedNodes: 16 });
       } finally {
         await fixture.close();
       }
@@ -805,30 +1496,54 @@ describe("transactional Caplet and host-setting repository", () => {
     async () => {
       const fixture = await openPostgresRepository(postgresAdminUrl!);
       try {
+        const benchmarkFingerprint = "benchmark-fingerprint";
         const initial = await fixture.store.initialize();
         const node = await fixture.store.registerNode({
           nodeId: "benchmark-node-00",
-          bootstrapFingerprint: "benchmark-fingerprint-00",
+          bootstrapFingerprint: benchmarkFingerprint,
+          effectiveRuntimeFingerprint: benchmarkFingerprint,
           compatibility: {
             binaryVersion: "0.34.1",
             schemaVersion: 3,
             keyVersion: 1,
             manifestVersion: 1,
+            ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
           },
+          appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
           ttlMs: 3_600_000,
         });
         if (node.status !== "ready") throw new Error("benchmark writer did not become ready");
+        await expect(
+          fixture.store.acknowledgeNode({
+            nodeId: "benchmark-node-00",
+            bootstrapFingerprint: benchmarkFingerprint,
+            effectiveRuntimeFingerprint: benchmarkFingerprint,
+            appliedToken: initial,
+            writerFence: node.writerFence,
+          }),
+        ).resolves.toEqual({ status: "applied", appliedNodes: 1 });
         for (let index = 1; index < STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes; index += 1) {
-          await fixture.store.registerNode({
+          const registration = await fixture.store.registerNode({
             nodeId: `benchmark-node-${index.toString().padStart(2, "0")}`,
-            bootstrapFingerprint: `benchmark-fingerprint-${index.toString().padStart(2, "0")}`,
+            bootstrapFingerprint: benchmarkFingerprint,
+            effectiveRuntimeFingerprint: benchmarkFingerprint,
             compatibility: {
               binaryVersion: "0.34.1",
               schemaVersion: 3,
               keyVersion: 1,
               manifestVersion: 1,
+              ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
             },
+            appliedToken: initial,
             ttlMs: 3_600_000,
+          });
+          if (registration.status !== "ready") throw new Error("benchmark reader was not admitted");
+          await fixture.store.acknowledgeNode({
+            nodeId: `benchmark-node-${index.toString().padStart(2, "0")}`,
+            bootstrapFingerprint: benchmarkFingerprint,
+            effectiveRuntimeFingerprint: benchmarkFingerprint,
+            appliedToken: initial,
+            writerFence: registration.writerFence,
           });
         }
 
@@ -848,42 +1563,57 @@ describe("transactional Caplet and host-setting repository", () => {
 
         let authorityGeneration = initial.authorityGeneration;
         let effectiveGeneration = initial.effectiveGeneration;
-        for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets; index += 1) {
-          const item = maxEnvelopeCaplet(
-            index,
-            "x".repeat(bodyBytes + (index < bodyRemainder ? 1 : 0)),
-            1,
-            `benchmark-provenance-${index}`,
-            authorityGeneration + 1,
-            effectiveGeneration + 1,
-          );
-          const operationId = `benchmark-seed-${index}`;
-          const operationBinding = binding(operationId, `${operationId}-request`);
-          await fixture.store.reserveOperation(operationBinding, item.aggregate.id);
-          const result = await fixture.store.mutateCaplet({
-            binding: operationBinding,
-            aggregateId: item.aggregate.id,
-            expectedAggregateVersion: 0,
-            expectedAuthorityGeneration: authorityGeneration,
-            expectedSecurityEpoch: initial.securityEpoch,
-            writerFence: { ...node.writerFence, authorityGeneration },
-            activity: {
-              id: `benchmark-seed-activity-${index}`,
-              action: "caplet.install",
-              target: { capletId: item.aggregate.id },
-            },
-            ...item,
-            provenance: provenance(
+        await fixture.dialect.runtimeTransaction(async (transaction) => {
+          for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets; index += 1) {
+            const item = maxEnvelopeCaplet(
+              index,
+              "x".repeat(bodyBytes + (index < bodyRemainder ? 1 : 0)),
+              1,
               `benchmark-provenance-${index}`,
-              index.toString(16).padStart(64, "0"),
-            ),
-          });
-          if (result.status !== "committed") {
-            throw new Error(`full-envelope seed ${index} did not commit`);
+              authorityGeneration,
+              effectiveGeneration,
+            );
+            await writeCanonicalCapletRows(transaction, {
+              identity,
+              ...item,
+              now: "2026-07-14T00:00:00.000Z",
+              authorityGeneration,
+              effectiveGeneration,
+              securityEpoch: initial.securityEpoch,
+            });
           }
-          authorityGeneration = result.receipt.authorityToken.authorityGeneration;
-          effectiveGeneration = result.receipt.authorityToken.effectiveGeneration;
-        }
+        });
+        await expect(
+          fixture.adminQuery<{
+            capletCount: string | number;
+            normalizedRowCount: string | number;
+            encodedByteCount: string | number;
+          }>(
+            `UPDATE caplets.cp_snapshot_envelope
+             SET caplet_count = $1,
+                 normalized_row_count = $2,
+                 encoded_byte_count = $3
+             WHERE logical_host_id = $4
+               AND store_id = $5
+               AND envelope_id = 'control-plane'
+             RETURNING caplet_count AS "capletCount",
+                       normalized_row_count AS "normalizedRowCount",
+                       encoded_byte_count AS "encodedByteCount"`,
+            [
+              STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets,
+              STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows,
+              STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes,
+              logicalHostId,
+              storeId,
+            ],
+          ),
+        ).resolves.toEqual([
+          {
+            capletCount: String(STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets),
+            normalizedRowCount: String(STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows),
+            encodedByteCount: String(STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes),
+          },
+        ]);
 
         const seededSnapshot = await fixture.store.loadSnapshot();
         expect(seededSnapshot.caplets).toHaveLength(STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets);
@@ -892,91 +1622,106 @@ describe("transactional Caplet and host-setting repository", () => {
           STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes,
         );
 
-        for (
-          let index = 0;
-          index <
-          STORAGE_BENCHMARK_ENVELOPE.managementWritesPerSecond *
-            STORAGE_BENCHMARK_ENVELOPE.writeBurstSeconds;
-          index += 1
-        ) {
-          const current = seededSnapshot.caplets[index]!;
-          const provenanceId = `benchmark-burst-provenance-${index}`;
-          const operationId = `benchmark-burst-${index}`;
+        const measuredItem = seededSnapshot.caplets.at(-1);
+        if (!measuredItem) throw new Error("full-envelope measurement Caplet is unavailable");
+        let measuredAggregate: CanonicalCapletAggregate = measuredItem.aggregate;
+        let measuredProjection: CanonicalCapletRelationalProjection = measuredItem.projection;
+        let materializedGenerationChanges = 0;
+        let materializationQueries = 0;
+        const publicationLatencies: number[] = [];
+        let publishedSnapshotGeneration = effectiveGeneration;
+        const advanceAuthoritativeSnapshot = async (): Promise<number> => {
+          const sampleIndex = materializedGenerationChanges;
+          const aggregateVersion = measuredAggregate.aggregateVersion + 1;
+          const provenanceId = `benchmark-sample-provenance-${sampleIndex
+            .toString()
+            .padStart(4, "0")}`;
+          const operationId = `benchmark-sample-${sampleIndex.toString().padStart(4, "0")}`;
           const operationBinding = binding(operationId, `${operationId}-request`);
-          await fixture.store.reserveOperation(operationBinding, current.aggregate.id);
+          const aggregate: CanonicalCapletAggregate = {
+            ...measuredAggregate,
+            aggregateVersion,
+            installationProvenanceId: provenanceId,
+          };
+          const projection: CanonicalCapletRelationalProjection = {
+            ...measuredProjection,
+            activationHistory: measuredProjection.activationHistory.map((event) => ({
+              ...event,
+              aggregateVersion,
+            })),
+          };
+          await fixture.store.reserveOperation(operationBinding, aggregate.id);
           const result = await fixture.store.mutateCaplet({
             binding: operationBinding,
-            aggregateId: current.aggregate.id,
-            expectedAggregateVersion: 1,
+            aggregateId: aggregate.id,
+            expectedAggregateVersion: measuredAggregate.aggregateVersion,
             expectedAuthorityGeneration: authorityGeneration,
             expectedSecurityEpoch: initial.securityEpoch,
             writerFence: { ...node.writerFence, authorityGeneration },
             activity: {
-              id: `benchmark-burst-activity-${index}`,
+              id: `benchmark-sample-activity-${sampleIndex.toString().padStart(4, "0")}`,
               action: "caplet.update",
-              target: { capletId: current.aggregate.id },
+              target: { capletId: aggregate.id },
             },
-            aggregate: {
-              ...current.aggregate,
-              aggregateVersion: 2,
-              installationProvenanceId: provenanceId,
-            },
-            projection: {
-              ...current.projection,
-              activationHistory: current.projection.activationHistory.map((event) => ({
-                ...event,
-                aggregateVersion: 2,
-              })),
-            },
+            aggregate,
+            projection,
             provenance: provenance(
               provenanceId,
               createHash("sha256").update(operationId).digest("hex"),
             ),
           });
           if (result.status !== "committed") {
-            throw new Error(`full-envelope write burst ${index} did not commit`);
+            throw new Error(`full-envelope measured mutation ${sampleIndex} did not commit`);
           }
+          measuredAggregate = aggregate;
+          measuredProjection = projection;
           authorityGeneration = result.receipt.authorityToken.authorityGeneration;
           effectiveGeneration = result.receipt.authorityToken.effectiveGeneration;
-        }
-
-        const loadFanout = async (): Promise<number[]> =>
-          Promise.all(
-            Array.from({ length: STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes }, async () => {
-              const startedAt = performance.now();
-              const snapshot = await fixture.store.loadSnapshot();
-              if (
-                snapshot.normalizedRows !== STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows ||
-                snapshot.encodedBytes !== STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes
-              ) {
-                throw new Error("full-envelope snapshot changed during measurement");
-              }
-              return performance.now() - startedAt;
-            }),
-          );
-        for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.warmupSamples; index += 1) {
-          await loadFanout();
-        }
-        const runs: number[][] = [];
-        for (
-          let runIndex = 0;
-          runIndex < STORAGE_BENCHMARK_ENVELOPE.independentRuns;
-          runIndex += 1
-        ) {
-          const samples: number[] = [];
-          for (
-            let sampleIndex = 0;
-            sampleIndex < STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun;
-            sampleIndex += 1
+          materializedGenerationChanges += 1;
+          return effectiveGeneration;
+        };
+        const loadChangedSnapshot = async (): Promise<number> => {
+          const previousGeneration = publishedSnapshotGeneration;
+          const materializer = createControlPlaneRepository({
+            identity: { logicalHostId, storeId, operationNamespace },
+            dialect: fixture.dialect,
+          });
+          await materializer.initialize();
+          const expectedGeneration = await advanceAuthoritativeSnapshot();
+          const startedAt = performance.now();
+          const snapshot = await materializer.loadSnapshot();
+          const elapsedMs = performance.now() - startedAt;
+          if (
+            snapshot.normalizedRows !== STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows ||
+            snapshot.encodedBytes !== STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes
           ) {
-            samples.push(...(await loadFanout()));
+            throw new Error("full-envelope snapshot changed shape during measurement");
           }
-          runs.push(samples);
+          if (
+            snapshot.versions.effectiveGeneration !== expectedGeneration ||
+            snapshot.versions.effectiveGeneration <= previousGeneration
+          ) {
+            throw new Error("full-envelope measurement did not materialize a changed snapshot");
+          }
+          const publicationStartedAt = performance.now();
+          publishedSnapshotGeneration = snapshot.versions.effectiveGeneration;
+          publicationLatencies.push(performance.now() - publicationStartedAt);
+          materializationQueries += 1;
+          return elapsedMs;
+        };
+        const fullBoundarySamples: number[] = [];
+        for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
+          fullBoundarySamples.push(await loadChangedSnapshot());
         }
-        const p99Ms = runs.map((samples) => nearestRank(samples, 0.99));
-        expect(
-          p99Ms.every((value) => value <= STORAGE_BENCHMARK_ENVELOPE.maxSnapshotLoadP99Ms),
-        ).toBe(true);
+        expect(materializedGenerationChanges).toBe(3);
+        expect(materializationQueries).toBe(materializedGenerationChanges);
+        expect(publicationLatencies).toHaveLength(materializedGenerationChanges);
+        const p99Ms = [nearestRank(fullBoundarySamples, 0.99)];
+        const publicationP99Ms = nearestRank(publicationLatencies, 0.99);
+        expect(p99Ms[0]).toBeLessThanOrEqual(STORAGE_BENCHMARK_ENVELOPE.maxSnapshotLoadP99Ms);
+        expect(publicationP99Ms).toBeLessThanOrEqual(
+          STORAGE_BENCHMARK_ENVELOPE.maxConvergenceP99Ms,
+        );
         if (process.env.CAPLETS_BENCHMARK_REPORT === "1") {
           process.stdout.write(
             `${JSON.stringify({
@@ -986,17 +1731,12 @@ describe("transactional Caplet and host-setting repository", () => {
               effectiveCaplets: STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets,
               normalizedRows: STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows,
               encodedBytes: STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes,
-              writeBurstMutations:
-                STORAGE_BENCHMARK_ENVELOPE.managementWritesPerSecond *
-                STORAGE_BENCHMARK_ENVELOPE.writeBurstSeconds,
-              refreshers: STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes,
-              warmups: STORAGE_BENCHMARK_ENVELOPE.warmupSamples,
-              measuredSamplesPerRun: STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun,
-              independentRuns: STORAGE_BENCHMARK_ENVELOPE.independentRuns,
+              fullBoundarySamples: fullBoundarySamples.length,
+              authoritativeGenerationChanges: materializedGenerationChanges,
               percentile: 0.99,
               percentileMethod: "nearest-rank",
-              notificationMode: "suppressed",
               p99Ms,
+              publicationP99Ms,
               maxP99Ms: STORAGE_BENCHMARK_ENVELOPE.maxSnapshotLoadP99Ms,
               passed: true,
             })}\n`,
@@ -1006,6 +1746,197 @@ describe("transactional Caplet and host-setting repository", () => {
         await fixture.close();
       }
     },
+    180_000,
+  );
+
+  it.skipIf(!postgresAdminUrl || process.env.CAPLETS_FULL_ENVELOPE_BENCHMARK !== "1")(
+    "qualifies changed 32 MiB Postgres snapshot materialization and publication p99",
+    async () => {
+      const fixture = await openPostgresRepository(postgresAdminUrl!);
+      try {
+        const capletCount = 256;
+        const encodedByteTarget = 32 * 1024 * 1024;
+        const normalizedRowTarget = capletCount * 50;
+        const fingerprint = "representative-benchmark-fingerprint";
+        const initial = await fixture.store.initialize();
+        const node = await fixture.store.registerNode({
+          nodeId: "representative-benchmark-node",
+          bootstrapFingerprint: fingerprint,
+          effectiveRuntimeFingerprint: fingerprint,
+          compatibility: {
+            binaryVersion: "0.34.1",
+            schemaVersion: 3,
+            keyVersion: 1,
+            manifestVersion: 1,
+            ...POSTGRES_DISTRIBUTED_COMPATIBILITY,
+          },
+          appliedToken: initial,
+          ttlMs: 3_600_000,
+        });
+        if (node.status !== "ready") throw new Error("representative writer did not become ready");
+        await fixture.store.acknowledgeNode({
+          nodeId: "representative-benchmark-node",
+          bootstrapFingerprint: fingerprint,
+          effectiveRuntimeFingerprint: fingerprint,
+          appliedToken: initial,
+          writerFence: node.writerFence,
+        });
+        const baseBytes = Array.from(
+          { length: capletCount },
+          (_, index) =>
+            encodePortableCaplet(
+              maxEnvelopeCaplet(index, "", 1, "representative-initial", 0, 0).aggregate.portable,
+            ).byteLength,
+        ).reduce((total, bytes) => total + bytes, 0);
+        const remainingBytes = encodedByteTarget - baseBytes;
+        if (remainingBytes < 0) throw new Error("representative fixture exceeds byte target");
+        const bodyBytes = Math.floor(remainingBytes / capletCount);
+        const bodyRemainder = remainingBytes % capletCount;
+        await fixture.dialect.runtimeTransaction(async (transaction) => {
+          for (let index = 0; index < capletCount; index += 1) {
+            await writeCanonicalCapletRows(transaction, {
+              identity,
+              ...maxEnvelopeCaplet(
+                index,
+                "r".repeat(bodyBytes + (index < bodyRemainder ? 1 : 0)),
+                1,
+                `representative-provenance-${index}`,
+                initial.authorityGeneration,
+                initial.effectiveGeneration,
+              ),
+              now: "2026-07-14T00:00:00.000Z",
+              authorityGeneration: initial.authorityGeneration,
+              effectiveGeneration: initial.effectiveGeneration,
+              securityEpoch: initial.securityEpoch,
+            });
+          }
+        });
+        await fixture.adminQuery(
+          `UPDATE caplets.cp_snapshot_envelope
+           SET caplet_count = $1,
+               normalized_row_count = $2,
+               encoded_byte_count = $3
+           WHERE logical_host_id = $4
+             AND store_id = $5
+             AND envelope_id = 'control-plane'`,
+          [capletCount, normalizedRowTarget, encodedByteTarget, logicalHostId, storeId],
+        );
+        const seeded = await fixture.store.loadSnapshot();
+        expect(seeded).toMatchObject({
+          normalizedRows: normalizedRowTarget,
+          encodedBytes: encodedByteTarget,
+        });
+        let aggregate: CanonicalCapletAggregate = seeded.caplets.at(-1)!.aggregate;
+        let projection: CanonicalCapletRelationalProjection = seeded.caplets.at(-1)!.projection;
+        let authorityGeneration = initial.authorityGeneration;
+        let publishedGeneration = initial.effectiveGeneration;
+        let sampleIndex = 0;
+        const publicationLatencies: number[] = [];
+        const loadChanged = async (): Promise<number> => {
+          const aggregateVersion = aggregate.aggregateVersion + 1;
+          const provenanceId = `representative-sample-provenance-${sampleIndex
+            .toString()
+            .padStart(4, "0")}`;
+          const operationId = `representative-sample-${sampleIndex.toString().padStart(4, "0")}`;
+          const operationBinding = binding(operationId, `${operationId}-request`);
+          const nextAggregate = {
+            ...aggregate,
+            aggregateVersion,
+            installationProvenanceId: provenanceId,
+          };
+          const nextProjection = {
+            ...projection,
+            activationHistory: projection.activationHistory.map((event) => ({
+              ...event,
+              aggregateVersion,
+            })),
+          };
+          await fixture.store.reserveOperation(operationBinding, aggregate.id);
+          const result = await fixture.store.mutateCaplet({
+            binding: operationBinding,
+            aggregateId: aggregate.id,
+            expectedAggregateVersion: aggregate.aggregateVersion,
+            expectedAuthorityGeneration: authorityGeneration,
+            expectedSecurityEpoch: initial.securityEpoch,
+            writerFence: { ...node.writerFence, authorityGeneration },
+            activity: {
+              id: `representative-sample-activity-${sampleIndex.toString().padStart(4, "0")}`,
+              action: "caplet.update",
+              target: { capletId: aggregate.id },
+            },
+            aggregate: nextAggregate,
+            projection: nextProjection,
+            provenance: provenance(
+              provenanceId,
+              createHash("sha256").update(operationId).digest("hex"),
+            ),
+          });
+          if (result.status !== "committed") {
+            throw new Error(`representative mutation ${sampleIndex} did not commit`);
+          }
+          aggregate = nextAggregate;
+          projection = nextProjection;
+          authorityGeneration = result.receipt.authorityToken.authorityGeneration;
+          const materializer = createControlPlaneRepository({ identity, dialect: fixture.dialect });
+          await materializer.initialize();
+          const startedAt = performance.now();
+          const snapshot = await materializer.loadSnapshot();
+          const elapsedMs = performance.now() - startedAt;
+          expect(snapshot).toMatchObject({
+            normalizedRows: normalizedRowTarget,
+            encodedBytes: encodedByteTarget,
+          });
+          expect(snapshot.versions.effectiveGeneration).toBeGreaterThan(publishedGeneration);
+          const publicationStartedAt = performance.now();
+          publishedGeneration = snapshot.versions.effectiveGeneration;
+          publicationLatencies.push(performance.now() - publicationStartedAt);
+          sampleIndex += 1;
+          return elapsedMs;
+        };
+        for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.warmupSamples; index += 1) {
+          await loadChanged();
+        }
+        const runP99Ms: number[] = [];
+        for (
+          let runIndex = 0;
+          runIndex < STORAGE_BENCHMARK_ENVELOPE.independentRuns;
+          runIndex += 1
+        ) {
+          const samples: number[] = [];
+          for (
+            let index = 0;
+            index < STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun;
+            index += 1
+          ) {
+            samples.push(await loadChanged());
+          }
+          runP99Ms.push(nearestRank(samples, 0.99));
+        }
+        const publicationP99Ms = nearestRank(publicationLatencies, 0.99);
+        expect(
+          runP99Ms.every((value) => value <= STORAGE_BENCHMARK_ENVELOPE.maxSnapshotLoadP99Ms),
+        ).toBe(true);
+        expect(publicationP99Ms).toBeLessThanOrEqual(
+          STORAGE_BENCHMARK_ENVELOPE.maxConvergenceP99Ms,
+        );
+        if (process.env.CAPLETS_BENCHMARK_REPORT === "1") {
+          process.stdout.write(
+            `${JSON.stringify({
+              profile: "representative-changed-snapshot",
+              encodedBytes: encodedByteTarget,
+              effectiveCaplets: capletCount,
+              normalizedRows: normalizedRowTarget,
+              samples: sampleIndex,
+              runP99Ms,
+              publicationP99Ms,
+            })}\n`,
+          );
+        }
+      } finally {
+        await fixture.close();
+      }
+    },
+    180_000,
   );
 });
 
@@ -1172,7 +2103,10 @@ type TestPostgresPoolConstructor = new (
   configuration: Readonly<Record<string, unknown>>,
 ) => PostgresPool;
 
-async function openPostgresRepository(adminUrl: string): Promise<
+async function openPostgresRepository(
+  adminUrl: string,
+  failureInjector?: (point: ControlPlaneFailurePoint) => void | Promise<void>,
+): Promise<
   Readonly<{
     store: ControlPlaneStore;
     dialect: PostgresControlPlaneDialect;
@@ -1244,7 +2178,7 @@ async function openPostgresRepository(adminUrl: string): Promise<
     const openDialect = dialect;
     return {
       dialect: openDialect,
-      store: createControlPlaneRepository({ identity, dialect: openDialect }),
+      store: createControlPlaneRepository({ identity, dialect: openDialect, failureInjector }),
       async adminQuery<T>(sql: string, parameters: readonly unknown[] = []) {
         const result = await admin.query(sql, parameters);
         return result.rows as readonly T[];

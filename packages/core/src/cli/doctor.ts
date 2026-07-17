@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createNativeCapletsService } from "../native/service";
+import { createActivatedNativeCapletsService } from "../native/service";
 import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
 import { CloudAuthStore } from "../cloud-auth/store";
 import { projectBindingWorkspacePaths } from "../project-binding/workspaces";
@@ -38,6 +38,8 @@ import {
 } from "../config";
 import { resolveExposure } from "../exposure/policy";
 import { daemonStatus, type DaemonOperationOptions } from "../daemon";
+import type { ControlPlaneRuntimeSnapshot } from "../control-plane/snapshot";
+import type { ExposureProjection } from "../exposure/projection";
 
 const PROJECT_BINDING_DOCTOR_PROBE_TIMEOUT_MS = 5_000;
 
@@ -51,6 +53,10 @@ export type DoctorOptions = {
   daemon?: DaemonOperationOptions;
   fetch?: typeof fetch;
   projectBindingProbeTimeoutMs?: number;
+  effectiveRuntime?: Readonly<{
+    snapshot: ControlPlaneRuntimeSnapshot;
+    exposure: ExposureProjection;
+  }>;
 };
 
 export type DoctorJsonReport = {
@@ -106,8 +112,8 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
     },
     daemon: await resolveDaemonSection(env, options.daemon),
     remoteLogin: remoteLogin.report,
-    vault: resolveVaultSection(env, root),
-    exposure: await resolveExposureSection(env),
+    vault: options.effectiveRuntime ? { ok: true, issues: [] } : resolveVaultSection(env, root),
+    exposure: await resolveExposureSection(env, options.effectiveRuntime),
     codeMode: await resolveCodeModeSection(options, env),
   };
 }
@@ -572,17 +578,49 @@ async function resolveDaemonSection(
   }
 }
 
-async function resolveExposureSection(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+async function resolveExposureSection(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  effectiveRuntime: DoctorOptions["effectiveRuntime"],
+) {
+  if (effectiveRuntime) {
+    const config = effectiveRuntime.snapshot.config;
+    const callableEntries = effectiveRuntime.exposure.entries.filter(
+      (entry) =>
+        entry.kind === "progressive-caplet" ||
+        entry.kind === "code-mode-caplet" ||
+        entry.kind === "direct-tool",
+    );
+    const callableIds = new Set(callableEntries.map((entry) => entry.capletId));
+    return {
+      ok: effectiveRuntime.exposure.availability.state === "ready",
+      availability: effectiveRuntime.exposure.availability,
+      default: config.options.exposure,
+      discoveryTimeoutMs: config.options.exposureDiscoveryTimeoutMs,
+      discoveryConcurrency: config.options.exposureDiscoveryConcurrency,
+      callableNativeToolCount: callableEntries.length,
+      caplets: allCaplets(config).map((caplet) => {
+        const exposure = resolveExposure(caplet.exposure, config.options.exposure);
+        const callable = callableIds.has(caplet.server);
+        return {
+          id: caplet.server,
+          exposure: exposure.value,
+          callable,
+          ...(callable ? {} : { hiddenReason: hiddenReasonFor(caplet) }),
+        };
+      }),
+    };
+  }
   const configPath = env.CAPLETS_CONFIG?.trim() ? env.CAPLETS_CONFIG.trim() : resolveConfigPath();
   const projectConfigPath = env.CAPLETS_PROJECT_CONFIG?.trim()
     ? env.CAPLETS_PROJECT_CONFIG.trim()
     : resolveProjectConfigPath();
   try {
     const config = loadConfig(configPath, projectConfigPath);
-    const service = createNativeCapletsService({
+    const service = await createActivatedNativeCapletsService({
       mode: "local",
       configPath,
       projectConfigPath,
+      env: env as NodeJS.ProcessEnv,
       watch: false,
       writeErr: () => undefined,
     });
@@ -820,12 +858,13 @@ async function resolveCallableIndexDoctor(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
 ) {
   try {
-    const service = createNativeCapletsService({
+    const service = await createActivatedNativeCapletsService({
       mode: "local",
       ...(env.CAPLETS_CONFIG?.trim() ? { configPath: env.CAPLETS_CONFIG.trim() } : {}),
       ...(env.CAPLETS_PROJECT_CONFIG?.trim()
         ? { projectConfigPath: env.CAPLETS_PROJECT_CONFIG.trim() }
         : {}),
+      env: env as NodeJS.ProcessEnv,
       watch: false,
       writeErr: () => undefined,
     });

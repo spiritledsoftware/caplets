@@ -4,6 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { CatalogAuthorityButton } from "./CatalogAuthorityButton";
 import type { CatalogCompactEntry } from "./catalog-state";
 
 export type CatalogDetailEntry = CatalogCompactEntry & {
@@ -36,6 +37,7 @@ export function installableDetail(detail: CatalogDetail | undefined): detail is 
 type CatalogDetailPageProps = {
   state: CatalogDetailState;
   installing: boolean;
+  installUnavailableReason?: string;
   onRetry(): void;
   onReturn(): void;
   onInstall(detail: CatalogDetail): void;
@@ -45,6 +47,7 @@ type CatalogDetailPageProps = {
 export function CatalogDetailPage({
   state,
   installing,
+  installUnavailableReason,
   onRetry,
   onReturn,
   onInstall,
@@ -197,10 +200,14 @@ export function CatalogDetailPage({
               <CopyIcon />
               Copy command
             </Button>
-            <Button disabled={!safe || installing} onClick={() => onInstall(state.detail)}>
+            <CatalogAuthorityButton
+              disabled={!safe || installing}
+              unavailableReason={installUnavailableReason}
+              onClick={() => onInstall(state.detail)}
+            >
               <DownloadIcon />
               {installing ? "Installing…" : "Install"}
-            </Button>
+            </CatalogAuthorityButton>
           </div>
           {copyFailed && (
             <code role="status" className="block select-all overflow-x-auto rounded bg-muted p-2">

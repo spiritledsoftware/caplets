@@ -12,6 +12,7 @@ describe("immutable storage benchmark envelope", () => {
       maxNormalizedRows: 100_000,
       maxEncodedSnapshotBytes: 256 * 1024 * 1024,
       managementWritesPerSecond: 100,
+      minimumMeasuredManagementWritesPerSecond: 25,
       writeBurstSeconds: 10,
       maxReadyNodes: 16,
       warmupSamples: 10,

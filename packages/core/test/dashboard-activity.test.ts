@@ -194,6 +194,7 @@ type Setup = Awaited<ReturnType<typeof authenticatedDashboard>>;
 async function authenticatedDashboard() {
   const setup = testApp();
   const started = await appPost(setup, "/dashboard/api/login/start", { clientLabel: "Browser" });
+  expect(started.status).toBe(200);
   const startBody = (await started.json()) as {
     flowId: string;
     pendingCompletionSecret: string;
@@ -256,11 +257,14 @@ function approvalCode(command: string): string {
 function testApp() {
   const stateDir = tempDir("caplets-dashboard-activity-state-");
   const context = testContext();
-  const engine = new CapletsEngine({
+  const engine = CapletsEngine.unactivatedForTests({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
     watch: false,
   });
+  (engine as unknown as { runtimeSnapshot: { securityEpoch: number } }).runtimeSnapshot = {
+    securityEpoch: 1,
+  };
   const store = new RemoteServerCredentialStore({ dir: stateDir });
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},

@@ -19,9 +19,21 @@ import {
   vaultStoreForAuthDir,
 } from "../config";
 import { version as packageJsonVersion } from "../../package.json";
-import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "../engine";
+import {
+  CapletsEngine,
+  createCapletsEngine,
+  createInternalCapletsEngine,
+  type CapletsEngineOptions,
+} from "../engine";
 import { CapletsError, toSafeError, type CapletsErrorCode } from "../errors";
+import { assertRedactedControlPlaneHealth } from "../control-plane/health";
+import type { ControlPlaneDetailedDiagnostics } from "../control-plane/types";
 import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
+import type { ControlPlaneLiveOperationClass } from "../control-plane/service";
+import {
+  runWithControlPlaneSecurityAdmission,
+  type ControlPlaneSecurityRepository,
+} from "../control-plane/security/repository";
 import {
   createCurrentHostOperations,
   parseCurrentHostManagementMutation,
@@ -37,7 +49,7 @@ import {
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
 import { DashboardActivityLog, type DashboardActivityAction } from "../dashboard/activity-log";
 import { dashboardShell, dashboardStaticResponse } from "../dashboard/routes";
-import { DashboardSessionStore } from "../dashboard/session-store";
+import { DashboardSessionStore, parseDashboardCookie } from "../dashboard/session-store";
 import type { DashboardSessionView } from "../dashboard/types";
 import {
   attachErrorResponse,
@@ -64,7 +76,10 @@ import {
 } from "../remote-control/dispatch";
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
-import { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import {
+  RemoteServerCredentialStore,
+  type RemoteCredentialRepository,
+} from "../remote/server-credential-store";
 import {
   roleAllows,
   type RemoteClientRole,
@@ -87,6 +102,7 @@ type HttpServeIo = {
   dashboardDistDir?: string;
   projectBindingWorkspaceStore?: ProjectBindingWorkspaceStore;
   currentHostManagement?: CurrentHostManagementDependencies | undefined;
+  controlPlaneSecurity?: ControlPlaneSecurityRepository | undefined;
 };
 
 type HttpMcpSession = {
@@ -195,13 +211,23 @@ export function createHttpServeApp(
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
-  const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  const controlPlaneSecurity = io.controlPlaneSecurity;
+  const remoteCredentialStore = controlPlaneSecurity
+    ? undefined
+    : remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  const remoteCredentialAuthority:
+    | RemoteCredentialRepository
+    | RemoteServerCredentialStore
+    | undefined = controlPlaneSecurity ?? remoteCredentialStore;
+  const pendingLoginAuthority = controlPlaneSecurity ?? remoteCredentialStore;
   const dashboardStateDir =
     options.remoteCredentialStateDir ?? io.dashboardSessionStore?.dir ?? ".";
-  const dashboardSessionStore = new DashboardSessionStore({
-    dir: dashboardStateDir,
-  });
-  const dashboardActivityLog = new DashboardActivityLog({ dir: dashboardStateDir });
+  const dashboardSessionStore =
+    controlPlaneSecurity ??
+    io.dashboardSessionStore ??
+    new DashboardSessionStore({ dir: dashboardStateDir });
+  const dashboardActivityLog =
+    controlPlaneSecurity ?? new DashboardActivityLog({ dir: dashboardStateDir });
   const currentHostOperations = createCurrentHostOperations({
     engine,
     ...(io.control === undefined
@@ -217,6 +243,9 @@ export function createHttpServeApp(
         }),
     activityLog: dashboardActivityLog,
     remoteCredentialStore,
+    remoteCredentialRepository: controlPlaneSecurity,
+    remotePendingLoginRepository: controlPlaneSecurity,
+    vaultRepository: controlPlaneSecurity,
     management: io.currentHostManagement,
     version: packageJsonVersion,
   });
@@ -243,7 +272,7 @@ export function createHttpServeApp(
   }
   const authenticatedClientRouteAuth = routeAuth(
     options,
-    remoteCredentialStore,
+    remoteCredentialAuthority,
     paths.base,
     undefined,
     retainAuthenticatedRemoteClient,
@@ -252,7 +281,7 @@ export function createHttpServeApp(
   );
   const accessRouteAuth = routeAuth(
     options,
-    remoteCredentialStore,
+    remoteCredentialAuthority,
     paths.base,
     "access",
     retainAuthenticatedRemoteClient,
@@ -260,7 +289,7 @@ export function createHttpServeApp(
   );
   const operatorRouteAuth = routeAuth(
     options,
-    remoteCredentialStore,
+    remoteCredentialAuthority,
     paths.base,
     "operator",
     retainAuthenticatedRemoteClient,
@@ -273,9 +302,64 @@ export function createHttpServeApp(
       writeErr(`${[message, ...rest].join(" ")}\n`);
     }),
   );
+  const requireLiveAuthority =
+    (operation: ControlPlaneLiveOperationClass): MiddlewareHandler =>
+    async (_context, next) => {
+      try {
+        await engine.requireLiveControlPlane(operation);
+        const snapshot = engine.currentControlPlaneRuntimeSnapshot();
+        if (!snapshot) {
+          if (engine.hasActivatedControlPlaneAuthority()) {
+            throw new CapletsError(
+              "SERVER_UNAVAILABLE",
+              "Activated SQL security authority is unavailable.",
+            );
+          }
+          await next();
+          return;
+        }
+        await runWithControlPlaneSecurityAdmission({ securityEpoch: snapshot.securityEpoch }, next);
+      } catch (error) {
+        return currentHostErrorResponse(error);
+      }
+    };
+  app.use(paths.dashboardLoginStart, requireLiveAuthority("auth"));
+  app.use(paths.dashboardLoginPoll, requireLiveAuthority("auth"));
+  app.use(paths.dashboardLoginComplete, requireLiveAuthority("auth"));
+  app.use(paths.remoteLoginStart, requireLiveAuthority("auth"));
+  app.use(paths.remoteLoginPoll, requireLiveAuthority("auth"));
+  app.use(paths.remoteLoginRefresh, requireLiveAuthority("auth"));
+  app.use(paths.remoteLoginComplete, requireLiveAuthority("auth"));
+  app.use(paths.dashboardSession, requireLiveAuthority("auth"));
+  app.use(paths.dashboardLogout, requireLiveAuthority("auth"));
+  app.use(paths.remoteLoginCancel, requireLiveAuthority("auth"));
+  app.use(paths.remoteRefresh, requireLiveAuthority("auth"));
+  app.use(paths.remoteClient, requireLiveAuthority("auth"));
+  app.use(paths.dashboardSummary, requireLiveAuthority("admin"));
+  app.use(paths.dashboardActivity, requireLiveAuthority("admin"));
+  app.use(paths.dashboardDiagnostics, requireLiveAuthority("admin"));
+  app.use(paths.dashboardAccessClients, requireLiveAuthority("admin"));
+  app.use(`${paths.dashboardAccessClients}/*`, requireLiveAuthority("admin"));
+  app.use(paths.dashboardAccessPendingLogins, requireLiveAuthority("admin"));
+  app.use(`${paths.dashboardAccessPendingLogins}/*`, requireLiveAuthority("admin"));
+  app.use(paths.dashboardCatalogInstall, requireLiveAuthority("mutation"));
+  app.use(paths.dashboardCatalogUpdate, requireLiveAuthority("mutation"));
+  app.use(paths.dashboardVault, requireLiveAuthority("vault"));
+  app.use(`${paths.dashboardVault}/*`, requireLiveAuthority("vault"));
+  app.use(paths.dashboardProjectBinding, requireLiveAuthority("project-binding"));
+  app.use(`${paths.dashboardProjectBinding}/*`, requireLiveAuthority("project-binding"));
+  app.use(paths.projectBindings, requireLiveAuthority("project-binding"));
+  app.use(`${paths.projectBindings}/*`, requireLiveAuthority("project-binding"));
+  app.use(paths.control, requireLiveAuthority("admin"));
+  app.use(`${paths.control}/*`, requireLiveAuthority("admin"));
+  app.use(paths.attachSessions, requireLiveAuthority("attach"));
+  app.use(`${paths.attachSessions}/*`, requireLiveAuthority("attach"));
+  app.use(paths.attachManifest, requireLiveAuthority("attach"));
+  app.use(paths.attachEvents, requireLiveAuthority("attach"));
+  app.use(paths.attachInvoke, requireLiveAuthority("attach"));
 
   app.get(paths.base, (c) => {
-    const remote = remoteCredentialStore
+    const remote = remoteCredentialAuthority
       ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
       : undefined;
     return c.json({
@@ -289,17 +373,22 @@ export function createHttpServeApp(
   });
 
   app.get(paths.version, (c) => {
-    const remote = remoteCredentialStore
+    const remote = remoteCredentialAuthority
       ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
       : undefined;
     return c.json(versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote));
   });
 
-  app.get(paths.health, (c) =>
-    c.json({
-      status: "ok",
-    }),
-  );
+  app.get(paths.health, async (c) => {
+    try {
+      const health = await engine.controlPlaneHealth();
+      if (!health) return c.json({ status: "ok" });
+      const redacted = assertRedactedControlPlaneHealth(health);
+      return c.json(redacted, redacted.readiness === "ready" ? 200 : 503);
+    } catch {
+      return c.json({ status: "unavailable" }, 503);
+    }
+  });
 
   app.get(
     routePath(paths.base, "_astro/*"),
@@ -307,6 +396,7 @@ export function createHttpServeApp(
       dashboardStaticResponse(
         dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
         io.dashboardDistDir,
+        paths.base,
       ) ?? c.notFound(),
   );
 
@@ -314,13 +404,14 @@ export function createHttpServeApp(
     const response = dashboardStaticResponse(
       dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
       io.dashboardDistDir,
+      paths.base,
     );
     if (response) return response;
     return c.html(dashboardShell(), 200, { "cache-control": "no-store" });
   });
 
   app.post(paths.dashboardLoginStart, attachHostProtection, async (c) => {
-    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    if (!pendingLoginAuthority) return c.json({ error: "dashboard_auth_unavailable" }, 503);
     try {
       const parsed = await parseJsonObject(c.req.json(), "Dashboard login start request");
       const clientLabel = optionalStringField(parsed, "clientLabel") ?? "Caplets Dashboard";
@@ -328,7 +419,7 @@ export function createHttpServeApp(
       const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
         c.req.header(name),
       );
-      const pending = remoteCredentialStore.createPendingLogin({
+      const pending = await pendingLoginAuthority.createPendingLogin({
         hostUrl,
         hostIdentity: hostUrl,
         requestedRole: "operator",
@@ -341,7 +432,7 @@ export function createHttpServeApp(
         requestedRole: "operator",
         approvalCommand: pendingLoginApprovalCommand(
           pending.operatorCode,
-          remoteCredentialStore.dir,
+          remoteCredentialStore?.dir,
         ),
       });
     } catch (error) {
@@ -350,11 +441,11 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardLoginPoll, attachHostProtection, async (c) => {
-    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    if (!pendingLoginAuthority) return c.json({ error: "dashboard_auth_unavailable" }, 503);
     try {
       const parsed = await parseJsonObject(c.req.json(), "Dashboard login poll request");
       return c.json(
-        remoteCredentialStore.pollPendingLogin({
+        await pendingLoginAuthority.pollPendingLogin({
           flowId: stringField(parsed, "flowId"),
           pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
         }),
@@ -365,10 +456,10 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardLoginComplete, attachHostProtection, async (c) => {
-    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    if (!pendingLoginAuthority) return c.json({ error: "dashboard_auth_unavailable" }, 503);
     try {
       const parsed = await parseJsonObject(c.req.json(), "Dashboard login complete request");
-      const credentials = remoteCredentialStore.completePendingLogin({
+      const credentials = await pendingLoginAuthority.completePendingLogin({
         hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
           c.req.header(name),
         ),
@@ -376,8 +467,10 @@ export function createHttpServeApp(
         flowId: stringField(parsed, "flowId"),
         pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
       });
-      const created = dashboardSessionStore.create({ operatorClientId: credentials.clientId });
-      dashboardActivityLog.append({
+      const created = await dashboardSessionStore.create({
+        operatorClientId: credentials.clientId,
+      });
+      await dashboardActivityLog.append({
         actorClientId: credentials.clientId,
         action: "dashboard_login_completed",
         target: { type: "dashboard_session", id: created.session.sessionId },
@@ -395,14 +488,14 @@ export function createHttpServeApp(
     }
   });
 
-  app.get(paths.dashboardSession, (c) => {
-    const session = dashboardSessionForRequest(c);
+  app.get(paths.dashboardSession, async (c) => {
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     return c.json({ authenticated: true, session: session.session });
   });
 
   app.get(paths.dashboardSummary, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const baseUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
@@ -423,8 +516,21 @@ export function createHttpServeApp(
     }
   });
 
+  app.get(paths.dashboardStorageHealth, async (c) => {
+    try {
+      const health = await engine.controlPlaneHealth();
+      if (!health) {
+        return c.json({ error: "storage_unavailable", guidanceCode: "storage-unavailable" }, 503);
+      }
+      const redacted = assertRedactedControlPlaneHealth(health);
+      return c.json(redacted);
+    } catch {
+      return c.json({ error: "storage_unavailable", guidanceCode: "storage-unavailable" }, 503);
+    }
+  });
+
   app.get(paths.dashboardCaplets, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -439,7 +545,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardManagement, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
     try {
@@ -451,14 +557,16 @@ export function createHttpServeApp(
         io.currentHostManagement,
         `list:${resource}`,
       );
-      return c.json(await currentHostOperations.list(principal, { binding, resource }));
+      return currentHostManagementResponse(
+        await currentHostOperations.list(principal, { binding, resource }),
+      );
     } catch (error) {
       return currentHostErrorResponse(error);
     }
   });
 
   app.get(paths.dashboardManagementInspect, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
     try {
@@ -472,7 +580,7 @@ export function createHttpServeApp(
         io.currentHostManagement,
         `inspect:${resource}:${id}:${selector}`,
       );
-      return c.json(
+      return currentHostManagementResponse(
         await currentHostOperations.inspect(principal, { binding, resource, id, selector }),
       );
     } catch (error) {
@@ -481,20 +589,30 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardManagementStatus, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     if (!io.currentHostManagement) return c.json({ error: "management_unavailable" }, 404);
     try {
       const principal = dashboardPrincipalForSession(c, session.session);
       const binding = dashboardManagementBinding(principal, io.currentHostManagement, "status");
-      return c.json(await currentHostOperations.status(principal, binding));
+      await engine.requireLiveControlPlane("admin");
+      const health = await engine.controlPlaneHealth();
+      if (!health) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Activated SQL storage health is unavailable.",
+        );
+      }
+      const redacted = assertRedactedControlPlaneHealth(health);
+      await engine.requireLiveControlPlane("admin");
+      return currentHostManagementResponse({ status: "ok", binding, health: redacted });
     } catch (error) {
       return currentHostErrorResponse(error);
     }
   });
 
   app.post(paths.dashboardManagementPreview, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -510,14 +628,16 @@ export function createHttpServeApp(
         stringField(parsed, "requestIdentity"),
         stringField(parsed, "operationId"),
       );
-      return c.json(await currentHostOperations.preview(principal, { binding, mutation }));
+      return currentHostManagementResponse(
+        await currentHostOperations.preview(principal, { binding, mutation }),
+      );
     } catch (error) {
       return currentHostErrorResponse(error);
     }
   });
 
   app.post(paths.dashboardManagementMutate, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -533,14 +653,16 @@ export function createHttpServeApp(
         stringField(parsed, "requestIdentity"),
         stringField(parsed, "operationId"),
       );
-      return c.json(await currentHostOperations.mutate(principal, { binding, mutation }));
+      return currentHostManagementResponse(
+        await currentHostOperations.mutate(principal, { binding, mutation }),
+      );
     } catch (error) {
       return currentHostErrorResponse(error);
     }
   });
 
   app.post(paths.dashboardManagementLookup, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -556,14 +678,16 @@ export function createHttpServeApp(
           "Current Host operation lookup target does not match the authenticated operator.",
         );
       }
-      return c.json(await currentHostOperations.lookupOperation(principal, binding));
+      return currentHostManagementResponse(
+        await currentHostOperations.lookupOperation(principal, binding),
+      );
     } catch (error) {
       return currentHostErrorResponse(error);
     }
   });
 
   app.get(paths.dashboardCatalogSearch, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
@@ -588,7 +712,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardCatalogDetail, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
@@ -612,7 +736,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardCatalogUpdates, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -627,7 +751,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardCatalogInstall, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -652,7 +776,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardCatalogUpdate, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -677,7 +801,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardAccessClients, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -692,7 +816,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardAccessPendingLogins, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -707,7 +831,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/approve"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -726,7 +850,7 @@ export function createHttpServeApp(
         },
       );
 
-      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 503);
       return c.json({ pendingLogin: outcome.pendingLogin });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -734,7 +858,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/deny"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -745,7 +869,7 @@ export function createHttpServeApp(
         { kind: "pending_login_deny", flowId: requiredRouteParam(c.req.param("flowId")) },
       );
 
-      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 503);
       return c.json({ pendingLogin: outcome.pendingLogin });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -753,7 +877,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessClients, ":clientId/revoke"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -764,9 +888,13 @@ export function createHttpServeApp(
         { kind: "client_revoke", clientId: requiredRouteParam(c.req.param("clientId")) },
       );
 
-      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 503);
       if (outcome.sessionEnded) {
-        dashboardSessionStore.delete(c.req.header("cookie"));
+        if (controlPlaneSecurity) {
+          await controlPlaneSecurity.deleteSession(c.req.header("cookie") ?? "");
+        } else {
+          (dashboardSessionStore as DashboardSessionStore).delete(c.req.header("cookie"));
+        }
         c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
       }
       return c.json({
@@ -780,7 +908,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardAccessClients, ":clientId/role"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -797,11 +925,15 @@ export function createHttpServeApp(
       );
 
       if (outcome.status === "credential_store_unavailable") {
-        return c.json({ error: "dashboard_auth_unavailable" }, 404);
+        return c.json({ error: "dashboard_auth_unavailable" }, 503);
       }
       if (outcome.status === "not_found") return c.json({ error: "client_not_found" }, 404);
       if (outcome.sessionEnded) {
-        dashboardSessionStore.delete(c.req.header("cookie"));
+        if (controlPlaneSecurity) {
+          await controlPlaneSecurity.deleteSession(c.req.header("cookie") ?? "");
+        } else {
+          (dashboardSessionStore as DashboardSessionStore).delete(c.req.header("cookie"));
+        }
         c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
       }
       return c.json({ client: outcome.client, sessionEnded: outcome.sessionEnded });
@@ -811,7 +943,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardActivity, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
@@ -832,7 +964,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardVault, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -847,7 +979,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultSet, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -871,7 +1003,7 @@ export function createHttpServeApp(
   });
 
   app.post(routePath(paths.dashboardVaultValues, ":key/delete"), async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -889,7 +1021,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultGrant, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -913,7 +1045,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultRevoke, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -937,7 +1069,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardVaultReveal, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -948,13 +1080,20 @@ export function createHttpServeApp(
       if (stringField(parsed, "confirmation") !== `reveal ${key}`) {
         throw new CapletsError("REQUEST_INVALID", "Vault reveal confirmation is invalid.");
       }
-      const value = vaultStoreForAuthDir(io.control?.authDir).resolveValue(key);
-      dashboardActivityLog.append({
+      const value = controlPlaneSecurity
+        ? await controlPlaneSecurity.revealValue(key)
+        : vaultStoreForAuthDir(io.control?.authDir).resolveValue(key);
+      await dashboardActivityLog.append({
         actorClientId: session.session.operatorClientId,
         action: "vault_value_revealed",
         target: { type: "vault", id: key },
         metadata: { confirmed: true },
       });
+      const finalSession = await dashboardSessionForRequest(c, {
+        requireCsrf: true,
+        csrfToken: c.req.header("x-caplets-csrf"),
+      });
+      if (!finalSession.ok) return finalSession.response;
       return c.json({ key, value }, 200, { "cache-control": "no-store" });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -962,7 +1101,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardRuntime, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -984,7 +1123,7 @@ export function createHttpServeApp(
   });
 
   app.post(paths.dashboardRuntimeRestart, async (c) => {
-    const session = dashboardSessionForRequest(c, {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
@@ -1002,7 +1141,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardLogs, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -1021,14 +1160,32 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardDiagnostics, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
+      if (engine.hasActivatedControlPlaneAuthority()) {
+        const authorizedSession = session.session;
+        const diagnostics = await engine.controlPlaneDetailedDiagnostics(async () => {
+          const current = await dashboardSessionForRequest(c);
+          return (
+            current.ok &&
+            current.session.sessionId === authorizedSession.sessionId &&
+            current.session.operatorClientId === authorizedSession.operatorClientId &&
+            current.session.role === "operator"
+          );
+        });
+        const guidance = sqlDiagnosticsGuidance(diagnostics);
+        return c.json({
+          status: guidance.code === "ok" ? "ok" : "attention",
+          diagnostics,
+          guidance,
+        });
+      }
+
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         { kind: "diagnostics" },
       );
-
       return c.json({
         status: outcome.status,
         diagnostics: outcome.diagnostics,
@@ -1040,7 +1197,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardEvents, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -1064,7 +1221,7 @@ export function createHttpServeApp(
   });
 
   app.get(paths.dashboardProjectBinding, async (c) => {
-    const session = dashboardSessionForRequest(c);
+    const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
     try {
       const outcome = await currentHostOperations.execute(
@@ -1078,18 +1235,25 @@ export function createHttpServeApp(
     }
   });
 
-  app.post(paths.dashboardLogout, (c) => {
-    const session = dashboardSessionForRequest(c, {
+  app.post(paths.dashboardLogout, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
     });
     if (!session.ok) return session.response;
-    dashboardActivityLog.append({
+    await dashboardActivityLog.append({
       actorClientId: session.session.operatorClientId,
       action: "dashboard_logout",
       target: { type: "dashboard_session", id: session.session.sessionId },
     });
-    dashboardSessionStore.delete(c.req.header("cookie"));
+    if (controlPlaneSecurity) {
+      const parsed = parseDashboardCookie(c.req.header("cookie"));
+      if (parsed) {
+        await controlPlaneSecurity.deleteSession(`${parsed.sessionId}.${parsed.secret}`);
+      }
+    } else {
+      (dashboardSessionStore as DashboardSessionStore).delete(c.req.header("cookie"));
+    }
     c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
     return c.json({ ok: true });
   });
@@ -1100,10 +1264,11 @@ export function createHttpServeApp(
       dashboardStaticResponse(
         dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
         io.dashboardDistDir,
+        paths.base,
       ) ?? c.notFound(),
   );
 
-  if (remoteCredentialStore) {
+  if (pendingLoginAuthority) {
     app.post(paths.remoteLoginStart, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login start request");
@@ -1112,7 +1277,7 @@ export function createHttpServeApp(
         const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
           c.req.header(name),
         );
-        const pending = remoteCredentialStore.createPendingLogin({
+        const pending = await pendingLoginAuthority.createPendingLogin({
           hostUrl,
           hostIdentity: hostUrl,
           ...(clientLabel ? { clientLabel } : {}),
@@ -1123,7 +1288,7 @@ export function createHttpServeApp(
           ...pending,
           approvalCommand: pendingLoginApprovalCommand(
             pending.operatorCode,
-            remoteCredentialStore.dir,
+            remoteCredentialStore?.dir,
           ),
         });
       } catch (error) {
@@ -1135,7 +1300,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login poll request");
         return c.json(
-          remoteCredentialStore.pollPendingLogin({
+          await pendingLoginAuthority.pollPendingLogin({
             flowId: stringField(parsed, "flowId"),
             pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
           }),
@@ -1149,7 +1314,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login refresh request");
         return c.json(
-          remoteCredentialStore.refreshPendingLogin({
+          await pendingLoginAuthority.refreshPendingLogin({
             flowId: stringField(parsed, "flowId"),
             pendingRefreshSecret: stringField(parsed, "pendingRefreshSecret"),
             pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
@@ -1163,7 +1328,7 @@ export function createHttpServeApp(
     app.post(paths.remoteLoginComplete, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login complete request");
-        const credentials = remoteCredentialStore.completePendingLogin({
+        const credentials = await pendingLoginAuthority.completePendingLogin({
           hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
             c.req.header(name),
           ),
@@ -1180,7 +1345,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login cancel request");
         return c.json(
-          remoteCredentialStore.cancelPendingLogin({
+          await pendingLoginAuthority.cancelPendingLogin({
             flowId: stringField(parsed, "flowId"),
             pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
           }),
@@ -1198,7 +1363,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
         const refreshToken = stringField(parsed, "refreshToken");
-        const credentials = remoteCredentialStore.refreshClientCredentials({
+        const credentials = await remoteCredentialAuthority!.refreshClientCredentials({
           hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
             c.req.header(name),
           ),
@@ -1218,11 +1383,11 @@ export function createHttpServeApp(
       }
     });
 
-    app.delete(paths.remoteClient, authenticatedClientRouteAuth, (c) => {
+    app.delete(paths.remoteClient, authenticatedClientRouteAuth, async (c) => {
       const client = authenticatedRemoteClients.get(c.req.raw);
       if (!client) return c.text("Unauthorized", 401);
       try {
-        const revoked = remoteCredentialStore.revokeClient(client.clientId);
+        const revoked = await remoteCredentialAuthority!.revokeClient(client.clientId);
         if (revoked) completedSelfRevocations.add(c.req.raw);
         return c.json({ revoked, clientId: client.clientId });
       } catch (error) {
@@ -1288,6 +1453,7 @@ export function createHttpServeApp(
           });
           const context = attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER));
           const sessionId = randomUUID();
+          await authorizeAttachRequest(c);
           const session = await io.attachSessionFactory!(metadata, context);
           attachSessions.set(sessionId, { session, lastUsedAt: Date.now() });
           pruneIdleAttachSessions();
@@ -1308,6 +1474,7 @@ export function createHttpServeApp(
             return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 400);
           }
           const record = attachSessions.get(sessionId);
+          await authorizeAttachRequest(c);
           attachSessions.delete(sessionId);
           await record?.session.close();
           return c.json({ ok: true });
@@ -1317,6 +1484,7 @@ export function createHttpServeApp(
 
     app.get(paths.attachManifest, attachHostProtection, accessRouteAuth, async (c) => {
       try {
+        await authorizeAttachRequest(c);
         const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
         const attachSession = attachSessionId
           ? attachSessionForRequest(attachSessionId)
@@ -1335,6 +1503,7 @@ export function createHttpServeApp(
     app.get(paths.attachEvents, attachHostProtection, accessRouteAuth, async (c) => {
       try {
         const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
+        await authorizeAttachRequest(c);
         const attachSession = attachSessionId
           ? attachSessionForRequest(attachSessionId)
           : await fallbackAttachSession(
@@ -1356,6 +1525,7 @@ export function createHttpServeApp(
       try {
         const request = await parseAttachInvokeRequest(c.req.json());
         const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
+        await authorizeAttachRequest(c);
         const attachSession = attachSessionId
           ? attachSessionForRequest(attachSessionId)
           : await fallbackAttachSession(
@@ -1478,6 +1648,7 @@ export function createHttpServeApp(
     }
     const context = controlContext(
       io,
+      engine,
       writeErr,
       authFlowStore,
       c.req.url,
@@ -1488,7 +1659,7 @@ export function createHttpServeApp(
     );
     let principal: CurrentHostOperatorPrincipal;
     try {
-      principal = controlOperatorPrincipal(c);
+      principal = await controlOperatorPrincipal(c);
     } catch (error) {
       return remoteCredentialErrorResponse(error);
     }
@@ -1515,6 +1686,25 @@ export function createHttpServeApp(
     },
     upgradeWebSocket((c) => {
       const validation = projectBindingSocketRecordForRequest(c);
+      const authorizeLiveMessage = async (): Promise<boolean> => {
+        try {
+          await engine.requireLiveControlPlane("project-binding");
+          if (!remoteCredentialAuthority)
+            return options.auth.type === "development_unauthenticated";
+          const token = bearerToken(authorizationHeaderForRequest(c));
+          if (!token) return false;
+          const client = await remoteCredentialAuthority.validateAccessToken({
+            hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+              c.req.header(name),
+            ),
+            accessToken: token,
+            requiredRole: "access",
+          });
+          return validation.ok && client.clientId === validation.durableClientId;
+        } catch {
+          return false;
+        }
+      };
       return {
         onOpen: (_event, ws) => {
           if (
@@ -1537,6 +1727,11 @@ export function createHttpServeApp(
           }
           void parseProjectBindingSocketClientMessage(event.data)
             .then(async (message) => {
+              if (!(await authorizeLiveMessage())) {
+                await endProjectBindingRecord(validation.record);
+                ws.close(1008, "Project Binding session is no longer authorized.");
+                return;
+              }
               if (!message) return;
               if (
                 message.bindingId !== validation.record.bindingId ||
@@ -1612,6 +1807,9 @@ export function createHttpServeApp(
       const sessionId = `session_${randomUUID()}`;
       const now = new Date();
       const expiresAt = new Date(now.getTime() + PROJECT_BINDING_LEASE_TTL_MS).toISOString();
+      if (!(await projectBindingAuthorizationForRequest(c, "project-binding")())) {
+        return c.json({ ok: false, error: { code: "AUTH_FAILED" } }, 403);
+      }
       const paths = await projectBindingWorkspaceStore.ensureWorkspace({
         projectFingerprint: serverWorkspaceFingerprint,
         projectRoot,
@@ -1684,6 +1882,9 @@ export function createHttpServeApp(
       if (sessionId !== record.sessionId) {
         return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 403);
       }
+      if (!(await projectBindingAuthorizationForRequest(c, "project-binding")())) {
+        return c.json({ ok: false, error: { code: "AUTH_FAILED" } }, 403);
+      }
       const updated = await updateProjectBindingHeartbeat(
         record,
         {
@@ -1712,6 +1913,9 @@ export function createHttpServeApp(
       const ownerKey = projectBindingOwnerKey(c);
       const record = projectBindingRecordFor(bindingId, ownerKey);
       if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
+      if (!(await projectBindingAuthorizationForRequest(c, "project-binding")())) {
+        return c.json({ ok: false, error: { code: "AUTH_FAILED" } }, 403);
+      }
       const ended = await endProjectBindingRecord(record, ownerKey);
       if (!ended) return c.json({ ok: false, error: { code: "AUTH_FAILED" } }, 403);
       return c.json({ ok: true, binding: projectBindingResponse(record) });
@@ -1885,6 +2089,7 @@ export function createHttpServeApp(
     ownerKey: string,
   ): boolean {
     if (record.ownerKey !== ownerKey) return false;
+    if (controlPlaneSecurity) return ownerKey !== "development_unauthenticated";
     if (!remoteCredentialStore) return ownerKey === "development_unauthenticated";
     const client = remoteCredentialStore
       .listClients()
@@ -2001,7 +2206,7 @@ export function createHttpServeApp(
   }
 
   function projectBindingOwnerKey(c: Parameters<MiddlewareHandler>[0]): string {
-    if (!remoteCredentialStore) return "development_unauthenticated";
+    if (!remoteCredentialAuthority) return "development_unauthenticated";
     const client = authenticatedRemoteClients.get(c.req.raw);
     if (!client) {
       throw new CapletsError("AUTH_FAILED", "Remote client credential is required.");
@@ -2009,19 +2214,37 @@ export function createHttpServeApp(
     return client.clientId;
   }
 
+  async function authorizeAttachRequest(
+    c: Parameters<MiddlewareHandler>[0],
+    operation: "attach" | "project-binding" = "attach",
+  ): Promise<void> {
+    await engine.requireLiveControlPlane(operation);
+    if (!remoteCredentialAuthority) {
+      if (options.auth.type === "development_unauthenticated") return;
+      throw new CapletsError("AUTH_FAILED", "Remote client credential is required.");
+    }
+    const token = bearerToken(authorizationHeaderForRequest(c));
+    if (!token) throw new CapletsError("AUTH_FAILED", "Remote client credential is required.");
+    const client = await remoteCredentialAuthority.validateAccessToken({
+      hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+        c.req.header(name),
+      ),
+      accessToken: token,
+      requiredRole: "access",
+    });
+    if (!roleAllows(client.role, "access")) {
+      throw new CapletsError("AUTH_FAILED", "Remote client credential requires Access.");
+    }
+  }
+
   function projectBindingAuthorizationForRequest(
     c: Parameters<MiddlewareHandler>[0],
-  ): () => boolean {
-    if (!remoteCredentialStore) return () => true;
-    const token = bearerToken(authorizationHeaderForRequest(c));
-    if (!token) return () => false;
-    const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-      c.req.header(name),
-    );
-    return () => {
+    operation: "attach" | "project-binding" = "attach",
+  ): () => Promise<boolean> {
+    return async () => {
       try {
-        const client = remoteCredentialStore.validateAccessToken({ hostUrl, accessToken: token });
-        return roleAllows(client.role, "access");
+        await authorizeAttachRequest(c, operation);
+        return true;
       } catch {
         return false;
       }
@@ -2105,10 +2328,10 @@ export function createHttpServeApp(
     return value as ProjectBindingState;
   }
 
-  function dashboardSessionForRequest(
+  async function dashboardSessionForRequest(
     c: Parameters<MiddlewareHandler>[0],
     csrf: { requireCsrf?: boolean; csrfToken?: string | undefined } = {},
-  ): { ok: true; session: DashboardSessionView } | { ok: false; response: Response } {
+  ): Promise<{ ok: true; session: DashboardSessionView } | { ok: false; response: Response }> {
     return validateDashboardSession(c.req.header("cookie"), csrf, c.req.url, (name) =>
       c.req.header(name),
     );
@@ -2122,7 +2345,36 @@ export function createHttpServeApp(
       c.req.header(name),
     );
     if (session.operatorClientId === "development_unauthenticated") {
-      return trustedDevelopmentOperatorPrincipal(hostUrl);
+      return withCurrentHostFinalAuthorization(
+        trustedDevelopmentOperatorPrincipal(hostUrl),
+        async () => {
+          await engine.requireLiveControlPlane("mutation");
+        },
+      );
+    }
+    if (controlPlaneSecurity) {
+      const parsedCookie = parseDashboardCookie(c.req.header("cookie"));
+      const cookieValue = parsedCookie ? `${parsedCookie.sessionId}.${parsedCookie.secret}` : "";
+      return withCurrentHostFinalAuthorization(
+        {
+          clientId: session.operatorClientId,
+          hostUrl,
+          role: "operator",
+        },
+        async () => {
+          await engine.requireLiveControlPlane("mutation");
+          const liveSession = await controlPlaneSecurity.validate({ cookieValue });
+          if (
+            liveSession.operatorClientId !== session.operatorClientId ||
+            liveSession.role !== "operator"
+          ) {
+            throw new CapletsError(
+              "AUTH_FAILED",
+              "Dashboard administration requires a live Operator principal.",
+            );
+          }
+        },
+      );
     }
     const assertLiveOperator = () => {
       const liveClient = remoteCredentialStore
@@ -2142,23 +2394,29 @@ export function createHttpServeApp(
         hostUrl,
         role: "operator",
       },
-      assertLiveOperator,
+      async () => {
+        await engine.requireLiveControlPlane("mutation");
+        assertLiveOperator();
+      },
     );
   }
 
-  function controlOperatorPrincipal(
+  async function controlOperatorPrincipal(
     c: Parameters<MiddlewareHandler>[0],
-  ): CurrentHostOperatorPrincipal {
+  ): Promise<CurrentHostOperatorPrincipal> {
     const retained = authenticatedRemoteClients.get(c.req.raw);
-    if (retained && remoteCredentialStore) {
+    if (retained && remoteCredentialAuthority) {
       const token = bearerToken(authorizationHeaderForRequest(c));
       if (!token) throw new CapletsError("AUTH_FAILED", "Remote credential is unavailable.");
-      const validateOperator = () => {
-        const client = remoteCredentialStore.validateAccessToken({
-          hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-            c.req.header(name),
-          ),
+      const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+        c.req.header(name),
+      );
+      const validateOperator = async () => {
+        await engine.requireLiveControlPlane("mutation");
+        const client = await remoteCredentialAuthority.validateAccessToken({
+          hostUrl,
           accessToken: token,
+          requiredRole: "operator",
         });
         if (client.clientId !== retained.clientId || client.role !== "operator") {
           throw new CapletsError(
@@ -2168,7 +2426,7 @@ export function createHttpServeApp(
         }
         return client;
       };
-      const client = validateOperator();
+      const client = await validateOperator();
       return withCurrentHostFinalAuthorization(
         {
           clientId: client.clientId,
@@ -2176,8 +2434,8 @@ export function createHttpServeApp(
           hostUrl: client.hostUrl,
           role: "operator",
         },
-        () => {
-          validateOperator();
+        async () => {
+          await validateOperator();
         },
       );
     }
@@ -2185,8 +2443,13 @@ export function createHttpServeApp(
       options.auth.type === "development_unauthenticated" &&
       isVerifiedLoopbackDevelopmentRequest(options, c.req.url, (name) => c.req.header(name))
     ) {
-      return trustedDevelopmentOperatorPrincipal(
-        remoteCredentialHostUrl(c.req.url, paths.base, options, (name) => c.req.header(name)),
+      return withCurrentHostFinalAuthorization(
+        trustedDevelopmentOperatorPrincipal(
+          remoteCredentialHostUrl(c.req.url, paths.base, options, (name) => c.req.header(name)),
+        ),
+        async () => {
+          await engine.requireLiveControlPlane("mutation");
+        },
       );
     }
     throw new CapletsError(
@@ -2195,13 +2458,13 @@ export function createHttpServeApp(
     );
   }
 
-  function validateDashboardSession(
+  async function validateDashboardSession(
     cookieHeader: string | undefined,
     csrf: { requireCsrf?: boolean; csrfToken?: string | undefined },
     requestUrl: string,
     header: (name: string) => string | undefined,
-  ): { ok: true; session: DashboardSessionView } | { ok: false; response: Response } {
-    if (!remoteCredentialStore && options.auth.type === "development_unauthenticated") {
+  ): Promise<{ ok: true; session: DashboardSessionView } | { ok: false; response: Response }> {
+    if (!remoteCredentialAuthority && options.auth.type === "development_unauthenticated") {
       if (!isVerifiedLoopbackDevelopmentRequest(options, requestUrl, header)) {
         return { ok: false, response: new Response("Forbidden", { status: 403 }) };
       }
@@ -2222,27 +2485,37 @@ export function createHttpServeApp(
         },
       };
     }
-    if (!remoteCredentialStore) {
+    if (!remoteCredentialAuthority) {
       return {
         ok: false,
         response: new Response(JSON.stringify({ error: "not_found" }), { status: 404 }),
       };
     }
     try {
-      return {
-        ok: true,
-        session: dashboardSessionStore.validate({
-          cookieHeader,
-          credentialStore: remoteCredentialStore,
-          ...csrf,
-        }),
-      };
+      const parsedCookie = parseDashboardCookie(cookieHeader);
+      const session = controlPlaneSecurity
+        ? await controlPlaneSecurity.validate({
+            cookieValue: parsedCookie ? `${parsedCookie.sessionId}.${parsedCookie.secret}` : "",
+            ...csrf,
+          })
+        : (dashboardSessionStore as DashboardSessionStore).validate({
+            cookieHeader,
+            credentialStore: remoteCredentialStore!,
+            ...csrf,
+          });
+      return { ok: true, session };
     } catch (error) {
       if (error instanceof CapletsError && error.code === "REQUEST_INVALID") {
         return { ok: false, response: new Response("Forbidden", { status: 403 }) };
       }
       if (error instanceof CapletsError && error.code === "SERVER_UNAVAILABLE") {
-        return { ok: false, response: new Response("Service Unavailable", { status: 503 }) };
+        return {
+          ok: false,
+          response: new Response(
+            JSON.stringify({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }),
+            { status: 503, headers: { "content-type": "application/json; charset=UTF-8" } },
+          ),
+        };
       }
       return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
     }
@@ -2267,6 +2540,7 @@ export function createHttpServeApp(
       { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
       controlContext(
         io,
+        engine,
         writeErr,
         authFlowStore,
         c.req.url,
@@ -2319,6 +2593,7 @@ export function createHttpServeApp(
 
 function controlContext(
   io: HttpServeIo,
+  engine: CapletsEngine,
   writeErr: (value: string) => void,
   authFlowStore: RemoteAuthFlowStore,
   requestUrl: string,
@@ -2329,6 +2604,7 @@ function controlContext(
 ): RemoteControlDispatchContext {
   return {
     ...io.control,
+    engine,
     projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
     globalCapletsRoot: io.control?.globalCapletsRoot ?? resolveCapletsRoot(io.control?.configPath),
     globalLockfilePath: io.control?.globalLockfilePath ?? defaultCapletsLockfilePath(),
@@ -2365,10 +2641,12 @@ function requestIsSecure(
   options: Pick<HttpServeOptions, "publicOrigin" | "publicOrigins" | "trustProxy">,
   header: (name: string) => string | undefined,
 ): boolean {
+  const requestOrigin = publicRequestOrigin(requestUrl, options.trustProxy, header);
   const publicOrigin = remoteCredentialPublicOrigin(options, header);
-  return (publicOrigin ?? publicRequestOrigin(requestUrl, options.trustProxy, header)).startsWith(
-    "https://",
-  );
+  if (publicOrigin && new URL(publicOrigin).host === new URL(requestOrigin).host) {
+    return publicOrigin.startsWith("https://");
+  }
+  return requestOrigin.startsWith("https://");
 }
 
 function dashboardStaticRequestPath(pathname: string, basePath: string): string {
@@ -2700,7 +2978,7 @@ function attachEventSource(
 function attachEventsResponse(
   source: AttachEventSource,
   activeStreams: Set<AttachEventStream>,
-  options: { onActivity?: () => void; authorize?: () => boolean } = {},
+  options: { onActivity?: () => void; authorize?: () => Promise<boolean> } = {},
 ): Response {
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
@@ -2708,8 +2986,8 @@ function attachEventsResponse(
   let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
   let closed = false;
   const readable = new ReadableStream<Uint8Array>({
-    start(controller) {
-      if (options.authorize && !options.authorize()) {
+    async start(controller) {
+      if (options.authorize && !(await options.authorize())) {
         closed = true;
         controller.close();
         return;
@@ -2732,29 +3010,31 @@ function attachEventsResponse(
       options.onActivity?.();
       controller.enqueue(encoder.encode(": connected\n\n"));
       keepAliveTimer = setInterval(() => {
-        if (closed) return;
-        if (options.authorize && !options.authorize()) {
-          activeStream?.close();
-          return;
-        }
-        options.onActivity?.();
-        try {
-          controller.enqueue(encoder.encode(": keepalive\n\n"));
-        } catch {
-          activeStream?.close();
-        }
+        void (async () => {
+          if (closed) return;
+          if (options.authorize && !(await options.authorize())) {
+            activeStream?.close();
+            return;
+          }
+          options.onActivity?.();
+          try {
+            controller.enqueue(encoder.encode(": keepalive\n\n"));
+          } catch {
+            activeStream?.close();
+          }
+        })();
       }, 30_000);
       keepAliveTimer.unref?.();
       unsubscribe = source.onManifestChanged(() => {
-        if (options.authorize && !options.authorize()) {
-          activeStream?.close();
-          return;
-        }
-        options.onActivity?.();
-        void source
-          .manifestRevision()
-          .then((revision) => {
-            if (options.authorize && !options.authorize()) {
+        void (async () => {
+          if (options.authorize && !(await options.authorize())) {
+            activeStream?.close();
+            return;
+          }
+          options.onActivity?.();
+          try {
+            const revision = await source.manifestRevision();
+            if (options.authorize && !(await options.authorize())) {
               activeStream?.close();
               return;
             }
@@ -2762,8 +3042,10 @@ function attachEventsResponse(
             controller.enqueue(
               encoder.encode(`event: manifest_changed\ndata: ${JSON.stringify({ revision })}\n\n`),
             );
-          })
-          .catch(() => undefined);
+          } catch {
+            activeStream?.close();
+          }
+        })();
       });
     },
     cancel() {
@@ -2789,7 +3071,7 @@ export async function serveHttp(
   return startHttpService(
     options,
     remoteEngineOptions,
-    new CapletsEngine(remoteEngineOptions),
+    await createCapletsEngine(remoteEngineOptions),
     writeErr,
   );
 }
@@ -2814,6 +3096,8 @@ function startHttpService(
 ): void {
   const app = createHttpServeApp(options, engine, {
     writeErr,
+    currentHostManagement: engine.currentHostManagementDependencies(),
+    controlPlaneSecurity: engine.controlPlaneSecurityRepository(),
     control: {
       ...remoteEngineOptions,
       ...(loader ? { internalRuntimeSnapshotLoader: loader } : {}),
@@ -2861,7 +3145,7 @@ export async function serveHttpWithSessionFactory(
     writeErr,
     io,
     remoteEngineOptions,
-    new CapletsEngine(remoteEngineOptions),
+    await createCapletsEngine(remoteEngineOptions),
   );
 }
 
@@ -2900,6 +3184,8 @@ function startHttpSessionService(
 ): void {
   const app = createHttpServeApp(options, engine, {
     writeErr,
+    currentHostManagement: engine.currentHostManagementDependencies(),
+    controlPlaneSecurity: engine.controlPlaneSecurityRepository(),
     exposeAttach: io.exposeAttach ?? false,
     sessionFactory: createSession,
     ...(io.attachSessionFactory ? { attachSessionFactory: io.attachSessionFactory } : {}),
@@ -2984,11 +3270,13 @@ export function servicePaths(base: string): {
   dashboardApi: string;
   dashboardLoginStart: string;
   dashboardLoginPoll: string;
+  dashboardLoginApprove: string;
   dashboardLoginComplete: string;
   dashboardSession: string;
   dashboardLogout: string;
   dashboardSummary: string;
   dashboardCaplets: string;
+  dashboardStorageHealth: string;
   dashboardManagement: string;
   dashboardManagementInspect: string;
   dashboardManagementPreview: string;
@@ -3045,11 +3333,13 @@ export function servicePaths(base: string): {
     dashboardApi,
     dashboardLoginStart: routePath(dashboardLogin, "start"),
     dashboardLoginPoll: routePath(dashboardLogin, "poll"),
+    dashboardLoginApprove: routePath(dashboardLogin, "approve"),
     dashboardLoginComplete: routePath(dashboardLogin, "complete"),
     dashboardSession: routePath(dashboardApi, "session"),
     dashboardLogout: routePath(dashboardApi, "logout"),
     dashboardSummary: routePath(dashboardApi, "summary"),
     dashboardCaplets: routePath(dashboardApi, "caplets"),
+    dashboardStorageHealth: routePath(dashboardApi, "storage-health"),
     dashboardManagement: routePath(dashboardApi, "management"),
     dashboardManagementInspect: routePath(dashboardApi, "management/inspect"),
     dashboardManagementPreview: routePath(dashboardApi, "management/preview"),
@@ -3190,7 +3480,7 @@ function isDashboardActivityAction(value: string): value is DashboardActivityAct
 
 function routeAuth(
   options: HttpServeOptions,
-  remoteCredentialStore: RemoteServerCredentialStore | undefined,
+  remoteCredentialStore: RemoteCredentialRepository | RemoteServerCredentialStore | undefined,
   basePath: string,
   requiredRole: RemoteClientRole | undefined,
   retainAuthenticatedClient:
@@ -3219,7 +3509,7 @@ function routeAuth(
     );
     let client: ValidatedRemoteClient;
     try {
-      client = remoteCredentialStore.validateAccessToken({
+      client = await remoteCredentialStore.validateAccessToken({
         hostUrl,
         accessToken: token,
       });
@@ -3237,7 +3527,7 @@ function routeAuth(
       await next();
       if (!skipFinalAuthorizationCheck?.(c.req.raw)) {
         try {
-          const finalClient = remoteCredentialStore.validateAccessToken({
+          const finalClient = await remoteCredentialStore.validateAccessToken({
             hostUrl,
             accessToken: token,
           });
@@ -3445,6 +3735,82 @@ function remoteCredentialErrorResponse(error: unknown): Response {
       ? toSafeError(error, error.code)
       : toSafeError(error, "AUTH_FAILED");
   return Response.json({ ok: false, error: safe }, { status: httpStatusForSafeError(safe.code) });
+}
+
+function currentHostManagementResponse(outcome: unknown): Response {
+  const status = isRecord(outcome) ? outcome.status : undefined;
+  const httpStatus =
+    status === "unavailable"
+      ? 503
+      : status === "denied" || status === "wrong_target"
+        ? 403
+        : status === "not_found"
+          ? 404
+          : status === "conflict" || status === "rejected" || status === "stale_namespace"
+            ? 409
+            : 200;
+  return Response.json(outcome, { status: httpStatus });
+}
+
+function sqlDiagnosticsGuidance(diagnostics: ControlPlaneDetailedDiagnostics): Readonly<{
+  code: "ok" | "key-incompatible" | "no-ready-nodes" | "convergence-overdue" | "activation-staged";
+  summary: string;
+  actions: readonly string[];
+}> {
+  const actions: string[] = [];
+  if (diagnostics.keyCompatibility.status === "incompatible") {
+    actions.push(
+      "Restore the configured key provider and both key commitments before retrying live operations.",
+    );
+  }
+  if (diagnostics.readyNodes === 0) {
+    actions.push("Start or recover a compatible replica for this Current Host.");
+  }
+  if (diagnostics.overdueNodes > 0) {
+    actions.push(
+      "Fence or recover overdue replicas, then wait for convergence before retrying mutations.",
+    );
+  }
+  if (diagnostics.fingerprint.nextFingerprint !== undefined) {
+    actions.push("Complete or roll back the staged bootstrap activation across the Current Host.");
+  }
+  if (actions.length === 0) {
+    actions.push("No operator action is required.");
+  }
+
+  if (diagnostics.keyCompatibility.status === "incompatible") {
+    return {
+      code: "key-incompatible",
+      summary: "The active storage key is incompatible with the configured commitments.",
+      actions,
+    };
+  }
+  if (diagnostics.overdueNodes > 0) {
+    return {
+      code: "convergence-overdue",
+      summary: `${diagnostics.overdueNodes} replica${diagnostics.overdueNodes === 1 ? " is" : "s are"} overdue.`,
+      actions,
+    };
+  }
+  if (diagnostics.readyNodes === 0) {
+    return {
+      code: "no-ready-nodes",
+      summary: "No compatible replica is currently ready.",
+      actions,
+    };
+  }
+  if (diagnostics.fingerprint.nextFingerprint !== undefined) {
+    return {
+      code: "activation-staged",
+      summary: "A compatible bootstrap activation is staged.",
+      actions,
+    };
+  }
+  return {
+    code: "ok",
+    summary: "SQL storage authority is compatible and converged.",
+    actions,
+  };
 }
 
 function currentHostErrorResponse(error: unknown): Response {

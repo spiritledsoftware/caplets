@@ -25,8 +25,19 @@ import {
   createControlPlaneSecurityRepository,
 } from "../src/control-plane/security/repository";
 import type { ResolvedSqliteStorage } from "../src/control-plane/storage-config";
-import type { ControlPlaneTransactionalDialect } from "../src/control-plane/store";
+import type {
+  ControlPlaneDatabaseRow,
+  ControlPlaneFilter,
+  ControlPlaneOrder,
+  ControlPlaneTable,
+  ControlPlaneTransactionalDialect,
+} from "../src/control-plane/store";
 import type { ControlPlaneStoreIdentity } from "../src/control-plane/types";
+import {
+  LocalSetupStore,
+  readLegacyLocalSetupState,
+  removeMigratedLegacyLocalSetupState,
+} from "../src/setup/local-store";
 import type { DashboardActivityRepository } from "../src/dashboard/activity-log";
 import {
   openPostgresControlPlaneFixture,
@@ -38,6 +49,16 @@ const identity: ControlPlaneStoreIdentity = {
   storeId: "store_01J00000000000000000000000",
   operationNamespace: "namespace_01J00000000000000000000",
 };
+const mutationAuthority = () =>
+  ({
+    securityEpoch: 1,
+    writerFence: {
+      leaseId: "lease-u6",
+      writerEpoch: 1,
+      authorityGeneration: 0,
+    },
+  }) as const;
+
 const migrationEnvironment: MigrationEnvironment = {
   binaryVersion: "0.34.1",
   supportedSchemaVersion: 1,
@@ -101,7 +122,18 @@ async function fixture() {
     dialect,
     keyProvider,
     controlStore,
-    repository: createControlPlaneSecurityRepository({ identity, dialect, keyProvider }),
+    repository: createControlPlaneSecurityRepository({
+      identity,
+      dialect,
+      keyProvider,
+      mutationAuthority: () => ({
+        ...mutationAuthority(),
+        securityEpoch:
+          dialect.query<{ epoch: number }>(
+            "SELECT epoch FROM cp_security_version ORDER BY epoch DESC LIMIT 1",
+          )[0]?.epoch ?? 0,
+      }),
+    }),
   };
 }
 
@@ -295,6 +327,7 @@ describe("SQL control-plane security state", () => {
         requiredRole: "operator",
       }),
     ).resolves.toMatchObject({ clientId: operator.clientId, role: "operator" });
+    expect(operator.clientId).toMatch(/^rcli_[A-Za-z0-9_-]{16}$/u);
 
     const issuedSession = await test.repository.create({ operatorClientId: operator.clientId });
     await expect(
@@ -329,25 +362,31 @@ describe("SQL control-plane security state", () => {
       { epoch: 1, revocationWatermark: 0 },
       { epoch: 2, revocationWatermark: 1 },
     ]);
+    const refreshedRepository = createControlPlaneSecurityRepository({
+      identity,
+      dialect: test.dialect,
+      keyProvider: test.keyProvider,
+      mutationAuthority: () => ({ ...mutationAuthority(), securityEpoch: 2 }),
+    });
     await expect(
-      test.repository.validate({ cookieValue: issuedSession.cookieValue }),
+      refreshedRepository.validate({ cookieValue: issuedSession.cookieValue }),
     ).rejects.toMatchObject({ code: "AUTH_FAILED" });
     await expect(
-      test.repository.validateAccessToken({
+      refreshedRepository.validateAccessToken({
         hostUrl: operator.hostUrl,
         accessToken: operator.accessToken,
         requiredRole: "access",
       }),
     ).resolves.toMatchObject({ role: "access" });
     await expect(
-      test.repository.authorize({
+      refreshedRepository.authorize({
         ...identity,
         actorId: operator.clientId,
         requiredRole: "operator",
       }),
     ).resolves.toEqual({ status: "denied", reason: "role-insufficient" });
     await expect(
-      test.repository.authorize({
+      refreshedRepository.authorize({
         ...identity,
         actorId: operator.clientId,
         requiredRole: "access",
@@ -559,8 +598,279 @@ describe("SQL control-plane security state", () => {
     }
   });
 
+  it("persists SQL pending login authority across restart and permits only one competing approval", async () => {
+    const test = await fixture();
+    await seedAuthorizationRows(test.dialect);
+    const pending = await test.repository.createPendingLogin({
+      hostUrl: "http://127.0.0.1:4322",
+      hostIdentity: "http://127.0.0.1:4322",
+      requestedRole: "operator",
+      clientLabel: "Restarted dashboard",
+      clientFingerprint: "browser-fingerprint",
+      sourceHint: "loopback",
+    });
+    expect(JSON.stringify(await test.repository.listPendingLogins())).not.toContain(
+      pending.pendingCompletionSecret,
+    );
+    await test.dialect.close();
+
+    const reopened = await openSqliteControlPlaneDialect({
+      storage: test.storage,
+      environment: migrationEnvironment,
+      assetRoot,
+    });
+    dialects.push(reopened);
+    reopened.migrate();
+    const repository = createControlPlaneSecurityRepository({
+      identity,
+      dialect: reopened,
+      keyProvider: test.keyProvider,
+      mutationAuthority,
+    });
+    await expect(
+      repository.pollPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    ).resolves.toEqual({ flowId: pending.flowId, status: "pending" });
+
+    const approvals = await Promise.allSettled([
+      repository.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        grantedRole: "operator",
+      }),
+      repository.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        grantedRole: "operator",
+      }),
+    ]);
+    expect(approvals.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(approvals.filter((result) => result.status === "rejected")).toHaveLength(1);
+
+    const credentials = await repository.completePendingLogin({
+      hostUrl: "http://127.0.0.1:4322",
+      requiredRole: "operator",
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    });
+    await expect(
+      repository.validateAccessToken({
+        hostUrl: credentials.hostUrl,
+        accessToken: credentials.accessToken,
+        requiredRole: "operator",
+      }),
+    ).resolves.toMatchObject({ clientId: credentials.clientId, role: "operator" });
+    await expect(repository.revokeClient(credentials.clientId)).resolves.toBe(true);
+    const refreshedRepository = createControlPlaneSecurityRepository({
+      identity,
+      dialect: reopened,
+      keyProvider: test.keyProvider,
+      mutationAuthority: () => ({ ...mutationAuthority(), securityEpoch: 2 }),
+    });
+    await expect(
+      refreshedRepository.validateAccessToken({
+        hostUrl: credentials.hostUrl,
+        accessToken: credentials.accessToken,
+      }),
+    ).rejects.toMatchObject({ code: "AUTH_FAILED" });
+    expect(await repository.listClients()).toHaveLength(1);
+    expect(await repository.listPendingLogins()).toEqual([
+      expect.objectContaining({ flowId: pending.flowId, status: "exchanged" }),
+    ]);
+  });
+
+  it("rejects the exact revoked caller fence without borrowing a higher active fence", async () => {
+    const test = await fixture();
+    await seedAuthorizationRows(test.dialect);
+    const pending = await test.repository.createPendingLogin({
+      hostUrl: "http://127.0.0.1:4322",
+      requestedRole: "operator",
+      clientLabel: "Revoked dashboard",
+    });
+    await test.dialect.runtimeTransaction(async (transaction) => {
+      const now = await transaction.databaseTime();
+      await transaction.update(
+        "writerFences",
+        { state: "revoked", updatedAt: now },
+        {
+          equals: {
+            logicalHostId: identity.logicalHostId,
+            storeId: identity.storeId,
+            state: "active",
+          },
+        },
+      );
+      await transaction.insert("writerFences", {
+        modelVersion: 1,
+        id: "writer-fence:higher",
+        logicalHostId: identity.logicalHostId,
+        storeId: identity.storeId,
+        createdAt: now,
+        updatedAt: now,
+        aggregateVersion: 0,
+        authorityVersion: 0,
+        effectiveVersion: 0,
+        securityVersion: 1,
+        leaseId: "lease-higher",
+        writerEpoch: 2,
+        authorityGeneration: 0,
+        expiresAt: "9999-12-31T23:59:59.999Z",
+        state: "active",
+      });
+    });
+    const activityBefore = test.dialect.query<{ count: number }>(
+      "SELECT count(*) AS count FROM cp_operator_activity",
+    );
+    await expect(
+      test.repository.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        grantedRole: "operator",
+      }),
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    await expect(
+      test.repository.pollPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    ).resolves.toEqual({ flowId: pending.flowId, status: "pending" });
+    expect(
+      test.dialect.query<{ state: string }>(
+        "SELECT state FROM cp_pending_approval WHERE approval_id = ?",
+        [pending.flowId],
+      ),
+    ).toEqual([{ state: "pending" }]);
+    expect(
+      test.dialect.query<{ count: number }>("SELECT count(*) AS count FROM cp_operator_activity"),
+    ).toEqual(activityBefore);
+  });
+
+  it.each([
+    [
+      "security epoch",
+      {
+        securityEpoch: 0,
+        writerFence: { leaseId: "lease-u6", writerEpoch: 1, authorityGeneration: 0 },
+      },
+    ],
+    [
+      "writer epoch",
+      {
+        securityEpoch: 1,
+        writerFence: { leaseId: "lease-u6", writerEpoch: 2, authorityGeneration: 0 },
+      },
+    ],
+    [
+      "authority generation",
+      {
+        securityEpoch: 1,
+        writerFence: { leaseId: "lease-u6", writerEpoch: 1, authorityGeneration: 1 },
+      },
+    ],
+  ] as const)("rolls back a security mutation with a stale caller %s", async (_name, stale) => {
+    const test = await fixture();
+    await seedAuthorizationRows(test.dialect);
+    const pending = await test.repository.createPendingLogin({
+      hostUrl: "http://127.0.0.1:4322",
+      requestedRole: "operator",
+      clientLabel: "Stale authority",
+    });
+    const staleRepository = createControlPlaneSecurityRepository({
+      identity,
+      dialect: test.dialect,
+      keyProvider: test.keyProvider,
+      mutationAuthority: () => stale,
+    });
+    const activityBefore = test.dialect.query<{ count: number }>(
+      "SELECT count(*) AS count FROM cp_operator_activity",
+    );
+
+    await expect(
+      staleRepository.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        grantedRole: "operator",
+      }),
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    expect(
+      test.dialect.query<{ state: string }>(
+        "SELECT state FROM cp_pending_approval WHERE approval_id = ?",
+        [pending.flowId],
+      ),
+    ).toEqual([{ state: "pending" }]);
+    expect(
+      test.dialect.query<{ count: number }>("SELECT count(*) AS count FROM cp_operator_activity"),
+    ).toEqual(activityBefore);
+  });
+
+  it("rolls back a paused mutation when actor revocation advances the final security epoch", async () => {
+    const test = await fixture();
+    await seedAuthorizationRows(test.dialect);
+    const mutationPaused = Promise.withResolvers<void>();
+    const releaseMutation = Promise.withResolvers<void>();
+    let securityReads = 0;
+    let revocationVisible = false;
+    const revocationDialect = new Proxy(test.dialect, {
+      get(target, property, receiver) {
+        if (property !== "runtimeTransaction") return Reflect.get(target, property, receiver);
+        return async (work: Parameters<typeof target.runtimeTransaction>[0]) =>
+          target.runtimeTransaction((transaction) =>
+            work({
+              ...transaction,
+              async select<Row extends ControlPlaneDatabaseRow>(
+                table: ControlPlaneTable,
+                filter?: ControlPlaneFilter,
+                order?: readonly ControlPlaneOrder[],
+                limit?: number,
+              ): Promise<readonly Row[]> {
+                const rows = await transaction.select<Row>(table, filter, order, limit);
+                if (table !== "securityVersions" || ++securityReads < 3 || !revocationVisible) {
+                  return rows;
+                }
+                return rows.map(
+                  (row) =>
+                    ({
+                      ...row,
+                      epoch: Number(row.epoch) + 1,
+                      securityVersion: Number(row.securityVersion) + 1,
+                      revocationWatermark: Number(row.revocationWatermark) + 1,
+                    }) as Row,
+                );
+              },
+            }),
+          );
+      },
+    });
+    const repository = createControlPlaneSecurityRepository({
+      identity,
+      dialect: revocationDialect,
+      keyProvider: test.keyProvider,
+      mutationAuthority,
+      async failureInjector(point) {
+        if (point !== "after-vault-value") return;
+        mutationPaused.resolve();
+        await releaseMutation.promise;
+      },
+    });
+    const mutation = repository.setWithGrant({
+      key: "REVOKED_ACTOR_WRITE",
+      value: "must-roll-back",
+    });
+    await mutationPaused.promise;
+    revocationVisible = true;
+    releaseMutation.resolve();
+
+    await expect(mutation).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    await expect(test.repository.getStatus("REVOKED_ACTOR_WRITE")).resolves.toEqual({
+      key: "REVOKED_ACTOR_WRITE",
+      present: false,
+    });
+    expect(
+      test.dialect.query<{ epoch: number }>("SELECT epoch FROM cp_security_version ORDER BY epoch"),
+    ).toEqual([{ epoch: 0 }, { epoch: 1 }]);
+  });
+
   it("rolls back Vault value and grant writes atomically and replaces an exact-origin remap", async () => {
     const test = await fixture();
+    await seedAuthorizationRows(test.dialect);
     await seedCaplet(test.dialect);
     const origin = { kind: "project-file" as const, path: "/workspace/caplet.json" };
     const afterGrant = createControlPlaneSecurityRepository({
@@ -635,6 +945,30 @@ describe("SQL control-plane security state", () => {
       const test = await postgresSecurityFixture();
       await seedAuthorizationRows(test.dialect);
       await seedCaplet(test.dialect);
+      const activation = await test.controlStore.initialize();
+      const node = await test.controlStore.registerNode({
+        nodeId: "postgres-node-a",
+        bootstrapFingerprint: "postgres-security-fingerprint",
+        effectiveRuntimeFingerprint: "postgres-security-fingerprint",
+        compatibility: {
+          ...test.dialect.compatibility,
+          providerCommitment: "1".repeat(64),
+          keyCanaryCommitment: "2".repeat(64),
+          capabilities: ["ordered-tuple-polling", "writer-fence-v1", "complete-snapshot-v1"],
+        },
+        ttlMs: 60_000,
+        appliedToken: activation,
+      });
+      if (node.status !== "ready") throw new Error(`postgres-node-a was ${node.status}`);
+      await expect(
+        test.controlStore.acknowledgeNode({
+          nodeId: "postgres-node-a",
+          bootstrapFingerprint: "postgres-security-fingerprint",
+          effectiveRuntimeFingerprint: "postgres-security-fingerprint",
+          appliedToken: activation,
+          writerFence: node.writerFence,
+        }),
+      ).resolves.toMatchObject({ status: "applied", appliedNodes: 1 });
       const manager = createControlPlaneKeyRotationManager({
         identity,
         dialect: test.dialect,
@@ -651,6 +985,7 @@ describe("SQL control-plane security state", () => {
           purpose: "vault-record",
           keyVersion: 1,
           provider: test.keyProvider,
+          writerFence: node.writerFence,
         }),
       ).resolves.toMatchObject({ verified: true, readiness: "canary-verified" });
 
@@ -841,20 +1176,68 @@ describe("SQL control-plane security state", () => {
       });
       await test.repository.setWithGrant({ key: "PG_ROTATE", value: sentinel });
       const versionTwoProvider = await createVaultVersionTwoProvider(test.onlineManifestPath);
+      const rotationToken = await test.controlStore.convergenceToken();
+      const rotationNode = await test.controlStore.registerNode({
+        nodeId: "postgres-node-a",
+        bootstrapFingerprint: "postgres-security-fingerprint",
+        effectiveRuntimeFingerprint: "postgres-security-fingerprint",
+        compatibility: {
+          ...test.dialect.compatibility,
+          providerCommitment: "1".repeat(64),
+          keyCanaryCommitment: "2".repeat(64),
+          capabilities: ["ordered-tuple-polling", "writer-fence-v1", "complete-snapshot-v1"],
+        },
+        ttlMs: 60_000,
+        appliedToken: rotationToken,
+      });
+      if (rotationNode.status !== "ready") {
+        throw new Error(`postgres-node-a refresh was ${rotationNode.status}`);
+      }
+      await test.controlStore.acknowledgeNode({
+        nodeId: "postgres-node-a",
+        bootstrapFingerprint: "postgres-security-fingerprint",
+        effectiveRuntimeFingerprint: "postgres-security-fingerprint",
+        appliedToken: rotationToken,
+        writerFence: rotationNode.writerFence,
+      });
       await expect(
         manager.registerActiveVersion({
           provider: versionTwoProvider,
           purpose: "vault-record",
+          securityEpoch: rotationToken.securityEpoch,
+          writerFence: rotationNode.writerFence,
         }),
-      ).resolves.toMatchObject({ keyVersion: 2, state: "active" });
+      ).resolves.toMatchObject({ keyVersion: 2, state: "staged" });
       await expect(
         manager.verifyNodeCanary({
           nodeId: "postgres-node-a",
           purpose: "vault-record",
           keyVersion: 2,
           provider: versionTwoProvider,
+          writerFence: rotationNode.writerFence,
         }),
       ).resolves.toMatchObject({ verified: true });
+      await expect(
+        manager.activateVersion({
+          purpose: "vault-record",
+          keyVersion: 2,
+          securityEpoch: rotationToken.securityEpoch,
+          writerFence: rotationNode.writerFence,
+        }),
+      ).resolves.toMatchObject({ keyVersion: 2, state: "active" });
+      test.repository.updateActiveKeyProvider(versionTwoProvider);
+      await test.repository.setWithGrant({
+        key: "PG_AFTER_ACTIVATION",
+        value: "encrypted-by-v2",
+      });
+      await expect(
+        test.adminQuery<{ keyVersion: string }>(
+          `SELECT key_version AS "keyVersion"
+           FROM caplets.cp_vault_value
+           WHERE reference_name = $1`,
+          ["PG_AFTER_ACTIVATION"],
+        ),
+      ).resolves.toEqual([{ keyVersion: "2" }]);
       const rotatedVault = createControlPlaneSecurityRepository({
         identity,
         dialect: test.dialect,
@@ -871,14 +1254,45 @@ describe("SQL control-plane security state", () => {
         keyVersion: 1,
         watermark: 1,
       });
+      const retirementToken = await test.controlStore.convergenceToken();
+      const retirementNode = await test.controlStore.registerNode({
+        nodeId: "postgres-node-a",
+        bootstrapFingerprint: "postgres-security-fingerprint",
+        effectiveRuntimeFingerprint: "postgres-security-fingerprint",
+        compatibility: {
+          ...test.dialect.compatibility,
+          providerCommitment: "1".repeat(64),
+          keyCanaryCommitment: "2".repeat(64),
+          capabilities: ["ordered-tuple-polling", "writer-fence-v1", "complete-snapshot-v1"],
+        },
+        ttlMs: 60_000,
+        appliedToken: retirementToken,
+      });
+      if (retirementNode.status !== "ready") {
+        throw new Error(`postgres-node-a retirement refresh was ${retirementNode.status}`);
+      }
+      await test.controlStore.acknowledgeNode({
+        nodeId: "postgres-node-a",
+        bootstrapFingerprint: "postgres-security-fingerprint",
+        effectiveRuntimeFingerprint: "postgres-security-fingerprint",
+        appliedToken: retirementToken,
+        writerFence: retirementNode.writerFence,
+      });
       const retirement = await manager.previewRetirement({
         purpose: "vault-record",
         keyVersion: 1,
-        authorityToken: "0:0",
+        authorityToken: `${retirementToken.authorityGeneration}:${retirementToken.effectiveGeneration}`,
+        securityEpoch: retirementToken.securityEpoch,
+        writerFence: retirementNode.writerFence,
         minimumPurgeWatermark: 1,
       });
       await expect(
-        manager.retireVersion({ preview: retirement, authorityToken: "0:0" }),
+        manager.retireVersion({
+          preview: retirement,
+          authorityToken: `${retirementToken.authorityGeneration}:${retirementToken.effectiveGeneration}`,
+          securityEpoch: retirementToken.securityEpoch,
+          writerFence: retirementNode.writerFence,
+        }),
       ).resolves.toMatchObject({ status: "retired" });
 
       const activity = await test.repository.append({
@@ -918,6 +1332,257 @@ describe("SQL control-plane security state", () => {
         ),
       ).not.toContain(sentinel);
       expect(JSON.stringify(await test.repository.list())).not.toContain(sentinel);
+    },
+  );
+  it("persists setup approvals and redacted results across SQLite restart and fences stale writers", async () => {
+    const test = await fixture();
+    await seedAuthorizationRows(test.dialect);
+    const approval = {
+      projectFingerprint: "project-sql",
+      capletId: "caplet-setup",
+      contentHash: "a".repeat(64),
+      targetKind: "local_host" as const,
+      actor: "cli-yes" as const,
+      approvedAt: "2026-07-15T01:00:00.000Z",
+    };
+    await expect(test.repository.approve(approval)).resolves.toEqual(approval);
+    const snapshotToken = await test.controlStore.convergenceToken();
+    const lease = await test.repository.reserveExecution({
+      projectFingerprint: approval.projectFingerprint,
+      capletId: approval.capletId,
+      contentHash: approval.contentHash,
+      setupHash: "b".repeat(64),
+      targetKind: approval.targetKind,
+      ttlMs: 5_000,
+      snapshotToken,
+    });
+    await test.repository.recordAttempt(
+      {
+        attemptId: "attempt-sql-1",
+        projectFingerprint: approval.projectFingerprint,
+        capletId: approval.capletId,
+        contentHash: approval.contentHash,
+        setupHash: "b".repeat(64),
+        targetKind: approval.targetKind,
+        actor: approval.actor,
+        status: "succeeded",
+        phase: "commands",
+        commandLabel: "Install",
+        argv: ["install-tool", "setup-secret-sentinel"],
+        exitCode: 0,
+        durationMs: 12,
+        startedAt: "2026-07-15T01:00:00.000Z",
+        finishedAt: "2026-07-15T01:00:00.012Z",
+        stdout: "setup-secret-sentinel",
+        stderr: "",
+        redacted: false,
+        retention: { maxAttempts: 3, days: 7 },
+      },
+      lease,
+    );
+    await test.repository.releaseExecution(lease);
+    expect(
+      JSON.stringify(
+        test.dialect.query("SELECT detail FROM cp_setup_attempt WHERE attempt_id = ?", [
+          "attempt-sql-1",
+        ]),
+      ),
+    ).not.toContain("setup-secret-sentinel");
+
+    const staleRepository = createControlPlaneSecurityRepository({
+      identity,
+      dialect: test.dialect,
+      keyProvider: test.keyProvider,
+      mutationAuthority: () => ({
+        securityEpoch: 0,
+        writerFence: mutationAuthority().writerFence,
+      }),
+    });
+    await expect(
+      staleRepository.approve({ ...approval, contentHash: "c".repeat(64) }),
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    expect(
+      test.dialect.query<{ count: number }>(
+        "SELECT count(*) AS count FROM cp_setup_approval WHERE content_hash = ?",
+        ["c".repeat(64)],
+      ),
+    ).toEqual([{ count: 0 }]);
+
+    await test.dialect.close();
+    dialects.splice(dialects.indexOf(test.dialect), 1);
+    const reopened = await openSqliteControlPlaneDialect({
+      storage: test.storage,
+      environment: migrationEnvironment,
+      assetRoot,
+    });
+    dialects.push(reopened);
+    reopened.migrate();
+    const reader = createControlPlaneSecurityRepository({
+      identity,
+      dialect: reopened,
+      keyProvider: test.keyProvider,
+    });
+    await expect(
+      reader.getApproval(
+        approval.projectFingerprint,
+        approval.capletId,
+        approval.contentHash,
+        approval.targetKind,
+      ),
+    ).resolves.toEqual(approval);
+    await expect(
+      reader.listAttempts(approval.projectFingerprint, approval.capletId),
+    ).resolves.toMatchObject([
+      {
+        attemptId: "attempt-sql-1",
+        argv: ["[REDACTED]", "[REDACTED]"],
+        stdout: "[REDACTED]",
+        redacted: true,
+      },
+    ]);
+  });
+
+  it("imports legacy LocalSetupStore state idempotently, redacts attempts, and removes files", async () => {
+    const test = await fixture();
+    await seedAuthorizationRows(test.dialect);
+    const legacyRoot = join(test.root, "legacy-setup");
+    const legacy = new LocalSetupStore({
+      baseDir: legacyRoot,
+      now: () => new Date("2026-07-15T01:00:00.000Z"),
+    });
+    const approval = {
+      projectFingerprint: "legacy-project",
+      capletId: "legacy-caplet",
+      contentHash: "f".repeat(64),
+      targetKind: "local_host" as const,
+      actor: "cli-yes" as const,
+      approvedAt: "2026-07-15T00:59:00.000Z",
+    };
+    await legacy.approve(approval);
+    await legacy.recordAttempt({
+      attemptId: "legacy-attempt",
+      projectFingerprint: approval.projectFingerprint,
+      capletId: approval.capletId,
+      contentHash: approval.contentHash,
+      setupHash: "e".repeat(64),
+      targetKind: approval.targetKind,
+      actor: approval.actor,
+      status: "succeeded",
+      phase: "commands",
+      commandLabel: "Install",
+      argv: ["install", "legacy-secret"],
+      exitCode: 0,
+      durationMs: 1,
+      startedAt: "2026-07-15T00:59:00.000Z",
+      finishedAt: "2026-07-15T00:59:00.001Z",
+      stdout: "legacy-secret",
+      stderr: "",
+      redacted: false,
+      retention: { maxAttempts: 3, days: 7 },
+    });
+    const state = readLegacyLocalSetupState({ root: legacyRoot });
+    expect(state).toBeDefined();
+    await test.repository.importLegacySetupState(state!);
+    await test.repository.importLegacySetupState(state!);
+    removeMigratedLegacyLocalSetupState(state!);
+    expect(readLegacyLocalSetupState({ root: legacyRoot })).toBeUndefined();
+    await expect(
+      test.repository.getApproval(
+        approval.projectFingerprint,
+        approval.capletId,
+        approval.contentHash,
+        approval.targetKind,
+      ),
+    ).resolves.toEqual(approval);
+    await expect(
+      test.repository.listAttempts(approval.projectFingerprint, approval.capletId),
+    ).resolves.toMatchObject([
+      {
+        attemptId: "legacy-attempt",
+        argv: ["[REDACTED]", "[REDACTED]"],
+        stdout: "[REDACTED]",
+        redacted: true,
+      },
+    ]);
+    expect(
+      test.dialect.query<{ count: number }>(
+        "SELECT count(*) AS count FROM cp_setup_attempt WHERE attempt_id = ?",
+        ["legacy-attempt"],
+      )[0]?.count,
+    ).toBe(1);
+  });
+
+  it.skipIf(!postgresAdminUrl)(
+    "publishes durable setup approvals across independent Postgres runtime nodes",
+    async () => {
+      const test = await postgresSecurityFixture();
+      await seedAuthorizationRows(test.dialect);
+      const writer = createControlPlaneSecurityRepository({
+        identity,
+        dialect: test.dialect,
+        keyProvider: test.keyProvider,
+        mutationAuthority,
+      });
+      const otherNode = await test.openRuntimeNode();
+      const reader = createControlPlaneSecurityRepository({
+        identity,
+        dialect: otherNode.dialect,
+        keyProvider: test.keyProvider,
+      });
+      const competingWriter = createControlPlaneSecurityRepository({
+        identity,
+        dialect: otherNode.dialect,
+        keyProvider: test.keyProvider,
+        mutationAuthority,
+      });
+      const approval = {
+        projectFingerprint: "project-postgres",
+        capletId: "caplet-setup",
+        contentHash: "d".repeat(64),
+        targetKind: "hosted_sandbox" as const,
+        actor: "automation" as const,
+        approvedAt: "2026-07-15T02:00:00.000Z",
+      };
+      await writer.approve(approval);
+      await expect(
+        reader.getApproval(
+          approval.projectFingerprint,
+          approval.capletId,
+          approval.contentHash,
+          approval.targetKind,
+        ),
+      ).resolves.toEqual(approval);
+      const snapshotToken = await test.controlStore.convergenceToken();
+      const lease = await writer.reserveExecution({
+        projectFingerprint: approval.projectFingerprint,
+        capletId: approval.capletId,
+        contentHash: approval.contentHash,
+        setupHash: "e".repeat(64),
+        targetKind: approval.targetKind,
+        ttlMs: 5_000,
+        snapshotToken,
+      });
+      await expect(
+        competingWriter.reserveExecution({
+          projectFingerprint: approval.projectFingerprint,
+          capletId: approval.capletId,
+          contentHash: approval.contentHash,
+          setupHash: "e".repeat(64),
+          targetKind: approval.targetKind,
+          ttlMs: 5_000,
+          snapshotToken,
+        }),
+      ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+      await test.adminQuery(
+        `UPDATE caplets.cp_effective_version
+         SET generation = generation + 1
+         WHERE logical_host_id = $1`,
+        [identity.logicalHostId],
+      );
+      await expect(writer.renewExecution(lease, 5_000)).rejects.toMatchObject({
+        code: "SERVER_UNAVAILABLE",
+      });
+      await writer.releaseExecution(lease);
     },
   );
 });

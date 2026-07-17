@@ -7,7 +7,7 @@ import { isAbsolute, join } from "node:path";
 import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { nativeCapletToolName } from "../src/native";
-import { CapletsRuntime } from "../src/runtime";
+import { createUnactivatedCapletsRuntimeForTests, type CapletsRuntime } from "../src/runtime";
 
 describe("CapletsRuntime", () => {
   const dirs: string[] = [];
@@ -36,7 +36,11 @@ describe("CapletsRuntime", () => {
     });
     dirs.push(dir);
     const server = mockServer();
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server,
+    });
     await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["alpha"]);
@@ -59,7 +63,11 @@ describe("CapletsRuntime", () => {
     });
     dirs.push(dir);
     const server = mockServer();
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server,
+    });
     await connectRuntime(runtime);
 
     try {
@@ -84,7 +92,11 @@ describe("CapletsRuntime", () => {
     });
     dirs.push(dir);
     const server = mockServer();
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server,
+    });
     await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["status"]);
@@ -114,7 +126,7 @@ describe("CapletsRuntime", () => {
       dirs.push(dir);
       const artifactDir = join(dir, "artifacts");
       const server = mockServer();
-      const runtime = new CapletsRuntime({
+      const runtime = createUnactivatedCapletsRuntimeForTests({
         configPath,
         projectConfigPath,
         artifactDir,
@@ -179,7 +191,11 @@ describe("CapletsRuntime", () => {
     });
     dirs.push(dir);
     const server = mockServer();
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server,
+    });
     await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["repo"]);
@@ -224,7 +240,11 @@ describe("CapletsRuntime", () => {
     });
     dirs.push(dir);
     const server = mockServer();
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server,
+    });
     await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["nested"]);
@@ -249,7 +269,11 @@ describe("CapletsRuntime", () => {
     });
     dirs.push(dir);
     const server = mockServer();
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server,
+    });
     await connectRuntime(runtime);
     const alpha = server.registered.get("alpha")!;
 
@@ -310,7 +334,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const errors: string[] = [];
-    const runtime = new CapletsRuntime({
+    const runtime = createUnactivatedCapletsRuntimeForTests({
       configPath,
       projectConfigPath,
       server,
@@ -342,7 +366,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const errors: string[] = [];
-    const runtime = new CapletsRuntime({
+    const runtime = createUnactivatedCapletsRuntimeForTests({
       configPath,
       projectConfigPath,
       server,
@@ -394,7 +418,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const errors: string[] = [];
-    const runtime = new CapletsRuntime({
+    const runtime = createUnactivatedCapletsRuntimeForTests({
       configPath,
       projectConfigPath,
       server,
@@ -436,7 +460,11 @@ describe("CapletsRuntime", () => {
       },
     });
     dirs.push(dir);
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server: mockServer() });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server: mockServer(),
+    });
 
     expect(runtime.watchedPaths()).toEqual([join(dir, "project", ".caplets"), join(dir, "user")]);
 
@@ -454,7 +482,11 @@ describe("CapletsRuntime", () => {
       },
     });
     dirs.push(dir);
-    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server: mockServer() });
+    const runtime = createUnactivatedCapletsRuntimeForTests({
+      configPath,
+      projectConfigPath,
+      server: mockServer(),
+    });
     const engine = (runtime as unknown as { engine: { scheduleReload: () => void } }).engine;
     engine.scheduleReload = vi.fn();
 

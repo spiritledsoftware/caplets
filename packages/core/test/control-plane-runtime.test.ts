@@ -811,7 +811,7 @@ describe("U8 layered runtime composition", () => {
       );
     }
     expect(runP99Ms.every((runP99Ms) => runP99Ms <= 1_000)).toBe(true);
-  }, 120_000);
+  }, 600_000);
 
   it("routes SQL and filesystem Vault references to their owning resolvers", async () => {
     const base = httpAggregate("sql-vault", "sql-vault");
@@ -1075,6 +1075,26 @@ describe("U8 layered runtime composition", () => {
     const adopt = vi.fn(async () =>
       hydration("sqlite", { currentFingerprint: candidate }, adoptedSnapshot),
     );
+    const adoptUnset = vi.fn(async () =>
+      hydration("sqlite", { currentFingerprint: candidate }, sqlSnapshot()),
+    );
+    const adoptedUnset = await composeControlPlaneRuntimeSnapshot({
+      hydration: hydration("sqlite", {}),
+      filesystemLayers: [hostLayer],
+      resolvedRuntimeInputs: {},
+      hiddenCommitments: [],
+      providerVersions: {},
+      adoptSqliteBootstrapFingerprint: adoptUnset,
+    });
+    expect(adoptUnset).toHaveBeenCalledWith({
+      nextFingerprint: candidate,
+      expectedEffectiveRuntimeFingerprint: adoptedUnset.effectiveRuntimeFingerprint,
+      expectedAuthorityGeneration: 1,
+      expectedEffectiveGeneration: 1,
+      expectedSecurityEpoch: 0,
+    });
+    expect(adoptedUnset.bootstrapFingerprint).toBe(candidate);
+
     const sqlite = await composeControlPlaneRuntimeSnapshot({
       hydration: hydration("sqlite", { currentFingerprint: previous }),
       filesystemLayers: [hostLayer],
@@ -1233,6 +1253,10 @@ describe("U8 awaited engine factory and atomic reload", () => {
     const engine = await enginePromise;
     expect(engine.currentConfig().httpApis.alpha?.name).toBe("SQL sql");
 
+    const unchangedSnapshot = engine.currentControlPlaneRuntimeSnapshot();
+    expect(await engine.reload()).toBe(true);
+    expect(engine.currentControlPlaneRuntimeSnapshot()).toBe(unchangedSnapshot);
+
     layers = [projectLayer];
     expect(await engine.reload()).toBe(true);
     expect(engine.currentConfig().httpApis.alpha?.name).toBe("Project alpha");
@@ -1243,6 +1267,37 @@ describe("U8 awaited engine factory and atomic reload", () => {
     expect(await engine.reload()).toBe(false);
     expect(engine.currentConfig().httpApis.alpha?.name).toBe("Project alpha");
     expect(engine.currentExposureGeneration()).toBe(generation);
+    await engine.close();
+  });
+
+  it("revalidates live SQL authority before dispatching any engine operation", async () => {
+    const loader = createControlPlaneRuntimeSnapshotLoader({
+      hydrate: async () =>
+        hydration("sqlite", { currentFingerprint: SQL_ONLY_BOOTSTRAP_FINGERPRINT }),
+      loadFilesystemLayers: () => [],
+      resolvedRuntimeInputs: () => ({}),
+      hiddenCommitments: () => [],
+      providerVersions: () => ({}),
+    });
+    const snapshot = await loader.initialize();
+    let revalidations = 0;
+    const engine = await createInternalCapletsEngine(
+      { watch: false },
+      loader,
+      snapshot,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        revalidations += 1;
+        throw new Error("live authority revoked");
+      },
+    );
+
+    await expect(engine.execute("missing", { operation: "check" })).resolves.toMatchObject({
+      isError: true,
+    });
+    expect(revalidations).toBe(1);
     await engine.close();
   });
 

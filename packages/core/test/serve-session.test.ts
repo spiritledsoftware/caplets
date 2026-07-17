@@ -40,7 +40,11 @@ describe("CapletsMcpSession", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     expect(session.registeredToolIds()).toEqual([]);
@@ -75,7 +79,7 @@ describe("CapletsMcpSession", () => {
     });
     dirs.push(dir);
     const projectRoot = join(dir, "project");
-    const engine = new CapletsEngine({
+    const engine = CapletsEngine.unactivatedForTests({
       configPath,
       projectConfigPath,
       watch: false,
@@ -104,7 +108,11 @@ describe("CapletsMcpSession", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     await session.refreshExposure();
@@ -340,7 +348,11 @@ describe("CapletsMcpSession", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
 
@@ -372,7 +384,11 @@ describe("CapletsMcpSession", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const session = new CapletsMcpSession(engine);
     const client = await connectMcpTestClient(session);
 
@@ -475,7 +491,7 @@ describe("CapletsMcpSession", () => {
         },
       });
       dirs.push(dir);
-      const engine = new CapletsEngine(
+      const engine = CapletsEngine.unactivatedForTests(
         sanitizeRemoteEngineOptions({
           configPath,
           projectConfigPath,
@@ -553,7 +569,7 @@ describe("CapletsMcpSession", () => {
         },
       });
       dirs.push(dir);
-      const engine = new CapletsEngine(
+      const engine = CapletsEngine.unactivatedForTests(
         sanitizeRemoteEngineOptions({
           configPath,
           projectConfigPath,

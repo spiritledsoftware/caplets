@@ -1,10 +1,23 @@
-import { dashboardApiUrl } from "./paths";
+import { dashboardApiUrl, dashboardBasePath } from "./paths";
 
 export type DashboardSession = {
   sessionId: string;
   operatorClientId: string;
   csrfToken: string;
   role?: string;
+};
+
+export type DashboardStorageHealth = {
+  backend?: "sqlite" | "postgres";
+  authorityToken?: { authorityGeneration?: number; effectiveGeneration?: number };
+  readiness?: "ready" | "not-ready" | "stale-read-only";
+  connectivity?: "connected" | "unavailable";
+  migration?: "current" | "blocked";
+  bootstrapCompatibility?: "current" | "staged" | "incompatible";
+  staleAgeMs?: number;
+  convergence?: "single-node" | "within-budget" | "pending" | "overdue";
+  guidanceCode?: string;
+  error?: string;
 };
 
 export type DashboardManagementMutation =
@@ -115,6 +128,30 @@ export async function dashboardApi<T>(path: string, options: RequestInit = {}): 
   return body as T;
 }
 
+export async function dashboardStorageHealth(
+  options: RequestInit = {},
+): Promise<DashboardStorageHealth> {
+  const response = await fetch(dashboardHealthUrl(), {
+    credentials: "same-origin",
+    ...options,
+  });
+  const body = parseResponseBody(await response.text());
+  if (response.status !== 200 && response.status !== 503) {
+    throw new DashboardApiError(apiErrorMessage(body, response), {
+      status: response.status,
+      body,
+    });
+  }
+  if (
+    isDashboardStorageHealth(body) &&
+    ((response.status === 200 && body.readiness === "ready") ||
+      (response.status === 503 && body.readiness !== "ready"))
+  ) {
+    return body;
+  }
+  return unavailableDashboardStorageHealth(body, response.status);
+}
+
 export async function dashboardManagementPreview(mutation: DashboardManagementMutation): Promise<{
   operation: DashboardManagementOperation;
   result: Record<string, unknown>;
@@ -133,6 +170,12 @@ async function prepareDashboardManagementOperation(
     method: "POST",
     body: JSON.stringify(operation),
   });
+  if (!isApiRecord(result) || result.status !== "preview") {
+    throw new DashboardApiError("Current Host management preview is unavailable.", {
+      status: 503,
+      body: result,
+    });
+  }
   const binding = parseManagementBinding(result.binding);
   const authorityToken = parseAuthorityToken(result.authorityToken);
   return {
@@ -200,7 +243,12 @@ export async function recoverDashboardManagementOperations(): Promise<unknown[]>
         removePendingManagementOperation(operation.operationId);
       }
     } catch (error) {
-      if (error instanceof DashboardApiError) throw error;
+      if (error instanceof DashboardApiError) {
+        const outcome = dashboardManagementLookupFailure(error, operation);
+        if (!outcome) throw error;
+        outcomes.push(outcome);
+        continue;
+      }
       outcomes.push({
         status: "unknown",
         operation,
@@ -351,12 +399,145 @@ function parseAuthorityToken(
     : undefined;
 }
 
+function dashboardManagementLookupFailure(
+  error: DashboardApiError,
+  operation: PendingDashboardManagementOperation,
+): Record<string, unknown> | undefined {
+  if (error.status !== 403 && error.status !== 409 && error.status !== 503) return undefined;
+  const body = isApiRecord(error.body) ? error.body : { message: error.message };
+  const status =
+    typeof body.status === "string"
+      ? body.status
+      : error.status === 403
+        ? "lookup_forbidden"
+        : error.status === 409
+          ? "lookup_conflict"
+          : "lookup_unavailable";
+  return {
+    ...body,
+    status,
+    httpStatus: error.status,
+    operation,
+    retryAllowed: false,
+    guidance: "lookup-original-target",
+  };
+}
+
+function isDashboardStorageHealth(value: unknown): value is DashboardStorageHealth & {
+  backend: "sqlite" | "postgres";
+  authorityToken: { authorityGeneration: number; effectiveGeneration: number };
+  readiness: "ready" | "not-ready" | "stale-read-only";
+  connectivity: "connected" | "unavailable";
+  migration: "current" | "blocked";
+  bootstrapCompatibility: "current" | "staged" | "incompatible";
+  convergence: "single-node" | "within-budget" | "pending" | "overdue";
+  guidanceCode: string;
+} {
+  if (!isApiRecord(value) || !isApiRecord(value.authorityToken)) return false;
+  const authorityGeneration = value.authorityToken.authorityGeneration;
+  const effectiveGeneration = value.authorityToken.effectiveGeneration;
+  if (
+    !Number.isSafeInteger(authorityGeneration) ||
+    Number(authorityGeneration) < 0 ||
+    !Number.isSafeInteger(effectiveGeneration) ||
+    Number(effectiveGeneration) < 0
+  ) {
+    return false;
+  }
+  if (value.backend !== "sqlite" && value.backend !== "postgres") {
+    return false;
+  }
+  if (
+    value.readiness !== "ready" &&
+    value.readiness !== "not-ready" &&
+    value.readiness !== "stale-read-only"
+  ) {
+    return false;
+  }
+  if (value.connectivity !== "connected" && value.connectivity !== "unavailable") return false;
+  if (value.migration !== "current" && value.migration !== "blocked") return false;
+  if (
+    value.bootstrapCompatibility !== "current" &&
+    value.bootstrapCompatibility !== "staged" &&
+    value.bootstrapCompatibility !== "incompatible"
+  ) {
+    return false;
+  }
+  if (
+    value.convergence !== "single-node" &&
+    value.convergence !== "within-budget" &&
+    value.convergence !== "pending" &&
+    value.convergence !== "overdue"
+  ) {
+    return false;
+  }
+  if (
+    value.guidanceCode !== "ok" &&
+    value.guidanceCode !== "storage-unavailable" &&
+    value.guidanceCode !== "migration-required" &&
+    value.guidanceCode !== "convergence-pending" &&
+    value.guidanceCode !== "convergence-overdue" &&
+    value.guidanceCode !== "bootstrap-incompatible"
+  ) {
+    return false;
+  }
+  if (
+    value.staleAgeMs !== undefined &&
+    (typeof value.staleAgeMs !== "number" ||
+      !Number.isFinite(value.staleAgeMs) ||
+      value.staleAgeMs < 0)
+  ) {
+    return false;
+  }
+  if (value.readiness === "ready") {
+    const convergenceReady =
+      value.convergence === "single-node" || value.convergence === "within-budget";
+    const convergencePending = value.convergence === "pending";
+    return (
+      value.connectivity === "connected" &&
+      value.migration === "current" &&
+      value.bootstrapCompatibility !== "incompatible" &&
+      (convergenceReady || convergencePending) &&
+      value.guidanceCode === (convergencePending ? "convergence-pending" : "ok") &&
+      value.staleAgeMs === undefined
+    );
+  }
+  if (value.readiness === "stale-read-only") {
+    return (
+      value.connectivity === "unavailable" &&
+      value.guidanceCode === "storage-unavailable" &&
+      value.staleAgeMs !== undefined
+    );
+  }
+  return value.guidanceCode !== "ok";
+}
+
+function unavailableDashboardStorageHealth(body: unknown, status: number): DashboardStorageHealth {
+  const backend =
+    isApiRecord(body) && (body.backend === "sqlite" || body.backend === "postgres")
+      ? body.backend
+      : undefined;
+  return {
+    ...(backend ? { backend } : {}),
+    readiness: "not-ready",
+    connectivity: "unavailable",
+    guidanceCode: "storage-unavailable",
+    error: structuredErrorMessage(body) ?? `Storage health response was unavailable (${status}).`,
+  };
+}
+
 function isApiRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function isDashboardUnauthorized(error: unknown): boolean {
   return error instanceof DashboardApiError && error.status === 401;
+}
+
+function dashboardHealthUrl(): string {
+  const segments = dashboardBasePath().split("/").filter(Boolean);
+  segments.pop();
+  return `/${[...segments, "v1", "healthz"].join("/")}`;
 }
 
 function parseResponseBody(text: string): unknown {

@@ -92,6 +92,7 @@ const QUERY_INDEXES: Partial<Record<ControlPlaneEntityKind, readonly (readonly s
     ["logicalHostId", "effective"],
   ],
   "operation-reservation": [["logicalHostId", "state", "reservedAt"]],
+  "operation-outcome": [["logicalHostId", "storeId", "convergenceClass", "operationId"]],
   confirmation: [["logicalHostId", "state", "expiresAt"]],
   "oauth-token": [
     ["logicalHostId", "serverName", "ownerId"],
@@ -187,13 +188,6 @@ const RELATIONS: Partial<
       columns: ["logicalHostId", "workspaceId"],
       target: "project-binding-workspace",
       targetColumns: ["logicalHostId", "workspaceId"],
-    },
-  ],
-  "vault-grant": [
-    {
-      columns: ["logicalHostId", "capletId"],
-      target: "caplet",
-      targetColumns: ["logicalHostId", "id"],
     },
   ],
   "key-canary": [

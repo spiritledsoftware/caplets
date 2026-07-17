@@ -398,7 +398,7 @@ export async function invokeAttachExport(
 }
 
 export function attachErrorResponse(error: unknown): {
-  status: 400 | 404 | 409 | 500;
+  status: 400 | 404 | 409 | 500 | 503;
   body: { ok: false; error: { code: string; message: string; details?: unknown } };
 } {
   const safe = toSafeError(error, "INTERNAL_ERROR");
@@ -409,7 +409,9 @@ export function attachErrorResponse(error: unknown): {
         ? 404
         : safe.code === "REQUEST_INVALID"
           ? 400
-          : 500;
+          : safe.code === "SERVER_UNAVAILABLE"
+            ? 503
+            : 500;
   return { status, body: { ok: false, error: safe } };
 }
 

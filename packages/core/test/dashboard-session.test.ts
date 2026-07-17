@@ -60,7 +60,7 @@ describe("dashboard sessions", () => {
     await engine.close();
   });
 
-  it("serves a development operator session and dashboard data without cookies", async () => {
+  it("serves a development operator session but no data before SQL activation", async () => {
     const { app, engine } = developmentTestApp();
 
     const session = await app.request("http://127.0.0.1:5387/dashboard/api/session");
@@ -76,16 +76,10 @@ describe("dashboard sessions", () => {
     });
 
     const summary = await app.request("http://127.0.0.1:5387/dashboard/api/summary");
-    expect(summary.status).toBe(200);
+    expect(summary.status).toBe(503);
     await expect(summary.json()).resolves.toMatchObject({
-      host: {
-        current: true,
-        baseUrl: "http://127.0.0.1:5387/",
-        dashboardUrl: "http://127.0.0.1:5387/dashboard",
-      },
-      sections: expect.objectContaining({
-        caplets: expect.objectContaining({ href: "/dashboard#caplets" }),
-      }),
+      ok: false,
+      error: { code: "SERVER_UNAVAILABLE" },
     });
 
     await engine.close();
@@ -426,7 +420,7 @@ function developmentTestApp(overrides: Partial<HttpServeOptions> = {}) {
 }
 
 function engineFor(context: { configPath: string; projectConfigPath: string }): CapletsEngine {
-  return new CapletsEngine({
+  return CapletsEngine.unactivatedForTests({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
     watch: false,

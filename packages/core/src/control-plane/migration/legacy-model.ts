@@ -111,13 +111,12 @@ export const LEGACY_MAPPING_MANIFEST: {
       identityFields: ["clientId"],
       fields: [
         required("serverId", "identity.clientId", "identity"),
-        optional("version", "fields.aggregateVersion", "version"),
-        optional("pairingCodes", "children.pairingCodes", "repeating-child"),
-        optional("clients", "children.clients", "repeating-child"),
-        optional("pendingLogins", "children.pendingApprovals", "repeating-child"),
-        optional("supersededTokens", "children.supersededTokens", "repeating-child"),
-        optional("encryptedReplayRecords", "children.encryptedReplayRecords", "repeating-child"),
-        optional("authorityVersion", "fields.authorityVersion", "authority"),
+        required("role", "fields.role", "value"),
+        required("status", "fields.status", "value"),
+        required("hostUrl", "fields.hostUrl", "value"),
+        required("clientLabel", "fields.clientLabel", "value"),
+        optional("lastAuthenticatedAt", "fields.lastAuthenticatedAt", "clock"),
+        optional("revokedAt", "fields.revokedAt", "clock"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -131,26 +130,27 @@ export const LEGACY_MAPPING_MANIFEST: {
         required("clientId", "fields.clientId", "reference"),
         required("createdAt", "fields.createdAt", "clock"),
         required("expiresAt", "fields.expiresAt", "clock"),
+        required("absoluteExpiresAt", "fields.absoluteExpiresAt", "clock"),
+        required("idleExpiresAt", "fields.idleExpiresAt", "clock"),
         optional("lastSeenAt", "fields.lastSeenAt", "clock"),
-        optional("revokedAt", "fields.revokedAt", "clock"),
-        encoded("verifier", "fields.verifier", "optional", "utf8-bytes"),
-        optional("version", "fields.aggregateVersion", "version"),
+        encoded("verifier", "fields.verifier", "required", "utf8-bytes"),
+        encoded("csrfVerifier", "fields.csrfVerifier", "required", "utf8-bytes"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
     },
     {
       domain: "remote-profile",
-      canonicalKind: "host-setting",
-      identityFields: ["key"],
+      canonicalKind: "credential",
+      identityFields: ["credentialId"],
       fields: [
-        required("id", "identity.key", "identity"),
-        required("name", "fields.value.name", "value"),
-        required("url", "fields.value.url", "value"),
-        optional("selectedWorkspace", "fields.value.selectedWorkspace", "reference"),
+        required("id", "identity.credentialId", "identity"),
+        required("name", "fields.purpose", "value"),
+        required("url", "fields.protection", "value"),
+        optional("selectedWorkspace", "fields.workspace", "reference"),
         optional("createdAt", "fields.createdAt", "clock"),
         optional("updatedAt", "fields.updatedAt", "clock"),
-        optional("ownerId", "fields.value.ownerId", "ownership"),
+        optional("ownerId", "fields.ownerId", "ownership"),
       ],
       malformedPolicy: "quarantine",
       unknownFieldPolicy: "quarantine",
@@ -435,9 +435,15 @@ export function mapLegacyRecord(
     const rule = bySource[sourceField]!;
     fieldDestinations[sourceField] = rule.destination;
     const decoded = decodeLegacyValue(rule, value);
-    if (rule.destination.startsWith("identity."))
+    if (rule.destination.startsWith("identity.")) {
       identity[rule.destination.slice("identity.".length)] = decoded;
-    else fields[rule.destination.replace(/^(?:fields|children)\./u, "")] = decoded;
+    } else {
+      setLegacyDestination(
+        fields,
+        rule.destination.replace(/^(?:fields|children)\./u, ""),
+        decoded,
+      );
+    }
   }
   return {
     status: "accepted",
@@ -450,6 +456,24 @@ export function mapLegacyRecord(
     },
     fieldDestinations,
   };
+}
+function setLegacyDestination(
+  target: Record<string, unknown>,
+  destination: string,
+  value: unknown,
+): void {
+  const path = destination.split(".");
+  let current = target;
+  for (const segment of path.slice(0, -1)) {
+    const nested = current[segment];
+    if (nested !== undefined && !isObject(nested)) {
+      throw new Error(`Legacy destination ${destination} conflicts with another field`);
+    }
+    const next = nested ?? {};
+    current[segment] = next;
+    current = next as Record<string, unknown>;
+  }
+  current[path.at(-1)!] = value;
 }
 
 function decodeLegacyValue(rule: LegacyFieldRule, value: unknown): unknown {

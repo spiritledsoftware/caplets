@@ -28,6 +28,7 @@ import {
   validate,
 } from "graphql";
 import { genericOAuthHeaders } from "./auth";
+import type { AuthTokenRepository } from "./auth/store";
 import type { GraphQlEndpointConfig } from "./config";
 import { isAllowedRemoteUrl } from "./config/validation";
 import {
@@ -78,6 +79,7 @@ export class GraphQLManager {
     private registry: ServerRegistry,
     private readonly options: {
       authDir?: string;
+      authTokenRepository?: AuthTokenRepository | undefined;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
       mediaInlineThresholdBytes?: number;
@@ -153,6 +155,7 @@ export class GraphQLManager {
             requestTimeoutMs: endpoint.requestTimeoutMs,
           },
           this.options.authDir,
+          this.options.authTokenRepository,
         )),
       });
       const response = await fetch(endpoint.endpointUrl, {
@@ -300,7 +303,11 @@ export class GraphQLManager {
 
     try {
       validateEndpointUrl(endpoint.endpointUrl);
-      const schema = await loadSchema(endpoint, this.options.authDir);
+      const schema = await loadSchema(
+        endpoint,
+        this.options.authDir,
+        this.options.authTokenRepository,
+      );
       const operations =
         endpoint.operations && Object.keys(endpoint.operations).length > 0
           ? loadConfiguredOperations(endpoint, schema)
@@ -335,6 +342,7 @@ export class GraphQLManager {
 async function loadSchema(
   endpoint: GraphQlEndpointConfig,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
 ): Promise<GraphQLSchema> {
   if (endpoint.schemaPath) {
     return parseSchemaSource(readFileSync(endpoint.schemaPath, "utf8"));
@@ -345,6 +353,7 @@ async function loadSchema(
       endpoint,
       endpoint.schemaUrl,
       authDir,
+      authTokenRepository,
       shouldSendSchemaAuth(endpoint),
     );
     return parseSchemaSource(source);
@@ -354,6 +363,7 @@ async function loadSchema(
     endpoint.endpointUrl,
     { query: getIntrospectionQuery() },
     authDir,
+    authTokenRepository,
   );
   if (!response.ok) {
     throw new CapletsError("DOWNSTREAM_PROTOCOL_ERROR", "GraphQL introspection request failed", {
@@ -615,6 +625,7 @@ async function postGraphQl(
   url: string,
   payload: Record<string, unknown>,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), endpoint.requestTimeoutMs);
@@ -635,6 +646,7 @@ async function postGraphQl(
             requestTimeoutMs: endpoint.requestTimeoutMs,
           },
           authDir,
+          authTokenRepository,
         )),
       },
       body: JSON.stringify(payload),
@@ -653,6 +665,7 @@ async function fetchGraphQlText(
   endpoint: GraphQlEndpointConfig,
   url: string,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
   sendAuth = true,
 ): Promise<string> {
   const controller = new AbortController();
@@ -663,7 +676,7 @@ async function fetchGraphQlText(
       redirect: "manual",
       signal: controller.signal,
       headers: {
-        ...(sendAuth ? await schemaAuthHeaders(endpoint, authDir) : {}),
+        ...(sendAuth ? await schemaAuthHeaders(endpoint, authDir, authTokenRepository) : {}),
       },
     });
   } catch (error) {
@@ -691,6 +704,7 @@ async function fetchGraphQlText(
 async function schemaAuthHeaders(
   endpoint: GraphQlEndpointConfig,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
 ): Promise<Record<string, string>> {
   return {
     ...staticHeaders(endpoint),
@@ -703,6 +717,7 @@ async function schemaAuthHeaders(
         requestTimeoutMs: endpoint.requestTimeoutMs,
       },
       authDir,
+      authTokenRepository,
     )),
   };
 }

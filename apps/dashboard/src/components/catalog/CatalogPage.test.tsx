@@ -318,6 +318,39 @@ describe("CatalogPage", () => {
     });
   });
 
+  it("maps unavailable live authority to row install controls before revalidation", async () => {
+    const compact = entry(4);
+    const confirmTyped = vi.fn().mockResolvedValue(true);
+    const action = vi.fn();
+    dashboardApi.mockResolvedValue({ entries: [compact] });
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <CatalogPage
+          data={{}}
+          action={action}
+          confirmTyped={confirmTyped}
+          liveAuthorityAvailable={false}
+          liveAuthorityUnavailableReason="Live SQL authority is unavailable. Installation is disabled until storage is ready."
+        />,
+      ),
+    );
+    await flush();
+    const installControl = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Install Entry 004"]',
+    )!;
+
+    expect(installControl.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => installControl.click());
+    expect(confirmTyped).not.toHaveBeenCalled();
+    expect(action).not.toHaveBeenCalled();
+    expect(
+      dashboardApi.mock.calls.some(([path]) => String(path).startsWith("catalog/detail?")),
+    ).toBe(false);
+  });
+
   it("keeps transient server failures non-installable and exposes Retry", async () => {
     window.history.replaceState({}, "", "/dashboard/catalog/server-error");
     dashboardApi.mockImplementation((path: string) =>

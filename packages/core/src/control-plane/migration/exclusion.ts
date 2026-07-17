@@ -106,6 +106,7 @@ export type LegacyMigrationExclusion = {
   readonly sealedSource: {
     path: string;
     manifestSha256: string;
+    cleanupId: string;
     identities: readonly RelocatedPathIdentity[];
     sources: readonly {
       logicalPath: string;
@@ -143,6 +144,7 @@ type ExclusionJournalPhase =
 type ExclusionJournal = {
   version: 1;
   phase: ExclusionJournalPhase;
+  cleanupId: string;
   sourceBoundaryPath: string;
   mutablePaths: LegacyMutablePath[];
   sealedSourcePath: string;
@@ -154,6 +156,7 @@ type ExclusionJournal = {
 
 type PosixAcquisition = {
   sourceBoundaryPath: string;
+  cleanupId: string;
   mutablePaths: LegacyMutablePath[];
   sealedSourcePath: string;
   recoverySnapshotPath: string;
@@ -168,6 +171,7 @@ type PosixAcquisition = {
 };
 type PreparedPosixBoundary = {
   sourceBoundaryPath: string;
+  cleanupId: string;
   mutablePaths: LegacyMutablePath[];
   sealedSourcePath: string;
   tombstoneStagingPath: string;
@@ -242,6 +246,46 @@ export async function acquireLegacyMigrationExclusion(
     throw exclusionError(error);
   }
 }
+
+export async function resumeLegacyMigrationExclusion(
+  options: AcquireLegacyMigrationExclusionOptions,
+  cleanupId: string,
+): Promise<LegacyMigrationExclusion> {
+  if (options.offlineSourcePaths?.length || (options.platform ?? process.platform) === "win32") {
+    refuse("This legacy exclusion requires the platform-specific offline resume path.");
+  }
+  const platform = options.platform ?? process.platform;
+  if (platform !== "linux" && platform !== "darwin") {
+    refuse("Legacy migration exclusion is unavailable on this platform.");
+  }
+  const sourceBoundaryPath = resolve(options.sourceBoundaryPath);
+  const journalPath = exclusionJournalPath(sourceBoundaryPath);
+  const journal = parseExclusionJournal(await readFile(journalPath, "utf8"), options, journalPath);
+  if (journal.cleanupId !== cleanupId || journal.phase !== "recovery-durable") {
+    refuse("Durable legacy exclusion cleanup identity does not match the active migration.");
+  }
+  const acquisition = await recoverPartialAcquisition(
+    options,
+    {
+      cleanupId: journal.cleanupId,
+      sourceBoundaryPath: journal.sourceBoundaryPath,
+      mutablePaths: journal.mutablePaths,
+      sealedSourcePath: journal.sealedSourcePath,
+      tombstoneStagingPath: journal.tombstoneStagingPath,
+      recoverySnapshotPath: journal.recoverySnapshotPath,
+      journalPath,
+      rollbackSnapshots: journal.snapshots,
+    },
+    platform,
+  );
+  acquisition.evidence = await scanPlatform(platform, {
+    sealedBoundaryPath: acquisition.sealedSourcePath,
+    identities: acquisition.snapshots,
+    mode: options.mode,
+    options,
+  });
+  return createPosixLease(acquisition, platform);
+}
 export async function acquireLegacyMigrationExclusionWithWindowsArtifactForTests(
   options: AcquireLegacyMigrationExclusionOptions,
   artifacts: WindowsArtifactLocation,
@@ -303,8 +347,10 @@ async function preparePosixBoundary(
   await enumeratePathSnapshots(sourceBoundaryPath, false);
 
   const nonce = randomBytes(24).toString("hex");
+  const cleanupId = `u7-cleanup-${nonce}`;
   const prepared: PreparedPosixBoundary = {
     sourceBoundaryPath,
+    cleanupId,
     mutablePaths,
     sealedSourcePath: join(dirname(sourceBoundaryPath), `.caplets-sealed-${nonce}`),
     tombstoneStagingPath: join(dirname(sourceBoundaryPath), `.caplets-tombstones-${nonce}`),
@@ -369,6 +415,7 @@ async function relocateAndScanPosix(
   }
 
   return {
+    cleanupId: prepared.cleanupId,
     sourceBoundaryPath: prepared.sourceBoundaryPath,
     mutablePaths: prepared.mutablePaths,
     sealedSourcePath: prepared.sealedSourcePath,
@@ -407,6 +454,7 @@ async function recoverPartialAcquisition(
     inode,
   }));
   return {
+    cleanupId: prepared.cleanupId,
     sourceBoundaryPath: prepared.sourceBoundaryPath,
     mutablePaths: prepared.mutablePaths,
     sealedSourcePath: prepared.sealedSourcePath,
@@ -441,6 +489,7 @@ function createPosixLease(
     sealedSource: {
       path: acquisition.sealedSourcePath,
       manifestSha256: acquisition.manifestSha256,
+      cleanupId: acquisition.cleanupId,
       identities: acquisition.snapshots.map(({ relativePath, kind, device, inode }) => ({
         relativePath,
         kind,
@@ -571,6 +620,7 @@ function createWindowsLease(helper: WindowsHelperLease): LegacyMigrationExclusio
     sealedSource: {
       path: helper.sealedSourcePath,
       manifestSha256: helper.manifestSha256,
+      cleanupId: helper.cleanupId,
       identities: helper.identities,
       sources: [
         {
@@ -651,6 +701,7 @@ function exclusionJournalPath(sourceBoundaryPath: string): string {
 async function writeExclusionJournal(
   input: {
     sourceBoundaryPath: string;
+    cleanupId: string;
     mutablePaths: LegacyMutablePath[];
     sealedSourcePath: string;
     tombstoneStagingPath: string;
@@ -663,6 +714,7 @@ async function writeExclusionJournal(
   const journal: ExclusionJournal = {
     version: 1,
     phase,
+    cleanupId: input.cleanupId,
     sourceBoundaryPath: input.sourceBoundaryPath,
     mutablePaths: input.mutablePaths,
     sealedSourcePath: input.sealedSourcePath,
@@ -751,6 +803,7 @@ async function reconcileExclusionJournal(
   const snapshots =
     journal.snapshots ?? (await enumeratePathSnapshots(journal.sealedSourcePath, true));
   await rollbackPosix({
+    cleanupId: journal.cleanupId,
     sourceBoundaryPath: journal.sourceBoundaryPath,
     mutablePaths: journal.mutablePaths,
     sealedSourcePath: journal.sealedSourcePath,
@@ -796,6 +849,7 @@ function parseExclusionJournal(
       "activation-cleanup",
     ].includes(String(value.phase)) ||
     typeof value.sourceBoundaryPath !== "string" ||
+    typeof value.cleanupId !== "string" ||
     typeof value.sealedSourcePath !== "string" ||
     typeof value.tombstoneStagingPath !== "string" ||
     typeof value.recoverySnapshotPath !== "string" ||
@@ -814,6 +868,7 @@ function parseExclusionJournal(
   const mutablePaths = validateMutablePaths(options.mutablePaths);
   const storedMutablePaths = validateMutablePaths(value.mutablePaths as LegacyMutablePath[]);
   if (
+    !/^u7-cleanup-[a-f0-9]{48}$/u.test(value.cleanupId) ||
     value.sourceBoundaryPath !== sourceBoundaryPath ||
     journalPath !== exclusionJournalPath(sourceBoundaryPath) ||
     JSON.stringify(storedMutablePaths) !== JSON.stringify(mutablePaths) ||
@@ -826,6 +881,7 @@ function parseExclusionJournal(
   return {
     version: 1,
     phase: value.phase as ExclusionJournalPhase,
+    cleanupId: value.cleanupId,
     sourceBoundaryPath,
     mutablePaths,
     sealedSourcePath: value.sealedSourcePath,
@@ -1097,6 +1153,7 @@ async function scanPlatform(
   });
 }
 type OfflinePathAcquisition = {
+  cleanupId: string;
   sourcePath: string;
   logicalPath: string;
   kind: "file" | "directory";
@@ -1112,6 +1169,7 @@ type OfflinePathAcquisition = {
 
 type OfflinePathJournal = {
   version: 2;
+  cleanupId: string;
   phase: ExclusionJournalPhase;
   sourcePath: string;
   logicalPath: string;
@@ -1201,6 +1259,7 @@ async function prepareOfflinePath(
   const nonce = randomBytes(24).toString("hex");
   const sealedContainerPath = join(parent, `.caplets-sealed-${nonce}`);
   const acquisition: OfflinePathAcquisition = {
+    cleanupId: `u7-cleanup-${nonce}`,
     sourcePath,
     logicalPath: source.logicalPath,
     kind: source.kind,
@@ -1290,6 +1349,17 @@ function createOfflineLease(
     sealedSource: {
       path: acquisitions[0]?.sealedContainerPath ?? "",
       manifestSha256,
+      cleanupId:
+        acquisitions.length === 1
+          ? acquisitions[0]!.cleanupId
+          : `u7-cleanup-set-${createHash("sha256")
+              .update(
+                acquisitions
+                  .map((entry) => entry.cleanupId)
+                  .sort()
+                  .join("\0"),
+              )
+              .digest("hex")}`,
       identities,
       sources,
     },
@@ -1577,6 +1647,7 @@ async function writeOfflineJournal(
 ): Promise<void> {
   const journal: OfflinePathJournal = {
     version: 2,
+    cleanupId: acquisition.cleanupId,
     phase,
     sourcePath: acquisition.sourcePath,
     logicalPath: acquisition.logicalPath,
@@ -1641,6 +1712,8 @@ async function reconcileOfflineJournal(
       "activation-cleanup",
     ].includes(raw.phase) ||
     raw.sourcePath !== resolve(source.sourcePath) ||
+    typeof raw.cleanupId !== "string" ||
+    !/^u7-cleanup-[a-f0-9]{48}$/u.test(raw.cleanupId) ||
     raw.logicalPath !== source.logicalPath ||
     raw.kind !== source.kind ||
     typeof raw.sealedContainerPath !== "string" ||
@@ -1658,6 +1731,7 @@ async function reconcileOfflineJournal(
     refuse("An offline exclusion journal contains an unsafe artifact path.");
   }
   const acquisition: OfflinePathAcquisition = {
+    cleanupId: raw.cleanupId,
     sourcePath: resolve(source.sourcePath),
     logicalPath: source.logicalPath,
     kind: source.kind,

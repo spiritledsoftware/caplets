@@ -455,7 +455,7 @@ describe("HttpActionManager", () => {
         },
       },
     });
-    const engine = new CapletsEngine({
+    const engine = CapletsEngine.unactivatedForTests({
       watch: false,
       artifactDir,
       mediaInlineThresholdBytes: 128,

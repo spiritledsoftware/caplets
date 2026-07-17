@@ -241,7 +241,7 @@ function entityChecks(
       ),
       check(
         "cp_key_inventory_state_check",
-        sql`${requireColumn(table, "state")} IN ('active', 'decrypt-only', 'retired', 'destruction-intended', 'destroyed')`,
+        sql`${requireColumn(table, "state")} IN ('staged', 'active', 'decrypt-only', 'retired', 'destruction-intended', 'destroyed')`,
       ),
     );
   }
@@ -252,7 +252,10 @@ function entityChecks(
     const authTag = requireColumn(table, "authTag");
     const verifier = requireColumn(table, "verifier");
     checks.push(
-      check("cp_key_canary_state_check", sql`${requireColumn(table, "state")} = 'active'`),
+      check(
+        "cp_key_canary_state_check",
+        sql`${requireColumn(table, "state")} IN ('staged', 'active')`,
+      ),
       check(
         "cp_key_canary_protection_check",
         sql`(${protection} = 'aead' AND ${nonce} IS NOT NULL AND ${ciphertext} IS NOT NULL AND ${authTag} IS NOT NULL AND ${verifier} IS NULL) OR (${protection} = 'hmac' AND ${nonce} IS NULL AND ${ciphertext} IS NULL AND ${authTag} IS NULL AND ${verifier} IS NOT NULL)`,
@@ -344,6 +347,9 @@ export const dashboardSessions = createEntityTable(definition("dashboard-session
 export const projectBindingWorkspaces = createEntityTable(definition("project-binding-workspace"));
 export const projectBindingLeases = createEntityTable(definition("project-binding-lease"));
 export const projectBindingReceipts = createEntityTable(definition("project-binding-receipt"));
+export const setupApprovals = createEntityTable(definition("setup-approval"));
+export const setupExecutions = createEntityTable(definition("setup-execution"));
+export const setupAttempts = createEntityTable(definition("setup-attempt"));
 export const vaultValues = createEntityTable(definition("vault-value"));
 export const vaultGrants = createEntityTable(definition("vault-grant"));
 export const operatorActivities = createEntityTable(definition("operator-activity"));
@@ -354,6 +360,7 @@ export const keyInventory = createEntityTable(definition("key-inventory"));
 export const keyCanaries = createEntityTable(definition("key-canary"));
 export const clusterNodeLeases = createEntityTable(definition("cluster-node-lease"));
 export const writerFences = createEntityTable(definition("writer-fence"));
+export const snapshotEnvelopes = createEntityTable(definition("snapshot-envelope"));
 export const migrations = createEntityTable(definition("migration"));
 export const backups = createEntityTable(definition("backup"));
 export const recoveries = createEntityTable(definition("recovery"));
@@ -500,6 +507,9 @@ export const postgresControlPlaneSchema = {
   projectBindingWorkspaces,
   projectBindingLeases,
   projectBindingReceipts,
+  setupApprovals,
+  setupExecutions,
+  setupAttempts,
   vaultValues,
   vaultGrants,
   operatorActivities,
@@ -510,6 +520,7 @@ export const postgresControlPlaneSchema = {
   keyCanaries,
   clusterNodeLeases,
   writerFences,
+  snapshotEnvelopes,
   migrations,
   backups,
   recoveries,

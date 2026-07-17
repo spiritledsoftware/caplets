@@ -121,11 +121,14 @@ function approvalCode(command: string): string {
 function testApp() {
   const stateDir = tempDir("caplets-dashboard-catalog-state-");
   const context = testContext();
-  const engine = new CapletsEngine({
+  const engine = CapletsEngine.unactivatedForTests({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
     watch: false,
   });
+  (engine as unknown as { runtimeSnapshot: { securityEpoch: number } }).runtimeSnapshot = {
+    securityEpoch: 1,
+  };
   const store = new RemoteServerCredentialStore({ dir: stateDir });
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},

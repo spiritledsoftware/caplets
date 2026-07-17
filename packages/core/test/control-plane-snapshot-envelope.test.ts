@@ -33,6 +33,15 @@ const identity: ControlPlaneStoreIdentity = { logicalHostId, storeId, operationN
 const roots: string[] = [];
 const openDialects: SqliteControlPlaneDialect[] = [];
 const scaledCapletCount = 8;
+const distributedCompatibility = {
+  binaryVersion: "0.34.1",
+  schemaVersion: 3,
+  keyVersion: 1,
+  manifestVersion: 1,
+  providerCommitment: "1".repeat(64),
+  keyCanaryCommitment: "2".repeat(64),
+  capabilities: ["ordered-tuple-polling", "writer-fence-v1", "complete-snapshot-v1"],
+} as const;
 
 const migrationEnvironment: MigrationEnvironment = {
   binaryVersion: "0.34.1",
@@ -58,15 +67,26 @@ describe("supported control-plane snapshot envelope", () => {
     const registered = await store.registerNode({
       nodeId: "snapshot-writer",
       bootstrapFingerprint: "snapshot-writer-fingerprint",
+      effectiveRuntimeFingerprint: "snapshot-writer-fingerprint",
       compatibility: {
         binaryVersion: "0.34.1",
         schemaVersion: 3,
         keyVersion: 1,
         manifestVersion: 1,
       },
+      appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
       ttlMs: 60_000,
     });
     if (registered.status !== "ready") throw new Error("snapshot writer did not become ready");
+    await expect(
+      store.acknowledgeNode({
+        nodeId: "snapshot-writer",
+        bootstrapFingerprint: "snapshot-writer-fingerprint",
+        effectiveRuntimeFingerprint: "snapshot-writer-fingerprint",
+        appliedToken: initial,
+        writerFence: registered.writerFence,
+      }),
+    ).resolves.toEqual({ status: "applied", appliedNodes: 1 });
 
     let authorityGeneration = initial.authorityGeneration;
     let effectiveGeneration = initial.effectiveGeneration;
@@ -187,15 +207,13 @@ describe("supported control-plane snapshot envelope", () => {
   it("admits 16 ready Postgres nodes and rejects a non-perturbing seventeenth", async () => {
     const { store } = await openRepository("postgres");
     await store.initialize();
+    const cohortFingerprint = "postgres-ready-cohort";
     const incompatible = await store.registerNode({
       nodeId: "node-incompatible",
       bootstrapFingerprint: "fingerprint-incompatible",
-      compatibility: {
-        binaryVersion: "0.34.1",
-        schemaVersion: 1,
-        keyVersion: 1,
-        manifestVersion: 1,
-      },
+      effectiveRuntimeFingerprint: "fingerprint-incompatible",
+      compatibility: { ...distributedCompatibility, schemaVersion: 1 },
+      appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
       ttlMs: 60_000,
     });
     expect(incompatible).toEqual({ status: "compatibility-rejected" });
@@ -204,30 +222,33 @@ describe("supported control-plane snapshot envelope", () => {
     for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes; index += 1) {
       const registration = await store.registerNode({
         nodeId: `node-${index.toString().padStart(2, "0")}`,
-        bootstrapFingerprint: `fingerprint-${index.toString().padStart(2, "0")}`,
-        compatibility: {
-          binaryVersion: "0.34.1",
-          schemaVersion: 3,
-          keyVersion: 1,
-          manifestVersion: 1,
-        },
+        bootstrapFingerprint: cohortFingerprint,
+        effectiveRuntimeFingerprint: cohortFingerprint,
+        compatibility: distributedCompatibility,
+        appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
         ttlMs: 60_000,
       });
       expect(registration.status).toBe("ready");
       if (registration.status !== "ready") throw new Error(`node ${index} was not ready`);
       expect(registration.readyNodes).toBe(index + 1);
+      await expect(
+        store.acknowledgeNode({
+          nodeId: `node-${index.toString().padStart(2, "0")}`,
+          bootstrapFingerprint: cohortFingerprint,
+          effectiveRuntimeFingerprint: cohortFingerprint,
+          appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
+          writerFence: registration.writerFence,
+        }),
+      ).resolves.toEqual({ status: "applied", appliedNodes: index + 1 });
       ready.push(registration);
     }
 
     const collision = await store.registerNode({
       nodeId: "node-00",
       bootstrapFingerprint: "different-fingerprint",
-      compatibility: {
-        binaryVersion: "0.34.1",
-        schemaVersion: 3,
-        keyVersion: 1,
-        manifestVersion: 1,
-      },
+      effectiveRuntimeFingerprint: "different-fingerprint",
+      compatibility: distributedCompatibility,
+      appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
       ttlMs: 60_000,
     });
     expect(collision).toEqual({ status: "identity-conflict" });
@@ -237,13 +258,10 @@ describe("supported control-plane snapshot envelope", () => {
     const healthBefore = await store.health();
     const rejected = await store.registerNode({
       nodeId: "node-16",
-      bootstrapFingerprint: "fingerprint-16",
-      compatibility: {
-        binaryVersion: "0.34.1",
-        schemaVersion: 3,
-        keyVersion: 1,
-        manifestVersion: 1,
-      },
+      bootstrapFingerprint: cohortFingerprint,
+      effectiveRuntimeFingerprint: cohortFingerprint,
+      compatibility: distributedCompatibility,
+      appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
       ttlMs: 60_000,
     });
     expect(rejected).toEqual({ status: "capacity-rejected", readyNodes: 16 });
@@ -254,44 +272,45 @@ describe("supported control-plane snapshot envelope", () => {
     for (let index = 0; index < ready.length; index += 1) {
       const existing = await store.registerNode({
         nodeId: `node-${index.toString().padStart(2, "0")}`,
-        bootstrapFingerprint: `fingerprint-${index.toString().padStart(2, "0")}`,
-        compatibility: {
-          binaryVersion: "0.34.1",
-          schemaVersion: 3,
-          keyVersion: 1,
-          manifestVersion: 1,
-        },
+        bootstrapFingerprint: cohortFingerprint,
+        effectiveRuntimeFingerprint: cohortFingerprint,
+        compatibility: distributedCompatibility,
+        appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
         ttlMs: 60_000,
       });
-      expect(existing).toEqual({
+      expect(existing).toMatchObject({
         status: "ready",
         readyNodes: 16,
         writerFence: ready[index]!.writerFence,
       });
+      if (existing.status !== "ready") throw new Error(`node ${index} did not re-register`);
+      await expect(
+        store.acknowledgeNode({
+          nodeId: `node-${index.toString().padStart(2, "0")}`,
+          bootstrapFingerprint: cohortFingerprint,
+          effectiveRuntimeFingerprint: cohortFingerprint,
+          appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
+          writerFence: existing.writerFence,
+        }),
+      ).resolves.toEqual({ status: "applied", appliedNodes: 16 });
     }
 
     const drained = await store.registerNode({
       nodeId: "node-00",
-      bootstrapFingerprint: "fingerprint-00",
-      compatibility: {
-        binaryVersion: "0.34.1",
-        schemaVersion: 1,
-        keyVersion: 1,
-        manifestVersion: 1,
-      },
+      bootstrapFingerprint: cohortFingerprint,
+      effectiveRuntimeFingerprint: cohortFingerprint,
+      compatibility: { ...distributedCompatibility, schemaVersion: 1 },
+      appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
       ttlMs: 60_000,
     });
     expect(drained).toEqual({ status: "compatibility-rejected" });
     await expect(
       store.registerNode({
         nodeId: "node-16",
-        bootstrapFingerprint: "fingerprint-16",
-        compatibility: {
-          binaryVersion: "0.34.1",
-          schemaVersion: 3,
-          keyVersion: 1,
-          manifestVersion: 1,
-        },
+        bootstrapFingerprint: cohortFingerprint,
+        effectiveRuntimeFingerprint: cohortFingerprint,
+        compatibility: distributedCompatibility,
+        appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
         ttlMs: 60_000,
       }),
     ).resolves.toMatchObject({ status: "ready", readyNodes: 16 });

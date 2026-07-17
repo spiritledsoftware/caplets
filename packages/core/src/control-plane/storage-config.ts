@@ -73,7 +73,7 @@ export type PostgresVerificationResult = {
     replication: boolean;
     bypassRowLevelSecurity: boolean;
   };
-  operationNamespace: string;
+  operationNamespace?: string | undefined;
   databaseIdentity: string;
 };
 
@@ -569,7 +569,7 @@ async function resolvePostgresStorage(
     );
   }
 
-  assertPostgresConnectionReference(connectionString, role.role);
+  assertPostgresConnectionReference(connectionString, role.role, storage.connection.tls.serverName);
 
   if (!options.verifyPostgres) {
     throw new CapletsError("REQUEST_INVALID", "Postgres verification adapter is required.");
@@ -586,8 +586,11 @@ async function resolvePostgresStorage(
   }
   assertVerifiedPostgresIdentity(storage, role.role, postgres);
   if (
-    !OPERATION_NAMESPACE_PATTERN.test(postgres.operationNamespace) ||
-    (authority.state === "bound" && postgres.operationNamespace !== authority.operationNamespace)
+    (postgres.operationNamespace !== undefined &&
+      !OPERATION_NAMESPACE_PATTERN.test(postgres.operationNamespace)) ||
+    (authority.state === "bound" &&
+      postgres.operationNamespace !== undefined &&
+      postgres.operationNamespace !== authority.operationNamespace)
   ) {
     throw new CapletsError("AUTH_FAILED", "Postgres operation namespace does not match authority.");
   }
@@ -648,7 +651,7 @@ async function resolvePostgresStorage(
 
   let operationNamespace: string;
   if (authority.state === "unbound") {
-    operationNamespace = postgres.operationNamespace;
+    operationNamespace = postgres.operationNamespace ?? generateCrockfordIdentifier("operations");
     const binding: StorageBinding = {
       version: 1,
       backend: "postgres",
@@ -803,7 +806,7 @@ async function resolveFilesystemArtifactCanary(
   };
 }
 
-async function resolveDeploymentSecret(
+export async function resolveDeploymentSecret(
   reference: DeploymentSecretReference,
   filesystem: SecureFilesystemOptions,
 ): Promise<string> {
@@ -884,15 +887,13 @@ async function verifySqliteDatabase(
     await options.verifySqliteFile({ path, identity });
     return identity;
   }
-  const descriptorRoot = "/proc/self/fd";
   try {
-    const verified = await withSecureRegularFile(path, filesystem, async (handle) => {
+    const verified = await withSecureRegularFile(path, filesystem, async (_handle) => {
       let database: DatabaseConnection | undefined;
       try {
-        database = new Database(`${descriptorRoot}/${handle.fd}`, {
-          readonly: true,
-          fileMustExist: true,
-        });
+        // Open the verified path so SQLite can resolve its live WAL/SHM companions.
+        // withSecureRegularFile pins and rechecks the database inode around this use.
+        database = new Database(path, { readonly: true, fileMustExist: true });
         const result = database.pragma("quick_check", { simple: true });
         if (result !== "ok") throw new Error("quick check failed");
         const stored = database
@@ -914,22 +915,44 @@ async function verifySqliteDatabase(
   }
 }
 
-function assertPostgresConnectionReference(connectionString: string, expectedRole: string): void {
+export function normalizedPostgresConnectionReference(
+  connectionString: string,
+  expectedRole: string,
+  serverName: string,
+): URL {
   try {
     const connection = new URL(connectionString);
     const database = connection.pathname.replace(/^\/+/u, "");
+    const sslModes = connection.searchParams.getAll("sslmode");
     if (
       (connection.protocol !== "postgres:" && connection.protocol !== "postgresql:") ||
       decodeURIComponent(connection.username) !== expectedRole ||
       connection.password.length === 0 ||
       connection.hostname.length === 0 ||
+      connection.hostname.toLowerCase() !== serverName.toLowerCase() ||
       database.length === 0 ||
       ["postgres", "template0", "template1"].includes(database) ||
-      connection.search.length > 0 ||
-      connection.hash.length > 0
+      connection.hash.length > 0 ||
+      sslModes.length !== 1 ||
+      (sslModes[0] !== "require" && sslModes[0] !== "verify-full") ||
+      [...connection.searchParams.keys()].some((key) => key !== "sslmode")
     ) {
       throw new Error("invalid connection target");
     }
+    connection.search = "";
+    return connection;
+  } catch {
+    throw new Error("Postgres connection string is invalid");
+  }
+}
+
+function assertPostgresConnectionReference(
+  connectionString: string,
+  expectedRole: string,
+  serverName: string,
+): void {
+  try {
+    normalizedPostgresConnectionReference(connectionString, expectedRole, serverName);
   } catch {
     throw new CapletsError("AUTH_FAILED", "Postgres role credential reference is invalid.");
   }

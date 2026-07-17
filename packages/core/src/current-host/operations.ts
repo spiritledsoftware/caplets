@@ -5,6 +5,7 @@ import {
   DashboardActivityLog,
   type DashboardActivityAction,
   type DashboardActivityEntry,
+  type DashboardActivityRepository,
 } from "../dashboard/activity-log";
 import type { CapletsEngine } from "../engine";
 import { MutableHostSettingSchema } from "../config-runtime";
@@ -28,13 +29,17 @@ import type {
   CapletActivationState,
 } from "../control-plane/caplets/model";
 import { CapletsError, toSafeError, type SafeErrorSummary } from "../errors";
-import type { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import type {
+  RemoteCredentialRepository,
+  RemotePendingLoginRepository,
+  RemoteServerCredentialStore,
+} from "../remote/server-credential-store";
 import type {
   RemoteClientRole,
   RemoteClientStatus,
   RemotePendingLoginStatus,
 } from "../remote/server-credentials";
-import type { VaultDeleteStatus, VaultValueStatus } from "../vault";
+import type { VaultDeleteStatus, VaultRepository, VaultValueStatus } from "../vault";
 import {
   type CurrentHostCatalogInstallResult as CatalogInstallResult,
   type CurrentHostInstalledCapletProjection as InstalledCapletProjection,
@@ -174,7 +179,8 @@ export type CurrentHostOperationReceipt = {
   localApplication: "applied" | "pending" | "not-applicable";
   convergence:
     | { kind: "single-node" }
-    | { kind: "pending"; deadline: string }
+    | { kind: "pending"; deadline: string; requiredNodes: number }
+    | { kind: "overdue"; deadline: string; requiredNodes: number }
     | { kind: "converged"; appliedNodes: number };
   management?: CurrentHostManagementTargetDetail | undefined;
 };
@@ -910,8 +916,13 @@ export interface CurrentHostOperations {
 export type CurrentHostOperationsDependencies = {
   engine: Pick<CapletsEngine, "enabledServers">;
   control?: CurrentHostControlContext | undefined;
-  activityLog: DashboardActivityLog;
+  activityLog: DashboardActivityLog | DashboardActivityRepository;
   remoteCredentialStore?: RemoteServerCredentialStore | undefined;
+  remoteCredentialRepository?:
+    | (RemoteCredentialRepository & { listClients(): Promise<RemoteClientStatus[]> })
+    | undefined;
+  remotePendingLoginRepository?: RemotePendingLoginRepository | undefined;
+  vaultRepository?: VaultRepository | undefined;
   management?: CurrentHostManagementDependencies | undefined;
   version: string;
 };
@@ -993,7 +1004,7 @@ async function executeCurrentHostOperation(
 ): Promise<CurrentHostOperationOutcome> {
   switch (operation.kind) {
     case "summary":
-      return clients.summary(vault.valueCount(), operation);
+      return await clients.summary(await vault.valueCount(), operation);
     case "caplets_list":
       return catalog.capletsList(operation);
     case "catalog_search":
@@ -1009,33 +1020,33 @@ async function executeCurrentHostOperation(
     case "catalog_update":
       return await catalog.update(principal, operation);
     case "clients_list":
-      return clients.listClients();
+      return await clients.listClients();
     case "pending_logins_list":
-      return clients.listPendingLogins();
+      return await clients.listPendingLogins();
     case "pending_login_approve":
-      return clients.approvePendingLogin(principal, operation);
+      return await clients.approvePendingLogin(principal, operation);
     case "pending_login_deny":
-      return clients.denyPendingLogin(principal, operation);
+      return await clients.denyPendingLogin(principal, operation);
     case "client_revoke":
-      return clients.revokeClient(principal, operation);
+      return await clients.revokeClient(principal, operation);
     case "client_change_role":
-      return clients.changeClientRole(principal, operation);
+      return await clients.changeClientRole(principal, operation);
     case "activity_list":
-      return { kind: "activity_list", activity: dependencies.activityLog.list(operation) };
+      return { kind: "activity_list", activity: await dependencies.activityLog.list(operation) };
     case "vault_set":
-      return vault.set(principal, operation);
+      return await vault.set(principal, operation);
     case "vault_list":
-      return vault.list(operation);
+      return await vault.list(operation);
     case "vault_get":
-      return vault.get(operation);
+      return await vault.get(operation);
     case "vault_delete":
-      return vault.delete(principal, operation);
+      return await vault.delete(principal, operation);
     case "vault_access_grant":
-      return vault.grant(principal, operation);
+      return await vault.grant(principal, operation);
     case "vault_access_revoke":
-      return vault.revoke(principal, operation);
+      return await vault.revoke(principal, operation);
     case "vault_access_list":
-      return vault.listAccess(operation);
+      return await vault.listAccess(operation);
     case "runtime":
       return {
         kind: "runtime",
@@ -1049,7 +1060,7 @@ async function executeCurrentHostOperation(
         daemon: { restartAvailable: false, stopAvailable: false, uninstallAvailable: false },
       };
     case "runtime_restart":
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "runtime_restart_requested",
         outcome: "failure",
@@ -1147,14 +1158,14 @@ async function executeCurrentHostManagementList(
   _principal: CurrentHostOperatorPrincipal,
   request: CurrentHostManagementListRequest,
 ): Promise<CurrentHostManagementListResult> {
-  const loaded = await loadAuthorizedManagementSnapshots(management, request.binding);
-  if ("status" in loaded) return loaded;
+  const runtime = await loadAuthorizedManagementRuntime(management, request.binding);
+  if ("status" in runtime) return runtime;
   const rows =
     request.resource === "caplet"
-      ? Object.values(loaded.runtime.caplets).map((row) =>
+      ? Object.values(runtime.caplets).map((row) =>
           managementTargetDetail("caplet", row.id, "effective", row),
         )
-      : Object.values(loaded.runtime.hostSettings).map((row) =>
+      : Object.values(runtime.hostSettings).map((row) =>
           managementTargetDetail("host-setting", row.key, "effective", row),
         );
   return {
@@ -1435,6 +1446,15 @@ async function loadAuthorizedManagementSnapshots(
 > {
   const loaded = await management.storage.loadSnapshot(binding);
   if (loaded.status !== "ok") return loaded;
+  const runtime = await loadAuthorizedManagementRuntime(management, binding);
+  if ("status" in runtime) return runtime;
+  return { sql: loaded.snapshot, runtime };
+}
+
+async function loadAuthorizedManagementRuntime(
+  management: CurrentHostManagementDependencies,
+  binding: CurrentHostOperationBinding,
+): Promise<ControlPlaneRuntimeSnapshot | CurrentHostManagementFailure> {
   try {
     const runtime = await management.loadRuntimeSnapshot();
     if (
@@ -1444,7 +1464,7 @@ async function loadAuthorizedManagementSnapshots(
     ) {
       return { status: "denied", binding, reason: "stale-authority" };
     }
-    return { sql: loaded.snapshot, runtime };
+    return runtime;
   } catch {
     return { status: "unavailable", binding };
   }

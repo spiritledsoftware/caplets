@@ -109,6 +109,7 @@ export async function openWindowsExclusionHelper(input: {
     });
     const acquired = parseAcquireResult(result);
     return {
+      cleanupId: acquired.cleanupId,
       sealedSourcePath: acquired.sealedSourcePath,
       tombstonePaths: acquired.tombstonePaths,
       manifestSha256: acquired.manifestSha256,
@@ -149,6 +150,7 @@ export async function openWindowsExclusionHelper(input: {
 }
 
 export type WindowsHelperLease = {
+  cleanupId: string;
   sealedSourcePath: string;
   tombstonePaths: readonly string[];
   manifestSha256: string;
@@ -305,6 +307,7 @@ function parseManifest(bytes: string | undefined): WindowsExclusionHelperManifes
 }
 
 function parseAcquireResult(value: unknown): {
+  cleanupId: string;
   sealedSourcePath: string;
   tombstonePaths: string[];
   manifestSha256: string;
@@ -313,6 +316,8 @@ function parseAcquireResult(value: unknown): {
 } {
   if (
     !isRecord(value) ||
+    typeof value.cleanupId !== "string" ||
+    !/^u7-cleanup-[a-f0-9]{48}$/u.test(value.cleanupId) ||
     typeof value.sealedSourcePath !== "string" ||
     !Array.isArray(value.tombstonePaths) ||
     !value.tombstonePaths.every((path) => typeof path === "string") ||
@@ -325,6 +330,7 @@ function parseAcquireResult(value: unknown): {
   }
   const identities = value.identities.map(parseIdentity);
   return {
+    cleanupId: value.cleanupId,
     sealedSourcePath: value.sealedSourcePath,
     tombstonePaths: value.tombstonePaths,
     manifestSha256: value.manifestSha256,

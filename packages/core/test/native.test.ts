@@ -11,6 +11,7 @@ import {
   nativeCapletsSystemGuidance,
   type NativeCapletsService,
 } from "../src/native";
+import { createUnactivatedNativeCapletsServiceForTests } from "../src/native/service";
 import { CapletsEngine, type ResolvedExposureProjection } from "../src/engine";
 import { recordTelemetryNoticeShown } from "../src/telemetry";
 import { FileVaultStore } from "../src/vault";
@@ -60,7 +61,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     expect(service.listTools()).toEqual([]);
     await waitForInitialProjection(service);
 
@@ -127,7 +131,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -151,7 +158,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -210,7 +220,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const capture = vi.fn();
-    const service = createNativeCapletsService({
+    const service = createUnactivatedNativeCapletsServiceForTests({
       configPath,
       projectConfigPath,
       telemetryStateDir: join(dir, "state"),
@@ -241,7 +251,7 @@ describe("native Caplets service", () => {
     const stateDir = join(dir, "state");
     recordTelemetryNoticeShown({ stateDir, surface: "cli" });
     const capture = vi.fn();
-    const service = createNativeCapletsService({
+    const service = createUnactivatedNativeCapletsServiceForTests({
       configPath,
       projectConfigPath,
       telemetryStateDir: stateDir,
@@ -283,7 +293,10 @@ describe("native Caplets service", () => {
     dirs.push(dir);
     process.env.XDG_STATE_HOME = join(dir, "state");
 
-    const ungranted = createNativeCapletsService({ configPath, projectConfigPath });
+    const ungranted = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(ungranted);
     try {
       expect(ungranted.listTools().map((tool) => tool.caplet)).not.toContain("github");
@@ -301,7 +314,10 @@ describe("native Caplets service", () => {
       origin: { kind: "global-config", path: configPath },
     });
 
-    const granted = createNativeCapletsService({ configPath, projectConfigPath });
+    const granted = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(granted);
     try {
       expect(granted.listTools()).toEqual(
@@ -343,7 +359,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -378,7 +397,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -408,7 +431,10 @@ describe("native Caplets service", () => {
         },
       });
       dirs.push(dir);
-      const service = createNativeCapletsService({ configPath, projectConfigPath });
+      const service = createUnactivatedNativeCapletsServiceForTests({
+        configPath,
+        projectConfigPath,
+      });
       await waitForInitialProjection(service);
 
       try {
@@ -464,7 +490,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const projectRoot = join(dir, "project");
-    const service = createNativeCapletsService({
+    const service = createUnactivatedNativeCapletsServiceForTests({
       configPath,
       projectConfigPath,
       projectRoot,
@@ -505,7 +531,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
 
     try {
       await expect(service.reload()).resolves.toBe(true);
@@ -560,7 +590,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
 
     try {
       await expect
@@ -624,7 +658,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
 
     try {
       await expect(service.reload()).resolves.toBe(true);
@@ -664,7 +702,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const events: string[][] = [];
     service.onToolsChanged((tools) => {
       events.push(configuredCapletIds(tools));
@@ -693,7 +735,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -717,7 +762,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     await waitForInitialProjection(service);
     expect(service.listTools().map((tool) => tool.caplet)).toEqual(["code_mode"]);
     const events: string[][] = [];
@@ -769,7 +818,11 @@ describe("native Caplets service", () => {
         if (projectionCalls++ === 0) return await initialProjection.promise;
         throw new Error("refreshed discovery failed");
       });
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const createdEngine = exposureProjection.mock.instances[0] as CapletsEngine | undefined;
     if (!createdEngine) throw new Error("expected native service to begin projection discovery");
     const execute = vi.spyOn(createdEngine, "execute");
@@ -852,7 +905,11 @@ describe("native Caplets service", () => {
             throw new Error("unexpected projection refresh");
         }
       });
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const createdEngine = exposureProjection.mock.instances[0] as CapletsEngine | undefined;
     if (!createdEngine) throw new Error("expected native service to begin projection discovery");
 
@@ -944,7 +1001,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -997,7 +1057,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -1033,7 +1096,10 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -1092,7 +1158,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -1133,7 +1203,11 @@ describe("native Caplets service", () => {
       { preserveExposureDefault: true },
     );
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     await waitForInitialProjection(service);
 
     try {
@@ -1150,7 +1224,11 @@ describe("native Caplets service", () => {
     const capletPath = join(capletDir, "CAPLET.md");
     mkdirSync(capletDir, { recursive: true });
     writeFileSync(capletPath, nativeReadmeCaplet("Initial operator notes."));
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     await waitForInitialProjection(service);
     const before = service.listTools();
     const events: string[][] = [];
@@ -1179,7 +1257,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const errors: string[] = [];
-    const service = createNativeCapletsService({
+    const service = createUnactivatedNativeCapletsServiceForTests({
       configPath,
       projectConfigPath,
       watch: false,
@@ -1248,7 +1326,11 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const service = createUnactivatedNativeCapletsServiceForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     await waitForInitialProjection(service);
     const events: string[][] = [];
     service.onToolsChanged((tools) => {
@@ -1293,7 +1375,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const errors: string[] = [];
-    const service = createNativeCapletsService({
+    const service = createUnactivatedNativeCapletsServiceForTests({
       configPath,
       projectConfigPath,
       watch: false,
@@ -1346,7 +1428,7 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({
+    const service = createUnactivatedNativeCapletsServiceForTests({
       configPath,
       projectConfigPath,
       watchDebounceMs: 10,

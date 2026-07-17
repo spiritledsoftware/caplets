@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   bootstrapSqliteFileV1,
   fileV1CompatibilityCommitment,
+  fileV1VersionFloors,
   loadFileV1KeyProvider,
 } from "../src/control-plane/key-provider/file-v1";
 import {
@@ -162,6 +163,15 @@ describe("file-v1 key provider", () => {
     });
     expect(fileV1CompatibilityCommitment(maintenance)).toEqual(
       fileV1CompatibilityCommitment(online),
+    );
+    expect(fileV1VersionFloors(maintenance)).toEqual(fileV1VersionFloors(online));
+    expect(maintenance.hasCapability("active-record", "decrypt")).toBe(false);
+    expect(maintenance.hasCapability("vault-record", "encrypt")).toBe(false);
+    expect(() =>
+      maintenance.decrypt("active-record", 1, Buffer.alloc(1), Buffer.alloc(12), Buffer.alloc(16)),
+    ).toThrow(/operation/u);
+    expect(() => maintenance.encrypt("vault-record", Buffer.alloc(1), Buffer.alloc(12))).toThrow(
+      /operation/u,
     );
     expect(() => online.manifest.entries[0]!.operations.push("wrap")).toThrow();
   });

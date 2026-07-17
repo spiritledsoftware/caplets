@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -45,7 +45,11 @@ import type {
   ResolvedPostgresStorage,
   ResolvedSqliteStorage,
 } from "../src/control-plane/storage-config";
-import type { ControlPlaneTransactionalDialect } from "../src/control-plane/store";
+import type {
+  ControlPlaneSqlTransaction,
+  ControlPlaneTable,
+  ControlPlaneTransactionalDialect,
+} from "../src/control-plane/store";
 import type { ControlPlaneStoreIdentity } from "../src/control-plane/types";
 
 const require = createRequire(import.meta.url);
@@ -103,6 +107,10 @@ describe("control-plane U7 typed-Drizzle persistence", () => {
       "0002_colorful_maverick",
       "0003_lazy_terrax",
       "0004_condemned_cardiac",
+      "0005_great_matthew_murdock",
+      "0006_mature_bill_hollister",
+      "0007_cuddly_cerebro",
+      "0008_giant_shard",
     ]);
     await createControlPlaneRepository({ identity, dialect }).initialize();
     let persistence = createControlPlaneMigrationPersistence({
@@ -144,6 +152,25 @@ describe("control-plane U7 typed-Drizzle persistence", () => {
       canonical: canonicalClient,
       protection: { verifiedBy: "u6" as const, commitment: hash("protected-client") },
     };
+    const trackedCapletPath = join(root, "tracked-caplet-1");
+    await mkdir(trackedCapletPath);
+    await writeFile(
+      join(trackedCapletPath, "CAPLET.md"),
+      [
+        "---",
+        "name: Tracked migration fixture",
+        "description: A complete legacy Caplet migration fixture.",
+        "mcpServer:",
+        "  command: node",
+        "  args:",
+        '    - "-e"',
+        '    - ""',
+        "---",
+        "# Tracked migration fixture",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
     const trackedCaplet = {
       entry: {
         id: "tracked-caplet-1",
@@ -167,7 +194,7 @@ describe("control-plane U7 typed-Drizzle persistence", () => {
           destructive: false,
         },
       },
-      sourcePath: "/legacy/tracked-caplet-1",
+      sourcePath: trackedCapletPath,
       installedHash: hash("tracked-caplet"),
     };
     const jsonProtectedRecord = {
@@ -615,6 +642,80 @@ describe("control-plane U7 typed-Drizzle persistence", () => {
     await runDialectParityContract(dialect);
     await dialect.close();
   });
+  it("proves a fresh Postgres destination without direct maintenance reads of application tables", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-u7-postgres-proof-"));
+    roots.push(root);
+    await chmod(root, 0o700);
+    const storage: ResolvedSqliteStorage = {
+      backend: "sqlite",
+      ...identity,
+      stateRoot: root,
+      databasePath: join(root, "control-plane.sqlite3"),
+      keyProviderManifest: join(root, "key-provider.json"),
+      artifacts: { kind: "filesystem", root: join(root, "artifacts") },
+    };
+    const sqlite = await openSqliteControlPlaneDialect({
+      storage,
+      environment: migrationEnvironment(),
+      assetRoot: sourceAssetRoot,
+    });
+    sqlite.migrate();
+    await createControlPlaneRepository({ identity, dialect: sqlite }).initialize();
+    const directApplicationReads: ControlPlaneTable[] = [];
+    let proofCalls = 0;
+    const metadataTables: Partial<Record<ControlPlaneTable, true>> = {
+      migrations: true,
+      operationNamespaces: true,
+      authorityVersions: true,
+      effectiveVersions: true,
+      securityVersions: true,
+      backups: true,
+    };
+    const postgresBoundary = {
+      ...sqlite,
+      backend: "postgres",
+      maintenanceTransaction<T>(
+        work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+      ): Promise<T> {
+        return sqlite.maintenanceTransaction((transaction) => {
+          const restricted: ControlPlaneSqlTransaction = {
+            ...transaction,
+            async select(table, filter, order, limit) {
+              if (!metadataTables[table]) directApplicationReads.push(table);
+              return transaction.select(table, filter, order, limit);
+            },
+            async migrationDestinationContainsAuthoritativeRows() {
+              proofCalls += 1;
+              return false;
+            },
+          };
+          return work(restricted);
+        });
+      },
+    } satisfies ControlPlaneTransactionalDialect;
+    const persistence = createControlPlaneMigrationPersistence({
+      identity,
+      dialect: postgresBoundary,
+      nodeId: "postgres-proof",
+    });
+
+    await expect(
+      runFreshControlPlaneInitialization({
+        backend: "postgres",
+        destination: persistence.legacyDestination,
+        election: persistence.election,
+        mutex: {
+          async acquire() {
+            return { async release() {} };
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ status: "migrated", backend: "postgres" });
+    expect(proofCalls).toBe(1);
+    expect(directApplicationReads).toEqual([]);
+    await sqlite.close();
+  });
+
   it("runs the real SQLite fresh coordinator with its zero fence and rejects non-bootstrap rows", async () => {
     const root = await mkdtemp(join(tmpdir(), "caplets-u7-fresh-coordinator-"));
     roots.push(root);
@@ -748,6 +849,47 @@ describe("control-plane U7 typed-Drizzle persistence", () => {
       status: "already-migrated",
       backend: "sqlite",
     });
+    await expect(persistence.inspectInitializationJournal()).resolves.toEqual({
+      kind: "fresh",
+      migrationId: "fresh-v1",
+      state: "finalized",
+    });
+    await dialect.close();
+  });
+  it("routes initialization journal reads through the process metadata credential", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-u7-metadata-read-"));
+    roots.push(root);
+    await chmod(root, 0o700);
+    const dialect = await openSqliteControlPlaneDialect({
+      storage: {
+        backend: "sqlite",
+        ...identity,
+        stateRoot: root,
+        databasePath: join(root, "control-plane.sqlite3"),
+        keyProviderManifest: join(root, "key-provider.json"),
+        artifacts: { kind: "filesystem", root: join(root, "artifacts") },
+      },
+      environment: migrationEnvironment(),
+      assetRoot: sourceAssetRoot,
+    });
+    dialect.migrate();
+    let metadataReads = 0;
+    const persistence = createControlPlaneMigrationPersistence({
+      identity,
+      dialect: {
+        ...dialect,
+        async metadataReadTransaction(work) {
+          metadataReads += 1;
+          return dialect.runtimeTransaction(work);
+        },
+        async maintenanceTransaction() {
+          throw new Error("maintenance credential must not be used");
+        },
+      },
+      nodeId: "metadata-reader",
+    });
+    await expect(persistence.inspectInitializationJournal()).resolves.toBeUndefined();
+    expect(metadataReads).toBe(1);
     await dialect.close();
   });
 });

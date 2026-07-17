@@ -1,5 +1,6 @@
 export {
   createNativeCapletsService,
+  createActivatedNativeCapletsService,
   type NativeCapletTool,
   type NativeCapletsService,
   type NativeCapletsServiceOptions,

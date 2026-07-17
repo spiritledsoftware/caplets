@@ -582,7 +582,7 @@ function approvalCode(command: string): string {
 function testApp(): TestAppSetup {
   const stateDir = tempDir("caplets-dashboard-catalog-state-");
   const context = testContext();
-  const engine = new CapletsEngine({
+  const engine = CapletsEngine.unactivatedForTests({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
     watch: false,

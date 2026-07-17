@@ -35,7 +35,7 @@ describe("internal control-plane storage initialization seam", () => {
     expect(out.join("")).toBe("Global legacy storage migration complete.\n");
   });
 
-  it("rejects missing target/mode and remains unreachable without U10 injection", async () => {
+  it("rejects incomplete or conflicting global migration selectors before dispatch", async () => {
     const migrate = vi.fn<InternalControlPlaneStorageMigrationService["migrate"]>();
     for (const args of [
       ["storage", "migrate", "--offline"],
@@ -51,13 +51,6 @@ describe("internal control-plane storage initialization seam", () => {
       ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
     }
     expect(migrate).not.toHaveBeenCalled();
-
-    await expect(
-      runCli(["storage", "migrate", "--global", "--offline"], {
-        writeOut: () => undefined,
-        writeErr: () => undefined,
-      }),
-    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
   });
 
   it("routes hidden global management through the injected client with a caller-known operation ID", async () => {

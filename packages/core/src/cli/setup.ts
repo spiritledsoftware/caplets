@@ -237,6 +237,7 @@ export async function runSetup(integration: string, options: SetupOptions = {}):
       ...(options.env?.CAPLETS_PROJECT_CONFIG
         ? { projectConfigPath: options.env.CAPLETS_PROJECT_CONFIG }
         : {}),
+      ...(options.env ? { env: options.env } : {}),
       ...(options.remote === undefined && !isRemoteSetup(options)
         ? {}
         : { remote: isRemoteSetup(options) }),

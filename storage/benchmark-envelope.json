@@ -4,6 +4,7 @@
   "maxNormalizedRows": 100000,
   "maxEncodedSnapshotBytes": 268435456,
   "managementWritesPerSecond": 100,
+  "minimumMeasuredManagementWritesPerSecond": 25,
   "writeBurstSeconds": 10,
   "maxReadyNodes": 16,
   "warmupSamples": 10,

@@ -22,15 +22,26 @@ export function dashboardShell(): string {
 export function dashboardStaticResponse(
   requestPath: string,
   distDir = defaultDashboardDistDir(),
+  assetBase = "",
 ): Response | undefined {
   const filePath = dashboardStaticFilePath(requestPath, distDir);
   if (!filePath || !existsSync(filePath)) return undefined;
   const cacheControl = requestPath.startsWith("/_astro/")
     ? "public, max-age=31536000, immutable"
     : "no-store";
-  return new Response(readFileSync(filePath), {
-    headers: { "cache-control": cacheControl, "content-type": contentType(filePath) },
-  });
+  const body = readFileSync(filePath);
+  return new Response(
+    filePath.endsWith(".html") ? rebaseDashboardAssets(body.toString("utf8"), assetBase) : body,
+    {
+      headers: { "cache-control": cacheControl, "content-type": contentType(filePath) },
+    },
+  );
+}
+
+function rebaseDashboardAssets(html: string, assetBase: string): string {
+  const normalizedBase = assetBase === "/" ? "" : assetBase.replace(/\/+$/u, "");
+  if (!normalizedBase) return html;
+  return html.replace(/(["'])\/_astro\//gu, `$1${normalizedBase}/_astro/`);
 }
 
 function dashboardStaticFilePath(requestPath: string, distDir: string): string | undefined {

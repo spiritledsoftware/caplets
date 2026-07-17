@@ -466,6 +466,8 @@ export type ConfigWithSources = {
   config: CapletsConfig;
   sources: Record<string, ConfigSource>;
   shadows: Record<string, ConfigSource[]>;
+  declaredSources?: Record<string, ConfigSource> | undefined;
+  declaredShadows?: Record<string, ConfigSource[]> | undefined;
   settingSources?: Record<string, ConfigSource> | undefined;
   settingShadows?: Record<string, ConfigSource[]> | undefined;
   runtimeFingerprint?: RuntimeFingerprintSnapshot | undefined;
@@ -2171,6 +2173,54 @@ export function loadRuntimeConfigLayers(
       : []),
   ];
 }
+const runtimeInputsWithoutUnavailableReferences = new WeakSet<object>();
+
+function hasUnavailableInputReferences(value: unknown, path: string[] = []): boolean {
+  if (isPublicMetadataPath(path)) return false;
+  if (typeof value === "string") {
+    return (
+      value.includes("$vault:") ||
+      value.includes("${vault:") ||
+      /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/u.test(value)
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.some((item, index) =>
+      hasUnavailableInputReferences(item, [...path, String(index)]),
+    );
+  }
+  if (!isPlainObject(value)) return false;
+  if (runtimeInputsWithoutUnavailableReferences.has(value)) return false;
+  const unavailable = Object.entries(value).some(([key, nested]) =>
+    hasUnavailableInputReferences(nested, [...path, key]),
+  );
+  if (!unavailable) runtimeInputsWithoutUnavailableReferences.add(value);
+  return unavailable;
+}
+
+function runtimeLayersWithAvailableInputs(
+  layers: readonly RuntimeConfigLayerInput[],
+  options: Pick<ConfigParseOptions, "vaultResolver"> & {
+    quarantineUnavailableInputs?: boolean;
+  },
+): readonly RuntimeConfigLayerInput[] {
+  if (!options.quarantineUnavailableInputs) return layers;
+  return layers.map((layer) => {
+    const input = layer.input;
+    if (!input || !hasUnavailableInputReferences(input)) return layer;
+    const sourcePath = layer.source.path;
+    return {
+      ...layer,
+      input: quarantineUnresolvedReferenceCaplets(
+        input,
+        layer.source.kind,
+        typeof sourcePath === "string" ? sourcePath : (id) => sourcePath[id] ?? id,
+        [],
+        options,
+      ),
+    };
+  });
+}
 
 export function loadGlobalConfig(
   path = resolveConfigPath(),
@@ -2285,10 +2335,13 @@ export function composeRuntimeConfigLayers(
   layers: readonly RuntimeConfigLayerInput[],
   options: Pick<ConfigParseOptions, "vaultResolver"> & {
     fingerprintDeclaredInputs?: boolean;
+    quarantineUnavailableInputs?: boolean;
   } = {},
 ): ConfigWithSources {
   try {
-    const merged = mergeRuntimeConfigInputsWithSources(layers);
+    const effectiveLayers = runtimeLayersWithAvailableInputs(layers, options);
+    const merged = mergeRuntimeConfigInputsWithSources(effectiveLayers);
+    const declared = mergeRuntimeConfigInputsWithSources(layers);
     const config = parseConfig(merged.input, {
       sources: merged.sources,
       vaultResolver: options.vaultResolver ?? defaultVaultResolver(),
@@ -2302,6 +2355,8 @@ export function composeRuntimeConfigLayers(
       config,
       sources: merged.sources,
       shadows: merged.shadows,
+      declaredSources: declared.sources,
+      declaredShadows: declared.shadows,
       settingSources: merged.settingSources,
       settingShadows: merged.settingShadows,
       ...(runtimeFingerprint ? { runtimeFingerprint } : {}),
@@ -2323,9 +2378,11 @@ const declaredInputFingerprintCache = new WeakMap<
 
 export function runtimeFingerprintsForConfigLayers(
   layers: readonly RuntimeConfigLayerInput[],
-  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
+  options: Pick<ConfigParseOptions, "vaultResolver"> & {
+    quarantineUnavailableInputs?: boolean;
+  } = {},
 ): readonly RuntimeFingerprintSnapshot[] {
-  return layers.map((layer) => {
+  return runtimeLayersWithAvailableInputs(layers, options).map((layer) => {
     const cached = declaredInputFingerprintCache.get(layer);
     if (cached) return cached;
     const merged = mergeRuntimeConfigInputsWithSources([layer]);
@@ -3041,12 +3098,18 @@ export function defaultVaultResolver(store = new FileVaultStore()): ConfigVaultR
   };
 }
 
-export function vaultStoreForAuthDir(authDir: string | undefined): FileVaultStore {
-  return new FileVaultStore(authDir ? { root: join(authDir, "vault") } : {});
+export function vaultStoreForAuthDir(
+  authDir: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): FileVaultStore {
+  return new FileVaultStore(authDir ? { root: join(authDir, "vault"), env } : { env });
 }
 
-export function vaultResolverForAuthDir(authDir: string | undefined): ConfigVaultResolver {
-  return defaultVaultResolver(vaultStoreForAuthDir(authDir));
+export function vaultResolverForAuthDir(
+  authDir: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ConfigVaultResolver {
+  return defaultVaultResolver(vaultStoreForAuthDir(authDir, env));
 }
 
 export const vaultBootstrapResolver: ConfigVaultResolver = (reference) => ({

@@ -3,6 +3,7 @@ import {
   acknowledgeRecoveredDashboardManagementOperations,
   dashboardApi,
   dashboardManagementMutation,
+  dashboardStorageHealth,
   pendingManagementOperations,
   recoverDashboardManagementOperations,
   setDashboardSession,
@@ -79,6 +80,76 @@ describe("dashboardApi", () => {
       "/api/session",
       expect.objectContaining({ credentials: "same-origin" }),
     );
+  });
+
+  it("reads redacted health from the availability-independent service route", async () => {
+    setDashboardPath("/tenant/tools/dashboard/runtime");
+    const fetchMock = vi.fn(async () =>
+      Response.json(
+        {
+          backend: "postgres",
+          authorityToken: { authorityGeneration: 3, effectiveGeneration: 5 },
+          readiness: "stale-read-only",
+          connectivity: "unavailable",
+          migration: "current",
+          bootstrapCompatibility: "current",
+          convergence: "overdue",
+          staleAgeMs: 1_000,
+          guidanceCode: "storage-unavailable",
+        },
+        { status: 503 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(dashboardStorageHealth()).resolves.toMatchObject({
+      backend: "postgres",
+      readiness: "stale-read-only",
+      connectivity: "unavailable",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/tenant/tools/v1/healthz",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+  });
+
+  it("accepts ready authority during a staged bootstrap with pending convergence", async () => {
+    setDashboardPath("/dashboard/runtime");
+    const health = {
+      backend: "postgres",
+      authorityToken: { authorityGeneration: 9, effectiveGeneration: 15 },
+      readiness: "ready",
+      connectivity: "connected",
+      migration: "current",
+      bootstrapCompatibility: "staged",
+      convergence: "pending",
+      guidanceCode: "convergence-pending",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(health)),
+    );
+
+    await expect(dashboardStorageHealth()).resolves.toEqual(health);
+  });
+
+  it.each([
+    ["an unrecognized JSON body", () => Response.json({ status: "unavailable" }, { status: 503 })],
+    ["an empty body", () => new Response(null, { status: 503 })],
+    ["a non-JSON body", () => new Response("upstream unavailable", { status: 503 })],
+    ["a malformed success body", () => Response.json({ status: "ok" }, { status: 200 })],
+  ])("fails closed for %s from the health route", async (_description, response) => {
+    setDashboardPath("/dashboard");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response()),
+    );
+
+    await expect(dashboardStorageHealth()).resolves.toMatchObject({
+      readiness: "not-ready",
+      connectivity: "unavailable",
+      guidanceCode: "storage-unavailable",
+    });
   });
 
   it("surfaces nested structured error messages", async () => {
@@ -233,6 +304,144 @@ describe("dashboardApi", () => {
     expect(pendingManagementOperations()).toEqual([
       expect.objectContaining({ binding, operationId: binding.operationId }),
     ]);
+  });
+
+  it("preserves typed 403, 409, and 503 lookup bodies as original-target outcomes", async () => {
+    setDashboardPath("/dashboard");
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    setDashboardSession({
+      sessionId: "session-u10",
+      operatorClientId: "operator-u10",
+      csrfToken: "csrf-u10",
+    });
+    const operations = [
+      {
+        operationId: "operation-dashboard-403-u10",
+        requestIdentity: "request-dashboard-403-u10",
+        binding: {
+          operationId: "operation-dashboard-403-u10",
+          target: "global" as const,
+          logicalHostId: "host-dashboard-u10",
+          storeId: "store-dashboard-u10",
+          operationNamespace: "namespace-dashboard-u10",
+          actorId: "operator-u10",
+          requestIdentity: "request-dashboard-403-u10",
+          operationClass: "logical-state" as const,
+        },
+        mutation: {
+          kind: "host-setting-set" as const,
+          key: "telemetry",
+          value: false,
+          selector: "underlying-sql" as const,
+        },
+      },
+      {
+        operationId: "operation-dashboard-409-u10",
+        requestIdentity: "request-dashboard-409-u10",
+        binding: {
+          operationId: "operation-dashboard-409-u10",
+          target: "global" as const,
+          logicalHostId: "host-dashboard-u10",
+          storeId: "store-dashboard-u10",
+          operationNamespace: "namespace-dashboard-u10",
+          actorId: "operator-u10",
+          requestIdentity: "request-dashboard-409-u10",
+          operationClass: "logical-state" as const,
+        },
+        mutation: {
+          kind: "host-setting-set" as const,
+          key: "telemetry",
+          value: false,
+          selector: "underlying-sql" as const,
+        },
+      },
+      {
+        operationId: "operation-dashboard-503-u10",
+        requestIdentity: "request-dashboard-503-u10",
+        binding: {
+          operationId: "operation-dashboard-503-u10",
+          target: "global" as const,
+          logicalHostId: "host-dashboard-u10",
+          storeId: "store-dashboard-u10",
+          operationNamespace: "namespace-dashboard-u10",
+          actorId: "operator-u10",
+          requestIdentity: "request-dashboard-503-u10",
+          operationClass: "logical-state" as const,
+        },
+        mutation: {
+          kind: "host-setting-set" as const,
+          key: "telemetry",
+          value: false,
+          selector: "underlying-sql" as const,
+        },
+      },
+    ];
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError("response dropped"))
+      .mockRejectedValueOnce(new TypeError("response dropped"))
+      .mockRejectedValueOnce(new TypeError("response dropped"))
+      .mockResolvedValueOnce(
+        Response.json(
+          { status: "wrong_target", message: "Original target denied the lookup." },
+          { status: 403 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          { status: "stale_namespace", message: "Original namespace is stale." },
+          { status: 409 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          { status: "unavailable", message: "Original target is unavailable." },
+          { status: 503 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const operation of operations) {
+      await dashboardManagementMutation(operation.mutation, operation);
+    }
+
+    await expect(recoverDashboardManagementOperations()).resolves.toEqual([
+      expect.objectContaining({
+        status: "wrong_target",
+        message: "Original target denied the lookup.",
+        httpStatus: 403,
+        retryAllowed: false,
+        guidance: "lookup-original-target",
+        operation: expect.objectContaining({
+          operationId: "operation-dashboard-403-u10",
+          target: expect.objectContaining({ id: "telemetry" }),
+        }),
+      }),
+      expect.objectContaining({
+        status: "stale_namespace",
+        message: "Original namespace is stale.",
+        httpStatus: 409,
+        retryAllowed: false,
+        guidance: "lookup-original-target",
+        operation: expect.objectContaining({
+          operationId: "operation-dashboard-409-u10",
+          target: expect.objectContaining({ id: "telemetry" }),
+        }),
+      }),
+      expect.objectContaining({
+        status: "unavailable",
+        message: "Original target is unavailable.",
+        httpStatus: 503,
+        retryAllowed: false,
+        guidance: "lookup-original-target",
+        operation: expect.objectContaining({
+          operationId: "operation-dashboard-503-u10",
+          target: expect.objectContaining({ id: "telemetry" }),
+        }),
+      }),
+    ]);
+    expect(pendingManagementOperations()).toHaveLength(3);
   });
 });
 

@@ -1,6 +1,6 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import {
-  createNativeCapletsService,
+  createActivatedNativeCapletsService,
   hasNativeRuntimeSelectionEnv,
   readNativeDefaults,
   registerNativeCapletsProcessCleanup,
@@ -11,7 +11,7 @@ import { createCapletsOpenCodeHooks } from "./hooks";
 export type CapletsOpenCodeConfig = Pick<NativeCapletsServiceOptions, "mode" | "remote" | "daemon">;
 
 const plugin = (async (_ctx: PluginInput, config?: CapletsOpenCodeConfig) => {
-  const service = createNativeCapletsService({
+  const service = await createActivatedNativeCapletsService({
     ...normalizeOpenCodeConfig(config),
     telemetryIntegration: "opencode",
   } as NativeCapletsServiceOptions);

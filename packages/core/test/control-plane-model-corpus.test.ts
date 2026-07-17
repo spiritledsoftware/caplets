@@ -447,7 +447,9 @@ describe("canonical control-plane model corpus", () => {
       }
       if (domain.domain === "host-setting") {
         expect(accepted.canonical.identity).toEqual({ key: "native.daemon-url" });
-        expect(accepted.canonical.fields["value.url"]).toBe("http://127.0.0.1:7777");
+        expect(accepted.canonical.fields.value).toMatchObject({
+          url: "http://127.0.0.1:7777",
+        });
       }
 
       const requiredOnly = Object.fromEntries(

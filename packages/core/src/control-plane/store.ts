@@ -8,10 +8,17 @@ import type {
   ConfirmationConsumeResult,
   ConfirmationConsumption,
   ConfirmationPreviewRequest,
+  ControlPlaneActivationState,
+  ControlPlaneConvergenceToken,
+  ControlPlaneDetailedDiagnostics,
   ControlPlaneHealthSummary,
   ControlPlaneMutationResult,
+  ControlPlaneNodeApplication,
+  ControlPlaneNodeApplicationResult,
   ControlPlaneNodeRegistration,
   ControlPlaneRuntimeCompatibility,
+  ControlPlaneMaintenanceFence,
+  ControlPlaneWriterFence,
   ControlPlaneNodeRegistrationResult,
   ControlPlaneOperationReservationResult,
   ControlPlaneSnapshot,
@@ -22,7 +29,6 @@ import type {
   ExternalDestructionStatus,
   HostSettingManagementMutation,
 } from "./types";
-
 export type ControlPlaneDatabaseRow = Readonly<Record<string, unknown>>;
 
 export type ControlPlaneTable =
@@ -42,6 +48,9 @@ export type ControlPlaneTable =
   | "projectBindingWorkspaces"
   | "projectBindingLeases"
   | "projectBindingReceipts"
+  | "setupApprovals"
+  | "setupExecutions"
+  | "setupAttempts"
   | "vaultValues"
   | "vaultGrants"
   | "operatorActivities"
@@ -52,6 +61,7 @@ export type ControlPlaneTable =
   | "keyCanaries"
   | "clusterNodeLeases"
   | "writerFences"
+  | "snapshotEnvelopes"
   | "migrations"
   | "backups"
   | "recoveries"
@@ -106,6 +116,55 @@ export interface ControlPlaneSqlTransaction {
   delete(table: ControlPlaneTable, filter: ControlPlaneFilter): Promise<number>;
   databaseTime(): Promise<string>;
   lock(serialKey: string): Promise<void>;
+  tryLock?(serialKey: string): Promise<boolean>;
+  /**
+   * Postgres-only SECURITY DEFINER proof that no application payload rows occupy a fresh
+   * offline-migration destination. The maintenance role never receives direct table reads.
+   */
+  migrationDestinationContainsAuthoritativeRows?(
+    logicalHostId: string,
+    storeId: string,
+  ): Promise<boolean>;
+  finalWriterFenceGuard(
+    input: Readonly<{
+      logicalHostId: string;
+      storeId: string;
+      leaseId: string;
+      writerEpoch: number;
+      authorityGeneration: number;
+      state?: "active" | "pending" | undefined;
+    }>,
+  ): Promise<number>;
+  advanceSnapshotEnvelope(
+    input: Readonly<{
+      logicalHostId: string;
+      storeId: string;
+      envelopeId: string;
+      capletDelta: number;
+      normalizedRowDelta: number;
+      encodedByteDelta: number;
+      maxCaplets: number;
+      maxNormalizedRows: number;
+      maxEncodedBytes: number;
+      expectedAuthorityGeneration: number;
+      expectedSecurityEpoch: number;
+      leaseId: string;
+      writerEpoch: number;
+      fenceAuthorityGeneration: number;
+      fenceState: "active" | "pending";
+    }>,
+  ): Promise<number>;
+  settleConvergenceReceipts(
+    input: Readonly<{
+      logicalHostId: string;
+      storeId: string;
+      authorityGeneration: number;
+      effectiveGeneration: number;
+      securityEpoch: number;
+      appliedNodes: number;
+      limit: number;
+    }>,
+  ): Promise<number>;
 }
 
 /** The only dialect capability accepted by the neutral repository. */
@@ -118,6 +177,18 @@ export interface ControlPlaneTransactionalDialect {
   maintenanceTransaction<T>(
     work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
   ): Promise<T>;
+  /** Read-only initialization metadata uses the credential available to the current process. */
+  metadataReadTransaction?<T>(
+    work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+  ): Promise<T>;
+  /**
+   * Postgres notifications are lossy wakeups only. Consumers always confirm the ordered token
+   * from SQL before composing or publishing a generation.
+   */
+  subscribeToChanges?(
+    listener: (token: ControlPlaneConvergenceToken | undefined) => void,
+  ): Promise<() => Promise<void>>;
+  publishChange?(token: ControlPlaneConvergenceToken): Promise<void>;
   /** Postgres SECURITY DEFINER primitive; omitted by SQLite, which uses typed transaction CRUD. */
   maintenancePurgeExpiredOperatorActivity?(
     input: Readonly<{
@@ -191,6 +262,39 @@ export interface ControlPlaneStore {
       detail?: Readonly<Record<string, unknown>> | undefined;
     }>,
   ): Promise<void>;
+  activationState(): Promise<ControlPlaneActivationState>;
+  initializeActivationFingerprint(fingerprint: string): Promise<ControlPlaneActivationState>;
+  stageNextFingerprint(
+    nextFingerprint: string,
+    fence?: ControlPlaneMaintenanceFence | undefined,
+  ): Promise<ControlPlaneActivationState>;
+  abortNextFingerprint(
+    nextFingerprint: string,
+    fence?: ControlPlaneMaintenanceFence | undefined,
+  ): Promise<ControlPlaneActivationState>;
+  activateNextFingerprint(
+    nextFingerprint: string,
+    fence?: ControlPlaneMaintenanceFence | undefined,
+  ): Promise<ControlPlaneActivationState>;
+  adoptSqliteActivationFingerprint?(
+    input: Readonly<{
+      previousFingerprint?: string | undefined;
+      nextFingerprint: string;
+      expectedEffectiveRuntimeFingerprint: string;
+      expectedAuthorityGeneration: number;
+      expectedEffectiveGeneration: number;
+      expectedSecurityEpoch: number;
+    }>,
+  ): Promise<ControlPlaneActivationState>;
+  convergenceToken(): Promise<ControlPlaneConvergenceToken>;
+  subscribeToChanges(
+    listener: (token: ControlPlaneConvergenceToken | undefined) => void,
+  ): Promise<() => Promise<void>>;
   registerNode(input: ControlPlaneNodeRegistration): Promise<ControlPlaneNodeRegistrationResult>;
+  acknowledgeNode(input: ControlPlaneNodeApplication): Promise<ControlPlaneNodeApplicationResult>;
+  validateWriterFence?(writerFence: ControlPlaneWriterFence): Promise<boolean>;
+  revokeNode(nodeId: string, writerFence?: ControlPlaneWriterFence | undefined): Promise<void>;
+  sweepOverdueNodes(maximumLagMs: number): Promise<number>;
   health(): Promise<ControlPlaneHealthSummary>;
+  detailedDiagnostics(): Promise<ControlPlaneDetailedDiagnostics>;
 }

@@ -47,6 +47,8 @@ type SetOptions = {
   now?: Date | undefined;
 };
 
+export type VaultMutationAudit = Readonly<{ actorClientId: string }>;
+
 /** Async transactional Vault seam; production stays on FileVaultStore until activation. */
 export interface VaultRepository {
   setWithGrant(
@@ -56,14 +58,21 @@ export interface VaultRepository {
       force?: boolean | undefined;
       grant?: VaultAccessGrantInput | undefined;
     }>,
+    audit?: VaultMutationAudit | undefined,
   ): Promise<VaultValueStatus>;
   getStatus(key: string): Promise<VaultValueStatus>;
   listValues(): Promise<VaultValueStatus[]>;
   revealValue(key: string): Promise<string>;
-  deleteValue(key: string): Promise<VaultDeleteStatus>;
-  grantAccess(input: VaultAccessGrantInput): Promise<VaultAccessGrant>;
+  deleteValue(key: string, audit?: VaultMutationAudit | undefined): Promise<VaultDeleteStatus>;
+  grantAccess(
+    input: VaultAccessGrantInput,
+    audit?: VaultMutationAudit | undefined,
+  ): Promise<VaultAccessGrant>;
   listAccess(filter?: VaultAccessGrantFilter): Promise<VaultAccessGrant[]>;
-  revokeAccess(filter: VaultAccessGrantFilter): Promise<VaultAccessGrant[]>;
+  revokeAccess(
+    filter: VaultAccessGrantFilter,
+    audit?: VaultMutationAudit | undefined,
+  ): Promise<VaultAccessGrant[]>;
   resolveGrantedValue(
     input: Readonly<{
       referenceName: string;

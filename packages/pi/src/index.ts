@@ -10,7 +10,7 @@ import {
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import {
-  createNativeCapletsService,
+  createActivatedNativeCapletsService,
   hasNativeRuntimeSelectionEnv,
   readNativeDefaults,
   registerNativeCapletsProcessCleanup,
@@ -122,10 +122,10 @@ async function registerCapletsPiExtension(
     explicitNativeOptions ?? mergeNativeServiceOptions(defaultsArgs, settingsArgs);
   const service =
     options.service ??
-    createNativeCapletsService({
+    (await createActivatedNativeCapletsService({
       ...nativeServiceOptions(serviceOptions),
       telemetryIntegration: "pi",
-    });
+    }));
   const showStatusWidget = shouldShowStatusWidget(
     serviceOptions,
     options.statusWidget ?? settingsArgs?.statusWidget,

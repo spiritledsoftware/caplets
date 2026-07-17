@@ -63,10 +63,12 @@ export type ControlPlaneRuntimeHydration = Readonly<{
 }>;
 
 export type SqliteBootstrapAdoptionRequest = Readonly<{
-  previousFingerprint: string;
+  previousFingerprint?: string | undefined;
   nextFingerprint: string;
   expectedEffectiveRuntimeFingerprint: string;
   expectedAuthorityGeneration: number;
+  expectedEffectiveGeneration: number;
+  expectedSecurityEpoch: number;
 }>;
 
 export type RuntimeOwnershipLayer = Readonly<{
@@ -183,7 +185,7 @@ export async function composeControlPlaneRuntimeSnapshot(
   };
   let configWithSources = composeRuntimeConfigLayers([sqlLayer, ...input.filesystemLayers], {
     vaultResolver: input.vaultResolver,
-    fingerprintDeclaredInputs: false,
+    quarantineUnavailableInputs: true,
   });
   let caplets = composeCapletOwnership(configWithSources, sqlProjection);
   let hostSettings = composeHostSettingOwnership(configWithSources, sqlProjection);
@@ -204,7 +206,7 @@ export async function composeControlPlaneRuntimeSnapshot(
     sqlLayer = { input: sqlProjection.input, source: { kind: "sql", path: "" } };
     configWithSources = composeRuntimeConfigLayers([sqlLayer, ...input.filesystemLayers], {
       vaultResolver: input.vaultResolver,
-      fingerprintDeclaredInputs: false,
+      quarantineUnavailableInputs: true,
     });
     caplets = composeCapletOwnership(configWithSources, sqlProjection);
     hostSettings = composeHostSettingOwnership(configWithSources, sqlProjection);
@@ -242,12 +244,22 @@ export function createControlPlaneRuntimeSnapshotLoader(
 ): ControlPlaneRuntimeSnapshotLoader {
   let current: ControlPlaneRuntimeSnapshot | undefined;
   let initializing: Promise<ControlPlaneRuntimeSnapshot> | undefined;
-  let reloadTail: Promise<void> = Promise.resolve();
+  let activeReload: Promise<ControlPlaneRuntimeSnapshot> | undefined;
+  let pendingReload:
+    | Readonly<{
+        context: ControlPlaneRuntimeSnapshotLoadContext;
+        sequence: number;
+        promise: Promise<ControlPlaneRuntimeSnapshot>;
+        resolve(snapshot: ControlPlaneRuntimeSnapshot): void;
+        reject(error: unknown): void;
+      }>
+    | undefined;
   let issuedSequence = 0;
   let committedSequence = 0;
   const candidateSequences = new WeakMap<ControlPlaneRuntimeSnapshot, number>();
 
   const compose = async (
+    sequence: number,
     context: ControlPlaneRuntimeSnapshotLoadContext = {},
   ): Promise<ControlPlaneRuntimeSnapshot> => {
     // Hydration/migration is deliberately awaited before filesystem evaluation. No partial
@@ -271,8 +283,22 @@ export function createControlPlaneRuntimeSnapshotLoader(
       ...(options.resolveSqlAssetPath ? { resolveSqlAssetPath: options.resolveSqlAssetPath } : {}),
       vaultResolver: runtimeVaultResolver(options.vaultResolver, context.vaultResolver),
     });
-    issuedSequence += 1;
-    candidateSequences.set(snapshot, issuedSequence);
+    if (
+      current &&
+      snapshot.backend === "sqlite" &&
+      current.backend === snapshot.backend &&
+      current.identity.logicalHostId === snapshot.identity.logicalHostId &&
+      current.identity.storeId === snapshot.identity.storeId &&
+      current.identity.operationNamespace === snapshot.identity.operationNamespace &&
+      current.authorityGeneration === snapshot.authorityGeneration &&
+      current.effectiveGeneration === snapshot.effectiveGeneration &&
+      current.securityEpoch === snapshot.securityEpoch &&
+      current.bootstrapFingerprint === snapshot.bootstrapFingerprint &&
+      current.effectiveRuntimeFingerprint === snapshot.effectiveRuntimeFingerprint
+    ) {
+      return current;
+    }
+    candidateSequences.set(snapshot, sequence);
     return snapshot;
   };
 
@@ -288,10 +314,35 @@ export function createControlPlaneRuntimeSnapshotLoader(
     return true;
   };
 
+  const launchReload = (
+    context: ControlPlaneRuntimeSnapshotLoadContext,
+    sequence: number,
+  ): Promise<ControlPlaneRuntimeSnapshot> => {
+    const running = compose(sequence, context);
+    activeReload = running;
+    void running.then(
+      () => {
+        if (activeReload === running) activeReload = undefined;
+        const queued = pendingReload;
+        pendingReload = undefined;
+        if (!queued) return;
+        launchReload(queued.context, queued.sequence).then(queued.resolve, queued.reject);
+      },
+      () => {
+        if (activeReload === running) activeReload = undefined;
+        const queued = pendingReload;
+        pendingReload = undefined;
+        if (!queued) return;
+        launchReload(queued.context, queued.sequence).then(queued.resolve, queued.reject);
+      },
+    );
+    return running;
+  };
+
   return Object.freeze({
     initialize(context = {}) {
       if (current) return Promise.resolve(current);
-      initializing ??= compose(context).then((snapshot) => {
+      initializing ??= compose(++issuedSequence, context).then((snapshot) => {
         if (!commit(snapshot)) {
           throw new CapletsError(
             "SERVER_UNAVAILABLE",
@@ -314,15 +365,29 @@ export function createControlPlaneRuntimeSnapshotLoader(
           ),
         );
       }
-      const candidate = reloadTail.then(
-        () => compose(context),
-        () => compose(context),
-      );
-      reloadTail = candidate.then(
-        () => undefined,
-        () => undefined,
-      );
-      return candidate;
+      if (!activeReload) return launchReload(context, ++issuedSequence);
+      if (pendingReload) {
+        pendingReload = Object.freeze({
+          ...pendingReload,
+          context,
+          sequence: ++issuedSequence,
+        });
+        return pendingReload.promise;
+      }
+      let resolve!: (snapshot: ControlPlaneRuntimeSnapshot) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<ControlPlaneRuntimeSnapshot>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      pendingReload = Object.freeze({
+        context,
+        sequence: ++issuedSequence,
+        promise,
+        resolve,
+        reject,
+      });
+      return promise;
     },
     commit,
     current() {
@@ -514,7 +579,10 @@ function validatedFilesystemRuntimeFingerprints(
   layers: readonly RuntimeConfigLayerInput[],
   vaultResolver: ConfigVaultResolver | undefined,
 ): readonly string[] {
-  const fingerprints = runtimeFingerprintsForConfigLayers(layers, { vaultResolver });
+  const fingerprints = runtimeFingerprintsForConfigLayers(layers, {
+    vaultResolver,
+    quarantineUnavailableInputs: true,
+  });
   if (fingerprints.some((fingerprint) => !fingerprint.valid)) {
     throw notReady("Filesystem declared inputs are missing or unreadable");
   }
@@ -1145,8 +1213,8 @@ async function resolveBootstrapActivation(
   adoptSqlite: ComposeControlPlaneRuntimeSnapshotInput["adoptSqliteBootstrapFingerprint"],
 ): Promise<ControlPlaneRuntimeHydration> {
   const current = hydration.prerequisites.activation.currentFingerprint;
-  if (current === undefined) throw notReady("Bootstrap activation fingerprint is not initialized");
   if (current === candidateFingerprint) return hydration;
+  if (current === undefined && hydration.prerequisites.backend === "postgres") return hydration;
   if (hydration.prerequisites.backend === "postgres") {
     if (hydration.prerequisites.activation.stagedNextFingerprint === candidateFingerprint) {
       throw notReady("Staged Postgres bootstrap fingerprint is not ready until cluster activation");
@@ -1157,20 +1225,27 @@ async function resolveBootstrapActivation(
     throw notReady("SQLite bootstrap fingerprint changed without an atomic adoption capability");
   }
   const adopted = await adoptSqlite({
-    previousFingerprint: current,
+    ...(current === undefined ? {} : { previousFingerprint: current }),
     nextFingerprint: candidateFingerprint,
     expectedEffectiveRuntimeFingerprint,
     expectedAuthorityGeneration: hydration.snapshot.versions.authorityGeneration,
+    expectedEffectiveGeneration: hydration.snapshot.versions.effectiveGeneration,
+    expectedSecurityEpoch: hydration.snapshot.versions.securityEpoch,
   });
   assertControlPlaneRuntimePrerequisites(adopted);
   if (adopted.prerequisites.backend !== "sqlite") {
     throw notReady("SQLite bootstrap fingerprint adoption changed the storage backend");
   }
   assertIdentity(hydration.snapshot.identity, adopted.snapshot.identity);
+  const authorityAdvanced =
+    current === undefined
+      ? adopted.snapshot.versions.authorityGeneration >=
+        hydration.snapshot.versions.authorityGeneration
+      : adopted.snapshot.versions.authorityGeneration >
+        hydration.snapshot.versions.authorityGeneration;
   if (
     adopted.prerequisites.activation.currentFingerprint !== candidateFingerprint ||
-    adopted.snapshot.versions.authorityGeneration <=
-      hydration.snapshot.versions.authorityGeneration ||
+    !authorityAdvanced ||
     adopted.snapshot.versions.effectiveGeneration <
       hydration.snapshot.versions.effectiveGeneration ||
     adopted.snapshot.versions.securityEpoch < hydration.snapshot.versions.securityEpoch

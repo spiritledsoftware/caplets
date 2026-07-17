@@ -22,7 +22,7 @@ import {
 import { runCapletSetupCli } from "../src/cli/setup-caplet";
 import { createCloudRuntimeAdapter } from "../src/cloud/runtime-adapter";
 import { loadConfigWithSources } from "../src/config";
-import { LocalSetupStore } from "../src/setup/local-store";
+import { createCapletsEngine } from "../src/engine";
 import { parseConfig } from "../src/config-runtime";
 
 const tempDirs: string[] = [];
@@ -1036,7 +1036,11 @@ README
     const capletDir = join(root, "tool");
     const capletPath = join(capletDir, "CAPLET.md");
     mkdirSync(capletDir, { recursive: true });
-    writeFileSync(configPath, "{}", "utf8");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ serve: { storage: { kind: "sqlite", stateRoot: join(root, "sql") } } }),
+      "utf8",
+    );
     const capletFile = (body: string, tokenReference = "$env:SETUP_RUNTIME_TOKEN") => `---
 name: Setup tool
 description: Run a setup-enabled remote tool.
@@ -1044,6 +1048,8 @@ setup:
   commands:
     - label: Install
       command: install-tool
+      env:
+        SETUP_SECRET: $env:SETUP_RUNTIME_TOKEN
 mcpServer:
   url: https://tool.example.com/mcp
   auth:
@@ -1055,6 +1061,14 @@ ${body}
     writeFileSync(capletPath, capletFile("# First README"), "utf8");
     const previousToken = process.env.SETUP_RUNTIME_TOKEN;
     const previousOtherToken = process.env.OTHER_TOKEN;
+    const previousHome = process.env.HOME;
+    const previousConfigHome = process.env.XDG_CONFIG_HOME;
+    const previousStateHome = process.env.XDG_STATE_HOME;
+    const previousCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.HOME = join(root, "home");
+    process.env.XDG_CONFIG_HOME = join(root, "config-home");
+    process.env.XDG_STATE_HOME = join(root, "state-home");
+    process.env.XDG_CACHE_HOME = join(root, "cache-home");
     process.env.SETUP_RUNTIME_TOKEN = "resolved-secret-one";
     process.env.OTHER_TOKEN = "resolved-secret-two";
     try {
@@ -1073,13 +1087,32 @@ ${body}
       const approvals = JSON.parse(
         readFileSync(join(localStoreRoot, "approvals.json"), "utf8"),
       ) as Array<{ contentHash: string }>;
+      if (!expected) throw new Error("Expected setup fingerprint is missing");
+      await runCapletSetupCli("tool", {
+        yes: true,
+        configPath,
+        projectConfigPath,
+        spawn: async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+      });
+      const sqlEngine = await createCapletsEngine({ configPath, projectConfigPath, watch: false });
+      try {
+        const setupStore = sqlEngine.controlPlaneSecurityRepository();
+        if (!setupStore) throw new Error("Activated SQL setup store is missing");
+        await expect(
+          setupStore.getApproval("default", "tool", expected, "local_host"),
+        ).resolves.toMatchObject({ contentHash: expected, actor: "cli-yes" });
+        await expect(setupStore.listAttempts("default", "tool")).resolves.toMatchObject([
+          { contentHash: expected, redacted: true, status: "succeeded" },
+        ]);
+      } finally {
+        await sqlEngine.close();
+      }
 
-      const hosted = createCloudRuntimeAdapter({
+      const hosted = await createCloudRuntimeAdapter({
         configPath,
         projectConfigPath,
         runtimeId: "runtime-test",
         executionKind: "cloud",
-        setupStore: new LocalSetupStore({ baseDir: join(root, "hosted-setup") }),
       });
       const hostedPlan = await hosted.setupPlan("tool");
       await hosted.close();
@@ -1118,25 +1151,44 @@ ${body}
       expect(liveOnlyAttempt).toContain('"contentHash":"live-only"');
       expect(liveOnlyAttempt).not.toContain("literal-secret");
 
-      const liveHostedRoot = join(root, "live-only-hosted");
-      const liveHosted = createCloudRuntimeAdapter({
+      const liveHostedStateRoot = join(root, "live-only-hosted-state");
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          serve: {
+            storage: {
+              kind: "sqlite",
+              stateRoot: liveHostedStateRoot,
+            },
+          },
+        }),
+        "utf8",
+      );
+
+      const liveHosted = await createCloudRuntimeAdapter({
         configPath,
         projectConfigPath,
         runtimeId: "runtime-live-only",
         executionKind: "cloud",
-        setupStore: new LocalSetupStore({ baseDir: liveHostedRoot }),
       });
       const liveHostedPlan = await liveHosted.setupPlan("tool");
       await liveHosted.close();
       expect(liveHostedPlan.contentHash).toBe("live-only");
       expect(liveHostedPlan.approved).toBe(false);
       expect(liveHostedPlan.persistenceEligible).toBe(false);
-      expect(existsSync(join(liveHostedRoot, "approvals.json"))).toBe(false);
     } finally {
       if (previousToken === undefined) delete process.env.SETUP_RUNTIME_TOKEN;
       else process.env.SETUP_RUNTIME_TOKEN = previousToken;
       if (previousOtherToken === undefined) delete process.env.OTHER_TOKEN;
       else process.env.OTHER_TOKEN = previousOtherToken;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousConfigHome;
+      if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousStateHome;
+      if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCacheHome;
     }
   });
 

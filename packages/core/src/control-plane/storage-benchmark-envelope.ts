@@ -6,6 +6,7 @@ export type StorageBenchmarkEnvelope = Readonly<{
   maxNormalizedRows: 100_000;
   maxEncodedSnapshotBytes: 268_435_456;
   managementWritesPerSecond: 100;
+  minimumMeasuredManagementWritesPerSecond: 25;
   writeBurstSeconds: 10;
   maxReadyNodes: 16;
   warmupSamples: 10;
@@ -41,6 +42,7 @@ function assertEnvelope(value: Record<string, number>): asserts value is Storage
     maxNormalizedRows: 100_000,
     maxEncodedSnapshotBytes: 256 * 1024 * 1024,
     managementWritesPerSecond: 100,
+    minimumMeasuredManagementWritesPerSecond: 25,
     writeBurstSeconds: 10,
     maxReadyNodes: 16,
     warmupSamples: 10,

@@ -51,6 +51,9 @@ export type ControlPlaneEntityKind =
   | "project-binding-workspace"
   | "project-binding-lease"
   | "project-binding-receipt"
+  | "setup-approval"
+  | "setup-execution"
+  | "setup-attempt"
   | "vault-value"
   | "vault-grant"
   | "operator-activity"
@@ -61,6 +64,7 @@ export type ControlPlaneEntityKind =
   | "key-canary"
   | "cluster-node-lease"
   | "writer-fence"
+  | "snapshot-envelope"
   | "migration"
   | "backup"
   | "recovery"
@@ -187,6 +191,24 @@ export const CONTROL_PLANE_ENTITY_INVENTORY: readonly EntityInventoryEntry[] = [
     securityCritical: true,
   },
   {
+    kind: "setup-approval",
+    fieldCategories: ["project", "caplet", "content-hash", "target", "actor", "clock"],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "setup-execution",
+    fieldCategories: ["project", "caplet", "content-hash", "target", "lease", "expiry"],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "setup-attempt",
+    fieldCategories: ["project", "caplet", "content-hash", "target", "result", "retention"],
+    mutable: false,
+    securityCritical: true,
+  },
+  {
     kind: "vault-value",
     fieldCategories: ["reference", "ciphertext", "nonce", "tag", "key-version", "aad-version"],
     mutable: true,
@@ -259,6 +281,12 @@ export const CONTROL_PLANE_ENTITY_INVENTORY: readonly EntityInventoryEntry[] = [
     fieldCategories: ["lease", "epoch", "authority-generation", "expiry"],
     mutable: true,
     securityCritical: true,
+  },
+  {
+    kind: "snapshot-envelope",
+    fieldCategories: ["capacity", "snapshot-size"],
+    mutable: true,
+    securityCritical: false,
   },
   {
     kind: "migration",

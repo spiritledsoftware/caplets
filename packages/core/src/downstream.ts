@@ -22,6 +22,7 @@ import {
   readTokenBundle,
   staticRemoteHeaders,
 } from "./auth";
+import type { AuthTokenRepository } from "./auth/store";
 import { CapletsError, toSafeError, type CapletsErrorCode, type SafeErrorSummary } from "./errors";
 import {
   projectBindingConnectionKey,
@@ -101,6 +102,7 @@ export class DownstreamManager {
     private registry: ServerRegistry,
     private readonly options: {
       authDir?: string | undefined;
+      authTokenRepository?: AuthTokenRepository | undefined;
       projectBindingContext?: ProjectBindingExecutionContext | undefined;
     } = {},
   ) {}
@@ -607,7 +609,7 @@ export class DownstreamManager {
     this.registry.setStatus(server.server, "starting");
     try {
       const client = new Client({ name: "caplets", version: "1.0.0" }, { capabilities: {} });
-      const transport = this.createTransport(server);
+      const transport = await this.createTransport(server);
       const connection: ManagedConnection = {
         client,
         transport,
@@ -727,7 +729,7 @@ export class DownstreamManager {
     }
   }
 
-  private createTransport(server: CapletServerConfig): any {
+  private async createTransport(server: CapletServerConfig): Promise<any> {
     if (server.transport === "stdio") {
       const cwd = resolveProjectBoundCwd({
         caplet: server,
@@ -757,7 +759,7 @@ export class DownstreamManager {
 
     const headers = staticRemoteHeaders(server);
     const requestInit = Object.keys(headers).length ? { headers } : undefined;
-    const authProvider = this.oauthProvider(server);
+    const authProvider = await this.oauthProvider(server);
     const fetchWithAuthClassification = async (
       input: Parameters<typeof fetch>[0],
       init?: RequestInit,
@@ -800,11 +802,13 @@ export class DownstreamManager {
     throw new CapletsError("UNSUPPORTED_TRANSPORT", `Unsupported transport for ${server.server}`);
   }
 
-  private oauthProvider(server: CapletServerConfig): FileOAuthProvider | undefined {
+  private async oauthProvider(server: CapletServerConfig): Promise<FileOAuthProvider | undefined> {
     if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
       return undefined;
     }
-    const bundle = readTokenBundle(server.server, this.options.authDir);
+    const bundle = this.options.authTokenRepository
+      ? await this.options.authTokenRepository.readTokenBundle(server.server)
+      : readTokenBundle(server.server, this.options.authDir);
     if (!bundle?.accessToken && !bundle?.refreshToken) {
       throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
         server: server.server,
@@ -823,6 +827,8 @@ export class DownstreamManager {
         });
       },
       this.options.authDir,
+      {},
+      this.options.authTokenRepository,
     );
   }
 

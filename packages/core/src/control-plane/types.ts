@@ -20,6 +20,12 @@ export type ControlPlaneStoreIdentity = Readonly<{
   operationNamespace: string;
 }>;
 
+export function controlPlaneNodeAdmissionLock(
+  identity: Pick<ControlPlaneStoreIdentity, "logicalHostId" | "storeId">,
+): string {
+  return `node-admission:${identity.logicalHostId}:${identity.storeId}`;
+}
+
 export type ControlPlaneVersionState = Readonly<{
   authorityGeneration: number;
   effectiveGeneration: number;
@@ -30,6 +36,12 @@ export type ControlPlaneWriterFence = Readonly<{
   leaseId: string;
   writerEpoch: number;
   authorityGeneration: number;
+}>;
+
+/** Exact live authority required by internal production maintenance mutations. */
+export type ControlPlaneMaintenanceFence = Readonly<{
+  securityEpoch: number;
+  writerFence: ControlPlaneWriterFence;
 }>;
 
 export type ControlPlaneAuthorization = Readonly<{
@@ -194,20 +206,55 @@ export type ControlPlaneRuntimeCompatibility = Readonly<{
   schemaVersion: number;
   keyVersion: number;
   manifestVersion: number;
+  schemaManifestFingerprint?: string | undefined;
+  providerCommitment?: string | undefined;
+  keyCanaryCommitment?: string | undefined;
+  capabilities?: readonly string[] | undefined;
+}>;
+
+export type ControlPlaneConvergenceToken = ControlPlaneVersionState;
+
+export type ControlPlaneActivationState = Readonly<{
+  generation: number;
+  currentFingerprint: string;
+  nextFingerprint?: string | undefined;
 }>;
 
 export type ControlPlaneNodeRegistration = Readonly<{
   nodeId: string;
   bootstrapFingerprint: string;
+  effectiveRuntimeFingerprint: string;
   compatibility: ControlPlaneRuntimeCompatibility;
+  appliedToken: ControlPlaneConvergenceToken;
   ttlMs: number;
 }>;
 
 export type ControlPlaneNodeRegistrationResult =
   | Readonly<{ status: "ready"; readyNodes: number; writerFence: ControlPlaneWriterFence }>
+  | Readonly<{
+      status: "catching-up";
+      readyNodes: number;
+      writerFence?: ControlPlaneWriterFence | undefined;
+    }>
+  | Readonly<{ status: "activation-pending"; readyNodes: number }>
   | Readonly<{ status: "capacity-rejected"; readyNodes: 16 }>
   | Readonly<{ status: "compatibility-rejected" }>
   | Readonly<{ status: "identity-conflict" }>;
+
+export type ControlPlaneNodeApplication = Readonly<{
+  nodeId: string;
+  bootstrapFingerprint: string;
+  effectiveRuntimeFingerprint: string;
+  appliedToken: ControlPlaneConvergenceToken;
+  writerFence: ControlPlaneWriterFence;
+}>;
+
+export type ControlPlaneNodeApplicationResult =
+  | Readonly<{ status: "applied"; appliedNodes: number }>
+  | Readonly<{
+      status: "rejected";
+      reason: "lease-revoked" | "token-regression" | "token-behind" | "token-ahead" | "fingerprint";
+    }>;
 
 export type ControlPlaneSnapshot = Readonly<{
   identity: ControlPlaneStoreIdentity;
@@ -228,9 +275,30 @@ export type ControlPlaneHealthSummary = Readonly<{
   connectivity: "connected" | "unavailable";
   migration: "current" | "blocked";
   authorityToken: CurrentHostAuthorityToken;
-  securityEpoch: number;
-  convergence: "single-node" | "within-budget" | "overdue";
-  guidanceCode: "ok" | "storage-unavailable" | "migration-required" | "convergence-overdue";
+  bootstrapCompatibility: "current" | "staged" | "incompatible";
+  staleAgeMs?: number | undefined;
+  convergence: "single-node" | "within-budget" | "pending" | "overdue";
+  guidanceCode:
+    | "ok"
+    | "storage-unavailable"
+    | "migration-required"
+    | "convergence-pending"
+    | "convergence-overdue"
+    | "bootstrap-incompatible";
+}>;
+
+export type ControlPlaneDetailedDiagnostics = Readonly<{
+  backend: "sqlite" | "postgres";
+  store: ControlPlaneStoreIdentity;
+  fingerprint: ControlPlaneActivationState;
+  keyCompatibility: Readonly<{
+    status: "compatible" | "incompatible";
+    activeVersion: number;
+    providerCommitmentPresent: boolean;
+    canaryCommitmentPresent: boolean;
+  }>;
+  readyNodes: number;
+  overdueNodes: number;
 }>;
 
 export type OperationLookupResult = CurrentHostOperationLookupOutcome;

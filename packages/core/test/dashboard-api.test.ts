@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
+import { CapletsError } from "../src/errors";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
@@ -48,6 +49,76 @@ describe("dashboard API read model", () => {
     expect(
       JSON.stringify(await (await dashboardGet(setup, "/dashboard/api/summary")).json()),
     ).not.toContain(setup.context.configPath);
+
+    await setup.engine.close();
+  });
+
+  it("serializes SQL session authority outages on live routes as structured 503s", async () => {
+    const context = testContext();
+    const stateDir = tempDir("caplets-dashboard-api-");
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(httpOptions(stateDir), engine, {
+      writeErr: () => {},
+      control: context,
+      remoteCredentialStore: new RemoteServerCredentialStore({ dir: stateDir }),
+      controlPlaneSecurity: {
+        async validate() {
+          throw new CapletsError("SERVER_UNAVAILABLE", "SQL security authority is unavailable.");
+        },
+      } as never,
+    });
+
+    const response = await app.request(
+      "http://127.0.0.1:5387/dashboard/api/management?resource=caplet",
+      { headers: { cookie: "caplets_dashboard_session=session.secret" } },
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: { code: "SERVER_UNAVAILABLE" },
+    });
+
+    await engine.close();
+  });
+
+  it("relays availability-independent redacted SQL health without a dashboard session", async () => {
+    const setup = await authenticatedDashboard();
+    vi.spyOn(setup.engine, "controlPlaneHealth").mockResolvedValue({
+      backend: "postgres",
+      readiness: "stale-read-only",
+      connectivity: "unavailable",
+      migration: "current",
+      authorityToken: { authorityGeneration: 7, effectiveGeneration: 9 },
+      bootstrapCompatibility: "current",
+      staleAgeMs: 1_250,
+      convergence: "overdue",
+      guidanceCode: "storage-unavailable",
+    });
+
+    const response = await setup.app.request("http://127.0.0.1:5387/dashboard/api/storage-health");
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({
+      backend: "postgres",
+      readiness: "stale-read-only",
+      connectivity: "unavailable",
+      migration: "current",
+      authorityToken: { authorityGeneration: 7, effectiveGeneration: 9 },
+      bootstrapCompatibility: "current",
+      staleAgeMs: 1_250,
+      convergence: "overdue",
+      guidanceCode: "storage-unavailable",
+    });
+    expect(text).not.toMatch(
+      /storeId|fingerprint|keyId|material|backup|path|caplets|hostSettings/u,
+    );
 
     await setup.engine.close();
   });
@@ -143,6 +214,14 @@ describe("dashboard API read model", () => {
     expect(listText).toContain('"owner":"filesystem"');
     expect(listText).toContain('"underlyingSqlAvailable":true');
     expect(listText).not.toContain("/private/global/config.json");
+    expect(management.events).toContain("target-query");
+    expect(management.events).not.toContain("source-read");
+    const unavailable = await dashboardGet(setup, "/dashboard/api/management/status");
+    expect(unavailable.status).toBe(503);
+    await expect(unavailable.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "SERVER_UNAVAILABLE" },
+    });
 
     const operation = {
       operationId: "operation-dashboard-u9",
@@ -200,6 +279,64 @@ describe("dashboard API read model", () => {
     const revoked = await dashboardGet(setup, "/dashboard/api/management?resource=host-setting");
     expect(revoked.status).toBe(401);
     expect(management.events).toHaveLength(eventCount);
+
+    await setup.engine.close();
+  });
+
+  it("keeps an authenticated live dashboard ready when management status is healthy", async () => {
+    const management = dashboardManagementFixture();
+    const setup = await authenticatedDashboard(management.dependencies);
+    const requireLive = vi.spyOn(setup.engine, "requireLiveControlPlane").mockResolvedValue();
+    vi.spyOn(setup.engine, "controlPlaneHealth").mockResolvedValue({
+      backend: "sqlite",
+      readiness: "ready",
+      connectivity: "connected",
+      migration: "current",
+      authorityToken: { authorityGeneration: 1, effectiveGeneration: 2 },
+      bootstrapCompatibility: "current",
+      convergence: "single-node",
+      guidanceCode: "ok",
+    });
+    const response = await dashboardGet(setup, "/dashboard/api/management/status");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ok",
+      health: {
+        readiness: "ready",
+        connectivity: "connected",
+        convergence: "single-node",
+      },
+    });
+    expect(requireLive).toHaveBeenCalledTimes(2);
+
+    await setup.engine.close();
+  });
+
+  it("fails status closed when live authority is lost after the health sample", async () => {
+    const setup = await authenticatedDashboard(dashboardManagementFixture().dependencies);
+    const requireLive = vi
+      .spyOn(setup.engine, "requireLiveControlPlane")
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(new CapletsError("SERVER_UNAVAILABLE", "Live authority changed."));
+    vi.spyOn(setup.engine, "controlPlaneHealth").mockResolvedValue({
+      backend: "sqlite",
+      readiness: "ready",
+      connectivity: "connected",
+      migration: "current",
+      authorityToken: { authorityGeneration: 1, effectiveGeneration: 2 },
+      bootstrapCompatibility: "current",
+      convergence: "single-node",
+      guidanceCode: "ok",
+    });
+
+    const response = await dashboardGet(setup, "/dashboard/api/management/status");
+    const body = await response.text();
+
+    expect(response.status).toBe(503);
+    expect(requireLive).toHaveBeenCalledTimes(2);
+    expect(body).not.toContain("authorityToken");
+    expect(body).not.toContain('"readiness":"ready"');
 
     await setup.engine.close();
   });
@@ -288,12 +425,15 @@ function testApp(currentHostManagement?: CurrentHostManagementDependencies | und
   const stateDir = tempDir("caplets-dashboard-api-state-");
   const authDir = tempDir("caplets-dashboard-api-auth-");
   const context = testContext();
-  const engine = new CapletsEngine({
+  const engine = CapletsEngine.unactivatedForTests({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
     authDir,
     watch: false,
   });
+  (engine as unknown as { runtimeSnapshot: { securityEpoch: number } }).runtimeSnapshot = {
+    securityEpoch: 1,
+  };
   const store = new RemoteServerCredentialStore({ dir: stateDir });
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},

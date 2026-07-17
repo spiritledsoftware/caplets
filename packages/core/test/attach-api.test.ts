@@ -427,7 +427,7 @@ describe("Attach API dispatch", () => {
     const http = await startPdfServer();
     try {
       const artifactDir = mkdtempSync(join(tmpdir(), "caplets-attach-artifacts-"));
-      const engine = new CapletsEngine(
+      const engine = CapletsEngine.unactivatedForTests(
         sanitizeRemoteEngineOptions({
           artifactDir,
           exposeLocalArtifactPaths: true,

@@ -19,8 +19,7 @@ import {
   loginAuth,
   logoutAuth,
   formatAuthRows,
-  listLocalAuthRows,
-  localAuthConfigForTarget,
+  listLocalAuthRowsFromRepository,
   localAuthTargets,
   refreshAuth,
   type AuthSource,
@@ -29,7 +28,7 @@ import {
 import { cliCommands } from "./cli/commands";
 import { codeModeTypesCli, runCodeModeCli, runCodeModeReplCli } from "./cli/code-mode";
 import { initConfig } from "./cli/init";
-import { doctorJsonReport, formatDoctorReport } from "./cli/doctor";
+import { doctorJsonReport, formatDoctorReport, type DoctorOptions } from "./cli/doctor";
 import {
   completeCliWords,
   completionScript,
@@ -76,6 +75,7 @@ import {
 import {
   type CapletsConfig,
   type ConfigSource,
+  type ConfigWithSources,
   type LocalOverlayConfigWithSources,
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
@@ -91,7 +91,8 @@ import {
   resolveProjectLockfilePath,
   vaultBootstrapResolver,
 } from "./config";
-import { CapletsEngine } from "./engine";
+import { createCapletsEngine, type CapletsEngine } from "./engine";
+import type { ControlPlaneSecurityRepository } from "./control-plane/security/repository";
 import { CapletsError } from "./errors";
 import { resolveAttachServeOptions, type AttachServeOptions } from "./attach/options";
 import { attachResolvedCaplets } from "./attach/server";
@@ -105,7 +106,6 @@ import {
   createRemoteProfileStore,
   type FileRemoteProfileStore,
 } from "./remote/profile-store";
-import { RemoteServerCredentialStore } from "./remote/server-credential-store";
 import type { RemoteClientRole } from "./remote/server-credentials";
 import { resolveRemoteSelection } from "./remote/selection";
 import {
@@ -131,7 +131,7 @@ import {
   type DaemonOperationOptions,
 } from "./daemon";
 import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
-import { DEFAULT_AUTH_DIR, defaultTelemetryStateDir } from "./config/paths";
+import { defaultTelemetryStateDir } from "./config/paths";
 import { appendBasePath } from "./server/options";
 import {
   acknowledgeTelemetryAttributionClaim,
@@ -159,6 +159,7 @@ import {
 import { maybePrintUpdateNotice } from "./update-check";
 import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
 import type { VaultAccessGrantFilter } from "./vault";
+import { runProductionControlPlaneOfflineMigration } from "./control-plane/production-runtime";
 import type { InternalControlPlaneStorageMigrationService } from "./control-plane/service";
 import type { CurrentHostManagementClient } from "./current-host/client-operations";
 import {
@@ -203,6 +204,7 @@ type CliIO = {
   readStdin?: () => Promise<string>;
   internalStorageMigration?: InternalControlPlaneStorageMigrationService;
   internalCurrentHostManagement?: CurrentHostManagementClient;
+  internalDoctorRuntime?: NonNullable<DoctorOptions["effectiveRuntime"]>;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -759,14 +761,68 @@ function hiddenOption(flags: string, description: string): Option {
   return new Option(flags, description).hideHelp();
 }
 
-function remoteServerCredentialStore(
-  statePath: string | undefined,
+async function withRemoteCredentialAuthority<T>(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
-): RemoteServerCredentialStore {
-  return new RemoteServerCredentialStore({
-    dir:
-      statePath ?? env.CAPLETS_REMOTE_SERVER_STATE_DIR ?? join(DEFAULT_AUTH_DIR, "remote-server"),
+  operation: (authority: ControlPlaneSecurityRepository) => T | Promise<T>,
+): Promise<T> {
+  const configPath = envConfigPath(env);
+  const projectConfigPath = envProjectConfigPath(env);
+  const engine = await createCapletsEngine({
+    ...(configPath ? { configPath } : {}),
+    projectConfigPath,
+    env,
+    watch: false,
   });
+  try {
+    const authority = engine.controlPlaneSecurityRepository();
+    if (!authority) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Activated SQL credential authority is unavailable.",
+      );
+    }
+    return await operation(authority);
+  } finally {
+    await engine.close();
+  }
+}
+
+async function withControlPlaneSecurity<T>(
+  io: CliIO,
+  operation: (security: ControlPlaneSecurityRepository, engine: CapletsEngine) => T | Promise<T>,
+  liveOperation: "admin" | "auth" | "vault" = "vault",
+): Promise<T> {
+  const env = io.env ?? process.env;
+  const configPath = envConfigPath(env);
+  const engine = await createCapletsEngine({
+    ...(configPath ? { configPath } : {}),
+    ...(envProjectConfigPath(env) ? { projectConfigPath: envProjectConfigPath(env) } : {}),
+    ...(io.authDir ? { authDir: io.authDir } : {}),
+    env,
+    watch: false,
+    ...(io.writeErr ? { writeErr: io.writeErr } : {}),
+  });
+  try {
+    await engine.requireLiveControlPlane(liveOperation);
+    const security = engine.controlPlaneSecurityRepository();
+    if (!security) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Activated SQL security authority is unavailable.",
+      );
+    }
+    return await operation(security, engine);
+  } finally {
+    await engine.close();
+  }
+}
+
+function requireActivatedConfigWithSources(engine: CapletsEngine): ConfigWithSources {
+  const snapshot = engine.currentControlPlaneRuntimeSnapshot();
+  if (!snapshot) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Activated SQL runtime snapshot is unavailable.");
+  }
+  return snapshot.configWithSources;
 }
 
 function compactCloudCaplet(value: unknown): Record<string, unknown> {
@@ -1483,13 +1539,18 @@ export function createProgram(io: CliIO = {}): Command {
     .requiredOption("--global", "target the local global control plane")
     .requiredOption("--offline", "require the one-shot offline migration path")
     .action(async () => {
-      if (!io.internalStorageMigration) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "Storage migration is unavailable until the SQL activation boundary is enabled",
-        );
+      if (io.internalStorageMigration) {
+        await io.internalStorageMigration.migrate({ target: "global", mode: "offline" });
+      } else {
+        const configPath = envConfigPath(env);
+        const projectConfigPath = envProjectConfigPath(env);
+        await runProductionControlPlaneOfflineMigration({
+          ...(configPath ? { configPath } : {}),
+          ...(projectConfigPath ? { projectConfigPath } : {}),
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+          env,
+        });
       }
-      await io.internalStorageMigration.migrate({ target: "global", mode: "offline" });
       writeOut("Global legacy storage migration complete.\n");
     });
 
@@ -1610,12 +1671,18 @@ export function createProgram(io: CliIO = {}): Command {
       try {
         if (remote) {
           const localOverlay = loadLocalOverlayForCli(io, () => {});
-          const localSuggestions = await completeCliWordsLocally(completionWords, {
-            ...(configPath ? { configPath } : {}),
-            projectConfigPath: envProjectConfigPath(env),
-            ...(io.authDir ? { authDir: io.authDir } : {}),
-            config: localOverlay.config,
-          });
+          let localSuggestions: string[] = [];
+          try {
+            localSuggestions = await completeCliWordsLocally(completionWords, {
+              ...(configPath ? { configPath } : {}),
+              projectConfigPath: envProjectConfigPath(env),
+              ...(io.authDir ? { authDir: io.authDir } : {}),
+              env,
+              config: localOverlay.config,
+            });
+          } catch {
+            // A missing or quarantined local overlay must not hide a healthy remote completion.
+          }
           const target = localShadowedCompletionTarget(completionWords, localOverlay.config);
           if (target) {
             suggestions = localSuggestions;
@@ -1631,6 +1698,7 @@ export function createProgram(io: CliIO = {}): Command {
             ...(configPath ? { configPath } : {}),
             projectConfigPath: envProjectConfigPath(env),
             ...(io.authDir ? { authDir: io.authDir } : {}),
+            env,
           });
         }
       } catch {
@@ -1863,6 +1931,7 @@ export function createProgram(io: CliIO = {}): Command {
               serveOptions,
               {
                 ...(configPath ? { configPath } : {}),
+                projectConfigPath: envProjectConfigPath(env),
                 ...(io.authDir ? { authDir: io.authDir } : {}),
                 telemetryEnv: env,
                 telemetryStateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(env),
@@ -2333,9 +2402,8 @@ export function createProgram(io: CliIO = {}): Command {
     .command("pair", { hidden: true })
     .description("Deprecated. Pairing Code bootstrap is no longer supported.")
     .option("--host-url <url>", "public Caplets host URL; defaults to CAPLETS_SERVER_URL")
-    .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action(async (options: { hostUrl?: string; statePath?: string; json?: boolean }) => {
+    .action(async (options: { hostUrl?: string; json?: boolean }) => {
       const hostUrl = options.hostUrl ?? env.CAPLETS_SERVER_URL;
       const guidance =
         "Self-hosted Pairing Code bootstrap is no longer supported. Run caplets remote login <url> from the client, then approve the pending login with caplets remote host logins and caplets remote host approve <code> from the host.";
@@ -2359,10 +2427,11 @@ export function createProgram(io: CliIO = {}): Command {
   remoteHost
     .command("clients")
     .description("List paired self-hosted remote clients from server state.")
-    .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((options: { statePath?: string; json?: boolean }) => {
-      const clients = remoteServerCredentialStore(options.statePath, env).listClients();
+    .action(async (options: { json?: boolean }) => {
+      const clients = await withRemoteCredentialAuthority(env, (authority) =>
+        authority.listClients(),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify({ clients }, null, 2)}\n`);
         return;
@@ -2380,10 +2449,11 @@ export function createProgram(io: CliIO = {}): Command {
   remoteHost
     .command("logins")
     .description("List pending self-hosted Remote Login approvals from server state.")
-    .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((options: { statePath?: string; json?: boolean }) => {
-      const pendingLogins = remoteServerCredentialStore(options.statePath, env).listPendingLogins();
+    .action(async (options: { json?: boolean }) => {
+      const pendingLogins = await withRemoteCredentialAuthority(env, (authority) =>
+        authority.listPendingLogins(),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify({ pendingLogins }, null, 2)}\n`);
         return;
@@ -2402,22 +2472,27 @@ export function createProgram(io: CliIO = {}): Command {
     .command("approve")
     .description("Approve one pending self-hosted Remote Login code from server state.")
     .argument("<code>", "operator-visible Remote Login code")
-    .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--role <role>", "grant role override: access or operator", parseRemoteClientRole)
     .option("--yes", "approve without an interactive confirmation prompt")
     .option("--json", "print JSON output")
     .action(
-      (
+      async (
         code: string,
-        options: { statePath?: string; role?: RemoteClientRole; yes?: boolean; json?: boolean },
+        options: {
+          role?: RemoteClientRole;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         if (!options.yes && !options.json) {
           throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
         }
-        const approved = remoteServerCredentialStore(options.statePath, env).approvePendingLogin({
-          operatorCode: code,
-          ...(options.role ? { grantedRole: options.role } : {}),
-        });
+        const approved = await withRemoteCredentialAuthority(env, (authority) =>
+          authority.approvePendingLogin({
+            operatorCode: code,
+            ...(options.role ? { grantedRole: options.role } : {}),
+          }),
+        );
         if (options.json) {
           writeOut(`${JSON.stringify(approved, null, 2)}\n`);
           return;
@@ -2429,12 +2504,11 @@ export function createProgram(io: CliIO = {}): Command {
     .command("deny")
     .description("Deny one pending self-hosted Remote Login code from server state.")
     .argument("<code>", "operator-visible Remote Login code")
-    .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((code: string, options: { statePath?: string; json?: boolean }) => {
-      const denied = remoteServerCredentialStore(options.statePath, env).denyPendingLogin({
-        operatorCode: code,
-      });
+    .action(async (code: string, options: { json?: boolean }) => {
+      const denied = await withRemoteCredentialAuthority(env, (authority) =>
+        authority.denyPendingLogin({ operatorCode: code }),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify(denied, null, 2)}\n`);
         return;
@@ -2445,10 +2519,11 @@ export function createProgram(io: CliIO = {}): Command {
     .command("revoke")
     .description("Revoke one paired self-hosted remote client from server state.")
     .argument("<client-id>", "remote client ID")
-    .option("--state-path <path>", "server-owned remote credential state directory")
     .option("--json", "print JSON output")
-    .action((clientId: string, options: { statePath?: string; json?: boolean }) => {
-      const revoked = remoteServerCredentialStore(options.statePath, env).revokeClient(clientId);
+    .action(async (clientId: string, options: { json?: boolean }) => {
+      const revoked = await withRemoteCredentialAuthority(env, (authority) =>
+        authority.revokeClient(clientId),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify({ revoked, clientId }, null, 2)}\n`);
         return;
@@ -2770,18 +2845,56 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
     .action(async (options: { json?: boolean; format?: CliOutputFormat }) => {
-      const doctorOptions = {
+      const format = options.format ?? (options.json ? "json" : "plain");
+      const writeDoctorReport = async (doctorOptions: DoctorOptions) => {
+        if (format === "json") {
+          writeOut(`${JSON.stringify(await doctorJsonReport(doctorOptions), null, 2)}\n`);
+          return;
+        }
+        writeOut(await formatDoctorReport(doctorOptions, format));
+      };
+      const commonDoctorOptions = {
         env,
         ...(io.fetch ? { fetch: io.fetch } : {}),
         ...(io.authDir ? { authDir: io.authDir } : {}),
         ...(io.daemon ? { daemon: io.daemon } : {}),
       };
-      const format = options.format ?? (options.json ? "json" : "plain");
-      if (format === "json") {
-        writeOut(`${JSON.stringify(await doctorJsonReport(doctorOptions), null, 2)}\n`);
+      if (io.internalDoctorRuntime) {
+        await writeDoctorReport({
+          ...commonDoctorOptions,
+          effectiveRuntime: io.internalDoctorRuntime,
+        });
         return;
       }
-      writeOut(await formatDoctorReport(doctorOptions, format));
+      const configPath = currentConfigPath();
+      const projectConfigPath = envProjectConfigPath(env);
+      const engine = await createCapletsEngine({
+        ...(configPath ? { configPath } : {}),
+        ...(projectConfigPath ? { projectConfigPath } : {}),
+        ...(io.authDir ? { authDir: io.authDir } : {}),
+        env,
+        watch: false,
+        ...(io.writeErr ? { writeErr: io.writeErr } : {}),
+      });
+      try {
+        await engine.requireLiveControlPlane("admin");
+        const runtimeSnapshot = engine.currentControlPlaneRuntimeSnapshot();
+        if (!runtimeSnapshot) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Activated SQL runtime snapshot is unavailable.",
+          );
+        }
+        await writeDoctorReport({
+          ...commonDoctorOptions,
+          effectiveRuntime: {
+            snapshot: runtimeSnapshot,
+            exposure: (await engine.exposureProjection()).projection,
+          },
+        });
+      } finally {
+        await engine.close();
+      }
     });
 
   const vault = program.command(cliCommands.vault).description("Manage Caplets Vault values.");
@@ -2833,28 +2946,24 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
         const value = await readVaultValue(io);
-        const store = new FileVaultStore({ env });
-        const existed = store.getStatus(name).present;
-        const previousValue = existed && options.grant ? store.resolveValue(name) : undefined;
-        const status = store.set(name, value, { force: Boolean(options.force) });
-        try {
-          if (options.grant) {
-            const origin = resolveVaultAccessOrigin(options.grant, io);
-            store.grantAccess({
-              storedKey: name,
-              referenceName: options.as ?? name,
-              capletId: options.grant,
-              origin,
-            });
-          }
-        } catch (error) {
-          if (existed && previousValue !== undefined) {
-            store.set(name, previousValue, { force: true });
-          } else {
-            store.delete(name);
-          }
-          throw error;
-        }
+        const status = await withControlPlaneSecurity(io, (store, engine) => {
+          const effectiveConfig = requireActivatedConfigWithSources(engine);
+          return store.setWithGrant({
+            key: name,
+            value,
+            force: Boolean(options.force),
+            ...(options.grant
+              ? {
+                  grant: {
+                    storedKey: name,
+                    referenceName: options.as ?? name,
+                    capletId: options.grant,
+                    origin: resolveVaultAccessOrigin(options.grant, effectiveConfig),
+                  },
+                }
+              : {}),
+          });
+        });
         if (options.json) {
           writeOut(`${JSON.stringify(status, null, 2)}\n`);
           return;
@@ -2900,15 +3009,23 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        const store = new FileVaultStore({ env });
+        const result = await withControlPlaneSecurity(io, async (store) => {
+          if (options.show) {
+            return { key: name, value: await store.revealValue(name) };
+          }
+          return store.getStatus(name);
+        });
         if (options.show) {
-          const value = store.resolveValue(name);
-          writeOut(
-            options.json ? `${JSON.stringify({ key: name, value }, null, 2)}\n` : `${value}\n`,
-          );
+          const value = "value" in result ? result.value : "";
+          writeOut(options.json ? `${JSON.stringify(result, null, 2)}\n` : `${value}\n`);
           return;
         }
-        writeOut(formatVaultValueStatus(store.getStatus(name), Boolean(options.json)));
+        writeOut(
+          formatVaultValueStatus(
+            result as Awaited<ReturnType<ControlPlaneSecurityRepository["getStatus"]>>,
+            Boolean(options.json),
+          ),
+        );
       },
     );
 
@@ -2933,9 +3050,8 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      writeOut(
-        formatVaultValueList(new FileVaultStore({ env }).listValues(), Boolean(options.json)),
-      );
+      const result = await withControlPlaneSecurity(io, (store) => store.listValues());
+      writeOut(formatVaultValueList(result, Boolean(options.json)));
     });
 
   vault
@@ -2960,9 +3076,8 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      writeOut(
-        formatVaultDeleteStatus(new FileVaultStore({ env }).delete(name), Boolean(options.json)),
-      );
+      const result = await withControlPlaneSecurity(io, (store) => store.deleteValue(name));
+      writeOut(formatVaultDeleteStatus(result, Boolean(options.json)));
     });
 
   const vaultAccess = vault.command("access").description("Manage Vault access grants.");
@@ -3000,13 +3115,14 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        const origin = resolveVaultAccessOrigin(capletId, io);
-        const grant = new FileVaultStore({ env }).grantAccess({
-          storedKey: name,
-          referenceName: options.as ?? name,
-          capletId,
-          origin,
-        });
+        const grant = await withControlPlaneSecurity(io, (store, engine) =>
+          store.grantAccess({
+            storedKey: name,
+            referenceName: options.as ?? name,
+            capletId,
+            origin: resolveVaultAccessOrigin(capletId, requireActivatedConfigWithSources(engine)),
+          }),
+        );
         writeOut(formatVaultAccessGrant(grant, Boolean(options.json)));
       },
     );
@@ -3050,12 +3166,10 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        writeOut(
-          formatVaultAccessList(
-            new FileVaultStore({ env }).listAccess(vaultAccessFilter(name, capletFilter)),
-            Boolean(options.json),
-          ),
+        const grants = await withControlPlaneSecurity(io, (store) =>
+          store.listAccess(vaultAccessFilter(name, capletFilter)),
         );
+        writeOut(formatVaultAccessList(grants, Boolean(options.json)));
       },
     );
 
@@ -3093,7 +3207,7 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
         const filter = vaultAccessFilter(name, capletId, options.as);
-        const revoked = new FileVaultStore({ env }).revokeAccess(filter);
+        const revoked = await withControlPlaneSecurity(io, (store) => store.revokeAccess(filter));
         writeOut(formatVaultAccessRevoke(revoked.length, Boolean(options.json)));
       },
     );
@@ -3889,23 +4003,18 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      const configPath = currentConfigPath();
-      const projectConfigPath = envProjectConfigPath(env);
-      await loginAuth(serverId, {
-        noOpen: options.open === false,
-        writeOut,
-        writeErr,
-        ...(configPath ? { configPath } : {}),
-        ...(projectConfigPath ? { projectConfigPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
-          ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
-      });
+      await withControlPlaneSecurity(
+        io,
+        async (security, engine) =>
+          loginAuth(serverId, {
+            noOpen: options.open === false,
+            writeOut,
+            writeErr,
+            config: engine.currentConfig(),
+            tokenRepository: security,
+          }),
+        "auth",
+      );
     });
 
   auth
@@ -3929,20 +4038,16 @@ export function createProgram(io: CliIO = {}): Command {
         );
         return;
       }
-      const configPath = currentConfigPath();
-      const projectConfigPath = envProjectConfigPath(env);
-      logoutAuth(serverId, {
-        writeOut,
-        ...(configPath ? { configPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
-          ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
-      });
+      await withControlPlaneSecurity(
+        io,
+        async (security, engine) =>
+          logoutAuth(serverId, {
+            writeOut,
+            config: engine.currentConfig(),
+            tokenRepository: security,
+          }),
+        "auth",
+      );
     });
 
   auth
@@ -3960,20 +4065,16 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(`Refreshed remote OAuth credentials for \`${serverId}\`.\n`);
         return;
       }
-      const configPath = currentConfigPath();
-      const projectConfigPath = envProjectConfigPath(env);
-      await refreshAuth(serverId, {
-        writeOut,
-        ...(configPath ? { configPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
-          ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
-      });
+      await withControlPlaneSecurity(
+        io,
+        async (security, engine) =>
+          refreshAuth(serverId, {
+            writeOut,
+            config: engine.currentConfig(),
+            tokenRepository: security,
+          }),
+        "auth",
+      );
     });
 
   auth
@@ -3985,12 +4086,10 @@ export function createProgram(io: CliIO = {}): Command {
     .option("-g, --global", "list auth targets from the user Caplets config")
     .option("--remote", "list auth targets from the remote server auth store")
     .action(async (options: AuthTargetOptions & { json?: boolean; format?: CliOutputFormat }) => {
-      const configPath = currentConfigPath();
-      const projectConfigPath = envProjectConfigPath(env);
       const format =
         options.json || options.format === "json" ? "json" : (options.format ?? "plain");
       const target = parseAuthFlagTarget(options);
-      const rows = await authListRowsForCli(target, io, configPath, projectConfigPath);
+      const rows = await authListRowsForCli(target, io);
       if (format === "json") {
         writeOut(`${JSON.stringify(rows, null, 2)}\n`);
         return;
@@ -4346,20 +4445,15 @@ function assertVaultTransportValueSize(value: string): void {
   }
 }
 
-function resolveVaultAccessOrigin(capletId: string, io: CliIO): ConfigSource {
-  const env = io.env ?? process.env;
-  const configPath = envConfigPath(env);
-  const projectConfigPath = envProjectConfigPath(env);
-  const config = loadConfigWithSources(configPath, projectConfigPath, {
-    vaultResolver: vaultBootstrapResolver,
-  });
-  if (config.shadows[capletId]?.length) {
+function resolveVaultAccessOrigin(capletId: string, config: ConfigWithSources): ConfigSource {
+  const shadows = config.declaredShadows?.[capletId] ?? config.shadows[capletId];
+  if (shadows?.length) {
     throw new CapletsError(
       "REQUEST_INVALID",
       `Caplet ${capletId} is shadowed in multiple config sources; resolve the active config before granting Vault access.`,
     );
   }
-  const origin = config.sources[capletId];
+  const origin = config.declaredSources?.[capletId] ?? config.sources[capletId];
   if (!origin) {
     throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
   }
@@ -4546,17 +4640,25 @@ async function resolveAuthTarget(
   io: CliIO,
 ): Promise<AuthTarget> {
   const explicit = parseAuthFlagTarget(options);
-  if (explicit) return explicit;
+  if (explicit === "remote") return explicit;
 
-  const env = io.env ?? process.env;
-  const configPath = envConfigPath(env);
-  const projectConfigPath = envProjectConfigPath(env);
-  const matches: AuthTarget[] = localAuthTargets({
-    ...(configPath ? { configPath } : {}),
-    ...(projectConfigPath ? { projectConfigPath } : {}),
-  })
-    .filter((target) => target.server === serverId)
-    .map((target) => target.source);
+  const matches: AuthTarget[] = await withControlPlaneSecurity(
+    io,
+    (_security, engine) =>
+      localAuthTargets({
+        effectiveConfig: requireActivatedConfigWithSources(engine),
+      })
+        .filter((target) => target.server === serverId)
+        .map((target) => target.source),
+    "auth",
+  );
+  if (explicit) {
+    if (matches.includes(explicit)) return explicit;
+    throw new CapletsError(
+      "SERVER_NOT_FOUND",
+      `Server ${serverId} is not configured for OAuth in the ${explicit} scope`,
+    );
+  }
 
   const remote = remoteClientForCli(io);
   if (remote) {
@@ -4581,18 +4683,22 @@ async function resolveAuthTarget(
 async function authListRowsForCli(
   target: AuthTarget | undefined,
   io: CliIO,
-  configPath: string | undefined,
-  projectConfigPath: string | undefined,
 ): Promise<AuthStatusRow[]> {
   if (target === "remote") {
     return remoteAuthRows(requireRemoteClientForTarget(io));
   }
-  const localRows = listLocalAuthRows({
-    ...(configPath ? { configPath } : {}),
-    ...(projectConfigPath ? { projectConfigPath } : {}),
-    ...(io.authDir ? { authDir: io.authDir } : {}),
-    ...(target ? { source: target } : {}),
-  });
+  const localRows = await withControlPlaneSecurity(
+    io,
+    (security, engine) =>
+      listLocalAuthRowsFromRepository(
+        {
+          effectiveConfig: requireActivatedConfigWithSources(engine),
+          ...(target ? { source: target } : {}),
+        },
+        security,
+      ),
+    "admin",
+  );
   if (target) return localRows;
   const remote = remoteClientForCli(io);
   if (!remote) return localRows;
@@ -4736,15 +4842,16 @@ async function completeCliWordsLocally(
     configPath?: string | undefined;
     projectConfigPath?: string | undefined;
     authDir?: string | undefined;
+    env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
     config?: CapletsConfig | undefined;
   },
 ): Promise<string[]> {
-  const engine = new CapletsEngine({
+  const engine = await createCapletsEngine({
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
+    env: options.env,
     watch: false,
-    ...(options.config ? { configLoader: () => options.config as CapletsConfig } : {}),
   });
   try {
     return await engine.completeCliWords(words);
@@ -4871,7 +4978,7 @@ async function executeOperation(
   if (io.remote && command) {
     const localOverlay = tryLoadLocalOverlayForCli(io, io.writeErr);
     if (localOverlay && hasEnabledCaplet(localOverlay.config, caplet)) {
-      await executeLocalOperation(caplet, request, io, localOverlay.config);
+      await executeLocalOperation(caplet, request, io);
       return;
     }
     const result = await io.remote.request(command, { caplet, request });
@@ -5106,13 +5213,13 @@ async function executeLocalOperation(
   caplet: string,
   request: Record<string, unknown>,
   io: ExecuteOperationIO,
-  config?: CapletsConfig,
 ): Promise<void> {
   const configPath = envConfigPath(io.env ?? process.env);
-  const engine = new CapletsEngine({
+  const engine = await createCapletsEngine({
     ...(configPath ? { configPath } : {}),
     projectConfigPath: envProjectConfigPath(io.env ?? process.env),
     ...(io.authDir ? { authDir: io.authDir } : {}),
+    env: io.env ?? process.env,
     watch: false,
     writeErr: io.writeErr,
     telemetryEnv: io.env ?? process.env,
@@ -5121,7 +5228,6 @@ async function executeLocalOperation(
     telemetryVisibility: "visible",
     telemetryRuntimeMode: runtimeModeForEnv(io.env ?? process.env),
     telemetryDebugSink: io.telemetryDebugSink,
-    ...(config ? { configLoader: () => config } : {}),
   });
   try {
     const result = await engine.execute(caplet, request);

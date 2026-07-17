@@ -26,10 +26,10 @@ import { updateCapletsFromLockfile, type CapletTransactionPhase } from "../src/c
 import { loadConfig, parseConfig, type VaultQuarantineOutcome } from "../src/config";
 import * as configModule from "../src/config";
 import type { CapletsError } from "../src/errors";
+import { createCapletsEngine } from "../src/engine";
 import { readCapletsLockfile } from "../src/cli/lockfile";
-import { readTokenBundle, writeTokenBundle } from "../src/auth";
+import { writeTokenBundle } from "../src/auth";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
-import { FileVaultStore } from "../src/vault";
 
 describe("cli init", () => {
   const originalMode = process.env.CAPLETS_MODE;
@@ -38,6 +38,7 @@ describe("cli init", () => {
   const originalServerUrl = process.env.CAPLETS_SERVER_URL;
   const originalServerUser = process.env.CAPLETS_SERVER_USER;
   const originalServerPassword = process.env.CAPLETS_SERVER_PASSWORD;
+  const originalStateHome = process.env.XDG_STATE_HOME;
 
   beforeEach(() => {
     process.env.CAPLETS_MODE = "local";
@@ -76,6 +77,11 @@ describe("cli init", () => {
       delete process.env.CAPLETS_SERVER_PASSWORD;
     } else {
       process.env.CAPLETS_SERVER_PASSWORD = originalServerPassword;
+    }
+    if (originalStateHome === undefined) {
+      delete process.env.XDG_STATE_HOME;
+    } else {
+      process.env.XDG_STATE_HOME = originalStateHome;
     }
   });
 
@@ -169,7 +175,34 @@ describe("cli init", () => {
 
   it("sets, gets, updates, lists, and deletes local Vault values without accidental reveal", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-"));
-    const env = { ...process.env, XDG_STATE_HOME: join(dir, "state") };
+    const configPath = join(dir, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
+        mcpServers: {
+          demo: {
+            name: "Demo",
+            description: "Vault CLI storage fixture",
+            url: "https://example.com/mcp",
+          },
+        },
+      }),
+      "utf8",
+    );
+    const previousConfigHome = process.env.XDG_CONFIG_HOME;
+    const previousStateHome = process.env.XDG_STATE_HOME;
+    const previousCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CONFIG_HOME = join(dir, "config");
+    process.env.XDG_STATE_HOME = join(dir, "state");
+    process.env.XDG_CACHE_HOME = join(dir, "cache");
+    const env = {
+      ...process.env,
+      XDG_CONFIG_HOME: join(dir, "config"),
+      XDG_STATE_HOME: join(dir, "state"),
+      XDG_CACHE_HOME: join(dir, "cache"),
+      CAPLETS_CONFIG: configPath,
+    };
     const out: string[] = [];
     try {
       await runCli(["vault", "set", "GH_TOKEN"], {
@@ -211,6 +244,12 @@ describe("cli init", () => {
       const afterDeleteOutput = out.at(-1) ?? "";
       expect(afterDeleteOutput).not.toContain("updated_secret");
     } finally {
+      if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousConfigHome;
+      if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousStateHome;
+      if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCacheHome;
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -276,10 +315,12 @@ describe("cli init", () => {
         }),
       ).rejects.toMatchObject({ code: "SERVER_NOT_FOUND" } satisfies Partial<CapletsError>);
 
-      expect(new FileVaultStore({ env }).getStatus("GH_TOKEN")).toEqual({
-        key: "GH_TOKEN",
-        present: false,
+      const valuesOut: string[] = [];
+      await runCli(["vault", "list", "--json"], {
+        env,
+        writeOut: (value) => valuesOut.push(value),
       });
+      expect(JSON.parse(valuesOut.join(""))).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -307,8 +348,11 @@ describe("cli init", () => {
           },
         }),
       );
-      const store = new FileVaultStore({ env });
-      store.set("GH_TOKEN", "original_secret");
+      await runCli(["vault", "set", "GH_TOKEN"], {
+        env,
+        readStdin: async () => "original_secret\n",
+        writeOut: () => {},
+      });
 
       await expect(
         runCli(["vault", "set", "GH_TOKEN", "--force", "--grant", "missing-caplet"], {
@@ -318,7 +362,12 @@ describe("cli init", () => {
         }),
       ).rejects.toMatchObject({ code: "SERVER_NOT_FOUND" } satisfies Partial<CapletsError>);
 
-      expect(store.resolveValue("GH_TOKEN")).toBe("original_secret");
+      const valueOut: string[] = [];
+      await runCli(["vault", "get", "GH_TOKEN", "--show"], {
+        env,
+        writeOut: (value) => valueOut.push(value),
+      });
+      expect(valueOut.join("")).toBe("original_secret\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -373,14 +422,12 @@ describe("cli init", () => {
         },
       );
 
-      const store = new FileVaultStore({ env });
-      expect(
-        store.resolveGrantedValue({
-          referenceName: "GH_TOKEN",
-          capletId: "github-personal",
-          origin: { kind: "global-config", path: configPath },
-        }),
-      ).toMatchObject({ reason: "ungranted" });
+      const finalGrantsOut: string[] = [];
+      await runCli(["vault", "access", "list", "--json"], {
+        env,
+        writeOut: (value) => finalGrantsOut.push(value),
+      });
+      expect(JSON.parse(finalGrantsOut.join(""))).toEqual([]);
       expect(out.join("")).toContain(
         "Granted Vault key GH_TOKEN_PERSONAL to github-personal as GH_TOKEN.",
       );
@@ -426,8 +473,12 @@ describe("cli init", () => {
         writeOut: () => undefined,
       });
 
-      const store = new FileVaultStore({ env });
-      expect(store.listAccess({ storedKey: "GH_TOKEN", capletId: "github" })).toEqual([
+      const grantsOut: string[] = [];
+      await runCli(["vault", "access", "list", "GH_TOKEN", "github", "--json"], {
+        env,
+        writeOut: (value) => grantsOut.push(value),
+      });
+      expect(JSON.parse(grantsOut.join(""))).toEqual([
         expect.objectContaining({
           storedKey: "GH_TOKEN",
           referenceName: "GH_TOKEN",
@@ -1098,6 +1149,7 @@ describe("cli init", () => {
     try {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
+      process.env.XDG_STATE_HOME = join(dir, "state");
 
       await runCli(["inspect", "local", "--format", "json"], {
         writeOut: (value) => out.push(value),
@@ -1152,7 +1204,7 @@ describe("cli init", () => {
     try {
       writeCliOperationConfig(configPath);
       await runCli(["get-tool", "local", "echo_json", "--format", "json"], {
-        env: { CAPLETS_CONFIG: configPath },
+        env: { CAPLETS_CONFIG: configPath, XDG_STATE_HOME: join(dir, "state") },
         writeOut: (value) => out.push(value),
       });
 
@@ -1179,7 +1231,7 @@ describe("cli init", () => {
           "json",
         ],
         {
-          env: { CAPLETS_CONFIG: configPath },
+          env: { CAPLETS_CONFIG: configPath, XDG_STATE_HOME: join(dir, "state") },
           writeOut: (value) => out.push(value),
         },
       );
@@ -1276,6 +1328,7 @@ describe("cli init", () => {
     try {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
+      process.env.XDG_STATE_HOME = join(dir, "state");
 
       await runCli(["inspect", "local"], { writeOut: (value) => out.push(value) });
       await runCli(["check-backend", "local"], { writeOut: (value) => out.push(value) });
@@ -1315,6 +1368,7 @@ describe("cli init", () => {
     try {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
+      process.env.XDG_STATE_HOME = join(dir, "state");
 
       await runCli(["inspect", "local", "--format", "plain"], {
         writeOut: (value) => out.push(value),
@@ -1338,6 +1392,7 @@ describe("cli init", () => {
     try {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
+      process.env.XDG_STATE_HOME = join(dir, "state");
 
       await runCli(["call-tool", "local.no_args", "--format", "json"], {
         writeOut: (value) => out.push(value),
@@ -1360,6 +1415,7 @@ describe("cli init", () => {
     try {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
+      process.env.XDG_STATE_HOME = join(dir, "state");
 
       await runCli(["call-tool", "local.fail"], {
         writeOut: (value) => out.push(value),
@@ -1385,6 +1441,7 @@ describe("cli init", () => {
     try {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
+      process.env.XDG_STATE_HOME = join(dir, "state");
 
       await runCli(["call-tool", "local.fail", "--format", "json"], {
         writeOut: (value) => out.push(value),
@@ -4486,8 +4543,13 @@ describe("cli init", () => {
     const out: string[] = [];
     try {
       writeFileSync(
+        join(dir, "users-openapi.json"),
+        '{"openapi":"3.0.3","info":{"title":"Users","version":"1"},"paths":{}}',
+      );
+      writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           mcpServers: {
             remote: {
               name: "Remote",
@@ -4513,33 +4575,28 @@ describe("cli init", () => {
             users: {
               name: "Users API",
               description: "Manage users through the internal HTTP API.",
-              specPath: "/tmp/users-openapi.json",
+              specPath: join(dir, "users-openapi.json"),
               auth: { type: "oauth2", clientId: "openapi-client" },
             },
           },
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "secret-access-token",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          scope: "mcp:tools",
-        },
-        authDir,
-      );
-      writeTokenBundle(
-        {
-          server: "expired",
-          accessToken: "expired-secret-access-token",
-          expiresAt: "2000-01-01T00:00:00.000Z",
-        },
-        authDir,
-      );
+      const env = isolatedSqlCliEnv(dir, configPath);
+      await seedSqlTokenBundle(dir, configPath, authDir, {
+        server: "remote",
+        accessToken: "secret-access-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: "mcp:tools",
+      });
+      await seedSqlTokenBundle(dir, configPath, authDir, {
+        server: "expired",
+        accessToken: "expired-secret-access-token",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      });
 
-      await runCli(["auth", "list"], { writeOut: (value) => out.push(value), authDir });
+      await runCli(["auth", "list"], { writeOut: (value) => out.push(value), authDir, env });
 
       const text = out.join("");
       expect(text).toContain(
@@ -4565,6 +4622,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           graphqlEndpoints: {
             catalog: {
               name: "Catalog",
@@ -4577,8 +4635,9 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
+      const env = isolatedSqlCliEnv(dir, configPath);
 
-      await runCli(["auth", "list"], { writeOut: (value) => out.push(value) });
+      await runCli(["auth", "list"], { writeOut: (value) => out.push(value), env });
 
       expect(out.join("")).toContain("catalog\n  Status: missing");
     } finally {
@@ -4594,6 +4653,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           graphqlEndpoints: {
             catalog: {
               name: "Catalog",
@@ -4605,9 +4665,11 @@ describe("cli init", () => {
           },
         }),
       );
+      const env = isolatedSqlCliEnv(dir, configPath);
       process.env.CAPLETS_CONFIG = configPath;
 
       await runCli(["auth", "list", "--format", "json"], {
+        env,
         writeOut: (value) => out.push(value),
       });
       expect(JSON.parse(out.join(""))).toEqual([
@@ -4623,10 +4685,17 @@ describe("cli init", () => {
     const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
     const out: string[] = [];
+    const previousConfigHome = process.env.XDG_CONFIG_HOME;
+    const previousStateHome = process.env.XDG_STATE_HOME;
+    const previousCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CONFIG_HOME = join(dir, "config-home");
+    process.env.XDG_STATE_HOME = join(dir, "state-home");
+    process.env.XDG_CACHE_HOME = join(dir, "cache-home");
     try {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           mcpServers: {
             remote: {
               name: "Remote",
@@ -4639,7 +4708,18 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle({ server: "remote", accessToken: "secret-access-token" }, authDir);
+      const engine = await createCapletsEngine({ configPath, authDir, watch: false });
+      try {
+        const repository = engine.controlPlaneSecurityRepository();
+        if (!repository) throw new Error("Activated SQL auth repository is missing");
+        await repository.writeTokenBundle({
+          server: "remote",
+          authType: "oauth2",
+          accessToken: "secret-access-token",
+        });
+      } finally {
+        await engine.close();
+      }
 
       await runCli(["auth", "logout", "remote"], {
         writeOut: (value) => out.push(value),
@@ -4655,7 +4735,14 @@ describe("cli init", () => {
       });
 
       expect(out.join("")).toBe("No OAuth credentials found for `remote`.\n");
+      expect(existsSync(join(authDir, "remote.json"))).toBe(false);
     } finally {
+      if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousConfigHome;
+      if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousStateHome;
+      if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCacheHome;
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -4677,6 +4764,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           mcpServers: {
             remote: {
               name: "Remote",
@@ -4693,19 +4781,25 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
+      const env = isolatedSqlCliEnv(dir, configPath);
+      const engine = await createCapletsEngine({ configPath, authDir, env, watch: false });
+      try {
+        const repository = engine.controlPlaneSecurityRepository();
+        if (!repository) throw new Error("Activated SQL auth repository is missing");
+        await repository.writeTokenBundle({
           server: "remote",
           authType: "oauth2",
           accessToken: "old-access-token",
           refreshToken: "old-refresh-token",
           expiresAt: "2999-01-01T00:00:00.000Z",
-        },
-        authDir,
-      );
+        });
+      } finally {
+        await engine.close();
+      }
 
       await runCli(["auth", "refresh", "remote"], {
         writeOut: (value) => out.push(value),
+        env,
         authDir,
       });
 
@@ -4720,11 +4814,18 @@ describe("cli init", () => {
       expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain(
         "refresh_token=old-refresh-token",
       );
-      expect(readTokenBundle("remote", authDir)).toMatchObject({
-        accessToken: "new-access-token",
-        refreshToken: "new-refresh-token",
-        tokenType: "Bearer",
-      });
+      const reader = await createCapletsEngine({ configPath, authDir, env, watch: false });
+      try {
+        await expect(
+          reader.controlPlaneSecurityRepository()?.readTokenBundle("remote"),
+        ).resolves.toMatchObject({
+          accessToken: "new-access-token",
+          refreshToken: "new-refresh-token",
+          tokenType: "Bearer",
+        });
+      } finally {
+        await reader.close();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -4750,6 +4851,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           googleDiscoveryApis: {
             drive: {
               name: "Google Drive",
@@ -4766,8 +4868,12 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
+      const env = isolatedSqlCliEnv(dir, configPath);
+      const engine = await createCapletsEngine({ configPath, authDir, env, watch: false });
+      try {
+        const repository = engine.controlPlaneSecurityRepository();
+        if (!repository) throw new Error("Activated SQL auth repository is missing");
+        await repository.writeTokenBundle({
           server: "drive",
           authType: "oauth2",
           accessToken: "old-access-token",
@@ -4776,12 +4882,14 @@ describe("cli init", () => {
           metadata: {
             requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
           },
-        },
-        authDir,
-      );
+        });
+      } finally {
+        await engine.close();
+      }
 
       await runCli(["auth", "refresh", "drive"], {
         writeOut: (value) => out.push(value),
+        env,
         authDir,
       });
 
@@ -4836,6 +4944,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           googleDiscoveryApis: {
             drive: {
               name: "Google Drive",
@@ -4851,24 +4960,23 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "drive",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          protectedResourceOrigin: "https://api.example.com",
-          metadata: {
-            requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
-          },
+      const env = isolatedSqlCliEnv(dir, configPath);
+      await seedSqlTokenBundle(dir, configPath, authDir, {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        protectedResourceOrigin: "https://api.example.com",
+        metadata: {
+          requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
         },
-        authDir,
-      );
+      });
 
       await runCli(["auth", "refresh", "drive"], {
         writeOut: (value) => out.push(value),
         authDir,
+        env,
       });
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
@@ -4918,6 +5026,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           googleDiscoveryApis: {
             drive: {
               name: "Google Drive",
@@ -4934,22 +5043,21 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "drive",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          protectedResourceOrigin: "https://api.example.com",
-          scope: "https://www.googleapis.com/auth/drive.readonly",
-        },
-        authDir,
-      );
+      const env = isolatedSqlCliEnv(dir, configPath);
+      await seedSqlTokenBundle(dir, configPath, authDir, {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        protectedResourceOrigin: "https://api.example.com",
+        scope: "https://www.googleapis.com/auth/drive.readonly",
+      });
 
       await runCli(["auth", "refresh", "drive"], {
         writeOut: (value) => out.push(value),
         authDir,
+        env,
       });
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
@@ -4975,24 +5083,34 @@ describe("cli init", () => {
     const out: string[] = [];
     try {
       writeFileSync(
+        join(dir, "users-openapi.json"),
+        '{"openapi":"3.0.3","info":{"title":"Users","version":"1"},"paths":{}}',
+      );
+      writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           openapiEndpoints: {
             users: {
               name: "Users API",
               description: "Manage users through the internal HTTP API.",
-              specPath: "/tmp/users-openapi.json",
+              specPath: join(dir, "users-openapi.json"),
               auth: { type: "oidc", issuer: "https://issuer.example" },
             },
           },
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle({ server: "users", accessToken: "secret-access-token" }, authDir);
+      const env = isolatedSqlCliEnv(dir, configPath);
+      await seedSqlTokenBundle(dir, configPath, authDir, {
+        server: "users",
+        accessToken: "secret-access-token",
+      });
 
       await runCli(["auth", "logout", "users"], {
         writeOut: (value) => out.push(value),
         authDir,
+        env,
       });
 
       expect(out.join("")).toBe("Deleted OAuth credentials for `users`.\n");
@@ -5102,6 +5220,7 @@ describe("cli setup", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           googleDiscoveryApis: {
             drive: {
               name: "Drive API",
@@ -5114,7 +5233,7 @@ describe("cli setup", () => {
       );
 
       await runCli(["setup", "drive"], {
-        env: { CAPLETS_CONFIG: configPath },
+        env: isolatedSqlCliEnv(dir, configPath),
         writeOut: (value) => out.push(value),
       });
 
@@ -5685,7 +5804,7 @@ describe("cli completion commands", () => {
     try {
       writeOpenApiCompletionConfig(configPath);
       await runCli(["__complete", "--shell", "bash", "--", "get-tool", "users."], {
-        env: { CAPLETS_CONFIG: configPath },
+        env: { CAPLETS_CONFIG: configPath, XDG_STATE_HOME: join(dir, "state") },
         writeOut: (value) => out.push(value),
       });
 
@@ -5769,6 +5888,9 @@ function writeOpenApiCompletionConfig(path: string): void {
   writeFileSync(
     path,
     JSON.stringify({
+      serve: {
+        storage: { kind: "sqlite", stateRoot: join(dir, "control-plane") },
+      },
       openapiEndpoints: {
         users: {
           name: "Users API",
@@ -5804,6 +5926,9 @@ function writeCliOperationConfig(path: string): void {
   writeFileSync(
     path,
     JSON.stringify({
+      serve: {
+        storage: { kind: "sqlite", stateRoot: join(dir, "control-plane") },
+      },
       cliTools: {
         local: {
           name: "Local CLI",
@@ -5952,11 +6077,39 @@ function gitFixtureEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+async function seedSqlTokenBundle(
+  dir: string,
+  configPath: string,
+  authDir: string,
+  bundle: Parameters<typeof writeTokenBundle>[0],
+): Promise<void> {
+  const env = isolatedSqlCliEnv(dir, configPath);
+  const engine = await createCapletsEngine({ configPath, authDir, env, watch: false });
+  try {
+    const repository = engine.controlPlaneSecurityRepository();
+    if (!repository) throw new Error("Activated SQL auth repository is missing");
+    await repository.writeTokenBundle(bundle);
+  } finally {
+    await engine.close();
+  }
+}
+
+function isolatedSqlCliEnv(dir: string, configPath: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    CAPLETS_CONFIG: configPath,
+    XDG_CONFIG_HOME: join(dir, "config-home"),
+    XDG_STATE_HOME: join(dir, "state-home"),
+    XDG_CACHE_HOME: join(dir, "cache-home"),
+  };
+}
+
 function capletFixture(name: string): string {
   return [
     "---",
     `name: ${name}`,
     "description: Test Caplet.",
+
     "mcpServer:",
     "  command: npx",
     "  args:",

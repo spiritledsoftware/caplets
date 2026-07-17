@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { satisfies } from "semver";
 import { CapletsError } from "../../errors";
 import type {
   CurrentHostConfirmationToken,
@@ -8,6 +9,7 @@ import type {
   CurrentHostOperationReceipt,
 } from "../../current-host/operations";
 import { STORAGE_BENCHMARK_ENVELOPE } from "../storage-benchmark-envelope";
+import { controlPlaneNodeAdmissionLock } from "../types";
 import {
   type CanonicalCapletAggregate,
   type CanonicalCapletRelationalProjection,
@@ -38,15 +40,22 @@ import type {
   ConfirmationConsumeResult,
   ConfirmationConsumption,
   ConfirmationPreviewRequest,
+  ControlPlaneActivationState,
+  ControlPlaneConvergenceToken,
+  ControlPlaneDetailedDiagnostics,
   ControlPlaneConflictReason,
   ControlPlaneHealthSummary,
   ControlPlaneMutationResult,
+  ControlPlaneNodeApplication,
+  ControlPlaneNodeApplicationResult,
   ControlPlaneNodeRegistration,
   ControlPlaneNodeRegistrationResult,
+  ControlPlaneMaintenanceFence,
   ControlPlaneOperationReservationResult,
   ControlPlaneSnapshot,
   ControlPlaneStoreIdentity,
   ControlPlaneVersionState,
+  ControlPlaneWriterFence,
   ExternalDestructionIntent,
   ExternalDestructionPort,
   ExternalDestructionStatus,
@@ -56,6 +65,18 @@ import type {
 const DEFAULT_RESERVATION_TTL_MS = 5 * 60_000;
 const EXTERNAL_DESTRUCTION_CLAIM_TTL_MS = 30_000;
 const OPERATOR_ACTIVITY_RETENTION_MS = 90 * 24 * 60 * 60_000;
+const ACTIVATION_MIGRATION_ID = "u10-runtime-activation";
+const TUPLE_FINGERPRINT_MIGRATION_PREFIX = "u10-runtime-tuple";
+const CONVERGENCE_RECEIPT_BATCH_SIZE =
+  STORAGE_BENCHMARK_ENVELOPE.managementWritesPerSecond *
+  STORAGE_BENCHMARK_ENVELOPE.writeBurstSeconds;
+const SUPPORTED_RUNTIME_BINARY_RANGE = ">=0.34.1 <0.35.0";
+const REQUIRED_RUNTIME_CAPABILITIES = Object.freeze([
+  "ordered-tuple-polling",
+  "writer-fence-v1",
+  "complete-snapshot-v1",
+]);
+const SNAPSHOT_ENVELOPE_ID = "control-plane";
 const COMMON_COLUMNS = [
   "model_version",
   "id",
@@ -99,6 +120,14 @@ type VersionRows = Readonly<{
   securityEpoch: number;
 }>;
 
+type SnapshotEnvelopeMetrics = Readonly<{
+  caplets: number;
+  normalizedRows: number;
+  encodedBytes: number;
+}>;
+
+type SnapshotEnvelopeContribution = SnapshotEnvelopeMetrics;
+
 export function createControlPlaneRepository(options: ControlPlaneStoreOptions): ControlPlaneStore {
   const reservationTtlMs = options.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS;
   let lastKnownVersions: VersionRows = {
@@ -110,6 +139,8 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     | Readonly<{ versions: VersionRows; snapshot: ControlPlaneSnapshot }>
     | undefined;
   let snapshotLoadTail: Promise<void> = Promise.resolve();
+  let lastConnectedAt = 0;
+  let localNodeId: string | undefined;
   const fail = async (point: ControlPlaneFailurePoint) => {
     await options.failureInjector?.(point);
   };
@@ -162,7 +193,9 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
         [...zero, 0, 0, 0, now],
         ["logical_host_id", "id"],
       );
-      return readVersions(transaction, options.identity.logicalHostId);
+      const initialized = await readVersions(transaction, options.identity.logicalHostId);
+      await loadOrCreateSnapshotEnvelopeMetrics(transaction, options, now, initialized);
+      return initialized;
     });
     lastKnownVersions = versions;
     return versions;
@@ -336,7 +369,7 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     ) {
       throw new Error("Caplet installation provenance does not match the mutation provenance");
     }
-    return runManagementMutation(
+    const result = await runManagementMutation(
       options,
       input,
       fail,
@@ -345,13 +378,27 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
         await writeCaplet(transaction, options, input, state);
       },
     );
+    if (result.status === "committed") {
+      const token = {
+        authorityGeneration: result.receipt.authorityToken.authorityGeneration,
+        effectiveGeneration: result.receipt.authorityToken.effectiveGeneration,
+        securityEpoch: input.expectedSecurityEpoch,
+      };
+      lastKnownVersions = token;
+      try {
+        await options.dialect.publishChange?.(token);
+      } catch {
+        // The receipt is already durable; tuple polling remains authoritative.
+      }
+    }
+    return result;
   };
 
   const mutateHostSetting = async (
     input: HostSettingManagementMutation,
   ): Promise<ControlPlaneMutationResult> => {
     parseCanonicalHostSetting(input.setting);
-    return runManagementMutation(
+    const result = await runManagementMutation(
       options,
       input,
       fail,
@@ -360,6 +407,20 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
         await writeHostSetting(transaction, options, input, state);
       },
     );
+    if (result.status === "committed") {
+      const token = {
+        authorityGeneration: result.receipt.authorityToken.authorityGeneration,
+        effectiveGeneration: result.receipt.authorityToken.effectiveGeneration,
+        securityEpoch: input.expectedSecurityEpoch,
+      };
+      lastKnownVersions = token;
+      try {
+        await options.dialect.publishChange?.(token);
+      } catch {
+        // The receipt is already durable; tuple polling remains authoritative.
+      }
+    }
+    return result;
   };
 
   const loadSnapshot = async (): Promise<ControlPlaneSnapshot> => {
@@ -818,6 +879,315 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     });
   };
 
+  const activationState = async (): Promise<ControlPlaneActivationState> => {
+    requireReady(options);
+    return options.dialect.snapshotTransaction(async (transaction) => {
+      const state = await readActivationState(transaction, options.identity);
+      if (!state) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Control-plane runtime activation is not initialized.",
+        );
+      }
+      return state;
+    });
+  };
+
+  const initializeActivationFingerprint = async (
+    initialFingerprint: string,
+  ): Promise<ControlPlaneActivationState> => {
+    requireReady(options);
+    const fingerprint = normalizeFingerprint(initialFingerprint);
+    return options.dialect.runtimeTransaction(async (transaction) => {
+      await transaction.lock(activationLock(options.identity));
+      return (
+        (await readActivationState(transaction, options.identity)) ??
+        initializeActivationState(transaction, options.identity, fingerprint)
+      );
+    });
+  };
+
+  const stageNextFingerprint = async (
+    nextFingerprint: string,
+    fence?: ControlPlaneMaintenanceFence,
+  ): Promise<ControlPlaneActivationState> => {
+    requireReady(options);
+    const fingerprint = normalizeFingerprint(nextFingerprint);
+    return options.dialect.runtimeTransaction(async (transaction) => {
+      await transaction.lock(activationLock(options.identity));
+      await lockMaintenanceAuthority(transaction, options.identity);
+      const current = await readActivationState(transaction, options.identity);
+      if (!current) {
+        return initializeActivationState(transaction, options.identity, fingerprint);
+      }
+      if (fingerprint === current.currentFingerprint || fingerprint === current.nextFingerprint) {
+        return current;
+      }
+      if (current.nextFingerprint) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Only one next runtime fingerprint may be staged.",
+        );
+      }
+      const staged = Object.freeze({ ...current, nextFingerprint: fingerprint });
+      await assertMaintenanceFence(transaction, options, fence);
+      await persistActivationState(transaction, options.identity, staged);
+      return staged;
+    });
+  };
+
+  const abortNextFingerprint = async (
+    nextFingerprint: string,
+    fence?: ControlPlaneMaintenanceFence,
+  ): Promise<ControlPlaneActivationState> => {
+    requireReady(options);
+    const fingerprint = normalizeFingerprint(nextFingerprint);
+    return options.dialect.runtimeTransaction(async (transaction) => {
+      await transaction.lock(activationLock(options.identity));
+      await lockMaintenanceAuthority(transaction, options.identity);
+      const current = await requireActivationState(transaction, options.identity);
+      if (current.nextFingerprint !== fingerprint) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Runtime fingerprint is not the staged next value.",
+        );
+      }
+      await transaction.delete("clusterNodeLeases", {
+        equals: {
+          logicalHostId: options.identity.logicalHostId,
+          storeId: options.identity.storeId,
+          state: "activation-pending",
+          bootstrapFingerprint: fingerprint,
+        },
+      });
+      const aborted = Object.freeze({
+        generation: current.generation,
+        currentFingerprint: current.currentFingerprint,
+      });
+      await assertMaintenanceFence(transaction, options, fence);
+      await persistActivationState(transaction, options.identity, aborted);
+      return aborted;
+    });
+  };
+
+  const activateNextFingerprint = async (
+    nextFingerprint: string,
+    fence?: ControlPlaneMaintenanceFence,
+  ): Promise<ControlPlaneActivationState> => {
+    requireReady(options);
+    const fingerprint = normalizeFingerprint(nextFingerprint);
+    const activated = await options.dialect.runtimeTransaction(async (transaction) => {
+      await transaction.lock(activationLock(options.identity));
+      await transaction.lock(
+        `authority-generation:${options.identity.logicalHostId}:${options.identity.storeId}`,
+      );
+      await transaction.lock(
+        `security-epoch:${options.identity.logicalHostId}:${options.identity.storeId}`,
+      );
+      const current = await requireActivationState(transaction, options.identity);
+      if (current.nextFingerprint !== fingerprint) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Runtime fingerprint is not the staged next value.",
+        );
+      }
+      const versions = await readVersions(transaction, options.identity.logicalHostId);
+      const now = await transaction.databaseTime();
+      await transaction.update(
+        "clusterNodeLeases",
+        { state: "activation-drained", expiresAt: now, updatedAt: now },
+        scope(options.identity),
+      );
+      await transaction.update(
+        "clusterNodeLeases",
+        { state: "catching-up", expiresAt: now, updatedAt: now },
+        scope(options.identity, { bootstrapFingerprint: fingerprint }),
+      );
+      await assertMaintenanceFence(transaction, options, fence);
+      await transaction.update(
+        "writerFences",
+        { state: "revoked", expiresAt: now, updatedAt: now },
+        scope(options.identity),
+      );
+      await transaction.update(
+        "authorityVersions",
+        { bindingState: "inactive", updatedAt: now },
+        scope(options.identity, { generation: versions.authorityGeneration }),
+      );
+      const authorityGeneration = versions.authorityGeneration + 1;
+      const common = commonValues(options, now, `u10-authority:${authorityGeneration}`, {
+        aggregateVersion: 0,
+        authorityVersion: authorityGeneration,
+        effectiveVersion: versions.effectiveGeneration,
+        securityVersion: versions.securityEpoch,
+      });
+      await insert(
+        transaction,
+        "cp_authority_version",
+        [
+          ...COMMON_COLUMNS,
+          "generation",
+          "binding_state",
+          "authority_token",
+          "operation_namespace",
+          "transfer_id",
+        ],
+        [
+          ...common,
+          authorityGeneration,
+          "active",
+          authorityTokenText(authorityGeneration, versions.effectiveGeneration),
+          options.identity.operationNamespace,
+          null,
+        ],
+      );
+      const next = Object.freeze({
+        generation: current.generation + 1,
+        currentFingerprint: fingerprint,
+      });
+      await persistActivationState(transaction, options.identity, next);
+      lastKnownVersions = { ...versions, authorityGeneration };
+      return { state: next, token: lastKnownVersions };
+    });
+    try {
+      await options.dialect.publishChange?.(activated.token);
+    } catch {
+      // Activation is durable; ordered tuple polling remains authoritative.
+    }
+    return activated.state;
+  };
+  const adoptSqliteActivationFingerprint: NonNullable<
+    ControlPlaneStore["adoptSqliteActivationFingerprint"]
+  > = async (input) => {
+    requireReady(options);
+    if (options.dialect.backend !== "sqlite") {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Atomic runtime fingerprint adoption is available only for SQLite.",
+      );
+    }
+    const nextFingerprint = normalizeFingerprint(input.nextFingerprint);
+    const previousFingerprint =
+      input.previousFingerprint === undefined
+        ? undefined
+        : normalizeFingerprint(input.previousFingerprint);
+    normalizeFingerprint(input.expectedEffectiveRuntimeFingerprint);
+    if (
+      [
+        input.expectedAuthorityGeneration,
+        input.expectedEffectiveGeneration,
+        input.expectedSecurityEpoch,
+      ].some((value) => !Number.isSafeInteger(value) || value < 0)
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Expected convergence tuple is invalid.");
+    }
+    const adopted = await options.dialect.runtimeTransaction(async (transaction) => {
+      await transaction.lock(activationLock(options.identity));
+      await transaction.lock(
+        `authority-generation:${options.identity.logicalHostId}:${options.identity.storeId}`,
+      );
+      await transaction.lock(
+        `security-epoch:${options.identity.logicalHostId}:${options.identity.storeId}`,
+      );
+      const current = await readActivationState(transaction, options.identity);
+      const versions = await readVersions(transaction, options.identity.logicalHostId);
+      if (
+        current?.currentFingerprint !== previousFingerprint ||
+        current?.nextFingerprint !== undefined ||
+        versions.authorityGeneration !== input.expectedAuthorityGeneration ||
+        versions.effectiveGeneration !== input.expectedEffectiveGeneration ||
+        versions.securityEpoch !== input.expectedSecurityEpoch
+      ) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "SQLite runtime fingerprint adoption lost its exact authority fence.",
+        );
+      }
+      if (!current) {
+        const state = await initializeActivationState(
+          transaction,
+          options.identity,
+          nextFingerprint,
+        );
+        lastKnownVersions = versions;
+        return { state, token: versions };
+      }
+      if (current.currentFingerprint === nextFingerprint) {
+        return { state: current, token: versions };
+      }
+      const now = await transaction.databaseTime();
+      await transaction.update(
+        "clusterNodeLeases",
+        { state: "activation-drained", expiresAt: now, updatedAt: now },
+        scope(options.identity),
+      );
+      await transaction.update(
+        "writerFences",
+        { state: "revoked", expiresAt: now, updatedAt: now },
+        scope(options.identity),
+      );
+      await transaction.update(
+        "authorityVersions",
+        { bindingState: "inactive", updatedAt: now },
+        scope(options.identity, { generation: versions.authorityGeneration }),
+      );
+      const authorityGeneration = versions.authorityGeneration + 1;
+      const common = commonValues(options, now, `u10-authority:${authorityGeneration}`, {
+        aggregateVersion: 0,
+        authorityVersion: authorityGeneration,
+        effectiveVersion: versions.effectiveGeneration,
+        securityVersion: versions.securityEpoch,
+      });
+      await insert(
+        transaction,
+        "cp_authority_version",
+        [
+          ...COMMON_COLUMNS,
+          "generation",
+          "binding_state",
+          "authority_token",
+          "operation_namespace",
+          "transfer_id",
+        ],
+        [
+          ...common,
+          authorityGeneration,
+          "active",
+          authorityTokenText(authorityGeneration, versions.effectiveGeneration),
+          options.identity.operationNamespace,
+          null,
+        ],
+      );
+      const state = Object.freeze({
+        generation: current.generation + 1,
+        currentFingerprint: nextFingerprint,
+      });
+      await persistActivationState(transaction, options.identity, state);
+      const token = { ...versions, authorityGeneration };
+      lastKnownVersions = token;
+      return { state, token };
+    });
+    try {
+      await options.dialect.publishChange?.(adopted.token);
+    } catch {
+      // Adoption is durable; ordered tuple polling remains authoritative.
+    }
+    return adopted.state;
+  };
+
+  const convergenceToken = async (): Promise<ControlPlaneConvergenceToken> => {
+    requireReady(options);
+    const token = await options.dialect.snapshotTransaction((transaction) =>
+      readVersions(transaction, options.identity.logicalHostId),
+    );
+    lastKnownVersions = token;
+    return token;
+  };
+  const subscribeToChanges: ControlPlaneStore["subscribeToChanges"] = async (listener) => {
+    if (!options.dialect.subscribeToChanges) return async () => undefined;
+    return options.dialect.subscribeToChanges(listener);
+  };
+
   const registerNode = async (
     input: ControlPlaneNodeRegistration,
   ): Promise<ControlPlaneNodeRegistrationResult> => {
@@ -825,159 +1195,574 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) {
       throw new Error("Node lease TTL must be a positive integer");
     }
-    return options.dialect.runtimeTransaction(async (transaction) => {
-      await transaction.lock(`nodes:${options.identity.logicalHostId}`);
-      const now = await transaction.databaseTime();
-      const existing = await transaction.select<NodeRow>("clusterNodeLeases", {
-        equals: {
-          logicalHostId: options.identity.logicalHostId,
-          storeId: options.identity.storeId,
-          nodeId: input.nodeId,
-        },
-      });
-      const versions = await readVersions(transaction, options.identity.logicalHostId);
-      const leaseId = `writer:${input.nodeId}`;
-      const existingFence = await transaction.select<FenceRow>(
-        "writerFences",
-        {
-          equals: {
-            logicalHostId: options.identity.logicalHostId,
-            storeId: options.identity.storeId,
-            leaseId,
-          },
-        },
-        [],
-        1,
-      );
-      const currentNode = existing[0];
-      const expectedFingerprint = /^[a-f0-9]{64}$/u.test(input.bootstrapFingerprint)
-        ? input.bootstrapFingerprint
-        : sha256(input.bootstrapFingerprint);
-      if (currentNode && currentNode.bootstrapFingerprint !== expectedFingerprint) {
-        return { status: "identity-conflict" };
-      }
-      const nodeStillReady =
-        currentNode?.state === "ready" && Date.parse(currentNode.expiresAt) > Date.parse(now);
-      const currentFence = existingFence[0];
-      const fenceStillActive =
-        nodeStillReady &&
-        currentFence?.state === "active" &&
-        Date.parse(currentFence.expiresAt) > Date.parse(now) &&
-        decodeCanonicalVersion(currentFence.authorityGeneration) === versions.authorityGeneration;
-      const fence = {
-        leaseId,
-        writerEpoch: currentFence
-          ? decodeCanonicalVersion(currentFence.writerEpoch) + (fenceStillActive ? 0 : 1)
-          : 1,
-        authorityGeneration: versions.authorityGeneration,
-      } as const;
-      const readyNodes = await countReadyNodes(transaction, options, now);
-      const expiresAt = new Date(Date.parse(now) + input.ttlMs).toISOString();
-      const common = commonValues(options, now, nodeRowId(input.nodeId), {
-        aggregateVersion: 0,
-        authorityVersion: versions.authorityGeneration,
-        effectiveVersion: versions.effectiveGeneration,
-        securityVersion: versions.securityEpoch,
-      });
-      if (!isDeepStrictEqual(options.dialect.compatibility, input.compatibility)) {
+    validateConvergenceToken(input.appliedToken);
+    const expectedFingerprint = normalizeFingerprint(input.bootstrapFingerprint);
+    const effectiveRuntimeFingerprint = normalizeFingerprint(input.effectiveRuntimeFingerprint);
+    const result = await options.dialect.runtimeTransaction<ControlPlaneNodeRegistrationResult>(
+      async (transaction) => {
+        await transaction.lock(nodeLeaseLock(options.identity, input.nodeId));
+        if (options.dialect.backend === "postgres") {
+          await transaction.lock(controlPlaneNodeAdmissionLock(options.identity));
+        }
+        let now = await transaction.databaseTime();
+        let activation = await readActivationState(transaction, options.identity);
+        const existing = await transaction.select<NodeRow>(
+          "clusterNodeLeases",
+          scope(options.identity, { nodeId: input.nodeId }),
+        );
+        let versions = await readVersions(transaction, options.identity.logicalHostId);
+        const leaseId = `writer:${input.nodeId}`;
+        const existingFence = await transaction.select<FenceRow>(
+          "writerFences",
+          scope(options.identity, { leaseId }),
+          [],
+          1,
+        );
+        const currentNode = existing[0];
+        const currentNodeIsLive =
+          currentNode !== undefined && Date.parse(currentNode.expiresAt) > Date.parse(now);
+        if (currentNodeIsLive && currentNode.bootstrapFingerprint !== expectedFingerprint) {
+          return { status: "identity-conflict" };
+        }
+        let readyNodes = await countReadyNodes(transaction, options, now);
+        let expiresAt = new Date(Date.parse(now) + input.ttlMs).toISOString();
+        const compatible =
+          runtimeCompatibilityMatches(
+            options.dialect.compatibility,
+            input.compatibility,
+            options.dialect.backend === "postgres",
+          ) &&
+          (options.dialect.backend === "sqlite" ||
+            (await cohortCommitmentsMatch(
+              transaction,
+              options.identity,
+              input.compatibility,
+              now,
+            )));
+        const previousToken = currentNode
+          ? nodeConvergenceToken(currentNode)
+          : { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 };
+        const previousFingerprint = currentNode
+          ? nodeAcknowledgedEffectiveRuntimeFingerprint(currentNode)
+          : undefined;
+        let common = commonValues(options, now, nodeRowId(input.nodeId), {
+          aggregateVersion: 0,
+          authorityVersion: previousToken.authorityGeneration,
+          effectiveVersion: previousToken.effectiveGeneration,
+          securityVersion: previousToken.securityEpoch,
+        });
+        if (!compatible) {
+          await upsertNode(
+            transaction,
+            common,
+            input,
+            now,
+            now,
+            "compatibility-rejected",
+            readyNodes,
+            previousFingerprint,
+          );
+          await retireWriterFence(transaction, options.identity, leaseId, now);
+          return { status: "compatibility-rejected" };
+        }
+        activation ??= await initializeActivationState(
+          transaction,
+          options.identity,
+          expectedFingerprint,
+        );
+        if (expectedFingerprint === activation.nextFingerprint) {
+          await upsertNode(
+            transaction,
+            common,
+            input,
+            now,
+            expiresAt,
+            "activation-pending",
+            readyNodes,
+            previousFingerprint,
+          );
+          await retireWriterFence(transaction, options.identity, leaseId, now);
+          return { status: "activation-pending", readyNodes };
+        }
+        if (expectedFingerprint !== activation.currentFingerprint) {
+          await upsertNode(
+            transaction,
+            common,
+            input,
+            now,
+            now,
+            "compatibility-rejected",
+            readyNodes,
+            previousFingerprint,
+          );
+          await retireWriterFence(transaction, options.identity, leaseId, now);
+          return { status: "compatibility-rejected" };
+        }
+        if (!sameConvergenceToken(input.appliedToken, versions)) {
+          if (compareConvergenceTokens(input.appliedToken, versions) > 0) {
+            await upsertNode(
+              transaction,
+              common,
+              input,
+              now,
+              now,
+              "compatibility-rejected",
+              readyNodes,
+              previousFingerprint,
+            );
+            await retireWriterFence(transaction, options.identity, leaseId, now);
+            return { status: "compatibility-rejected" };
+          }
+          await upsertNode(
+            transaction,
+            common,
+            input,
+            now,
+            expiresAt,
+            "catching-up",
+            readyNodes,
+            previousFingerprint,
+          );
+          await retireWriterFence(transaction, options.identity, leaseId, now);
+          return { status: "catching-up", readyNodes };
+        }
+        if (
+          previousFingerprint &&
+          sameConvergenceToken(previousToken, input.appliedToken) &&
+          previousFingerprint !== effectiveRuntimeFingerprint
+        ) {
+          return { status: "compatibility-rejected" };
+        }
+        if (
+          !(await tupleFingerprintMatches(
+            transaction,
+            options.identity,
+            input.appliedToken,
+            effectiveRuntimeFingerprint,
+          ))
+        ) {
+          return { status: "compatibility-rejected" };
+        }
+        const nodeStillReady =
+          currentNode?.state === "ready" && Date.parse(currentNode.expiresAt) > Date.parse(now);
+        if (!nodeStillReady && options.dialect.backend === "postgres") {
+          now = await transaction.databaseTime();
+          versions = await readVersions(transaction, options.identity.logicalHostId);
+          expiresAt = new Date(Date.parse(now) + input.ttlMs).toISOString();
+          common = commonValues(options, now, nodeRowId(input.nodeId), {
+            aggregateVersion: 0,
+            authorityVersion: previousToken.authorityGeneration,
+            effectiveVersion: previousToken.effectiveGeneration,
+            securityVersion: previousToken.securityEpoch,
+          });
+          if (!sameConvergenceToken(input.appliedToken, versions)) {
+            await upsertNode(
+              transaction,
+              common,
+              input,
+              now,
+              expiresAt,
+              "catching-up",
+              readyNodes,
+              previousFingerprint,
+            );
+            await retireWriterFence(transaction, options.identity, leaseId, now);
+            return { status: "catching-up", readyNodes };
+          }
+          readyNodes = await countReadyNodes(transaction, options, now);
+        }
+        if (
+          !nodeStillReady &&
+          options.dialect.backend === "postgres" &&
+          readyNodes >= STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes
+        ) {
+          await upsertNode(
+            transaction,
+            common,
+            input,
+            now,
+            expiresAt,
+            "capacity-rejected",
+            16,
+            previousFingerprint,
+          );
+          await retireWriterFence(transaction, options.identity, leaseId, now);
+          return { status: "capacity-rejected", readyNodes: 16 };
+        }
+        const currentFence = existingFence[0];
+        if (
+          nodeStillReady &&
+          currentFence?.state === "active" &&
+          decodeCanonicalVersion(currentFence.authorityGeneration) ===
+            versions.authorityGeneration &&
+          Date.parse(currentFence.expiresAt) > Date.parse(now)
+        ) {
+          await upsertNode(
+            transaction,
+            common,
+            input,
+            now,
+            expiresAt,
+            "ready",
+            readyNodes,
+            previousFingerprint,
+          );
+          const renewed = await transaction.update(
+            "writerFences",
+            { expiresAt, updatedAt: now },
+            {
+              equals: {
+                logicalHostId: options.identity.logicalHostId,
+                storeId: options.identity.storeId,
+                leaseId,
+                writerEpoch: currentFence.writerEpoch,
+                authorityGeneration: versions.authorityGeneration,
+                state: "active",
+              },
+              greaterThan: { expiresAt: now },
+            },
+          );
+          if (renewed !== 1) {
+            throw new CapletsError("SERVER_UNAVAILABLE", "Node lease changed concurrently.");
+          }
+          return {
+            status: "ready",
+            readyNodes,
+            writerFence: {
+              leaseId,
+              writerEpoch: decodeCanonicalVersion(currentFence.writerEpoch),
+              authorityGeneration: versions.authorityGeneration,
+            },
+          };
+        }
+        const fence = {
+          leaseId,
+          writerEpoch: currentFence ? decodeCanonicalVersion(currentFence.writerEpoch) + 1 : 1,
+          authorityGeneration: versions.authorityGeneration,
+        } as const;
+        const admittedReadyNodes = nodeStillReady ? readyNodes : readyNodes + 1;
         await upsertNode(
           transaction,
           common,
           input,
           now,
-          now,
-          "compatibility-rejected",
-          readyNodes,
+          expiresAt,
+          "catching-up",
+          admittedReadyNodes,
+          previousFingerprint,
         );
-        await transaction.delete("writerFences", {
-          equals: {
-            logicalHostId: options.identity.logicalHostId,
-            storeId: options.identity.storeId,
-            leaseId,
-          },
+        const fenceCommon = commonValues(options, now, fenceRowId(fence.leaseId), {
+          aggregateVersion: 0,
+          authorityVersion: versions.authorityGeneration,
+          effectiveVersion: versions.effectiveGeneration,
+          securityVersion: versions.securityEpoch,
         });
-        return { status: "compatibility-rejected" };
+        await upsert(
+          transaction,
+          "cp_writer_fence",
+          [
+            ...COMMON_COLUMNS,
+            "lease_id",
+            "writer_epoch",
+            "authority_generation",
+            "expires_at",
+            "state",
+          ],
+          [
+            ...fenceCommon,
+            fence.leaseId,
+            fence.writerEpoch,
+            fence.authorityGeneration,
+            expiresAt,
+            "pending",
+          ],
+          ["logical_host_id", "id"],
+        );
+        return { status: "ready", readyNodes: admittedReadyNodes, writerFence: fence };
+      },
+    );
+    if (result.status === "ready") localNodeId = input.nodeId;
+    return result;
+  };
+
+  const acknowledgeNode = async (
+    input: ControlPlaneNodeApplication,
+  ): Promise<ControlPlaneNodeApplicationResult> => {
+    requireReady(options);
+    validateConvergenceToken(input.appliedToken);
+    const fingerprint = normalizeFingerprint(input.bootstrapFingerprint);
+    if (input.writerFence.leaseId !== `writer:${input.nodeId}`) {
+      return { status: "rejected", reason: "lease-revoked" };
+    }
+    const effectiveRuntimeFingerprint = normalizeFingerprint(input.effectiveRuntimeFingerprint);
+    return options.dialect.runtimeTransaction(async (transaction) => {
+      await transaction.lock(nodeLeaseLock(options.identity, input.nodeId));
+      if (options.dialect.backend === "postgres") {
+        await transaction.lock(controlPlaneNodeAdmissionLock(options.identity));
       }
-      if (currentNode) {
-        const storedCompatibility = decodeJson(currentNode.compatibility) as {
-          declared?: unknown;
-        };
-        if (!isDeepStrictEqual(storedCompatibility.declared, input.compatibility)) {
-          return { status: "identity-conflict" };
-        }
+      const now = await transaction.databaseTime();
+      const versions = await readVersions(transaction, options.identity.logicalHostId);
+      const activation = await requireActivationState(transaction, options.identity);
+      if (fingerprint !== activation.currentFingerprint) {
+        return { status: "rejected", reason: "fingerprint" };
+      }
+      const [node] = await transaction.select<NodeRow>(
+        "clusterNodeLeases",
+        scope(options.identity, { nodeId: input.nodeId }),
+        [],
+        1,
+      );
+      const [fence] = await transaction.select<FenceRow>(
+        "writerFences",
+        scope(options.identity, {
+          leaseId: input.writerFence.leaseId,
+          writerEpoch: input.writerFence.writerEpoch,
+          authorityGeneration: input.writerFence.authorityGeneration,
+        }),
+        [],
+        1,
+      );
+      const pendingApplication = node?.state === "catching-up" && fence?.state === "pending";
+      const readyHeartbeat = node?.state === "ready" && fence?.state === "active";
+      if (
+        !node ||
+        !fence ||
+        (!pendingApplication && !readyHeartbeat) ||
+        node.bootstrapFingerprint !== fingerprint ||
+        (pendingApplication &&
+          nodePendingEffectiveRuntimeFingerprint(node) !== effectiveRuntimeFingerprint) ||
+        Date.parse(node.expiresAt) <= Date.parse(now) ||
+        Date.parse(fence.expiresAt) <= Date.parse(now)
+      ) {
+        return { status: "rejected", reason: "lease-revoked" };
+      }
+      const previous = nodeConvergenceToken(node);
+      if (compareConvergenceTokens(input.appliedToken, previous) < 0) {
+        return { status: "rejected", reason: "token-regression" };
+      }
+      if (compareConvergenceTokens(input.appliedToken, versions) > 0) {
+        return { status: "rejected", reason: "token-ahead" };
+      }
+      if (compareConvergenceTokens(input.appliedToken, versions) < 0) {
+        return { status: "rejected", reason: "token-behind" };
+      }
+      const acknowledgedFingerprint = nodeAcknowledgedEffectiveRuntimeFingerprint(node);
+      if (
+        acknowledgedFingerprint &&
+        sameConvergenceToken(previous, input.appliedToken) &&
+        acknowledgedFingerprint !== effectiveRuntimeFingerprint
+      ) {
+        return { status: "rejected", reason: "fingerprint" };
       }
       if (
-        !nodeStillReady &&
-        options.dialect.backend === "postgres" &&
-        readyNodes >= STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes
+        !(await bindTupleFingerprint(
+          transaction,
+          options,
+          now,
+          input.appliedToken,
+          effectiveRuntimeFingerprint,
+        ))
       ) {
-        await upsertNode(transaction, common, input, now, expiresAt, "capacity-rejected", 16);
-        return { status: "capacity-rejected", readyNodes: 16 };
+        return { status: "rejected", reason: "fingerprint" };
       }
-      const renewedReadyNodes = nodeStillReady ? readyNodes : readyNodes + 1;
-      await upsertNode(transaction, common, input, now, expiresAt, "ready", renewedReadyNodes);
-      const fenceCommon = commonValues(options, now, fenceRowId(fence.leaseId), {
-        aggregateVersion: 0,
-        authorityVersion: versions.authorityGeneration,
-        effectiveVersion: versions.effectiveGeneration,
-        securityVersion: versions.securityEpoch,
-      });
-      await upsert(
-        transaction,
-        "cp_writer_fence",
-        [
-          ...COMMON_COLUMNS,
-          "lease_id",
-          "writer_epoch",
-          "authority_generation",
-          "expires_at",
-          "state",
-        ],
-        [
-          ...fenceCommon,
-          fence.leaseId,
-          fence.writerEpoch,
-          fence.authorityGeneration,
-          expiresAt,
-          "active",
-        ],
-        ["logical_host_id", "id"],
+      if (
+        pendingApplication &&
+        options.dialect.backend === "postgres" &&
+        (await countReadyNodes(transaction, options, now)) >=
+          STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes
+      ) {
+        return { status: "rejected", reason: "lease-revoked" };
+      }
+      if (
+        pendingApplication &&
+        options.dialect.backend === "postgres" &&
+        !(await hasCurrentCanaryProofs(
+          transaction,
+          options.identity,
+          input.nodeId,
+          input.writerFence,
+        ))
+      ) {
+        return { status: "rejected", reason: "lease-revoked" };
+      }
+      const nodeUpdated = await transaction.update(
+        "clusterNodeLeases",
+        {
+          authorityVersion: input.appliedToken.authorityGeneration,
+          effectiveVersion: input.appliedToken.effectiveGeneration,
+          securityVersion: input.appliedToken.securityEpoch,
+          compatibility: encodeCanonicalJson({
+            declared: nodeDeclaredCompatibility(node),
+            effectiveRuntimeFingerprint,
+            acknowledgedEffectiveRuntimeFingerprint: effectiveRuntimeFingerprint,
+          }),
+          state: "ready",
+          heartbeatAt: now,
+          updatedAt: now,
+        },
+        scope(options.identity, { nodeId: input.nodeId, state: node.state }),
       );
-      return { status: "ready", readyNodes: renewedReadyNodes, writerFence: fence };
+      const fenceUpdated = await transaction.update(
+        "writerFences",
+        { state: "active", updatedAt: now },
+        scope(options.identity, {
+          leaseId: input.writerFence.leaseId,
+          writerEpoch: input.writerFence.writerEpoch,
+          authorityGeneration: input.writerFence.authorityGeneration,
+          state: fence.state,
+        }),
+      );
+      if (nodeUpdated !== 1 || fenceUpdated !== 1) {
+        throw new CapletsError("SERVER_UNAVAILABLE", "Node acknowledgement changed concurrently.");
+      }
+      const appliedNodes = await countAppliedNodes(transaction, options, now, versions);
+      const readyNodes = await countReadyNodes(transaction, options, now);
+      if (appliedNodes >= readyNodes) {
+        await updateConvergedReceipts(transaction, options, now, versions, appliedNodes);
+      }
+      return { status: "applied", appliedNodes };
+    });
+  };
+
+  const validateWriterFence = async (writerFence: ControlPlaneWriterFence): Promise<boolean> => {
+    requireReady(options);
+    return (
+      (await options.dialect.runtimeTransaction((transaction) =>
+        transaction.finalWriterFenceGuard({
+          logicalHostId: options.identity.logicalHostId,
+          storeId: options.identity.storeId,
+          leaseId: writerFence.leaseId,
+          writerEpoch: writerFence.writerEpoch,
+          authorityGeneration: writerFence.authorityGeneration,
+          state: "active",
+        }),
+      )) === 1
+    );
+  };
+
+  const revokeNode = async (
+    nodeId: string,
+    expectedFence?: ControlPlaneWriterFence | undefined,
+  ): Promise<void> => {
+    requireReady(options);
+    await options.dialect.runtimeTransaction(async (transaction) => {
+      await transaction.lock(nodeLeaseLock(options.identity, nodeId));
+      const now = await transaction.databaseTime();
+      if (expectedFence) {
+        if (expectedFence.leaseId !== `writer:${nodeId}`) return;
+        const [currentFence] = await transaction.select<FenceRow>(
+          "writerFences",
+          scope(options.identity, {
+            leaseId: expectedFence.leaseId,
+            writerEpoch: expectedFence.writerEpoch,
+            authorityGeneration: expectedFence.authorityGeneration,
+          }),
+          [],
+          1,
+        );
+        if (
+          !currentFence ||
+          (currentFence.state !== "active" && currentFence.state !== "pending")
+        ) {
+          return;
+        }
+      }
+      await transaction.update(
+        "clusterNodeLeases",
+        { state: "revoked", expiresAt: now, updatedAt: now },
+        scope(options.identity, { nodeId }),
+      );
+      await retireWriterFence(transaction, options.identity, `writer:${nodeId}`, now);
+    });
+  };
+
+  const sweepOverdueNodes = async (maximumLagMs: number): Promise<number> => {
+    requireReady(options);
+    if (!Number.isSafeInteger(maximumLagMs) || maximumLagMs <= 0) {
+      throw new Error("Convergence deadline must be a positive integer");
+    }
+    return options.dialect.runtimeTransaction(async (transaction) => {
+      const sweepKey = `overdue-sweep:${options.identity.logicalHostId}:${options.identity.storeId}`;
+      if (
+        options.dialect.backend === "postgres" &&
+        transaction.tryLock &&
+        !(await transaction.tryLock(sweepKey))
+      ) {
+        return 0;
+      }
+      if (options.dialect.backend !== "postgres" || !transaction.tryLock) {
+        await transaction.lock(sweepKey);
+      }
+      const now = await transaction.databaseTime();
+      const versions = await readVersions(transaction, options.identity.logicalHostId);
+      const advancedAt = await currentConvergenceAdvancedAt(
+        transaction,
+        options.identity,
+        versions,
+      );
+      if (Date.parse(now) - Date.parse(advancedAt) < maximumLagMs) return 0;
+      const nodes = await transaction.select<NodeRow>(
+        "clusterNodeLeases",
+        scope(options.identity, { state: "ready" }),
+        [],
+      );
+      let overdue = 0;
+      for (const node of nodes) {
+        if (
+          decodeCanonicalVersion(node.authorityVersion) === versions.authorityGeneration &&
+          decodeCanonicalVersion(node.effectiveVersion) === versions.effectiveGeneration &&
+          decodeCanonicalVersion(node.securityVersion) === versions.securityEpoch
+        ) {
+          continue;
+        }
+        overdue += await transaction.update(
+          "clusterNodeLeases",
+          { state: "overdue", expiresAt: now, updatedAt: now },
+          scope(options.identity, { nodeId: node.nodeId, state: "ready" }),
+        );
+        await retireWriterFence(transaction, options.identity, `writer:${node.nodeId}`, now);
+      }
+      const appliedNodes = await countAppliedNodes(transaction, options, now, {
+        authorityGeneration: versions.authorityGeneration,
+        effectiveGeneration: versions.effectiveGeneration,
+        securityEpoch: versions.securityEpoch,
+      });
+      let settled: number;
+      do {
+        settled = await transaction.settleConvergenceReceipts({
+          logicalHostId: options.identity.logicalHostId,
+          storeId: options.identity.storeId,
+          authorityGeneration: versions.authorityGeneration,
+          effectiveGeneration: versions.effectiveGeneration,
+          securityEpoch: versions.securityEpoch,
+          appliedNodes,
+          limit: CONVERGENCE_RECEIPT_BATCH_SIZE,
+        });
+      } while (settled === CONVERGENCE_RECEIPT_BATCH_SIZE);
+      return overdue;
     });
   };
 
   const health = async (): Promise<ControlPlaneHealthSummary> => {
     if (!options.dialect.ready) {
-      return {
-        backend: options.dialect.backend,
-        readiness: "not-ready",
-        connectivity: "unavailable",
-        migration: "blocked",
-        authorityToken: { authorityGeneration: 0, effectiveGeneration: 0 },
-        securityEpoch: 0,
-        convergence: options.dialect.backend === "sqlite" ? "single-node" : "overdue",
-        guidanceCode: "storage-unavailable",
-      };
+      return unavailableHealth(
+        options,
+        lastKnownVersions,
+        cachedSnapshot !== undefined,
+        lastConnectedAt,
+      );
     }
     try {
-      const versions = await initialize();
-      if (options.dialect.backend === "sqlite") {
-        return {
-          backend: "sqlite",
-          readiness: "ready",
-          connectivity: "connected",
-          migration: "current",
-          authorityToken: {
-            authorityGeneration: versions.authorityGeneration,
-            effectiveGeneration: versions.effectiveGeneration,
-          },
-          securityEpoch: versions.securityEpoch,
-          convergence: "single-node",
-          guidanceCode: "ok",
-        };
-      }
-      const nodeState = await options.dialect.snapshotTransaction(async (transaction) => {
+      const observed = await options.dialect.snapshotTransaction(async (transaction) => {
+        const versions = await readVersions(transaction, options.identity.logicalHostId);
+        const activation = await readActivationState(transaction, options.identity);
+        if (!activation) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Control-plane runtime activation is not initialized.",
+          );
+        }
+        if (options.dialect.backend === "sqlite") return { versions, activation };
         const now = await transaction.databaseTime();
         const rows = await transaction.select<NodeRow>("clusterNodeLeases", {
           equals: {
@@ -987,44 +1772,120 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
           },
           greaterThan: { expiresAt: now },
         });
-        return {
-          readyNodes: rows.length,
-          allApplied: rows.every(
-            (row) =>
-              decodeCanonicalVersion(row.effectiveVersion) >= versions.effectiveGeneration &&
-              decodeCanonicalVersion(row.authorityVersion) >= versions.authorityGeneration,
+        const allApplied = rows.every((row) =>
+          sameConvergenceToken(
+            {
+              authorityGeneration: decodeCanonicalVersion(row.authorityVersion),
+              effectiveGeneration: decodeCanonicalVersion(row.effectiveVersion),
+              securityEpoch: decodeCanonicalVersion(row.securityVersion),
+            },
+            versions,
           ),
+        );
+        const localReady = rows.some(
+          (row) =>
+            row.nodeId === localNodeId &&
+            sameConvergenceToken(
+              {
+                authorityGeneration: decodeCanonicalVersion(row.authorityVersion),
+                effectiveGeneration: decodeCanonicalVersion(row.effectiveVersion),
+                securityEpoch: decodeCanonicalVersion(row.securityVersion),
+              },
+              versions,
+            ),
+        );
+        const advancedAt = await currentConvergenceAdvancedAt(
+          transaction,
+          options.identity,
+          versions,
+        );
+        return {
+          versions,
+          activation,
+          nodeState: {
+            readyNodes: rows.length,
+            allApplied,
+            localReady,
+            overdue:
+              Date.parse(now) - Date.parse(advancedAt) >=
+              STORAGE_BENCHMARK_ENVELOPE.maxConvergenceP99Ms,
+          },
         };
       });
-      const healthy = nodeState.readyNodes > 0 && nodeState.allApplied;
+      lastKnownVersions = observed.versions;
+      lastConnectedAt = Date.now();
+      if (options.dialect.backend === "sqlite") {
+        return {
+          backend: "sqlite",
+          readiness: "ready",
+          connectivity: "connected",
+          migration: "current",
+          authorityToken: {
+            authorityGeneration: observed.versions.authorityGeneration,
+            effectiveGeneration: observed.versions.effectiveGeneration,
+          },
+          bootstrapCompatibility: "current",
+          convergence: "single-node",
+          guidanceCode: "ok",
+        };
+      }
+      if (!("nodeState" in observed)) {
+        throw new Error("Postgres health observation did not include node state");
+      }
+      const healthy =
+        observed.nodeState.readyNodes > 0 &&
+        observed.nodeState.allApplied &&
+        observed.nodeState.localReady;
+      const overdue = !healthy && observed.nodeState.overdue;
       return {
         backend: "postgres",
-        readiness: healthy ? "ready" : "stale-read-only",
+        readiness: healthy ? "ready" : "not-ready",
         connectivity: "connected",
         migration: "current",
         authorityToken: {
-          authorityGeneration: versions.authorityGeneration,
-          effectiveGeneration: versions.effectiveGeneration,
+          authorityGeneration: observed.versions.authorityGeneration,
+          effectiveGeneration: observed.versions.effectiveGeneration,
         },
-        securityEpoch: versions.securityEpoch,
-        convergence: healthy ? "within-budget" : "overdue",
-        guidanceCode: healthy ? "ok" : "convergence-overdue",
+        bootstrapCompatibility: observed.activation.nextFingerprint ? "staged" : "current",
+        convergence: healthy ? "within-budget" : overdue ? "overdue" : "pending",
+        guidanceCode: healthy ? "ok" : overdue ? "convergence-overdue" : "convergence-pending",
       };
     } catch {
-      return {
-        backend: options.dialect.backend,
-        readiness: "not-ready",
-        connectivity: "unavailable",
-        migration: "current",
-        authorityToken: {
-          authorityGeneration: lastKnownVersions.authorityGeneration,
-          effectiveGeneration: lastKnownVersions.effectiveGeneration,
-        },
-        securityEpoch: lastKnownVersions.securityEpoch,
-        convergence: options.dialect.backend === "sqlite" ? "single-node" : "overdue",
-        guidanceCode: "storage-unavailable",
-      };
+      return unavailableHealth(
+        options,
+        lastKnownVersions,
+        cachedSnapshot !== undefined,
+        lastConnectedAt,
+      );
     }
+  };
+
+  const detailedDiagnostics = async (): Promise<ControlPlaneDetailedDiagnostics> => {
+    requireReady(options);
+    return options.dialect.snapshotTransaction(async (transaction) => {
+      const activation = await requireActivationState(transaction, options.identity);
+      const now = await transaction.databaseTime();
+      const nodes = await transaction.select<NodeRow>("clusterNodeLeases", scope(options.identity));
+      return Object.freeze({
+        backend: options.dialect.backend,
+        store: Object.freeze({ ...options.identity }),
+        fingerprint: activation,
+        keyCompatibility: Object.freeze({
+          status:
+            options.dialect.compatibility.providerCommitment &&
+            options.dialect.compatibility.keyCanaryCommitment
+              ? "compatible"
+              : "incompatible",
+          activeVersion: options.dialect.compatibility.keyVersion,
+          providerCommitmentPresent: Boolean(options.dialect.compatibility.providerCommitment),
+          canaryCommitmentPresent: Boolean(options.dialect.compatibility.keyCanaryCommitment),
+        }),
+        readyNodes: nodes.filter(
+          (node) => node.state === "ready" && Date.parse(node.expiresAt) > Date.parse(now),
+        ).length,
+        overdueNodes: nodes.filter((node) => node.state === "overdue").length,
+      });
+    });
   };
 
   return Object.freeze({
@@ -1041,8 +1902,21 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     confirmExternalDestruction,
     resumeExternalDestruction,
     recordOperationalLedger,
+    activationState,
+    initializeActivationFingerprint,
+    stageNextFingerprint,
+    abortNextFingerprint,
+    activateNextFingerprint,
+    adoptSqliteActivationFingerprint,
+    convergenceToken,
+    subscribeToChanges,
     registerNode,
+    acknowledgeNode,
+    validateWriterFence,
+    revokeNode,
+    sweepOverdueNodes,
     health,
+    detailedDiagnostics,
   });
 }
 
@@ -1108,7 +1982,10 @@ async function runManagementMutation(
         throw new StoreResultError({ status: "conflict", reason: "aggregate-version" });
       }
       const effectiveStateChanged = await changesEffectiveState(transaction, options, input);
-      if (effectiveStateChanged) {
+      // Runtime snapshots contain every SQL Caplet row, including disabled and shadowed
+      // aggregates. Their token must advance whenever any Caplet aggregate changes.
+      const snapshotDataChanged = effectiveStateChanged || "aggregate" in input;
+      if (snapshotDataChanged) {
         await transaction.lock(
           `effective-generation:${options.identity.logicalHostId}:${options.identity.storeId}`,
         );
@@ -1120,20 +1997,47 @@ async function runManagementMutation(
       if (versions.securityEpoch !== input.expectedSecurityEpoch) {
         throw new StoreResultError({ status: "conflict", reason: "security-epoch" });
       }
-      const effectiveGeneration = effectiveStateChanged
+      const previousContribution = await readSnapshotEnvelopeContribution(
+        transaction,
+        options,
+        input,
+      );
+      const effectiveGeneration = snapshotDataChanged
         ? versions.effectiveGeneration + 1
         : versions.effectiveGeneration;
-      const state: MutationState = { now, versions, effectiveGeneration };
+      const state: MutationState = {
+        now,
+        versions,
+        effectiveGeneration,
+        previousContribution,
+      };
       await writeDomain(transaction, state);
       await fail("after-domain-write");
       await writeProvenance(transaction, options, input, state);
       await fail("after-provenance");
+      await transaction.lock(
+        `management-rate:${options.identity.logicalHostId}:${options.identity.storeId}`,
+      );
+      const rateBoundary = await transaction.databaseTime();
+      const recentActivity = await transaction.select<ControlPlaneSqlRow & { occurredAt: string }>(
+        "operatorActivities",
+        scope(options.identity),
+        [{ column: "occurredAt", direction: "desc" }],
+        STORAGE_BENCHMARK_ENVELOPE.managementWritesPerSecond,
+      );
+      if (
+        recentActivity.length >= STORAGE_BENCHMARK_ENVELOPE.managementWritesPerSecond &&
+        recentActivity.every(
+          (activity) => Date.parse(rateBoundary) - Date.parse(activity.occurredAt) < 1_000,
+        )
+      ) {
+        throw new StoreResultError({ status: "unavailable" });
+      }
       await writeActivity(transaction, options, input, state);
       await fail("after-activity");
-      if (effectiveStateChanged) {
+      if (snapshotDataChanged) {
         await writeEffectiveGeneration(transaction, options, input, state);
       }
-      await fail("after-generation");
       await fail("before-fence-guard");
       if (input.finalAuthorization) {
         const finalAuthorization = await input.finalAuthorization(transaction);
@@ -1150,12 +2054,47 @@ async function runManagementMutation(
           throw new StoreResultError({ status: "conflict", reason: "writer-fence" });
         }
       }
-      const guardConflict = await guardWriterFence(transaction, options, input);
-      if (guardConflict) {
-        throw new StoreResultError({ status: "conflict", reason: guardConflict });
+      const receiptState = Object.freeze({
+        ...state,
+        now: await transaction.databaseTime(),
+      });
+      const requiredNodes =
+        options.dialect.backend === "postgres"
+          ? await countReadyNodes(transaction, options, receiptState.now)
+          : 1;
+      const receipt = createReceipt(options, input, receiptState, requiredNodes);
+      await writeOutcome(transaction, options, input, receiptState, receipt);
+      const envelopeDelta = snapshotEnvelopeDelta(input, state.previousContribution);
+      const envelopeAdvanced = await transaction.advanceSnapshotEnvelope({
+        logicalHostId: options.identity.logicalHostId,
+        storeId: options.identity.storeId,
+        envelopeId: SNAPSHOT_ENVELOPE_ID,
+        ...envelopeDelta,
+        maxCaplets: STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets,
+        maxNormalizedRows: STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows,
+        maxEncodedBytes: STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes,
+        expectedAuthorityGeneration: input.expectedAuthorityGeneration,
+        expectedSecurityEpoch: input.expectedSecurityEpoch,
+        leaseId: input.writerFence.leaseId,
+        writerEpoch: input.writerFence.writerEpoch,
+        fenceAuthorityGeneration: input.writerFence.authorityGeneration,
+        fenceState: "active",
+      });
+      if (envelopeAdvanced !== 1) {
+        const guardConflict = await guardWriterFence(transaction, options, input);
+        if (guardConflict) {
+          throw new StoreResultError({ status: "conflict", reason: guardConflict });
+        }
+        const finalVersions = await readVersions(transaction, options.identity.logicalHostId);
+        if (finalVersions.authorityGeneration !== input.expectedAuthorityGeneration) {
+          throw new StoreResultError({ status: "conflict", reason: "authority-generation" });
+        }
+        if (finalVersions.securityEpoch !== input.expectedSecurityEpoch) {
+          throw new StoreResultError({ status: "denied", reason: "stale-security" });
+        }
+        throw new StoreResultError({ status: "unavailable" });
       }
-      const receipt = createReceipt(options, input, state);
-      await writeOutcome(transaction, options, input, state, receipt);
+      await fail("after-generation");
       return { status: "committed", receipt } as const;
     });
     try {
@@ -1175,12 +2114,42 @@ type MutationState = Readonly<{
   now: string;
   versions: VersionRows;
   effectiveGeneration: number;
+  previousContribution: SnapshotEnvelopeContribution;
 }>;
+
+export async function writeCanonicalCapletRows(
+  transaction: ControlPlaneSqlTransaction,
+  input: Readonly<{
+    identity: ControlPlaneStoreIdentity;
+    aggregate: CanonicalCapletAggregate;
+    projection: CanonicalCapletRelationalProjection;
+    now: string;
+    authorityGeneration: number;
+    effectiveGeneration: number;
+    securityEpoch: number;
+  }>,
+): Promise<void> {
+  await writeCaplet(
+    transaction,
+    { identity: input.identity },
+    { aggregate: input.aggregate, projection: input.projection },
+    {
+      now: input.now,
+      versions: {
+        authorityGeneration: input.authorityGeneration,
+        effectiveGeneration: input.effectiveGeneration,
+        securityEpoch: input.securityEpoch,
+      },
+      effectiveGeneration: input.effectiveGeneration,
+      previousContribution: { caplets: 0, normalizedRows: 0, encodedBytes: 0 },
+    },
+  );
+}
 
 async function writeCaplet(
   transaction: ControlPlaneSqlTransaction,
-  options: ControlPlaneStoreOptions,
-  input: CapletManagementMutation,
+  options: Pick<ControlPlaneStoreOptions, "identity">,
+  input: Pick<CapletManagementMutation, "aggregate" | "projection">,
   state: MutationState,
 ): Promise<void> {
   const common = commonValues(options, state.now, input.aggregate.id, {
@@ -1615,6 +2584,45 @@ async function changesEffectiveState(
   return input.aggregate.effective || booleanValue(current[0]?.effective);
 }
 
+async function lockMaintenanceAuthority(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+): Promise<void> {
+  await transaction.lock(`authority-generation:${identity.logicalHostId}:${identity.storeId}`);
+  await transaction.lock(`security-epoch:${identity.logicalHostId}:${identity.storeId}`);
+}
+
+async function assertMaintenanceFence(
+  transaction: ControlPlaneSqlTransaction,
+  options: ControlPlaneStoreOptions,
+  fence: ControlPlaneMaintenanceFence | undefined,
+): Promise<void> {
+  if (transaction.backend === "sqlite") return;
+  if (!fence) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Postgres maintenance requires an exact live authority fence.",
+    );
+  }
+  const current = await readVersions(transaction, options.identity.logicalHostId);
+  if (
+    current.authorityGeneration !== fence.writerFence.authorityGeneration ||
+    current.securityEpoch !== fence.securityEpoch
+  ) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Postgres maintenance authority is stale.");
+  }
+  const guarded = await transaction.finalWriterFenceGuard({
+    logicalHostId: options.identity.logicalHostId,
+    storeId: options.identity.storeId,
+    leaseId: fence.writerFence.leaseId,
+    writerEpoch: fence.writerFence.writerEpoch,
+    authorityGeneration: fence.writerFence.authorityGeneration,
+  });
+  if (guarded !== 1) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Postgres maintenance writer fence is stale.");
+  }
+}
+
 async function guardWriterFence(
   transaction: ControlPlaneSqlTransaction,
   options: ControlPlaneStoreOptions,
@@ -1633,22 +2641,13 @@ async function guardWriterFence(
   if (current.securityEpoch !== input.expectedSecurityEpoch) {
     return "security-epoch";
   }
-  const now = await transaction.databaseTime();
-  const changed = await transaction.update(
-    "writerFences",
-    { updatedAt: now },
-    {
-      equals: {
-        logicalHostId: options.identity.logicalHostId,
-        storeId: options.identity.storeId,
-        leaseId: input.writerFence.leaseId,
-        writerEpoch: input.writerFence.writerEpoch,
-        authorityGeneration: input.expectedAuthorityGeneration,
-        state: "active",
-      },
-      greaterThan: { expiresAt: now },
-    },
-  );
+  const changed = await transaction.finalWriterFenceGuard({
+    logicalHostId: options.identity.logicalHostId,
+    storeId: options.identity.storeId,
+    leaseId: input.writerFence.leaseId,
+    writerEpoch: input.writerFence.writerEpoch,
+    authorityGeneration: input.expectedAuthorityGeneration,
+  });
   return changed === 1 ? undefined : "writer-fence";
 }
 
@@ -1656,6 +2655,7 @@ function createReceipt(
   options: ControlPlaneStoreOptions,
   input: CapletManagementMutation | HostSettingManagementMutation,
   state: MutationState,
+  requiredNodes: number,
 ): CurrentHostOperationReceipt {
   const aggregateVersion =
     "aggregate" in input ? input.aggregate.aggregateVersion : input.expectedAggregateVersion + 1;
@@ -1674,6 +2674,7 @@ function createReceipt(
         : ({
             kind: "pending" as const,
             deadline: new Date(Date.parse(state.now) + 5_000).toISOString(),
+            requiredNodes,
           } as const),
     ...(input.managementTarget ? { management: Object.freeze({ ...input.managementTarget }) } : {}),
   });
@@ -1738,11 +2739,199 @@ async function writeOutcome(
   }
 }
 
+async function loadOrCreateSnapshotEnvelopeMetrics(
+  transaction: ControlPlaneSqlTransaction,
+  options: ControlPlaneStoreOptions,
+  now: string,
+  versions: VersionRows,
+): Promise<SnapshotEnvelopeMetrics> {
+  const [existing] = await transaction.select<SnapshotEnvelopeRow>(
+    "snapshotEnvelopes",
+    scope(options.identity, { envelopeId: SNAPSHOT_ENVELOPE_ID }),
+    [],
+    1,
+  );
+  if (existing) {
+    return {
+      caplets: decodeCanonicalVersion(existing.capletCount),
+      normalizedRows: decodeCanonicalVersion(existing.normalizedRowCount),
+      encodedBytes: decodeCanonicalVersion(existing.encodedByteCount),
+    };
+  }
+  const snapshot = await readSnapshot(transaction, options, versions);
+  const metrics: SnapshotEnvelopeMetrics = {
+    caplets: snapshot.caplets.length,
+    normalizedRows: snapshot.normalizedRows,
+    encodedBytes: snapshot.encodedBytes,
+  };
+  assertSnapshotEnvelope(metrics);
+  const common = commonValues(options, now, `snapshot-envelope:${SNAPSHOT_ENVELOPE_ID}`, {
+    aggregateVersion: versions.effectiveGeneration,
+    authorityVersion: versions.authorityGeneration,
+    effectiveVersion: versions.effectiveGeneration,
+    securityVersion: versions.securityEpoch,
+  });
+  await insert(
+    transaction,
+    "cp_snapshot_envelope",
+    [
+      ...COMMON_COLUMNS,
+      "envelope_id",
+      "caplet_count",
+      "normalized_row_count",
+      "encoded_byte_count",
+    ],
+    [
+      ...common,
+      SNAPSHOT_ENVELOPE_ID,
+      metrics.caplets,
+      metrics.normalizedRows,
+      metrics.encodedBytes,
+    ],
+  );
+  return metrics;
+}
+
+async function readSnapshotEnvelopeContribution(
+  transaction: ControlPlaneSqlTransaction,
+  options: ControlPlaneStoreOptions,
+  input: CapletManagementMutation | HostSettingManagementMutation,
+): Promise<SnapshotEnvelopeContribution> {
+  if ("setting" in input) {
+    const rows = await transaction.select<HostSettingRow>(
+      "hostSettings",
+      scope(options.identity, { id: input.aggregateId }),
+      [],
+      1,
+    );
+    return { caplets: 0, normalizedRows: rows.length, encodedBytes: 0 };
+  }
+  const [caplet] = await transaction.select<CapletRow>(
+    "caplets",
+    scope(options.identity, { id: input.aggregateId }),
+    [],
+    1,
+  );
+  if (!caplet) return { caplets: 0, normalizedRows: 0, encodedBytes: 0 };
+  const childFilter = {
+    equals: {
+      logicalHostId: options.identity.logicalHostId,
+      capletId: input.aggregateId,
+    },
+  } as const;
+  const limit = STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows + 1;
+  const [documents, backends, catalogs, tags, inputs, references, assets, history] =
+    await Promise.all([
+      transaction.select<DocumentRow>("capletDocuments", childFilter, [], limit),
+      transaction.select<BackendRow>("capletBackends", childFilter, [{ column: "ordinal" }], limit),
+      transaction.select<CatalogRow>("capletCatalogs", childFilter, [], limit),
+      transaction.select<TagRow>("capletCatalogTags", childFilter, [{ column: "ordinal" }], limit),
+      transaction.select<InputRow>(
+        "capletDeclaredInputs",
+        childFilter,
+        [{ column: "ordinal" }],
+        limit,
+      ),
+      transaction.select<ReferenceRow>(
+        "capletReferences",
+        childFilter,
+        [{ column: "ordinal" }],
+        limit,
+      ),
+      transaction.select<AssetRow>("capletAssets", childFilter, [{ column: "ordinal" }], limit),
+      transaction.select<HistoryRow>(
+        "capletActivationHistory",
+        childFilter,
+        [{ column: "sequence" }],
+        limit,
+      ),
+    ]);
+  const hydrated = hydrateCaplet(
+    caplet,
+    documents[0],
+    backends,
+    catalogs[0],
+    tags,
+    inputs,
+    references,
+    assets,
+    history,
+  );
+  return {
+    caplets: 1,
+    normalizedRows:
+      1 +
+      documents.length +
+      backends.length +
+      catalogs.length +
+      tags.length +
+      inputs.length +
+      references.length +
+      assets.length +
+      history.length,
+    encodedBytes: encodePortableCaplet(hydrated.aggregate.portable).byteLength,
+  };
+}
+
+function snapshotEnvelopeDelta(
+  input: CapletManagementMutation | HostSettingManagementMutation,
+  previousContribution: SnapshotEnvelopeContribution,
+): Readonly<{
+  capletDelta: number;
+  normalizedRowDelta: number;
+  encodedByteDelta: number;
+}> {
+  const nextContribution: SnapshotEnvelopeContribution =
+    "setting" in input
+      ? {
+          caplets: 0,
+          normalizedRows: 1,
+          encodedBytes: 0,
+        }
+      : {
+          caplets: 1,
+          normalizedRows:
+            2 +
+            input.projection.backends.length +
+            (input.aggregate.portable.frontmatter.catalog ? 1 : 0) +
+            (input.aggregate.portable.frontmatter.catalog?.tags?.length ?? 0) +
+            input.aggregate.portable.frontmatter.declaredInputs.length +
+            input.projection.references.length +
+            input.projection.assets.length +
+            input.projection.activationHistory.length,
+          encodedBytes: encodePortableCaplet(input.aggregate.portable).byteLength,
+        };
+  return {
+    capletDelta: nextContribution.caplets - previousContribution.caplets,
+    normalizedRowDelta: nextContribution.normalizedRows - previousContribution.normalizedRows,
+    encodedByteDelta: nextContribution.encodedBytes - previousContribution.encodedBytes,
+  };
+}
+
+function assertSnapshotEnvelope(metrics: SnapshotEnvelopeMetrics): void {
+  if (
+    metrics.caplets < 0 ||
+    metrics.caplets > STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets ||
+    metrics.normalizedRows < 0 ||
+    metrics.normalizedRows > STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows ||
+    metrics.encodedBytes < 0 ||
+    metrics.encodedBytes > STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes
+  ) {
+    throw new StoreResultError({ status: "unavailable" });
+  }
+}
+
 async function readSnapshot(
   transaction: ControlPlaneSqlTransaction,
   options: ControlPlaneStoreOptions,
   versions: VersionRows,
 ): Promise<ControlPlaneSnapshot> {
+  const [snapshotEnvelope] = await transaction.select<SnapshotEnvelopeRow>(
+    "snapshotEnvelopes",
+    scope(options.identity, { envelopeId: SNAPSHOT_ENVELOPE_ID }),
+    [],
+    1,
+  );
   const hostRows = await transaction.select<HostSettingRow>(
     "hostSettings",
     {
@@ -1816,10 +3005,6 @@ async function readSnapshot(
       ]),
     ),
   );
-  const encodedBytes = caplets.reduce(
-    (total, entry) => total + encodePortableCaplet(entry.aggregate.portable).byteLength,
-    0,
-  );
   const normalizedRows =
     hostRows.length +
     capletRows.length +
@@ -1833,6 +3018,22 @@ async function readSnapshot(
       ...assets,
       ...history,
     ].reduce((total, [, rows]) => total + rows.length, 0);
+  const snapshotEnvelopeIsCurrent =
+    snapshotEnvelope !== undefined &&
+    decodeCanonicalVersion(snapshotEnvelope.effectiveVersion) === versions.effectiveGeneration &&
+    decodeCanonicalVersion(snapshotEnvelope.capletCount) === capletRows.length &&
+    decodeCanonicalVersion(snapshotEnvelope.normalizedRowCount) === normalizedRows;
+  const encodedBytes = snapshotEnvelopeIsCurrent
+    ? decodeCanonicalVersion(snapshotEnvelope.encodedByteCount)
+    : caplets.reduce(
+        (total, entry) => total + encodePortableCaplet(entry.aggregate.portable).byteLength,
+        0,
+      );
+  assertSnapshotEnvelope({
+    caplets: capletRows.length,
+    normalizedRows,
+    encodedBytes,
+  });
   return Object.freeze({
     identity: Object.freeze({ ...options.identity }),
     versions: Object.freeze(versions),
@@ -2059,9 +3260,29 @@ async function readOutcome(
       operationId,
     },
   });
-  return rows[0]
-    ? (decodeJson(rows[0].receipt) as unknown as CurrentHostOperationReceipt)
-    : undefined;
+  if (!rows[0]) return undefined;
+  const receipt = decodeJson(rows[0].receipt) as unknown as CurrentHostOperationReceipt;
+  if (receipt.convergence.kind !== "pending") return receipt;
+  if (rows[0].convergenceClass === "converged") {
+    return {
+      ...receipt,
+      convergence: {
+        kind: "converged",
+        appliedNodes: receipt.convergence.requiredNodes,
+      },
+    };
+  }
+  if (rows[0].convergenceClass === "overdue") {
+    return {
+      ...receipt,
+      convergence: {
+        kind: "overdue",
+        deadline: receipt.convergence.deadline,
+        requiredNodes: receipt.convergence.requiredNodes,
+      },
+    };
+  }
+  return receipt;
 }
 
 async function readTombstone(
@@ -2171,6 +3392,509 @@ async function releaseExternalDestructionClaim(
   });
 }
 
+async function readActivationState(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+): Promise<ControlPlaneActivationState | undefined> {
+  const [row] = await transaction.select<MigrationRow>(
+    "migrations",
+    scope(identity, { migrationId: ACTIVATION_MIGRATION_ID }),
+    [],
+    1,
+  );
+  if (!row) return undefined;
+  const document = decodeJson(row.compatibility);
+  if (!isRecord(document)) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Control-plane runtime activation state is invalid.",
+    );
+  }
+  if (
+    typeof document.generation !== "number" ||
+    !Number.isSafeInteger(document.generation) ||
+    typeof document.currentFingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(document.currentFingerprint) ||
+    (document.nextFingerprint !== undefined &&
+      (typeof document.nextFingerprint !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(document.nextFingerprint)))
+  ) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Control-plane runtime activation state is invalid.",
+    );
+  }
+  return Object.freeze({
+    generation: document.generation,
+    currentFingerprint: document.currentFingerprint,
+    ...(document.nextFingerprint === undefined
+      ? {}
+      : { nextFingerprint: document.nextFingerprint }),
+  });
+}
+
+async function requireActivationState(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+): Promise<ControlPlaneActivationState> {
+  const state = await readActivationState(transaction, identity);
+  if (!state) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Control-plane runtime activation is not initialized.",
+    );
+  }
+  return state;
+}
+
+async function initializeActivationState(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  fingerprint: string,
+): Promise<ControlPlaneActivationState> {
+  const now = await transaction.databaseTime();
+  const state = Object.freeze({ generation: 0, currentFingerprint: fingerprint });
+  await transaction.insert(
+    "migrations",
+    {
+      modelVersion: 1,
+      id: `migration:${ACTIVATION_MIGRATION_ID}`,
+      logicalHostId: identity.logicalHostId,
+      storeId: identity.storeId,
+      createdAt: now,
+      updatedAt: now,
+      aggregateVersion: 0,
+      authorityVersion: 0,
+      effectiveVersion: 0,
+      securityVersion: 0,
+      migrationId: ACTIVATION_MIGRATION_ID,
+      source: "runtime-bootstrap",
+      destination: "runtime-bootstrap",
+      phase: "activated",
+      manifestHash: fingerprint,
+      checksum: fingerprint,
+      compatibility: encodeCanonicalJson(state),
+      activatedAt: now,
+    },
+    { target: ["logicalHostId", "id"] },
+  );
+  return (await readActivationState(transaction, identity)) ?? state;
+}
+
+async function persistActivationState(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  state: ControlPlaneActivationState,
+): Promise<void> {
+  const now = await transaction.databaseTime();
+  const changed = await transaction.update(
+    "migrations",
+    {
+      phase: state.nextFingerprint ? "staged" : "activated",
+      manifestHash: state.currentFingerprint,
+      checksum: state.nextFingerprint ?? state.currentFingerprint,
+      compatibility: encodeCanonicalJson(state),
+      activatedAt: state.nextFingerprint ? null : now,
+      updatedAt: now,
+    },
+    scope(identity, { migrationId: ACTIVATION_MIGRATION_ID }),
+  );
+  if (changed !== 1) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Control-plane runtime activation changed concurrently.",
+    );
+  }
+}
+
+function normalizeFingerprint(value: string): string {
+  return /^[a-f0-9]{64}$/u.test(value) ? value : sha256(value);
+}
+
+function validateConvergenceToken(token: ControlPlaneConvergenceToken): void {
+  if (
+    !Number.isSafeInteger(token.authorityGeneration) ||
+    token.authorityGeneration < 0 ||
+    !Number.isSafeInteger(token.effectiveGeneration) ||
+    token.effectiveGeneration < 0 ||
+    !Number.isSafeInteger(token.securityEpoch) ||
+    token.securityEpoch < 0
+  ) {
+    throw new Error("Control-plane convergence token is invalid");
+  }
+}
+
+function compareConvergenceTokens(
+  left: ControlPlaneConvergenceToken,
+  right: ControlPlaneConvergenceToken,
+): number {
+  return (
+    left.authorityGeneration - right.authorityGeneration ||
+    left.effectiveGeneration - right.effectiveGeneration ||
+    left.securityEpoch - right.securityEpoch
+  );
+}
+
+function sameConvergenceToken(
+  left: ControlPlaneConvergenceToken,
+  right: ControlPlaneConvergenceToken,
+): boolean {
+  return compareConvergenceTokens(left, right) === 0;
+}
+
+function runtimeCompatibilityMatches(
+  expected: ControlPlaneStoreOptions["dialect"]["compatibility"],
+  declared: ControlPlaneNodeRegistration["compatibility"],
+  requireDistributedCommitments: boolean,
+): boolean {
+  const capabilities = new Set(declared.capabilities);
+  return (
+    satisfies(declared.binaryVersion, SUPPORTED_RUNTIME_BINARY_RANGE) &&
+    expected.schemaVersion === declared.schemaVersion &&
+    expected.keyVersion === declared.keyVersion &&
+    expected.manifestVersion === declared.manifestVersion &&
+    (!expected.schemaManifestFingerprint ||
+      expected.schemaManifestFingerprint === declared.schemaManifestFingerprint) &&
+    (!requireDistributedCommitments ||
+      (isCommitment(declared.providerCommitment) &&
+        isCommitment(declared.keyCanaryCommitment) &&
+        REQUIRED_RUNTIME_CAPABILITIES.every((capability) => capabilities.has(capability))))
+  );
+}
+
+function isCommitment(value: string | undefined): value is string {
+  return value !== undefined && /^[a-f0-9]{64}$/u.test(value);
+}
+
+async function cohortCommitmentsMatch(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  declared: ControlPlaneNodeRegistration["compatibility"],
+  now: string,
+): Promise<boolean> {
+  const nodes = await transaction.select<NodeRow>("clusterNodeLeases", {
+    equals: { logicalHostId: identity.logicalHostId, storeId: identity.storeId, state: "ready" },
+    greaterThan: { expiresAt: now },
+  });
+  return nodes.every((node) => {
+    const current = nodeDeclaredCompatibility(node);
+    return (
+      satisfies(current.binaryVersion, SUPPORTED_RUNTIME_BINARY_RANGE) &&
+      current.schemaVersion === declared.schemaVersion &&
+      current.keyVersion === declared.keyVersion &&
+      current.manifestVersion === declared.manifestVersion &&
+      current.schemaManifestFingerprint === declared.schemaManifestFingerprint &&
+      keyProviderAdvertisementsOverlap(current, declared) &&
+      REQUIRED_RUNTIME_CAPABILITIES.every(
+        (capability) =>
+          current.capabilities?.includes(capability) && declared.capabilities?.includes(capability),
+      )
+    );
+  });
+}
+
+function keyProviderAdvertisementsOverlap(
+  current: ControlPlaneNodeRegistration["compatibility"],
+  declared: ControlPlaneNodeRegistration["compatibility"],
+): boolean {
+  const currentMaterials = keyMaterialsByPurpose(current.capabilities);
+  const declaredMaterials = keyMaterialsByPurpose(declared.capabilities);
+  const purposes = new Set([...currentMaterials.keys(), ...declaredMaterials.keys()]);
+  if (purposes.size === 0) {
+    return (
+      current.providerCommitment === declared.providerCommitment &&
+      current.keyCanaryCommitment === declared.keyCanaryCommitment
+    );
+  }
+  for (const purpose of purposes) {
+    const currentKeys = currentMaterials.get(purpose);
+    const declaredKeys = declaredMaterials.get(purpose);
+    if (!currentKeys || !declaredKeys) return false;
+    if (![...currentKeys].some((key) => declaredKeys.has(key))) return false;
+  }
+  return true;
+}
+
+function keyMaterialsByPurpose(
+  capabilities: readonly string[] | undefined,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const materials = new Map<string, Set<string>>();
+  for (const capability of capabilities ?? []) {
+    const match = /^key-material:([^:]+):([1-9]\d*):([^:]+):([a-f0-9]{64})$/u.exec(capability);
+    if (!match) continue;
+    const purpose = match[1]!;
+    const material = `${match[2]}:${match[3]}:${match[4]}`;
+    const values = materials.get(purpose) ?? new Set<string>();
+    values.add(material);
+    materials.set(purpose, values);
+  }
+  return materials;
+}
+
+function nodeDeclaredCompatibility(node: NodeRow): ControlPlaneNodeRegistration["compatibility"] {
+  const value = decodeJson(node.compatibility);
+  if (!isRecord(value) || !isRecord(value.declared)) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Node compatibility advertisement is invalid.");
+  }
+  const declared = value.declared;
+  const capabilities = declared.capabilities;
+  if (
+    typeof declared.binaryVersion !== "string" ||
+    typeof declared.schemaVersion !== "number" ||
+    !Number.isSafeInteger(declared.schemaVersion) ||
+    typeof declared.keyVersion !== "number" ||
+    !Number.isSafeInteger(declared.keyVersion) ||
+    typeof declared.manifestVersion !== "number" ||
+    !Number.isSafeInteger(declared.manifestVersion) ||
+    (declared.schemaManifestFingerprint !== undefined &&
+      typeof declared.schemaManifestFingerprint !== "string") ||
+    (declared.providerCommitment !== undefined &&
+      typeof declared.providerCommitment !== "string") ||
+    (declared.keyCanaryCommitment !== undefined &&
+      typeof declared.keyCanaryCommitment !== "string") ||
+    (capabilities !== undefined &&
+      (!Array.isArray(capabilities) ||
+        capabilities.some((capability: unknown) => typeof capability !== "string")))
+  ) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Node compatibility advertisement is invalid.");
+  }
+  return Object.freeze({
+    binaryVersion: declared.binaryVersion,
+    schemaVersion: declared.schemaVersion,
+    keyVersion: declared.keyVersion,
+    manifestVersion: declared.manifestVersion,
+    ...(declared.schemaManifestFingerprint === undefined
+      ? {}
+      : { schemaManifestFingerprint: declared.schemaManifestFingerprint }),
+    ...(declared.providerCommitment === undefined
+      ? {}
+      : { providerCommitment: declared.providerCommitment }),
+    ...(declared.keyCanaryCommitment === undefined
+      ? {}
+      : { keyCanaryCommitment: declared.keyCanaryCommitment }),
+    ...(capabilities === undefined
+      ? {}
+      : { capabilities: Object.freeze(capabilities.map((capability) => String(capability))) }),
+  });
+}
+
+function nodeConvergenceToken(node: NodeRow): ControlPlaneConvergenceToken {
+  return {
+    authorityGeneration: decodeCanonicalVersion(node.authorityVersion),
+    effectiveGeneration: decodeCanonicalVersion(node.effectiveVersion),
+    securityEpoch: decodeCanonicalVersion(node.securityVersion),
+  };
+}
+
+function nodePendingEffectiveRuntimeFingerprint(node: NodeRow): string | undefined {
+  const value = decodeJson(node.compatibility);
+  return isRecord(value) && typeof value.effectiveRuntimeFingerprint === "string"
+    ? normalizeFingerprint(value.effectiveRuntimeFingerprint)
+    : undefined;
+}
+
+function nodeAcknowledgedEffectiveRuntimeFingerprint(node: NodeRow): string | undefined {
+  const value = decodeJson(node.compatibility);
+  if (!isRecord(value)) return undefined;
+  if (typeof value.acknowledgedEffectiveRuntimeFingerprint === "string") {
+    return normalizeFingerprint(value.acknowledgedEffectiveRuntimeFingerprint);
+  }
+  return node.state === "ready" && typeof value.effectiveRuntimeFingerprint === "string"
+    ? normalizeFingerprint(value.effectiveRuntimeFingerprint)
+    : undefined;
+}
+
+function tupleFingerprintMigrationId(token: ControlPlaneConvergenceToken): string {
+  return `${TUPLE_FINGERPRINT_MIGRATION_PREFIX}:${token.authorityGeneration}:${token.effectiveGeneration}:${token.securityEpoch}`;
+}
+
+async function tupleFingerprintMatches(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  token: ControlPlaneConvergenceToken,
+  fingerprint: string,
+): Promise<boolean> {
+  const [row] = await transaction.select<MigrationRow>(
+    "migrations",
+    scope(identity, { migrationId: tupleFingerprintMigrationId(token) }),
+    [],
+    1,
+  );
+  if (!row) return true;
+  const compatibility = decodeJson(row.compatibility);
+  return (
+    isRecord(compatibility) &&
+    typeof compatibility.effectiveRuntimeFingerprint === "string" &&
+    normalizeFingerprint(compatibility.effectiveRuntimeFingerprint) === fingerprint
+  );
+}
+
+async function bindTupleFingerprint(
+  transaction: ControlPlaneSqlTransaction,
+  options: ControlPlaneStoreOptions,
+  now: string,
+  token: ControlPlaneConvergenceToken,
+  fingerprint: string,
+): Promise<boolean> {
+  const migrationId = tupleFingerprintMigrationId(token);
+  const common = commonValues(options, now, `migration:${migrationId}`, {
+    aggregateVersion: 0,
+    authorityVersion: token.authorityGeneration,
+    effectiveVersion: token.effectiveGeneration,
+    securityVersion: token.securityEpoch,
+  });
+  await insertIgnore(
+    transaction,
+    "cp_migration",
+    [
+      ...COMMON_COLUMNS,
+      "migration_id",
+      "source",
+      "destination",
+      "phase",
+      "manifest_hash",
+      "checksum",
+      "compatibility",
+      "activated_at",
+    ],
+    [
+      ...common,
+      migrationId,
+      "runtime-tuple",
+      "runtime-tuple",
+      "activated",
+      fingerprint,
+      fingerprint,
+      encodeCanonicalJson({ effectiveRuntimeFingerprint: fingerprint }),
+      now,
+    ],
+    ["logical_host_id", "id"],
+  );
+  return tupleFingerprintMatches(transaction, options.identity, token, fingerprint);
+}
+
+async function countAppliedNodes(
+  transaction: ControlPlaneSqlTransaction,
+  options: ControlPlaneStoreOptions,
+  now: string,
+  token: ControlPlaneConvergenceToken,
+): Promise<number> {
+  const nodes = await transaction.select<NodeRow>("clusterNodeLeases", {
+    equals: {
+      logicalHostId: options.identity.logicalHostId,
+      storeId: options.identity.storeId,
+      state: "ready",
+    },
+    greaterThan: { expiresAt: now },
+  });
+  return nodes.filter((node) =>
+    sameConvergenceToken(
+      {
+        authorityGeneration: decodeCanonicalVersion(node.authorityVersion),
+        effectiveGeneration: decodeCanonicalVersion(node.effectiveVersion),
+        securityEpoch: decodeCanonicalVersion(node.securityVersion),
+      },
+      token,
+    ),
+  ).length;
+}
+
+async function updateConvergedReceipts(
+  transaction: ControlPlaneSqlTransaction,
+  options: ControlPlaneStoreOptions,
+  _now: string,
+  token: ControlPlaneConvergenceToken,
+  appliedNodes: number,
+): Promise<void> {
+  await transaction.settleConvergenceReceipts({
+    logicalHostId: options.identity.logicalHostId,
+    storeId: options.identity.storeId,
+    authorityGeneration: token.authorityGeneration,
+    effectiveGeneration: token.effectiveGeneration,
+    securityEpoch: token.securityEpoch,
+    appliedNodes,
+    limit: CONVERGENCE_RECEIPT_BATCH_SIZE,
+  });
+}
+
+async function currentConvergenceAdvancedAt(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  versions: VersionRows,
+): Promise<string> {
+  const [authority, effective, security] = await Promise.all([
+    transaction.select<AuthorityVersionRow>(
+      "authorityVersions",
+      scope(identity, { generation: versions.authorityGeneration }),
+      [],
+      1,
+    ),
+    transaction.select<EffectiveVersionRow>(
+      "effectiveVersions",
+      scope(identity, { generation: versions.effectiveGeneration }),
+      [],
+      1,
+    ),
+    transaction.select<SecurityVersionRow>(
+      "securityVersions",
+      scope(identity, { epoch: versions.securityEpoch }),
+      [],
+      1,
+    ),
+  ]);
+  const clocks = [authority[0]?.updatedAt, effective[0]?.publishedAt, security[0]?.advancedAt];
+  const validClocks = clocks.filter((clock): clock is string => typeof clock === "string");
+  if (validClocks.length !== clocks.length) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Convergence publication clock is unavailable.");
+  }
+  return validClocks.reduce((latest, clock) =>
+    Date.parse(clock) > Date.parse(latest) ? clock : latest,
+  );
+}
+
+function unavailableHealth(
+  options: ControlPlaneStoreOptions,
+  versions: VersionRows,
+  warm: boolean,
+  lastConnectedAt: number,
+): ControlPlaneHealthSummary {
+  return {
+    backend: options.dialect.backend,
+    readiness: warm ? "stale-read-only" : "not-ready",
+    connectivity: "unavailable",
+    migration: options.dialect.ready ? "current" : "blocked",
+    authorityToken: {
+      authorityGeneration: versions.authorityGeneration,
+      effectiveGeneration: versions.effectiveGeneration,
+    },
+    bootstrapCompatibility: "current",
+    ...(warm ? { staleAgeMs: Math.max(0, Date.now() - lastConnectedAt) } : {}),
+    convergence: options.dialect.backend === "sqlite" ? "single-node" : "overdue",
+    guidanceCode: "storage-unavailable",
+  };
+}
+
+function activationLock(identity: ControlPlaneStoreIdentity): string {
+  return `runtime-activation:${identity.logicalHostId}:${identity.storeId}`;
+}
+
+function nodeLeaseLock(identity: ControlPlaneStoreIdentity, nodeId: string): string {
+  return `node-lease:${identity.logicalHostId}:${identity.storeId}:${nodeId}`;
+}
+
+function scope(
+  identity: ControlPlaneStoreIdentity,
+  values: Readonly<Record<string, unknown>> = {},
+) {
+  return {
+    equals: {
+      logicalHostId: identity.logicalHostId,
+      storeId: identity.storeId,
+      ...values,
+    },
+  } as const;
+}
+
 async function countReadyNodes(
   transaction: ControlPlaneSqlTransaction,
   options: ControlPlaneStoreOptions,
@@ -2187,14 +3911,64 @@ async function countReadyNodes(
   return rows.length;
 }
 
+async function hasCurrentCanaryProofs(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  nodeId: string,
+  fence: ControlPlaneWriterFence,
+): Promise<boolean> {
+  if (fence.leaseId !== `writer:${nodeId}`) return false;
+  const inventories = await transaction.select<KeyInventoryProofRow>(
+    "keyInventory",
+    scope(identity, { state: "active" }),
+  );
+  return inventories.every((inventory) => {
+    try {
+      const proofs = decodeCanonicalJson(inventory.verifiedNodeIds);
+      return (
+        Array.isArray(proofs) &&
+        proofs.some(
+          (proof) =>
+            isRecord(proof) &&
+            proof.nodeId === nodeId &&
+            proof.leaseId === fence.leaseId &&
+            proof.writerEpoch === fence.writerEpoch &&
+            proof.authorityGeneration === fence.authorityGeneration,
+        )
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function retireWriterFence(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  leaseId: string,
+  now: string,
+): Promise<void> {
+  await transaction.update(
+    "writerFences",
+    { state: "revoked", expiresAt: now, updatedAt: now },
+    scope(identity, { leaseId }),
+  );
+}
+
 async function upsertNode(
   transaction: ControlPlaneSqlTransaction,
   common: readonly unknown[],
   input: ControlPlaneNodeRegistration,
   now: string,
   expiresAt: string,
-  state: "ready" | "capacity-rejected" | "compatibility-rejected",
+  state:
+    | "ready"
+    | "catching-up"
+    | "activation-pending"
+    | "capacity-rejected"
+    | "compatibility-rejected",
   assignedReadyNodes: number,
+  acknowledgedEffectiveRuntimeFingerprint?: string,
 ): Promise<void> {
   await upsert(
     transaction,
@@ -2211,10 +3985,19 @@ async function upsertNode(
     [
       ...common,
       input.nodeId,
-      /^[a-f0-9]{64}$/u.test(input.bootstrapFingerprint)
-        ? input.bootstrapFingerprint
-        : sha256(input.bootstrapFingerprint),
-      encodeCanonicalJson({ declared: input.compatibility, assignedReadyNodes }),
+      normalizeFingerprint(input.bootstrapFingerprint),
+      encodeCanonicalJson({
+        declared: input.compatibility,
+        effectiveRuntimeFingerprint: normalizeFingerprint(input.effectiveRuntimeFingerprint),
+        assignedReadyNodes,
+        ...(acknowledgedEffectiveRuntimeFingerprint
+          ? {
+              acknowledgedEffectiveRuntimeFingerprint: normalizeFingerprint(
+                acknowledgedEffectiveRuntimeFingerprint,
+              ),
+            }
+          : {}),
+      }),
       now,
       expiresAt,
       state,
@@ -2224,7 +4007,7 @@ async function upsertNode(
 }
 
 function commonValues(
-  options: ControlPlaneStoreOptions,
+  options: Pick<ControlPlaneStoreOptions, "identity">,
   now: string,
   id: string,
   versions: CommonVersions,
@@ -2258,6 +4041,7 @@ const TABLE_BY_SQL_NAME: Readonly<Record<string, ControlPlaneTable>> = {
   cp_security_version: "securityVersions",
   cp_cluster_node_lease: "clusterNodeLeases",
   cp_writer_fence: "writerFences",
+  cp_snapshot_envelope: "snapshotEnvelopes",
   cp_migration: "migrations",
   cp_retention: "retentions",
   cp_external_destruction: "externalDestructions",
@@ -2556,16 +4340,30 @@ function fenceRowId(leaseId: string): string {
   return `fence:${leaseId}`;
 }
 
-type AuthorityVersionRow = ControlPlaneSqlRow & { generation: number | bigint };
-type EffectiveVersionRow = ControlPlaneSqlRow & { generation: number | bigint };
-type SecurityVersionRow = ControlPlaneSqlRow & { epoch: number | bigint };
+type AuthorityVersionRow = ControlPlaneSqlRow & {
+  generation: number | bigint;
+  updatedAt: string;
+};
+type EffectiveVersionRow = ControlPlaneSqlRow & {
+  generation: number | bigint;
+  publishedAt: string;
+};
+type SecurityVersionRow = ControlPlaneSqlRow & {
+  epoch: number | bigint;
+  advancedAt: string;
+};
 type AggregateVersionRow = ControlPlaneSqlRow & { aggregateVersion: number | bigint };
 type ReservationRow = ControlPlaneSqlRow & {
   target: unknown;
   state: string;
   reservedAt: string;
 };
-type OutcomeRow = ControlPlaneSqlRow & { receipt: unknown };
+type OutcomeRow = ControlPlaneSqlRow & {
+  operationId: string;
+  receipt: unknown;
+  convergenceClass: string;
+  securityVersion: number | bigint;
+};
 type TombstoneRow = ControlPlaneSqlRow & { target: unknown };
 type ConfirmationRow = ControlPlaneSqlRow & {
   confirmationId: string;
@@ -2584,19 +4382,35 @@ type DestructionRow = ControlPlaneSqlRow & {
   completedAt?: string;
   updatedAt: string;
 };
+type KeyInventoryProofRow = ControlPlaneSqlRow & {
+  verifiedNodeIds: string;
+};
 type FenceRow = ControlPlaneSqlRow & {
   writerEpoch: number | bigint;
   authorityGeneration: number | bigint;
   expiresAt: string;
   state: string;
 };
+type SnapshotEnvelopeRow = ControlPlaneSqlRow & {
+  envelopeId: string;
+  effectiveVersion: number | bigint;
+  capletCount: number | bigint;
+  normalizedRowCount: number | bigint;
+  encodedByteCount: number | bigint;
+};
+type MigrationRow = ControlPlaneSqlRow & {
+  migrationId: string;
+  compatibility: unknown;
+};
 type NodeRow = ControlPlaneSqlRow & {
+  nodeId: string;
   state: string;
   expiresAt: string;
   compatibility: unknown;
   bootstrapFingerprint: string;
   authorityVersion: number | bigint;
   effectiveVersion: number | bigint;
+  securityVersion: number | bigint;
 };
 type HostSettingRow = ControlPlaneSqlRow & { key: string; value: unknown; updatedAt: string };
 type CapletRow = ControlPlaneSqlRow & {
@@ -2671,3 +4485,7 @@ type HistoryRow = ControlPlaneSqlRow & {
   effectiveVersion: number | bigint;
   occurredAt: string;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}

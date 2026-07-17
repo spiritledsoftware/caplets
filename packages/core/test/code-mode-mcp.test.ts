@@ -22,7 +22,11 @@ describe("Code Mode MCP tool", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     await session.refreshExposure();
@@ -68,7 +72,11 @@ describe("Code Mode MCP tool", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     await session.refreshExposure();
@@ -98,7 +106,11 @@ describe("Code Mode MCP tool", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     await session.refreshExposure();
@@ -128,7 +140,11 @@ describe("Code Mode MCP tool", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     await session.refreshExposure();
@@ -168,7 +184,11 @@ describe("Code Mode MCP tool", () => {
       },
     });
     dirs.push(dir);
-    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath,
+      watch: false,
+    });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     await session.refreshExposure();

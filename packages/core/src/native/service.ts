@@ -26,6 +26,7 @@ import {
 } from "./remote";
 import {
   CapletsEngine,
+  createCapletsEngine,
   createInternalCapletsEngine,
   type CapletsEngineOptions,
   type ResolvedExposureProjection,
@@ -100,6 +101,7 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
   projectRoot?: string;
   projectConfigPath?: string;
   authDir?: string;
+  env?: NodeJS.ProcessEnv | undefined;
   exposeLocalArtifactPaths?: boolean;
   watchDebounceMs?: number;
   watch?: boolean;
@@ -187,7 +189,41 @@ export function createNativeCapletsService(
     });
     return remote;
   }
-  return new DefaultNativeCapletsService(options);
+  throw new CapletsError(
+    "CONFIG_INVALID",
+    "Local native Caplets services require createActivatedNativeCapletsService().",
+  );
+}
+
+export async function createActivatedNativeCapletsService(
+  options: NativeCapletsServiceOptions = {},
+): Promise<NativeCapletsService> {
+  const resolved = resolveNativeCapletsServiceOptions(options);
+  if (resolved.mode === "local") {
+    const engine = await createCapletsEngine(nativeEngineOptions(options));
+    return new DefaultNativeCapletsService(options, engine);
+  }
+  if (resolved.mode === "remote" && options.remoteClientFactory) {
+    const engine = await createCapletsEngine(nativeEngineOptions(options));
+    const local = new DefaultNativeCapletsService(options, engine);
+    try {
+      return createCompositeRemoteService(resolved.remote, local, options, "self_hosted_remote");
+    } catch (error) {
+      await local.close().catch(() => undefined);
+      throw error;
+    }
+  }
+  return createNativeCapletsService(options);
+}
+
+/** @internal Test-only unactivated native service seam. */
+export function createUnactivatedNativeCapletsServiceForTests(
+  options: NativeCapletsServiceOptions = {},
+): NativeCapletsService {
+  return new DefaultNativeCapletsService(
+    options,
+    CapletsEngine.unactivatedForTests(nativeEngineOptions(options)),
+  );
 }
 
 export async function createInternalNativeCapletsService(
@@ -247,9 +283,9 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private postReloadRefresh: Promise<void> | undefined;
   private exposureRefreshSequence = 0;
 
-  constructor(options: LocalNativeCapletsServiceOptions, internalEngine?: CapletsEngine) {
+  constructor(options: LocalNativeCapletsServiceOptions, internalEngine: CapletsEngine) {
     this.writeErr = options.writeErr ?? (() => undefined);
-    this.engine = internalEngine ?? new CapletsEngine(nativeEngineOptions(options, this.writeErr));
+    this.engine = internalEngine;
     this.postReloadRefresh = this.refreshExposureProjection({ emitToolsChanged: true });
     this.unsubscribeEngineReload = this.engine.onReload(() => {
       this.postReloadRefresh = this.refreshExposureProjection({ emitToolsChanged: true });
@@ -830,7 +866,10 @@ function nativeEngineOptions(
 function createDefaultNativeCapletsService(
   options: LocalNativeCapletsServiceOptions,
 ): NativeCapletsService {
-  return new DefaultNativeCapletsService(options);
+  return new DefaultNativeCapletsService(
+    options,
+    CapletsEngine.createFilesystemOverlay(nativeEngineOptions(options)),
+  );
 }
 
 type ResolvedNativeRemoteOptions = Extract<

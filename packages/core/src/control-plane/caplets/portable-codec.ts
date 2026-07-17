@@ -151,7 +151,7 @@ export function portableCapletFromBundle(
   bundle: PortableCapletBundle,
   limits: PortableCodecLimits = {},
 ): PortableCaplet {
-  assertExactKeys(bundle.frontmatter, FRONTMATTER_FIELDS, "frontmatter");
+  assertExactKeys(bundle.frontmatter, FRONTMATTER_FIELDS, "frontmatter", true);
   const entryPath = canonicalPortablePath(bundle.entryPath);
   if (bundle.files.length > (limits.maxFiles ?? DEFAULT_MAX_FILES))
     throw new Error("Portable file count limit exceeded");

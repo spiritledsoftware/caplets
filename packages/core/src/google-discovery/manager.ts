@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { genericOAuthHeaders, readTokenBundle } from "../auth";
+import type { AuthTokenRepository } from "../auth/store";
 import type { GoogleDiscoveryApiConfig } from "../config";
 import {
   compactToolSafetyHints,
@@ -46,6 +47,7 @@ export class GoogleDiscoveryManager {
     private registry: ServerRegistry,
     private readonly options: {
       authDir?: string;
+      authTokenRepository?: AuthTokenRepository | undefined;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
       mediaInlineThresholdBytes?: number;
@@ -113,7 +115,12 @@ export class GoogleDiscoveryManager {
       : args;
     const url = buildGoogleDiscoveryUrl(requestApi, operation, requestArgs);
     const headers = new Headers(
-      await authHeaders(requestApi, this.options.authDir, operation.scopes),
+      await authHeaders(
+        requestApi,
+        this.options.authDir,
+        this.options.authTokenRepository,
+        operation.scopes,
+      ),
     );
     const init = buildJsonRequestInit(operation, args, headers);
     const controller = new AbortController();
@@ -188,7 +195,14 @@ export class GoogleDiscoveryManager {
     if (this.options.artifactDir) mediaOptions.artifactRoot = this.options.artifactDir;
     if (this.options.exposeLocalArtifactPaths === false) mediaOptions.allowLocalPaths = false;
     const media = await readMediaInput(args.media, mediaOptions);
-    const headers = new Headers(await authHeaders(api, this.options.authDir, operation.scopes));
+    const headers = new Headers(
+      await authHeaders(
+        api,
+        this.options.authDir,
+        this.options.authTokenRepository,
+        operation.scopes,
+      ),
+    );
     const protocol = selectUploadProtocol(operation, media, args);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), api.requestTimeoutMs);
@@ -392,7 +406,11 @@ export class GoogleDiscoveryManager {
     if (!force && isFresh) return cached.operations ?? [];
 
     try {
-      const document = await loadGoogleDiscoveryDocument(api, this.options.authDir);
+      const document = await loadGoogleDiscoveryDocument(
+        api,
+        this.options.authDir,
+        this.options.authTokenRepository,
+      );
       const baseUrl = googleDiscoveryBaseUrl(api, document);
       const operations = discoveryOperations({
         server: api.server,
@@ -589,8 +607,9 @@ async function fetchGoogleRequest(
 async function loadGoogleDiscoveryDocument(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
 ): Promise<GoogleDiscoveryDocument> {
-  const source = await loadGoogleDiscoverySource(api, authDir);
+  const source = await loadGoogleDiscoverySource(api, authDir, authTokenRepository);
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
@@ -612,6 +631,7 @@ async function loadGoogleDiscoveryDocument(
 async function loadGoogleDiscoverySource(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
 ): Promise<string> {
   if (api.discoveryPath) {
     return readFile(api.discoveryPath, "utf8");
@@ -622,7 +642,7 @@ async function loadGoogleDiscoverySource(
       `${api.server} is missing Google Discovery document source`,
     );
   }
-  return fetchDiscoverySource(api, await discoveryAuthHeaders(api, authDir));
+  return fetchDiscoverySource(api, await discoveryAuthHeaders(api, authDir, authTokenRepository));
 }
 
 async function fetchDiscoverySource(
@@ -667,22 +687,30 @@ async function fetchDiscoverySource(
 async function discoveryAuthHeaders(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
 ): Promise<Record<string, string>> {
   if (api.auth.type === "none") return {};
   if (api.auth.type === "oauth2" || api.auth.type === "oidc") {
-    const protectedOrigin = discoveryProtectedResourceOrigin(api, authDir);
+    const protectedOrigin = await discoveryProtectedResourceOrigin(
+      api,
+      authDir,
+      authTokenRepository,
+    );
     if (!protectedOrigin || !shouldSendDiscoveryAuth(api, protectedOrigin)) return {};
-    const bundle = readTokenBundle(api.server, authDir);
+    const bundle = authTokenRepository
+      ? await authTokenRepository.readTokenBundle(api.server)
+      : readTokenBundle(api.server, authDir);
     if (!bundle?.accessToken && !bundle?.refreshToken) return {};
-    return genericOAuthHeaders({ ...api, baseUrl: protectedOrigin }, authDir);
+    return genericOAuthHeaders({ ...api, baseUrl: protectedOrigin }, authDir, authTokenRepository);
   }
   if (!api.baseUrl || !shouldSendDiscoveryAuth(api, new URL(api.baseUrl).origin)) return {};
-  return authHeaders(api, authDir);
+  return authHeaders(api, authDir, authTokenRepository);
 }
 
 async function authHeaders(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
   resolvedScopes?: string[],
 ): Promise<Record<string, string>> {
   switch (api.auth.type) {
@@ -694,16 +722,19 @@ async function authHeaders(
       return api.auth.headers;
     case "oauth2":
     case "oidc":
-      return genericOAuthHeaders({ ...api, resolvedScopes }, authDir);
+      return genericOAuthHeaders({ ...api, resolvedScopes }, authDir, authTokenRepository);
   }
 }
 
-function discoveryProtectedResourceOrigin(
+async function discoveryProtectedResourceOrigin(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
-): string | undefined {
+  authTokenRepository?: AuthTokenRepository,
+): Promise<string | undefined> {
   if (api.baseUrl) return new URL(api.baseUrl).origin;
-  const bundle = readTokenBundle(api.server, authDir);
+  const bundle = authTokenRepository
+    ? await authTokenRepository.readTokenBundle(api.server)
+    : readTokenBundle(api.server, authDir);
   return bundle?.protectedResourceOrigin;
 }
 

@@ -1703,7 +1703,7 @@ function remoteServerFixture(): {
   projectCapletsRoot: string;
 } {
   const context = testContext("caplets-cli-remote-server-");
-  const engine = new CapletsEngine({
+  const engine = CapletsEngine.unactivatedForTests({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
     watch: false,

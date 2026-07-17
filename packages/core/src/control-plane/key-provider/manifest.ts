@@ -147,6 +147,7 @@ export const FILE_V1_PROFILE_CAPABILITIES: Record<FileV1Profile, readonly FileV1
   migrator: [
     { purpose: "active-record", operations: ["encrypt", "decrypt"] },
     { purpose: "vault-record", operations: ["encrypt", "decrypt"] },
+    { purpose: "credential-verifier", operations: ["compute", "verify"] },
     { purpose: "bootstrap-attestation", operations: ["compute", "verify"] },
   ],
   maintenance: [],

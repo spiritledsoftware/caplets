@@ -1,0 +1,120 @@
+DROP TABLE `cp_snapshot_envelope`;--> statement-breakpoint
+PRAGMA foreign_keys=OFF;--> statement-breakpoint
+CREATE TABLE `__new_cp_key_canary` (
+	`model_version` integer NOT NULL,
+	`id` text NOT NULL,
+	`logical_host_id` text NOT NULL,
+	`store_id` text NOT NULL,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	`aggregate_version` integer NOT NULL,
+	`authority_version` integer NOT NULL,
+	`effective_version` integer NOT NULL,
+	`security_version` integer NOT NULL,
+	`purpose` text NOT NULL,
+	`algorithm` text NOT NULL,
+	`key_version` integer NOT NULL,
+	`protection` text NOT NULL,
+	`label_hash` text NOT NULL,
+	`aad_version` integer NOT NULL,
+	`nonce` blob,
+	`ciphertext` blob,
+	`auth_tag` blob,
+	`verifier` blob,
+	`state` text NOT NULL,
+	PRIMARY KEY(`logical_host_id`, `id`),
+	FOREIGN KEY (`logical_host_id`,`store_id`) REFERENCES `__caplets_storage_identity_v1`(`logical_host_id`,`store_id`) ON UPDATE no action ON DELETE restrict,
+	FOREIGN KEY (`logical_host_id`,`purpose`,`key_version`) REFERENCES `cp_key_inventory`(`logical_host_id`,`purpose`,`key_version`) ON UPDATE no action ON DELETE restrict,
+	CONSTRAINT "cp_key_canary_model_version_version_check" CHECK("__new_cp_key_canary"."model_version" >= 0),
+	CONSTRAINT "cp_key_canary_id_nonempty_check" CHECK(length("__new_cp_key_canary"."id") > 0),
+	CONSTRAINT "cp_key_canary_logical_host_id_nonempty_check" CHECK(length("__new_cp_key_canary"."logical_host_id") > 0),
+	CONSTRAINT "cp_key_canary_store_id_nonempty_check" CHECK(length("__new_cp_key_canary"."store_id") > 0),
+	CONSTRAINT "cp_key_canary_created_at_nonempty_check" CHECK(length("__new_cp_key_canary"."created_at") > 0),
+	CONSTRAINT "cp_key_canary_updated_at_nonempty_check" CHECK(length("__new_cp_key_canary"."updated_at") > 0),
+	CONSTRAINT "cp_key_canary_aggregate_version_version_check" CHECK("__new_cp_key_canary"."aggregate_version" >= 0),
+	CONSTRAINT "cp_key_canary_authority_version_version_check" CHECK("__new_cp_key_canary"."authority_version" >= 0),
+	CONSTRAINT "cp_key_canary_effective_version_version_check" CHECK("__new_cp_key_canary"."effective_version" >= 0),
+	CONSTRAINT "cp_key_canary_security_version_version_check" CHECK("__new_cp_key_canary"."security_version" >= 0),
+	CONSTRAINT "cp_key_canary_purpose_nonempty_check" CHECK(length("__new_cp_key_canary"."purpose") > 0),
+	CONSTRAINT "cp_key_canary_algorithm_nonempty_check" CHECK(length("__new_cp_key_canary"."algorithm") > 0),
+	CONSTRAINT "cp_key_canary_key_version_version_check" CHECK("__new_cp_key_canary"."key_version" >= 0),
+	CONSTRAINT "cp_key_canary_protection_nonempty_check" CHECK(length("__new_cp_key_canary"."protection") > 0),
+	CONSTRAINT "cp_key_canary_label_hash_hash_check" CHECK(length("__new_cp_key_canary"."label_hash") = 64 AND NOT "__new_cp_key_canary"."label_hash" GLOB '*[^0-9a-f]*'),
+	CONSTRAINT "cp_key_canary_aad_version_version_check" CHECK("__new_cp_key_canary"."aad_version" >= 0),
+	CONSTRAINT "cp_key_canary_nonce_bytes_check" CHECK(length("__new_cp_key_canary"."nonce") > 0),
+	CONSTRAINT "cp_key_canary_ciphertext_bytes_check" CHECK(length("__new_cp_key_canary"."ciphertext") > 0),
+	CONSTRAINT "cp_key_canary_auth_tag_bytes_check" CHECK(length("__new_cp_key_canary"."auth_tag") > 0),
+	CONSTRAINT "cp_key_canary_verifier_bytes_check" CHECK(length("__new_cp_key_canary"."verifier") > 0),
+	CONSTRAINT "cp_key_canary_state_nonempty_check" CHECK(length("__new_cp_key_canary"."state") > 0),
+	CONSTRAINT "cp_key_canary_model_version_check" CHECK("__new_cp_key_canary"."model_version" = 1),
+	CONSTRAINT "cp_key_canary_state_check" CHECK("__new_cp_key_canary"."state" = 'active'),
+	CONSTRAINT "cp_key_canary_protection_check" CHECK(("__new_cp_key_canary"."protection" = 'aead' AND "__new_cp_key_canary"."nonce" IS NOT NULL AND "__new_cp_key_canary"."ciphertext" IS NOT NULL AND "__new_cp_key_canary"."auth_tag" IS NOT NULL AND "__new_cp_key_canary"."verifier" IS NULL) OR ("__new_cp_key_canary"."protection" = 'hmac' AND "__new_cp_key_canary"."nonce" IS NULL AND "__new_cp_key_canary"."ciphertext" IS NULL AND "__new_cp_key_canary"."auth_tag" IS NULL AND "__new_cp_key_canary"."verifier" IS NOT NULL))
+);
+--> statement-breakpoint
+INSERT INTO `__new_cp_key_canary`("model_version", "id", "logical_host_id", "store_id", "created_at", "updated_at", "aggregate_version", "authority_version", "effective_version", "security_version", "purpose", "algorithm", "key_version", "protection", "label_hash", "aad_version", "nonce", "ciphertext", "auth_tag", "verifier", "state") SELECT "model_version", "id", "logical_host_id", "store_id", "created_at", "updated_at", "aggregate_version", "authority_version", "effective_version", "security_version", "purpose", "algorithm", "key_version", "protection", "label_hash", "aad_version", "nonce", "ciphertext", "auth_tag", "verifier", "state" FROM `cp_key_canary`;--> statement-breakpoint
+DROP TABLE `cp_key_canary`;--> statement-breakpoint
+ALTER TABLE `__new_cp_key_canary` RENAME TO `cp_key_canary`;--> statement-breakpoint
+PRAGMA foreign_keys=ON;--> statement-breakpoint
+CREATE UNIQUE INDEX `cp_key_canary_semantic_uq` ON `cp_key_canary` (`logical_host_id`,`purpose`,`key_version`);--> statement-breakpoint
+CREATE INDEX `cp_key_canary_query_1_idx` ON `cp_key_canary` (`logical_host_id`,`purpose`,`key_version`,`state`);--> statement-breakpoint
+CREATE TABLE `__new_cp_key_inventory` (
+	`model_version` integer NOT NULL,
+	`id` text NOT NULL,
+	`logical_host_id` text NOT NULL,
+	`store_id` text NOT NULL,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	`aggregate_version` integer NOT NULL,
+	`authority_version` integer NOT NULL,
+	`effective_version` integer NOT NULL,
+	`security_version` integer NOT NULL,
+	`provider` text NOT NULL,
+	`key_id` text NOT NULL,
+	`purpose` text NOT NULL,
+	`algorithm` text NOT NULL,
+	`key_version` integer NOT NULL,
+	`state` text NOT NULL,
+	`verified_node_ids` text NOT NULL,
+	`purge_watermark` integer NOT NULL,
+	`activated_at` text NOT NULL,
+	`decrypt_only_at` text,
+	`retired_at` text,
+	`destroyed_at` text,
+	`destruction_id` text,
+	PRIMARY KEY(`logical_host_id`, `id`),
+	FOREIGN KEY (`logical_host_id`,`store_id`) REFERENCES `__caplets_storage_identity_v1`(`logical_host_id`,`store_id`) ON UPDATE no action ON DELETE restrict,
+	CONSTRAINT "cp_key_inventory_model_version_version_check" CHECK("__new_cp_key_inventory"."model_version" >= 0),
+	CONSTRAINT "cp_key_inventory_id_nonempty_check" CHECK(length("__new_cp_key_inventory"."id") > 0),
+	CONSTRAINT "cp_key_inventory_logical_host_id_nonempty_check" CHECK(length("__new_cp_key_inventory"."logical_host_id") > 0),
+	CONSTRAINT "cp_key_inventory_store_id_nonempty_check" CHECK(length("__new_cp_key_inventory"."store_id") > 0),
+	CONSTRAINT "cp_key_inventory_created_at_nonempty_check" CHECK(length("__new_cp_key_inventory"."created_at") > 0),
+	CONSTRAINT "cp_key_inventory_updated_at_nonempty_check" CHECK(length("__new_cp_key_inventory"."updated_at") > 0),
+	CONSTRAINT "cp_key_inventory_aggregate_version_version_check" CHECK("__new_cp_key_inventory"."aggregate_version" >= 0),
+	CONSTRAINT "cp_key_inventory_authority_version_version_check" CHECK("__new_cp_key_inventory"."authority_version" >= 0),
+	CONSTRAINT "cp_key_inventory_effective_version_version_check" CHECK("__new_cp_key_inventory"."effective_version" >= 0),
+	CONSTRAINT "cp_key_inventory_security_version_version_check" CHECK("__new_cp_key_inventory"."security_version" >= 0),
+	CONSTRAINT "cp_key_inventory_provider_nonempty_check" CHECK(length("__new_cp_key_inventory"."provider") > 0),
+	CONSTRAINT "cp_key_inventory_key_id_nonempty_check" CHECK(length("__new_cp_key_inventory"."key_id") > 0),
+	CONSTRAINT "cp_key_inventory_purpose_nonempty_check" CHECK(length("__new_cp_key_inventory"."purpose") > 0),
+	CONSTRAINT "cp_key_inventory_algorithm_nonempty_check" CHECK(length("__new_cp_key_inventory"."algorithm") > 0),
+	CONSTRAINT "cp_key_inventory_key_version_version_check" CHECK("__new_cp_key_inventory"."key_version" >= 0),
+	CONSTRAINT "cp_key_inventory_state_nonempty_check" CHECK(length("__new_cp_key_inventory"."state") > 0),
+	CONSTRAINT "cp_key_inventory_verified_node_ids_json_check" CHECK(json_valid("__new_cp_key_inventory"."verified_node_ids")),
+	CONSTRAINT "cp_key_inventory_purge_watermark_version_check" CHECK("__new_cp_key_inventory"."purge_watermark" >= 0),
+	CONSTRAINT "cp_key_inventory_activated_at_nonempty_check" CHECK(length("__new_cp_key_inventory"."activated_at") > 0),
+	CONSTRAINT "cp_key_inventory_decrypt_only_at_nonempty_check" CHECK(length("__new_cp_key_inventory"."decrypt_only_at") > 0),
+	CONSTRAINT "cp_key_inventory_retired_at_nonempty_check" CHECK(length("__new_cp_key_inventory"."retired_at") > 0),
+	CONSTRAINT "cp_key_inventory_destroyed_at_nonempty_check" CHECK(length("__new_cp_key_inventory"."destroyed_at") > 0),
+	CONSTRAINT "cp_key_inventory_destruction_id_nonempty_check" CHECK(length("__new_cp_key_inventory"."destruction_id") > 0),
+	CONSTRAINT "cp_key_inventory_model_version_check" CHECK("__new_cp_key_inventory"."model_version" = 1),
+	CONSTRAINT "cp_key_inventory_provider_check" CHECK("__new_cp_key_inventory"."provider" = 'file-v1'),
+	CONSTRAINT "cp_key_inventory_state_check" CHECK("__new_cp_key_inventory"."state" IN ('active', 'decrypt-only', 'retired', 'destruction-intended', 'destroyed'))
+);
+--> statement-breakpoint
+INSERT INTO `__new_cp_key_inventory`("model_version", "id", "logical_host_id", "store_id", "created_at", "updated_at", "aggregate_version", "authority_version", "effective_version", "security_version", "provider", "key_id", "purpose", "algorithm", "key_version", "state", "verified_node_ids", "purge_watermark", "activated_at", "decrypt_only_at", "retired_at", "destroyed_at", "destruction_id") SELECT "model_version", "id", "logical_host_id", "store_id", "created_at", "updated_at", "aggregate_version", "authority_version", "effective_version", "security_version", "provider", "key_id", "purpose", "algorithm", "key_version", "state", "verified_node_ids", "purge_watermark", "activated_at", "decrypt_only_at", "retired_at", "destroyed_at", "destruction_id" FROM `cp_key_inventory`;--> statement-breakpoint
+DROP TABLE `cp_key_inventory`;--> statement-breakpoint
+ALTER TABLE `__new_cp_key_inventory` RENAME TO `cp_key_inventory`;--> statement-breakpoint
+CREATE UNIQUE INDEX `cp_key_inventory_semantic_uq` ON `cp_key_inventory` (`logical_host_id`,`purpose`,`key_version`);--> statement-breakpoint
+CREATE INDEX `cp_key_inventory_query_1_idx` ON `cp_key_inventory` (`logical_host_id`,`purpose`,`state`);--> statement-breakpoint
+CREATE INDEX `cp_key_inventory_query_2_idx` ON `cp_key_inventory` (`logical_host_id`,`purge_watermark`);--> statement-breakpoint
+CREATE UNIQUE INDEX `cp_key_inventory_relation_target_uq` ON `cp_key_inventory` (`logical_host_id`,`purpose`,`key_version`);

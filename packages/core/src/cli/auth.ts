@@ -9,6 +9,7 @@ import {
   runOAuthFlow,
   type GenericAuthTarget,
 } from "../auth";
+import type { AuthTokenRepository } from "../auth/store";
 import {
   loadConfig,
   loadGlobalConfig,
@@ -16,6 +17,7 @@ import {
   vaultBootstrapResolver,
   vaultResolverForAuthDir,
   type CapletsConfig,
+  type ConfigWithSources,
   type GoogleDiscoveryApiConfig,
   type GraphQlEndpointConfig,
   type HttpApiConfig,
@@ -45,6 +47,7 @@ export async function loginAuth(
     writeErr: (value: string) => void;
     authDir?: string;
     config?: CapletsConfig;
+    tokenRepository?: AuthTokenRepository;
   },
 ): Promise<void> {
   const config = options.config ?? loadAuthResolvedConfig(options);
@@ -57,6 +60,7 @@ export async function loginAuth(
       ...(options.authDir ? { authDir: options.authDir } : {}),
       ...(options.noOpen ? { readManualInput: maybeReadManualInput } : {}),
       print: (line: string) => options.writeOut(`${line}\n`),
+      ...(options.tokenRepository ? { tokenRepository: options.tokenRepository } : {}),
     };
     if (server.backend === "mcp") {
       await runOAuthFlow(server, flowOptions);
@@ -70,16 +74,17 @@ export async function loginAuth(
   }
 }
 
-export function logoutAuth(
+export async function logoutAuth(
   serverId: string,
   options: {
     authDir?: string;
     configPath?: string;
     config?: CapletsConfig;
+    tokenRepository?: AuthTokenRepository;
     writeOut: (value: string) => void;
   },
-): void {
-  const result = logoutAuthResult(serverId, options);
+): Promise<void> {
+  const result = await logoutAuthResult(serverId, options);
   if (result.deleted) {
     options.writeOut(`Deleted OAuth credentials for \`${serverId}\`.\n`);
   } else {
@@ -87,17 +92,25 @@ export function logoutAuth(
   }
 }
 
-export function logoutAuthResult(
+export async function logoutAuthResult(
   serverId: string,
-  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
-): { server: string; deleted: boolean } {
+  options: {
+    authDir?: string;
+    configPath?: string;
+    config?: CapletsConfig;
+    tokenRepository?: AuthTokenRepository;
+  },
+): Promise<{ server: string; deleted: boolean }> {
   const target = findAuthTarget(
     serverId,
     options.config ??
       loadConfig(options.configPath, undefined, { vaultResolver: vaultBootstrapResolver }),
   );
   assertLoginTarget(target, serverId);
-  return { server: serverId, deleted: deleteTokenBundle(serverId, options.authDir) };
+  const deleted = options.tokenRepository
+    ? await options.tokenRepository.deleteTokenBundle(serverId)
+    : deleteTokenBundle(serverId, options.authDir);
+  return { server: serverId, deleted };
 }
 
 export async function refreshAuth(
@@ -106,6 +119,7 @@ export async function refreshAuth(
     authDir?: string;
     configPath?: string;
     config?: CapletsConfig;
+    tokenRepository?: AuthTokenRepository;
     writeOut: (value: string) => void;
   },
 ): Promise<void> {
@@ -115,7 +129,12 @@ export async function refreshAuth(
 
 export async function refreshAuthResult(
   serverId: string,
-  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
+  options: {
+    authDir?: string;
+    configPath?: string;
+    config?: CapletsConfig;
+    tokenRepository?: AuthTokenRepository;
+  },
 ): Promise<{ server: string }> {
   const target = await resolveAuthTarget(
     serverId,
@@ -123,7 +142,7 @@ export async function refreshAuthResult(
     options.authDir,
   );
   assertLoginTarget(target, serverId);
-  await refreshOAuthTokenBundle(target, options.authDir);
+  await refreshOAuthTokenBundle(target, options.authDir, options.tokenRepository);
   return { server: serverId };
 }
 
@@ -171,11 +190,28 @@ export function localAuthTargets(options: {
   configPath?: string;
   projectConfigPath?: string;
   source?: Exclude<AuthSource, "remote">;
+  effectiveConfig?: ConfigWithSources;
 }): (AuthTarget & { source: Exclude<AuthSource, "remote"> })[] {
+  if (options.effectiveConfig) {
+    return authTargets(options.effectiveConfig.config)
+      .map((target) => ({
+        ...target,
+        source: authSourceForEffectiveTarget(target.server, options.effectiveConfig!),
+      }))
+      .filter((target) => !options.source || target.source === options.source);
+  }
   return [
     ...(options.source === "project" ? [] : authTargetsForSource("global", options)),
     ...(options.source === "global" ? [] : authTargetsForSource("project", options)),
   ].filter((target) => !options.source || target.source === options.source);
+}
+
+function authSourceForEffectiveTarget(
+  serverId: string,
+  config: ConfigWithSources,
+): Exclude<AuthSource, "remote"> {
+  const kind = config.sources[serverId]?.kind;
+  return kind === "project-config" || kind === "project-file" ? "project" : "global";
 }
 
 export function localAuthConfigForTarget(options: {
@@ -220,6 +256,36 @@ function loadConfigForSource(
     return loadGlobalConfig(options.configPath, loadOptions);
   }
   return loadProjectConfig(options.projectConfigPath, loadOptions);
+}
+
+export async function listLocalAuthRowsFromRepository(
+  options: {
+    configPath?: string;
+    projectConfigPath?: string;
+    source?: Exclude<AuthSource, "remote">;
+    effectiveConfig?: ConfigWithSources;
+  },
+  repository: AuthTokenRepository,
+): Promise<AuthStatusRow[]> {
+  const bundles = new Map(
+    (await repository.listTokenBundles()).map((bundle) => [bundle.server, bundle]),
+  );
+  return localAuthTargets(options)
+    .sort((left, right) => left.server.localeCompare(right.server))
+    .map((server) => {
+      const bundle = bundles.get(server.server);
+      return {
+        server: server.server,
+        status: !bundle
+          ? ("missing" as const)
+          : isTokenBundleExpired(bundle)
+            ? ("expired" as const)
+            : ("authenticated" as const),
+        ...(bundle?.expiresAt ? { expiresAt: bundle.expiresAt } : {}),
+        ...(bundle?.scope ? { scope: bundle.scope } : {}),
+        source: server.source,
+      };
+    });
 }
 
 function authRowsForTargets(

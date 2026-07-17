@@ -34,7 +34,7 @@ describe("paired control-plane schemas", () => {
   it("covers the complete canonical inventory and every normalized Caplet child", () => {
     expect(sqliteSchemaInventory).toBe(SQL_SCHEMA_INVENTORY);
     expect(postgresSchemaInventory).toBe(SQL_SCHEMA_INVENTORY);
-    expect(ENTITY_SQL_DEFINITIONS).toHaveLength(33);
+    expect(ENTITY_SQL_DEFINITIONS).toHaveLength(37);
     expect(CAPLET_CHILD_SQL_DEFINITIONS.map((child) => child.key)).toEqual([
       "document",
       "backend",

@@ -90,10 +90,20 @@ async function fixture(options: { migrate?: boolean } = {}) {
   const registration = await store.registerNode({
     nodeId: "node-1",
     bootstrapFingerprint: "a".repeat(64),
+    effectiveRuntimeFingerprint: "a".repeat(64),
     compatibility: { binaryVersion: "0.34.1", schemaVersion: 3, keyVersion: 1, manifestVersion: 1 },
+    appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
     ttlMs: 60_000,
   });
   if (registration.status !== "ready") throw new Error("test node was not ready");
+  const acknowledgement = await store.acknowledgeNode({
+    nodeId: "node-1",
+    bootstrapFingerprint: "a".repeat(64),
+    effectiveRuntimeFingerprint: "a".repeat(64),
+    appliedToken: versions,
+    writerFence: registration.writerFence,
+  });
+  if (acknowledgement.status !== "applied") throw new Error("test node was not acknowledged");
   return {
     dialect,
     store,

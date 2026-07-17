@@ -80,13 +80,14 @@ describe("dashboard static serving", () => {
     mkdirSync(join(dashboardDistDir, "_astro"), { recursive: true });
     writeFileSync(
       join(dashboardDistDir, "dashboard", "index.html"),
-      "<main>Base path dashboard</main>",
+      '<link rel="stylesheet" href="/_astro/base.css"><astro-island component-url="/_astro/base.js" renderer-url="/vendor/_astro/renderer.js">Base path dashboard</astro-island>',
     );
     writeFileSync(
       join(dashboardDistDir, "dashboard", "catalog", "index.html"),
       "<main>Base path catalog</main>",
     );
     writeFileSync(join(dashboardDistDir, "_astro", "base.js"), "export const base = true;");
+    writeFileSync(join(dashboardDistDir, "_astro", "base.css"), "body { color: CanvasText; }");
 
     const { engine } = testEngine();
     const app = createHttpServeApp(
@@ -100,7 +101,11 @@ describe("dashboard static serving", () => {
 
     const dashboard = await app.request("http://127.0.0.1:5387/caplets/dashboard");
     expect(dashboard.status).toBe(200);
-    await expect(dashboard.text()).resolves.toBe("<main>Base path dashboard</main>");
+    const dashboardHtml = await dashboard.text();
+    expect(dashboardHtml).toContain('href="/caplets/_astro/base.css"');
+    expect(dashboardHtml).toContain('component-url="/caplets/_astro/base.js"');
+    expect(dashboardHtml).toContain('renderer-url="/vendor/_astro/renderer.js"');
+    expect(dashboardHtml).not.toContain('="/_astro/');
 
     const catalogDetail = await app.request(
       "http://127.0.0.1:5387/caplets/dashboard/catalog/github%3Aowner%2Frepo%3Acaplet",
@@ -112,6 +117,10 @@ describe("dashboard static serving", () => {
     expect(asset.status).toBe(200);
     await expect(asset.text()).resolves.toBe("export const base = true;");
     expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+
+    const stylesheet = await app.request("http://127.0.0.1:5387/caplets/_astro/base.css");
+    expect(stylesheet.status).toBe(200);
+    expect(stylesheet.headers.get("content-type")).toContain("text/css");
 
     await engine.close();
   });
@@ -154,7 +163,7 @@ function testEngine() {
       },
     }),
   );
-  return { engine: new CapletsEngine({ configPath }) };
+  return { engine: CapletsEngine.unactivatedForTests({ configPath }) };
 }
 
 function httpOptions(stateDir: string): HttpServeOptions {

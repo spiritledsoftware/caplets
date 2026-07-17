@@ -38,6 +38,8 @@ import {
 export type CatalogPageProps = {
   data: { updates?: { ready?: boolean; reason?: string } };
   action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  liveAuthorityAvailable?: boolean;
+  liveAuthorityUnavailableReason?: string;
   confirmTyped?: (title: string, description: string, expectedPhrase: string) => Promise<boolean>;
 };
 
@@ -47,7 +49,13 @@ const SCOPE_OPTIONS = ["all", "official", "community"];
 const SETUP_OPTIONS = ["all", "ready", "required", "unknown"];
 const SORT_OPTIONS = ["rank", "name"];
 
-export function CatalogPage({ data, action, confirmTyped = async () => false }: CatalogPageProps) {
+export function CatalogPage({
+  data,
+  action,
+  confirmTyped = async () => false,
+  liveAuthorityAvailable = true,
+  liveAuthorityUnavailableReason = "Live SQL authority is unavailable. Installation is disabled until storage is ready.",
+}: CatalogPageProps) {
   const [entries, setEntries] = useState<CatalogCompactEntry[]>([]);
   const [discovery, setDiscovery] = useState<CatalogDiscoveryState>(defaultCatalogState);
   const [location, setLocation] = useState<CatalogLocation>({ mode: "list" });
@@ -64,6 +72,9 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   const tags = useMemo(() => catalogTags(entries), [entries]);
   const visible = useMemo(() => filterCatalogEntries(entries, discovery), [entries, discovery]);
   const discoveryKey = `${discovery.query}\u0000${discovery.scope}\u0000${discovery.setup}\u0000${discovery.tag}\u0000${discovery.sort}`;
+  const installUnavailableReason = liveAuthorityAvailable
+    ? undefined
+    : liveAuthorityUnavailableReason;
 
   const load = useCallback(() => {
     activeRequestController.current?.abort();
@@ -287,7 +298,13 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   }
 
   async function install(detail: CatalogDetail) {
-    if (!installableDetail(detail) || installingKey || installLock.current) return;
+    if (
+      !liveAuthorityAvailable ||
+      !installableDetail(detail) ||
+      installingKey ||
+      installLock.current
+    )
+      return;
 
     installLock.current = true;
     const phrase = `install ${detail.entry.id}`;
@@ -315,7 +332,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   }
 
   async function rowInstall(entry: CatalogCompactEntry) {
-    if (installingKey) return;
+    if (!liveAuthorityAvailable || installingKey) return;
 
     setInstallingKey(entry.entryKey);
     const detail = await fetchDetail(entry.entryKey);
@@ -337,6 +354,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
       <CatalogDetailPage
         state={detailState}
         installing={installingKey === location.entryKey}
+        installUnavailableReason={installUnavailableReason}
         onRetry={() => void fetchDetail(location.entryKey)}
         onReturn={returnToList}
         onInstall={(detail) => void install(detail)}
@@ -374,6 +392,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
         discoveryKey={discoveryKey}
         visible={visible}
         installingKey={installingKey}
+        installUnavailableReason={installUnavailableReason}
         onNavigate={openDetail}
         onCopy={(command, entry) => copy(command, entry.name)}
         onInstall={(entry) => void rowInstall(entry)}

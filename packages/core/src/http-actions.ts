@@ -1,5 +1,6 @@
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { genericOAuthHeaders } from "./auth";
+import type { AuthTokenRepository } from "./auth/store";
 import type { HttpActionConfig, HttpApiConfig } from "./config";
 import { FORBIDDEN_HEADERS, isAllowedRemoteUrl } from "./config/validation";
 import {
@@ -24,6 +25,7 @@ export class HttpActionManager {
     private registry: ServerRegistry,
     private readonly options: {
       authDir?: string;
+      authTokenRepository?: AuthTokenRepository | undefined;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
       mediaInlineThresholdBytes?: number;
@@ -47,7 +49,7 @@ export class HttpActionManager {
     try {
       const operations = operationsFor(api);
       validateBaseUrl(api);
-      await authHeaders(api, this.options.authDir);
+      await authHeaders(api, this.options.authDir, this.options.authTokenRepository);
       for (const operation of operations) {
         validateAction(api, operation);
       }
@@ -85,7 +87,13 @@ export class HttpActionManager {
   ): Promise<CompatibilityCallToolResult> {
     const operation = getOperation(api, toolName);
     const startedAt = Date.now();
-    const request = await buildRequest(api, operation, args, this.options.authDir);
+    const request = await buildRequest(
+      api,
+      operation,
+      args,
+      this.options.authDir,
+      this.options.authTokenRepository,
+    );
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), api.requestTimeoutMs);
     try {
@@ -210,6 +218,7 @@ async function buildRequest(
   operation: HttpActionOperation,
   args: Record<string, unknown>,
   authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
 ): Promise<{ url: URL; headers: Headers; body?: string }> {
   validateBaseUrl(api);
   validateAction(api, operation);
@@ -223,7 +232,7 @@ async function buildRequest(
     }
   }
   const headers = new Headers();
-  await applyAuth(headers, api, authDir);
+  await applyAuth(headers, api, authDir, authTokenRepository);
   const resolvedHeaders = resolveMappingToRecord(operation.headers, args, "headers");
   for (const [key, value] of Object.entries(resolvedHeaders)) {
     if (value !== undefined && value !== null) {
@@ -359,13 +368,22 @@ function serializeHttpValue(
   }
 }
 
-async function applyAuth(headers: Headers, api: HttpApiConfig, authDir?: string): Promise<void> {
-  for (const [key, value] of Object.entries(await authHeaders(api, authDir))) {
+async function applyAuth(
+  headers: Headers,
+  api: HttpApiConfig,
+  authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
+): Promise<void> {
+  for (const [key, value] of Object.entries(await authHeaders(api, authDir, authTokenRepository))) {
     headers.set(key, value);
   }
 }
 
-async function authHeaders(api: HttpApiConfig, authDir?: string): Promise<Record<string, string>> {
+async function authHeaders(
+  api: HttpApiConfig,
+  authDir?: string,
+  authTokenRepository?: AuthTokenRepository,
+): Promise<Record<string, string>> {
   switch (api.auth.type) {
     case "none":
       return {};
@@ -384,6 +402,7 @@ async function authHeaders(api: HttpApiConfig, authDir?: string): Promise<Record
           requestTimeoutMs: api.requestTimeoutMs,
         },
         authDir,
+        authTokenRepository,
       );
   }
 }

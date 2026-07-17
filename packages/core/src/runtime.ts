@@ -1,6 +1,11 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import type { CapletsConfig } from "./config";
-import { CapletsEngine, createInternalCapletsEngine, type CapletsEngineOptions } from "./engine";
+import {
+  CapletsEngine,
+  createCapletsEngine,
+  createInternalCapletsEngine,
+  type CapletsEngineOptions,
+} from "./engine";
 import { CapletsMcpSession, type CapletsMcpSessionOptions, type ToolServer } from "./serve/session";
 import type { ControlPlaneRuntimeSnapshotLoader } from "./control-plane/snapshot";
 
@@ -22,8 +27,8 @@ export class CapletsRuntime {
   private readonly engine: CapletsEngine;
   private readonly session: CapletsMcpSession;
 
-  constructor(options: CapletsRuntimeOptions = {}, internalEngine?: CapletsEngine) {
-    this.engine = internalEngine ?? new CapletsEngine(engineOptions(options));
+  constructor(options: CapletsRuntimeOptions, internalEngine: CapletsEngine) {
+    this.engine = internalEngine;
     this.session = new CapletsMcpSession(this.engine, selectSessionOptions(options));
     this.server = this.session.server;
   }
@@ -64,6 +69,20 @@ export class CapletsRuntime {
   watchedPaths(): string[] {
     return this.engine.watchedPaths();
   }
+}
+
+/** Test-only source seam. This function is intentionally absent from the package root exports. */
+export function createUnactivatedCapletsRuntimeForTests(
+  options: CapletsRuntimeOptions = {},
+): CapletsRuntime {
+  return new CapletsRuntime(options, CapletsEngine.unactivatedForTests(engineOptions(options)));
+}
+
+export async function createCapletsRuntime(
+  options: CapletsRuntimeOptions = {},
+): Promise<CapletsRuntime> {
+  const engine = await createCapletsEngine(engineOptions(options));
+  return new CapletsRuntime(options, engine);
 }
 
 export async function createInternalCapletsRuntime(

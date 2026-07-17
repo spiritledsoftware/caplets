@@ -386,6 +386,23 @@ describe("legacy control-plane initialization state machine", () => {
     }
   });
 
+  it("adopts a finalized legacy migration on restart without activating authority twice", async () => {
+    const fixture = legacyFixture();
+    const harness = initializationHarness(fixture.root, "sqlite");
+    try {
+      await expect(runLegacyControlPlaneInitialization(harness.options)).resolves.toMatchObject({
+        status: "migrated",
+      });
+      expect(harness.destination.state).toBe("finalized");
+      await expect(runLegacyControlPlaneInitialization(harness.options)).resolves.toMatchObject({
+        status: "already-migrated",
+      });
+      expect(harness.destination.activations).toBe(1);
+    } finally {
+      fixture.remove();
+    }
+  });
+
   it("resumes exclusion cleanup and finalization after activation", async () => {
     const fixture = legacyFixture();
     const harness = initializationHarness(

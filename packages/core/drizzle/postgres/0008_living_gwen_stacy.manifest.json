@@ -1,0 +1,36 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0008_living_gwen_stacy",
+  "order": 8,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0008_living_gwen_stacy.sql",
+    "sha256": "bc0a9a3ae439e07b1e500f6d35a7897b5b318216fa82e787cf7370c7db30af81"
+  },
+  "compatibility": {
+    "binary": { "minimum": "0.34.1", "maximumExclusive": "0.35.0" },
+    "schema": { "minimum": 1, "maximum": 3 },
+    "key": { "minimum": 1, "maximum": 1 },
+    "manifest": { "minimum": 1, "maximum": 1 }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "restore",
+    "windowSeconds": 604800,
+    "requiresVerifiedBackup": true,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "2645026dfe48c0447c3ee7c71a5c7cf44d872df3748278e700b2c5eb50f9c671"
+}

@@ -112,8 +112,14 @@ const COMPATIBILITY_COMMITMENT = Symbol("file-v1-compatibility-commitment");
 export class FileV1KeyProvider {
   readonly manifest: FileV1Manifest;
   readonly #keys: LoadedKey[];
+  readonly #activeVersions: Readonly<Partial<Record<FileV1Purpose, number>>>;
+  readonly #sqlActiveVersions: Readonly<Partial<Record<FileV1Purpose, number>>>;
 
-  constructor(manifest: FileV1Manifest, keys: LoadedKey[]) {
+  constructor(
+    manifest: FileV1Manifest,
+    keys: LoadedKey[],
+    activeVersions: Readonly<Partial<Record<FileV1Purpose, number>>> = {},
+  ) {
     this.manifest = freezeManifest(manifest);
     this.#keys = keys
       .map((key) => ({
@@ -124,6 +130,16 @@ export class FileV1KeyProvider {
         (left, right) =>
           left.purpose.localeCompare(right.purpose) || right.keyVersion - left.keyVersion,
       );
+    this.#activeVersions = Object.freeze(
+      Object.fromEntries(
+        FILE_V1_PURPOSES.map((purpose) => [
+          purpose,
+          activeVersions[purpose] ??
+            this.#keys.find((candidate) => candidate.purpose === purpose)?.keyVersion,
+        ]),
+      ),
+    );
+    this.#sqlActiveVersions = Object.freeze({ ...activeVersions });
     for (const key of this.#keys) {
       const expected = manifest.compatibilityKeys.find(
         (candidate) =>
@@ -145,8 +161,37 @@ export class FileV1KeyProvider {
     }
   }
 
+  withActiveVersions(
+    activeVersions: Readonly<Partial<Record<FileV1Purpose, number>>>,
+  ): FileV1KeyProvider {
+    for (const [purpose, keyVersion] of Object.entries(activeVersions)) {
+      if (
+        keyVersion !== undefined &&
+        !this.#keys.some((key) => key.purpose === purpose && key.keyVersion === keyVersion)
+      ) {
+        throw new CapletsError("AUTH_FAILED", "SQL-active file-v1 key material is unavailable.");
+      }
+    }
+    return new FileV1KeyProvider(this.manifest, this.#keys, {
+      ...this.#sqlActiveVersions,
+      ...activeVersions,
+    });
+  }
+
+  activeVersion(purpose: FileV1Purpose): number {
+    const activeVersion = this.#activeVersions[purpose];
+    if (activeVersion === undefined) throw keyOperationError();
+    return activeVersion;
+  }
+
   hasCapability(purpose: FileV1Purpose, operation: FileV1Operation): boolean {
-    return this.#keys.some((key) => key.purpose === purpose && key.operations.includes(operation));
+    return this.#keys.some(
+      (key) =>
+        key.purpose === purpose &&
+        (key.operations.includes(operation) ||
+          (this.#sqlActiveVersions[purpose] === key.keyVersion &&
+            operation === activeOperation(purpose))),
+    );
   }
 
   encrypt(
@@ -241,8 +286,14 @@ export class FileV1KeyProvider {
   }
 
   #activeKey(purpose: FileV1Purpose, operation: FileV1Operation): LoadedKey {
+    const activeVersion = this.activeVersion(purpose);
     const key = this.#keys.find(
-      (candidate) => candidate.purpose === purpose && candidate.operations.includes(operation),
+      (candidate) =>
+        candidate.purpose === purpose &&
+        candidate.keyVersion === activeVersion &&
+        (candidate.operations.includes(operation) ||
+          (this.#sqlActiveVersions[purpose] === activeVersion &&
+            operation === activeOperation(purpose))),
     );
     if (!key) throw keyOperationError();
     return key;
@@ -257,6 +308,17 @@ export class FileV1KeyProvider {
     );
     if (!key) throw keyOperationError();
     return key;
+  }
+}
+
+function activeOperation(purpose: FileV1Purpose): FileV1Operation {
+  switch (FILE_V1_PURPOSE_SPECS[purpose].algorithm) {
+    case "AES-256-GCM":
+      return "encrypt";
+    case "HMAC-SHA-256":
+      return "compute";
+    case "RSA-OAEP-256":
+      return "wrap";
   }
 }
 

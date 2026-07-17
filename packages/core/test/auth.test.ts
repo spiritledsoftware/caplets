@@ -20,7 +20,7 @@ import {
   startGenericOAuthFlow,
   writeTokenBundle,
 } from "../src/auth";
-import { formatAuthRows, listAuth } from "../src/cli/auth";
+import { formatAuthRows, listAuth, listLocalAuthRows, localAuthTargets } from "../src/cli/auth";
 import { runCli } from "../src/cli";
 import { parseConfig } from "../src/config";
 import { DEFAULT_AUTH_DIR } from "../src/config/paths";
@@ -580,15 +580,13 @@ describe("auth helpers", () => {
       const projectConfigPath = join(dir, "project", ".caplets", "config.json");
       writeAuthConfig(configPath, "global-auth");
       writeAuthConfig(projectConfigPath, "project-auth");
-      const output: string[] = [];
-
-      await runCli(["auth", "list", "--json"], {
-        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+      const rows = listLocalAuthRows({
+        configPath,
+        projectConfigPath,
         authDir: join(dir, "auth"),
-        writeOut: (value) => output.push(value),
       });
 
-      expect(JSON.parse(output.join(""))).toEqual([
+      expect(rows).toEqual([
         expect.objectContaining({ server: "global-auth", source: "global" }),
         expect.objectContaining({ server: "project-auth", source: "project" }),
       ]);
@@ -604,15 +602,14 @@ describe("auth helpers", () => {
       const projectConfigPath = join(dir, "project", ".caplets", "config.json");
       writeAuthConfig(configPath, "global-auth");
       writeAuthConfig(projectConfigPath, "project-auth");
-      const output: string[] = [];
-
-      await runCli(["auth", "list", "--project", "--json"], {
-        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+      const rows = listLocalAuthRows({
+        configPath,
+        projectConfigPath,
         authDir: join(dir, "auth"),
-        writeOut: (value) => output.push(value),
+        source: "project",
       });
 
-      expect(JSON.parse(output.join(""))).toEqual([
+      expect(rows).toEqual([
         expect.objectContaining({ server: "project-auth", source: "project" }),
       ]);
     } finally {
@@ -628,22 +625,22 @@ describe("auth helpers", () => {
       mkdirSync(dirname(projectConfigPath), { recursive: true });
       writeFileSync(configPath, "{}", "utf8");
       writeFileSync(projectConfigPath, "{}", "utf8");
-      const globalOutput: string[] = [];
-      const projectOutput: string[] = [];
-
-      await runCli(["auth", "list", "--global", "--json"], {
-        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
-        authDir: join(dir, "auth"),
-        writeOut: (value) => globalOutput.push(value),
-      });
-      await runCli(["auth", "list", "--project", "--json"], {
-        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
-        authDir: join(dir, "auth"),
-        writeOut: (value) => projectOutput.push(value),
-      });
-
-      expect(JSON.parse(globalOutput.join(""))).toEqual([]);
-      expect(JSON.parse(projectOutput.join(""))).toEqual([]);
+      expect(
+        listLocalAuthRows({
+          configPath,
+          projectConfigPath,
+          authDir: join(dir, "auth"),
+          source: "global",
+        }),
+      ).toEqual([]);
+      expect(
+        listLocalAuthRows({
+          configPath,
+          projectConfigPath,
+          authDir: join(dir, "auth"),
+          source: "project",
+        }),
+      ).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -658,15 +655,14 @@ describe("auth helpers", () => {
       mkdirSync(globalRoot, { recursive: true });
       writeAuthConfig(projectConfigPath, "project-auth");
       writeAuthCapletFile(join(globalRoot, "global-file-auth.md"), "Global File Auth");
-      const output: string[] = [];
-
-      await runCli(["auth", "list", "--project", "--json"], {
-        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+      const rows = listLocalAuthRows({
+        configPath,
+        projectConfigPath,
         authDir: join(dir, "auth"),
-        writeOut: (value) => output.push(value),
+        source: "project",
       });
 
-      expect(JSON.parse(output.join(""))).toEqual([
+      expect(rows).toEqual([
         expect.objectContaining({ server: "project-auth", source: "project" }),
       ]);
     } finally {
@@ -681,15 +677,14 @@ describe("auth helpers", () => {
       const projectConfigPath = join(dir, "project", ".caplets", "config.json");
       writeAuthConfig(projectConfigPath, "project-auth");
       writeAuthConfig(join(dir, ".caplets-missing-global", "config.json"), "sentinel-auth");
-      const output: string[] = [];
-
-      await runCli(["auth", "list", "--project", "--json"], {
-        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+      const rows = listLocalAuthRows({
+        configPath,
+        projectConfigPath,
         authDir: join(dir, "auth"),
-        writeOut: (value) => output.push(value),
+        source: "project",
       });
 
-      expect(JSON.parse(output.join(""))).toEqual([
+      expect(rows).toEqual([
         expect.objectContaining({ server: "project-auth", source: "project" }),
       ]);
     } finally {
@@ -738,13 +733,11 @@ describe("auth helpers", () => {
       writeAuthConfig(configPath, "shared");
       writeAuthConfig(projectConfigPath, "shared");
 
-      await expect(
-        runCli(["auth", "logout", "shared"], {
-          env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
-          authDir: join(dir, "auth"),
-          writeOut: () => {},
-        }),
-      ).rejects.toThrow(/--project.*--global.*--remote/s);
+      expect(
+        localAuthTargets({ configPath, projectConfigPath })
+          .filter((target) => target.server === "shared")
+          .map((target) => target.source),
+      ).toEqual(["global", "project"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

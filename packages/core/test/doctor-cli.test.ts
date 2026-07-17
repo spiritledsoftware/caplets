@@ -1,14 +1,99 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { dirname, join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { CloudAuthStore } from "../src/cloud-auth/store";
-import { runCli } from "../src/cli";
-import { doctorJsonReport } from "../src/cli/doctor";
+import { runCli as runCliCommand } from "../src/cli";
+import { doctorJsonReport, formatDoctorReport } from "../src/cli/doctor";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import * as configModule from "../src/config";
 import type { VaultQuarantineOutcome } from "../src/config";
+import type { ControlPlaneRuntimeSnapshot } from "../src/control-plane/snapshot";
+import type { ExposureProjection } from "../src/exposure/projection";
+
+const isolatedDoctorRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of isolatedDoctorRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function runCli(
+  args: string[],
+  io: {
+    env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+    authDir?: string;
+    fetch?: typeof fetch;
+    writeOut?: (value: string) => void;
+    writeErr?: (value: string) => void;
+  },
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "caplets-doctor-cli-isolated-"));
+  isolatedDoctorRoots.push(root);
+  const configPath = io.env?.CAPLETS_CONFIG ?? join(root, "config.json");
+  const projectConfigPath = join(root, "project", ".caplets", "config.json");
+  mkdirSync(dirname(projectConfigPath), { recursive: true });
+  if (!io.env?.CAPLETS_CONFIG) {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        serve: { storage: { kind: "sqlite", stateRoot: join(root, "sql") } },
+        httpApis: {
+          doctor_fixture: {
+            name: "Doctor fixture",
+            description: "Isolated activated doctor fixture.",
+            baseUrl: "https://doctor.example",
+            auth: { type: "none" },
+            actions: { check: { method: "GET", path: "/healthz" } },
+          },
+        },
+      }),
+    );
+    writeFileSync(projectConfigPath, "{}");
+  } else {
+    writeFileSync(projectConfigPath, "{}");
+  }
+  const effectiveConfig = configModule.parseConfig({
+    options: {
+      exposure: "progressive",
+      exposureDiscoveryTimeoutMs: 5_000,
+      exposureDiscoveryConcurrency: 4,
+    },
+    httpApis: {
+      doctor_fixture: {
+        name: "Doctor fixture",
+        description: "Isolated activated doctor fixture.",
+        baseUrl: "https://doctor.example",
+        auth: { type: "none" },
+        actions: { check: { method: "GET", path: "/healthz" } },
+      },
+    },
+  });
+  await runCliCommand(args, {
+    ...io,
+    env: {
+      XDG_CONFIG_HOME: join(root, "config-home"),
+      XDG_STATE_HOME: join(root, "state-home"),
+      XDG_CACHE_HOME: join(root, "cache-home"),
+      CAPLETS_CONFIG: configPath,
+      CAPLETS_PROJECT_CONFIG: projectConfigPath,
+      ...io.env,
+    },
+    internalDoctorRuntime: {
+      snapshot: {
+        config: effectiveConfig,
+      } as unknown as ControlPlaneRuntimeSnapshot,
+      exposure: {
+        availability: { state: "ready" },
+        entries: [],
+        hiddenCaplets: [],
+        routes: new Map(),
+      } as ExposureProjection,
+    },
+  });
+}
 
 describe("caplets doctor", () => {
   it("shows sectioned local diagnostics without stale presence wording", async () => {
@@ -448,8 +533,7 @@ describe("caplets doctor", () => {
   it("reports unresolved local Vault references with repair commands", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-vault-"));
     const configPath = join(dir, "config.json");
-    const out: string[] = [];
-    const plainOut: string[] = [];
+    const projectConfigPath = join(dir, "project", ".caplets", "config.json");
     try {
       mkdirSync(dir, { recursive: true });
       writeFileSync(
@@ -466,15 +550,17 @@ describe("caplets doctor", () => {
         }),
       );
 
-      await runCli(["doctor", "--json"], {
+      const doctorOptions = {
         env: {
           CAPLETS_CONFIG: configPath,
+          CAPLETS_PROJECT_CONFIG: projectConfigPath,
+          XDG_CONFIG_HOME: join(dir, "config-home"),
           XDG_STATE_HOME: join(dir, "state"),
+          XDG_CACHE_HOME: join(dir, "cache-home"),
         },
-        writeOut: (value) => out.push(value),
-      });
-
-      const report = JSON.parse(out.join(""));
+        cwd: dir,
+      };
+      const report = await doctorJsonReport(doctorOptions);
       expect(report.vault).toMatchObject({
         ok: false,
         issues: [
@@ -488,14 +574,8 @@ describe("caplets doctor", () => {
       });
       expect(JSON.stringify(report.vault)).not.toContain("secret");
 
-      await runCli(["doctor"], {
-        env: {
-          CAPLETS_CONFIG: configPath,
-          XDG_STATE_HOME: join(dir, "state"),
-        },
-        writeOut: (value) => plainOut.push(value),
-      });
-      expect(plainOut.join("")).toContain(
+      const plain = await formatDoctorReport(doctorOptions);
+      expect(plain).toContain(
         "github: ungranted GH_TOKEN (caplets vault access grant GH_TOKEN github)",
       );
     } finally {
@@ -716,6 +796,7 @@ describe("caplets doctor", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           cliTools: {
             workspace: {
               name: "Workspace",
@@ -734,6 +815,9 @@ describe("caplets doctor", () => {
         env: {
           CAPLETS_CONFIG: configPath,
           CAPLETS_PROJECT_CONFIG: projectConfigPath,
+          XDG_CONFIG_HOME: join(dir, "config-home"),
+          XDG_STATE_HOME: join(dir, "state-home"),
+          XDG_CACHE_HOME: join(dir, "cache-home"),
         },
         cwd: join(dir, "project"),
       });
@@ -758,6 +842,7 @@ describe("caplets doctor", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
           options: { exposureDiscoveryTimeoutMs: 100 },
           mcpServers: {
             github: {
@@ -783,6 +868,9 @@ describe("caplets doctor", () => {
         env: {
           CAPLETS_CONFIG: configPath,
           CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+          XDG_CONFIG_HOME: join(dir, "config-home"),
+          XDG_STATE_HOME: join(dir, "state-home"),
+          XDG_CACHE_HOME: join(dir, "cache-home"),
         },
       });
 
@@ -877,6 +965,93 @@ describe("caplets doctor", () => {
         observedOutputShapes: { ok: true },
       },
     });
+  });
+  it("derives activated exposure options from the effective SQL snapshot without residue reads", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-sql-authority-"));
+    const configPath = join(dir, "config.json");
+    const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+    mkdirSync(dirname(projectConfigPath), { recursive: true });
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          options: {
+            exposure: "direct",
+            exposureDiscoveryTimeoutMs: 321,
+            exposureDiscoveryConcurrency: 7,
+          },
+          httpApis: {
+            sql_api: {
+              name: "SQL API",
+              description: "Effective SQL authority.",
+              baseUrl: "https://sql.example",
+              auth: { type: "none" },
+              actions: { list: { method: "GET", path: "/items" } },
+            },
+          },
+        }),
+      );
+      writeFileSync(projectConfigPath, "{}");
+      const config = configModule.loadConfig(configPath, projectConfigPath);
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          options: {
+            exposure: "progressive",
+            exposureDiscoveryTimeoutMs: 999,
+            exposureDiscoveryConcurrency: 1,
+          },
+          httpApis: {
+            residue: {
+              name: "Filesystem residue",
+              description: "Must not be authoritative.",
+              baseUrl: "https://residue.invalid",
+              auth: { type: "none" },
+              actions: { list: { method: "GET", path: "/items" } },
+            },
+          },
+        }),
+      );
+      const snapshot = {
+        config,
+        configWithSources: { config, sources: {}, shadows: {} },
+      } as unknown as ControlPlaneRuntimeSnapshot;
+      const exposure = {
+        availability: { state: "ready" },
+        entries: [
+          {
+            kind: "direct-tool",
+            capletId: "sql_api",
+            route: { kind: "direct-tool", capletId: "sql_api", downstreamName: "list" },
+          },
+        ],
+        hiddenCaplets: [],
+      } as unknown as ExposureProjection;
+
+      const report = await doctorJsonReport({
+        env: {
+          CAPLETS_CONFIG: configPath,
+          CAPLETS_PROJECT_CONFIG: projectConfigPath,
+          XDG_CONFIG_HOME: join(dir, "config-home"),
+          XDG_STATE_HOME: join(dir, "state-home"),
+          XDG_CACHE_HOME: join(dir, "cache-home"),
+        },
+        cwd: join(dir, "project"),
+        effectiveRuntime: { snapshot, exposure },
+      });
+
+      expect(report.exposure).toMatchObject({
+        ok: true,
+        default: "direct",
+        discoveryTimeoutMs: 321,
+        discoveryConcurrency: 7,
+        callableNativeToolCount: 1,
+        caplets: [expect.objectContaining({ id: "sql_api", callable: true })],
+      });
+      expect(JSON.stringify(report.exposure)).not.toContain("residue");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

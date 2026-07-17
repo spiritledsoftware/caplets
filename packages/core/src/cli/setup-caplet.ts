@@ -1,7 +1,13 @@
-import { loadConfigWithSources, resolveConfigPath, resolveProjectConfigPath } from "../config";
+import {
+  loadConfigWithSources,
+  resolveConfigPath,
+  resolveProjectConfigPath,
+  runtimeFingerprintForConfig,
+} from "../config";
+import { createCapletsEngine } from "../engine";
 import { CapletsError } from "../errors";
 import { capletSetupContentHash } from "../setup/hash";
-import { LocalSetupStore } from "../setup/local-store";
+import { LocalSetupStore, type SetupSnapshotToken, type SetupStore } from "../setup/local-store";
 import { runCapletSetup, type SetupSpawn } from "../setup/runner";
 import type { SetupActor, SetupTargetKind } from "../setup/types";
 
@@ -13,6 +19,7 @@ export type CapletSetupCliOptions = {
   projectConfigPath?: string | undefined;
   baseDir?: string | undefined;
   spawn?: SetupSpawn;
+  env?: NodeJS.ProcessEnv | undefined;
 };
 
 export async function runCapletSetupCli(
@@ -29,78 +36,150 @@ export async function runCapletSetupCli(
 
   const configPath = options.configPath ?? resolveConfigPath();
   const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
-  const loaded = loadConfigWithSources(configPath, projectConfigPath);
-  const config = loaded.config;
-  const caplet = Object.values({
-    ...config.mcpServers,
-    ...config.openapiEndpoints,
-    ...config.googleDiscoveryApis,
-    ...config.graphqlEndpoints,
-    ...config.httpApis,
-    ...config.cliTools,
-    ...config.capletSets,
-  }).find((entry) => entry.server === capletId);
-  if (!caplet) throw new CapletsError("CONFIG_INVALID", `Unknown Caplet ID: ${capletId}`);
-  if (!caplet.setup || (!caplet.setup.commands?.length && !caplet.setup.verify?.length)) {
-    return `No setup metadata is defined for ${caplet.name} (${caplet.server}).\n`;
-  }
+  const context = await openSetupContext(options, configPath, projectConfigPath);
+  try {
+    const config = context.config;
+    const caplet = Object.values({
+      ...config.mcpServers,
+      ...config.openapiEndpoints,
+      ...config.googleDiscoveryApis,
+      ...config.graphqlEndpoints,
+      ...config.httpApis,
+      ...config.cliTools,
+      ...config.capletSets,
+    }).find((entry) => entry.server === capletId);
+    if (!caplet) throw new CapletsError("CONFIG_INVALID", `Unknown Caplet ID: ${capletId}`);
+    if (!caplet.setup || (!caplet.setup.commands?.length && !caplet.setup.verify?.length)) {
+      return `No setup metadata is defined for ${caplet.name} (${caplet.server}).\n`;
+    }
 
-  const runtimeFingerprint = loaded.runtimeFingerprint?.caplets[caplet.server];
-  const contentHash = capletSetupContentHash(runtimeFingerprint);
-  const projectFingerprint = "default";
-  const store = new LocalSetupStore(options.baseDir ? { baseDir: options.baseDir } : {});
-  const existingApproval =
-    runtimeFingerprint?.persistenceEligible === false
-      ? undefined
-      : await store.getApproval(projectFingerprint, caplet.server, contentHash, targetKind);
-  const actor: SetupActor = options.yes ? "cli-yes" : "cli-interactive";
-  if (!existingApproval && !options.yes) {
-    return [
-      `Setup approval required for ${caplet.name} (${caplet.server}).`,
-      `Content hash: ${contentHash}`,
-      `Target: ${targetKind}`,
-      "",
-      "Commands:",
-      ...formatCommands(caplet.setup.commands ?? []),
-      "Verify:",
-      ...formatCommands(caplet.setup.verify ?? []),
-      "",
-      `Run caplets setup ${caplet.server} --yes to approve and execute these exact steps.`,
-      "",
-    ].join("\n");
-  }
+    const runtimeFingerprint = context.runtimeFingerprint.caplets[caplet.server];
+    const contentHash = capletSetupContentHash(runtimeFingerprint);
+    const projectFingerprint = "default";
+    const existingApproval =
+      runtimeFingerprint?.persistenceEligible === false
+        ? undefined
+        : await context.store.getApproval(
+            projectFingerprint,
+            caplet.server,
+            contentHash,
+            targetKind,
+          );
+    const actor: SetupActor = options.yes ? "cli-yes" : "cli-interactive";
+    if (!existingApproval && !options.yes) {
+      return [
+        `Setup approval required for ${caplet.name} (${caplet.server}).`,
+        `Content hash: ${contentHash}`,
+        `Target: ${targetKind}`,
+        "",
+        "Commands:",
+        ...formatCommands(caplet.setup.commands ?? []),
+        "Verify:",
+        ...formatCommands(caplet.setup.verify ?? []),
+        "",
+        `Run caplets setup ${caplet.server} --yes to approve and execute these exact steps.`,
+        "",
+      ].join("\n");
+    }
 
-  if (options.yes && !existingApproval && runtimeFingerprint?.persistenceEligible !== false) {
-    await store.approve({
+    if (options.yes && !existingApproval && runtimeFingerprint?.persistenceEligible !== false) {
+      await context.store.approve({
+        projectFingerprint,
+        capletId: caplet.server,
+        contentHash,
+        targetKind,
+        approvedAt: new Date().toISOString(),
+        actor,
+      });
+    }
+
+    const attempts = await runCapletSetup({
       projectFingerprint,
       capletId: caplet.server,
       contentHash,
+      snapshotToken: context.snapshotToken,
+      setupHash: contentHash,
       targetKind,
-      approvedAt: new Date().toISOString(),
+      setup: caplet.setup,
       actor,
+      approved: true,
+      store: context.store,
+      ...(options.spawn ? { spawn: options.spawn } : {}),
     });
+    const failed = attempts.find((attempt) => attempt.status === "failed");
+    if (failed) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        `Setup failed for ${caplet.server}: ${failed.commandLabel}`,
+        { attempts },
+      );
+    }
+    return `Completed setup for ${caplet.name} (${caplet.server}).\n`;
+  } finally {
+    await context.close();
   }
+}
 
-  const attempts = await runCapletSetup({
-    projectFingerprint,
-    capletId: caplet.server,
-    contentHash,
-    targetKind,
-    setup: caplet.setup,
-    actor,
-    approved: true,
-    store,
-    ...(options.spawn ? { spawn: options.spawn } : {}),
-  });
-  const failed = attempts.find((attempt) => attempt.status === "failed");
-  if (failed) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      `Setup failed for ${caplet.server}: ${failed.commandLabel}`,
-      { attempts },
-    );
+async function openSetupContext(
+  options: CapletSetupCliOptions,
+  configPath: string,
+  projectConfigPath: string,
+): Promise<{
+  store: SetupStore;
+  config: ReturnType<typeof loadConfigWithSources>["config"];
+  runtimeFingerprint: ReturnType<typeof runtimeFingerprintForConfig>;
+  close: () => Promise<void>;
+  snapshotToken?: SetupSnapshotToken | undefined;
+}> {
+  // Explicit baseDir is an internal test seam for the pre-activation filesystem contract.
+  if (options.baseDir) {
+    const loaded = loadConfigWithSources(configPath, projectConfigPath);
+    return {
+      store: new LocalSetupStore({ baseDir: options.baseDir }),
+      config: loaded.config,
+      runtimeFingerprint: loaded.runtimeFingerprint ?? runtimeFingerprintForConfig(loaded.config),
+      close: async () => undefined,
+    };
   }
-  return `Completed setup for ${caplet.name} (${caplet.server}).\n`;
+  const engine = await createCapletsEngine({
+    configPath,
+    projectConfigPath,
+    watch: false,
+    env: options.env,
+  });
+  try {
+    await engine.requireLiveControlPlane("admin");
+    const store = engine.controlPlaneSecurityRepository();
+    if (!store) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Setup persistence is unavailable until SQL activation completes.",
+      );
+    }
+    const snapshot = engine.currentControlPlaneRuntimeSnapshot();
+    if (!snapshot) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Setup configuration is unavailable until SQL activation completes.",
+      );
+    }
+    return {
+      store,
+      config: snapshot.config,
+      runtimeFingerprint:
+        snapshot.configWithSources.runtimeFingerprint ??
+        runtimeFingerprintForConfig(snapshot.config),
+      close: () => engine.close(),
+      snapshotToken: {
+        authorityGeneration: snapshot.authorityGeneration,
+        effectiveGeneration: snapshot.effectiveGeneration,
+        securityEpoch: snapshot.securityEpoch,
+      },
+    };
+  } catch (error) {
+    await engine.close();
+    throw error;
+  }
 }
 
 function resolveSetupTarget(options: CapletSetupCliOptions): SetupTargetKind {

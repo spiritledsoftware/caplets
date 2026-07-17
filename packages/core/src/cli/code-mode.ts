@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defaultTelemetryStateDir } from "../config/paths";
-import { createNativeCapletsService } from "../native/service";
+import { createActivatedNativeCapletsService } from "../native/service";
 import { codeModeDeclarationHash, generateCodeModeDeclarations } from "../code-mode/declarations";
 import { runCodeMode } from "../code-mode/runner";
 import { emptyCodeModeRunMeta } from "../code-mode/tool";
@@ -10,7 +10,7 @@ import type {
   CodeModeRunEnvelope,
   CodeModeTypesJson,
 } from "../code-mode/types";
-import { CapletsEngine } from "../engine";
+import { createCapletsEngine, type CapletsEngine } from "../engine";
 
 export type CodeModeCliOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -30,7 +30,7 @@ export type CodeModeCliOptions = {
 };
 
 export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void> {
-  const service = createNativeCapletsService({
+  const service = await createActivatedNativeCapletsService({
     mode: "local",
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
@@ -144,10 +144,11 @@ export async function codeModeTypesCli(
     | "writeOut"
   >,
 ): Promise<void> {
-  const engine = new CapletsEngine({
+  const engine = await createCapletsEngine({
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
+    env: options.env,
     telemetryStateDir: options.telemetryStateDir ?? defaultTelemetryStateDir(options.env),
   });
   try {

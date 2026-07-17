@@ -31,12 +31,14 @@ async function render(
   entries: CatalogCompactEntry[],
   discoveryKey = "initial",
   onNavigate?: React.ComponentProps<typeof CatalogResults>["onNavigate"],
+  installUnavailableReason?: string,
 ) {
   await act(async () =>
     root.render(
       <CatalogResults
         discoveryKey={discoveryKey}
         visible={entries}
+        installUnavailableReason={installUnavailableReason}
         onInstall={install}
         onNavigate={onNavigate}
         onCopy={async (command, item) => {
@@ -152,6 +154,26 @@ describe("CatalogResults", () => {
       (document.querySelector('[aria-label="Install Entry 1"]') as HTMLButtonElement).click(),
     );
     expect(install).toHaveBeenCalledWith(expect.objectContaining({ entryKey: "key-1" }));
+  });
+  it("keeps an unavailable install explanation focusable without invoking the row action", async () => {
+    const reason =
+      "Live SQL authority is unavailable. Installation is disabled until storage is ready.";
+    await render([entry(1)], "initial", undefined, reason);
+    const installControl = document.querySelector<HTMLButtonElement>(
+      '[aria-label="Install Entry 1"]',
+    )!;
+
+    expect(installControl.disabled).toBe(false);
+    expect(installControl.getAttribute("aria-disabled")).toBe("true");
+    expect(installControl.title).toBe(reason);
+    installControl.focus();
+    expect(document.activeElement).toBe(installControl);
+    const reasonId = installControl.getAttribute("aria-describedby");
+    expect(reasonId).toBeTruthy();
+    expect(document.getElementById(reasonId!)?.textContent).toBe(reason);
+
+    await act(async () => installControl.click());
+    expect(install).not.toHaveBeenCalled();
   });
   it("renders server icon metadata with failure fallback and bounded safety signals", async () => {
     await render([

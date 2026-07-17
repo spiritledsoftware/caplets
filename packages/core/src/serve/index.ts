@@ -7,7 +7,7 @@ import {
 } from "../attach/api";
 import {
   createInternalNativeCapletsService,
-  createNativeCapletsService,
+  createActivatedNativeCapletsService,
   type NativeCapletsService,
 } from "../native/service";
 import { isCapletsCloudUrl } from "../remote/options";
@@ -202,7 +202,7 @@ async function createUpstreamNativeService(
   };
   return loader
     ? createInternalNativeCapletsService(options, loader)
-    : createNativeCapletsService(options);
+    : createActivatedNativeCapletsService(options);
 }
 
 function serveStackIdentity(options: Extract<ServeOptions, { transport: "http" }>): string {

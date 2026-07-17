@@ -1,11 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  watch,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runInteractiveSetup, runSetup, type SetupMcpUpsertOptions } from "../src/cli/setup";
 import { capletSetupContentHash } from "../src/setup/hash";
 import { LocalSetupStore } from "../src/setup/local-store";
-import { runCapletSetup, type SetupSpawn } from "../src/setup/runner";
+import type { SetupExecutionLease, SetupExecutionRequest } from "../src/setup/local-store";
+import { runCapletSetup, spawnCommand, type SetupSpawn } from "../src/setup/runner";
 import type { SetupAttempt, SetupTargetKind } from "../src/setup/types";
 
 describe("setup runner", () => {
@@ -122,6 +131,254 @@ describe("setup runner", () => {
     expect(store.attempts).toHaveLength(2);
   });
 
+  it("renews the execution lease while a long-running setup command completes", async () => {
+    vi.useFakeTimers();
+    try {
+      const baseStore = memoryStore();
+      const store = {
+        ...baseStore,
+        renewExecution: vi.fn(baseStore.renewExecution),
+        releaseExecution: vi.fn(baseStore.releaseExecution),
+      };
+      const started = Promise.withResolvers<void>();
+      const completed = Promise.withResolvers<void>();
+      const running = runCapletSetup({
+        projectFingerprint: "project",
+        capletId: "slow",
+        contentHash: "hash",
+        targetKind: "local_host",
+        actor: "automation",
+        approved: true,
+        setup: {
+          commands: [{ label: "Install slowly", command: "slow-install", timeoutMs: 1_000 }],
+        },
+        store,
+        spawn: async () => {
+          started.resolve();
+          await completed.promise;
+          return { exitCode: 0, stdout: "done", stderr: "", durationMs: 2_500 };
+        },
+      });
+
+      await started.promise;
+      expect(store.renewExecution).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(store.renewExecution).toHaveBeenCalledTimes(2);
+      completed.resolve();
+
+      await expect(running).resolves.toMatchObject([{ status: "succeeded", stdout: "done" }]);
+      expect(baseStore.attempts).toHaveLength(1);
+      expect(store.releaseExecution).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts and redacts a late child success when the execution lease is lost", async () => {
+    vi.useFakeTimers();
+    try {
+      const baseStore = memoryStore();
+      let renewals = 0;
+      const store = {
+        ...baseStore,
+        renewExecution: vi.fn(async (lease: SetupExecutionLease, ttlMs: number) => {
+          renewals += 1;
+          if (renewals > 1) throw new Error("setup authority lease lost");
+          return baseStore.renewExecution(lease, ttlMs);
+        }),
+        releaseExecution: vi.fn(baseStore.releaseExecution),
+      };
+      const started = Promise.withResolvers<void>();
+      const running = runCapletSetup({
+        projectFingerprint: "project",
+        capletId: "secret",
+        contentHash: "hash",
+        targetKind: "local_host",
+        actor: "automation",
+        approved: true,
+        setup: {
+          commands: [
+            {
+              label: "Install",
+              command: "secret-command",
+              args: ["argv-secret"],
+              env: { CUSTOM_VALUE: "env-secret" },
+              timeoutMs: 1_000,
+            },
+          ],
+        },
+        store,
+        spawn: async (_command, _args, options) => {
+          started.resolve();
+          const aborted = Promise.withResolvers<void>();
+          options.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+          await aborted.promise;
+          return {
+            exitCode: 0,
+            stdout: "late argv-secret env-secret success",
+            stderr: "env-secret",
+            durationMs: 2_000,
+          };
+        },
+      });
+
+      await started.promise;
+      const rejected = expect(running).rejects.toThrow("setup authority lease lost");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await rejected;
+      expect(baseStore.attempts).toHaveLength(1);
+      expect(baseStore.attempts[0]).toMatchObject({
+        status: "failed",
+        argv: ["[REDACTED]", "[REDACTED]"],
+        stdout: "",
+        stderr: "",
+        redacted: true,
+      });
+      expect(JSON.stringify(baseStore.attempts[0])).not.toMatch(
+        /secret-command|argv-secret|env-secret/u,
+      );
+      expect(store.releaseExecution).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caller abort terminates setup without leaking its renewal timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const baseStore = memoryStore();
+      const store = {
+        ...baseStore,
+        renewExecution: vi.fn(baseStore.renewExecution),
+        releaseExecution: vi.fn(baseStore.releaseExecution),
+      };
+      const started = Promise.withResolvers<void>();
+      const running = runCapletSetup({
+        projectFingerprint: "project",
+        capletId: "aborted",
+        contentHash: "hash",
+        targetKind: "local_host",
+        actor: "automation",
+        approved: true,
+        signal: controller.signal,
+        setup: {
+          commands: [{ label: "Install", command: "slow-install", timeoutMs: 1_000 }],
+        },
+        store,
+        spawn: async (_command, _args, options) => {
+          started.resolve();
+          const aborted = Promise.withResolvers<void>();
+          options.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+          await aborted.promise;
+          return { exitCode: 0, stdout: "late success", stderr: "", durationMs: 1 };
+        },
+      });
+
+      await started.promise;
+      const rejected = expect(running).rejects.toThrow("caller aborted setup");
+      controller.abort(new Error("caller aborted setup"));
+      await rejected;
+      expect(baseStore.attempts).toMatchObject([{ status: "failed", stdout: "", stderr: "" }]);
+      expect(store.releaseExecution).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("service close aborts an in-flight child and clears the renewal timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const baseStore = memoryStore();
+      let renewals = 0;
+      const store = {
+        ...baseStore,
+        renewExecution: vi.fn(async (lease: SetupExecutionLease, ttlMs: number) => {
+          renewals += 1;
+          if (renewals > 1) throw new Error("setup store closed");
+          return baseStore.renewExecution(lease, ttlMs);
+        }),
+        releaseExecution: vi.fn(baseStore.releaseExecution),
+      };
+      const started = Promise.withResolvers<void>();
+      const running = runCapletSetup({
+        projectFingerprint: "project",
+        capletId: "closed",
+        contentHash: "hash",
+        targetKind: "local_host",
+        actor: "automation",
+        approved: true,
+        setup: {
+          commands: [{ label: "Install", command: "slow-install", timeoutMs: 1_000 }],
+        },
+        store,
+        spawn: async (_command, _args, options) => {
+          started.resolve();
+          const aborted = Promise.withResolvers<void>();
+          options.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+          await aborted.promise;
+          return { exitCode: 0, stdout: "late success", stderr: "", durationMs: 2_000 };
+        },
+      });
+
+      await started.promise;
+      const rejected = expect(running).rejects.toThrow("setup store closed");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await rejected;
+      expect(baseStore.attempts).toMatchObject([{ status: "failed", stdout: "", stderr: "" }]);
+      expect(store.releaseExecution).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "caller abort terminates the full spawned process tree",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "caplets-setup-process-tree-"));
+      const readyPath = join(dir, "ready");
+      const childScript = 'require("node:net").createServer().listen(0)';
+      const parentScript = [
+        'const { spawn } = require("node:child_process");',
+        'const { writeFileSync } = require("node:fs");',
+        `const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], {`,
+        '  stdio: ["ignore", "inherit", "inherit"],',
+        "});",
+        `writeFileSync(${JSON.stringify(readyPath)}, String(child.pid));`,
+        'require("node:net").createServer().listen(0);',
+      ].join("\n");
+      const ready = Promise.withResolvers<void>();
+      const watcher = watch(dir, (_event, filename) => {
+        if (filename === "ready") ready.resolve();
+      });
+      watcher.once("error", ready.reject);
+      const controller = new AbortController();
+      try {
+        const running = spawnCommand(process.execPath, ["-e", parentScript], {
+          env: process.env,
+          timeoutMs: 10_000,
+          maxOutputBytes: 1_000,
+          signal: controller.signal,
+        });
+
+        await ready.promise;
+        controller.abort();
+        const result = await running;
+        const childPid = Number(readFileSync(readyPath, "utf8"));
+        expect(childPid).toBeGreaterThan(0);
+        expect(result.signal).toBeTruthy();
+        expect(() => process.kill(childPid, 0)).toThrow();
+      } finally {
+        watcher.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("leaves status failed when verify fails", async () => {
     const store = memoryStore();
     const attempts = await runCapletSetup({
@@ -146,7 +403,7 @@ describe("setup runner", () => {
     expect(attempts.at(-1)).toMatchObject({ phase: "verify", status: "failed" });
   });
 
-  it("caps output and redacts secret-looking env values", async () => {
+  it("caps output and redacts every resolved command env value", async () => {
     const store = memoryStore();
     const attempts = await runCapletSetup({
       projectFingerprint: "project",
@@ -160,7 +417,7 @@ describe("setup runner", () => {
           {
             label: "Install",
             command: "echo",
-            env: { API_TOKEN: "super-secret-value" },
+            env: { CUSTOM_VALUE: "super-secret-value" },
             maxOutputBytes: 12,
           },
         ],
@@ -1205,6 +1462,21 @@ function memoryStore() {
   return {
     attempts,
     retention: () => ({ maxAttempts: 3, days: 7 }),
+    reserveExecution: async (input: SetupExecutionRequest): Promise<SetupExecutionLease> => ({
+      ...input,
+      executionId: "execution",
+      leaseId: "lease",
+      expiresAt: new Date(Date.now() + input.ttlMs).toISOString(),
+    }),
+    renewExecution: async (
+      lease: SetupExecutionLease,
+      ttlMs: number,
+    ): Promise<SetupExecutionLease> => ({
+      ...lease,
+      ttlMs,
+      expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+    }),
+    releaseExecution: async (_lease: SetupExecutionLease) => undefined,
     recordAttempt: async (attempt: SetupAttempt) => {
       attempts.push(attempt);
     },

@@ -9,6 +9,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { CapletsEngine } from "../src/engine";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import type { CapletsEngineOptions } from "../src/engine";
+import type { ControlPlaneSecurityRepository } from "../src/control-plane/security/repository";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
@@ -117,6 +118,136 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("uses activated SQL credentials instead of a supplied legacy credential store", async () => {
+    const { engine } = testEngine();
+    const legacy = remoteCredentialStore();
+    const legacyValidation = vi.spyOn(legacy, "validateAccessToken");
+    const sqlValidation = vi.fn(async () => ({
+      clientId: "rcli_1234567890abcdef",
+      clientLabel: "SQL client",
+      hostUrl: "http://127.0.0.1:5387/",
+      role: "access" as const,
+      createdAt: new Date(0).toISOString(),
+      lastUsedAt: new Date(0).toISOString(),
+    }));
+    const security = {
+      validateAccessToken: sqlValidation,
+    } as unknown as ControlPlaneSecurityRepository;
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: legacy,
+      controlPlaneSecurity: security,
+    });
+
+    const response = await app.request(
+      "http://127.0.0.1:5387/v1/attach/project-bindings/missing/status",
+      { headers: { authorization: "Bearer sql-token" } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(sqlValidation).toHaveBeenCalledTimes(2);
+    expect(legacyValidation).not.toHaveBeenCalled();
+    await engine.close();
+  });
+
+  it("keeps redacted storage health readable without a dashboard session", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const response = await app.request("http://127.0.0.1:5387/dashboard/api/storage-health");
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "storage_unavailable",
+      guidanceCode: "storage-unavailable",
+    });
+    await engine.close();
+  });
+
+  it("returns actionable SQL diagnostics only through live session reauthorization", async () => {
+    const { engine } = testEngine();
+    vi.spyOn(engine, "hasActivatedControlPlaneAuthority").mockReturnValue(true);
+    const diagnostics = {
+      backend: "postgres" as const,
+      store: {
+        logicalHostId: "logical-host-diagnostics-u10",
+        storeId: "store-diagnostics-u10",
+        operationNamespace: "namespace-diagnostics-u10",
+      },
+      fingerprint: {
+        generation: 7,
+        currentFingerprint: "a".repeat(64),
+        nextFingerprint: "b".repeat(64),
+      },
+      keyCompatibility: {
+        status: "compatible" as const,
+        activeVersion: 2,
+        providerCommitmentPresent: true,
+        canaryCommitmentPresent: true,
+      },
+      readyNodes: 2,
+      overdueNodes: 0,
+    };
+    const reauthorizations: boolean[] = [];
+    const detailed = vi
+      .spyOn(engine, "controlPlaneDetailedDiagnostics")
+      .mockImplementationOnce(async (reauthorize) => {
+        reauthorizations.push(await reauthorize(), await reauthorize());
+        return diagnostics;
+      })
+      .mockRejectedValueOnce(
+        new CapletsError("SERVER_UNAVAILABLE", "Live diagnostics authorization was lost."),
+      );
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const current = await app.request("http://127.0.0.1:5387/dashboard/api/diagnostics");
+    expect(current.status).toBe(200);
+    await expect(current.json()).resolves.toEqual({
+      status: "attention",
+      diagnostics,
+      guidance: {
+        code: "activation-staged",
+        summary: "A compatible bootstrap activation is staged.",
+        actions: ["Complete or roll back the staged bootstrap activation across the Current Host."],
+      },
+    });
+    expect(reauthorizations).toEqual([true, true]);
+
+    const unavailable = await app.request("http://127.0.0.1:5387/dashboard/api/diagnostics");
+    expect(unavailable.status).toBe(503);
+    const unavailableBody = await unavailable.text();
+    expect(unavailableBody).not.toContain("logical-host-diagnostics-u10");
+    expect(unavailableBody).not.toContain("currentFingerprint");
+    expect(detailed).toHaveBeenCalledTimes(2);
+    await engine.close();
+  });
+
+  it("fails every activated live route class closed when SQL authority is unavailable", async () => {
+    const { engine } = testEngine();
+    vi.spyOn(engine, "requireLiveControlPlane").mockRejectedValue(
+      new CapletsError("SERVER_UNAVAILABLE", "SQL authority is unavailable."),
+    );
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+    const requests: Array<[string, RequestInit | undefined]> = [
+      ["/dashboard/api/summary", undefined],
+      ["/dashboard/api/activity", undefined],
+      ["/dashboard/api/catalog/install", { method: "POST" }],
+      ["/dashboard/api/vault", undefined],
+      ["/dashboard/api/session", undefined],
+      ["/dashboard/api/logout", { method: "POST" }],
+      ["/v1/attach/project-bindings/sessions", { method: "POST" }],
+      ["/v1/remote/login/start", { method: "POST" }],
+      ["/v1/attach/invoke", { method: "POST" }],
+      ["/v1/admin", { method: "POST" }],
+    ];
+
+    for (const [path, init] of requests) {
+      const response = await app.request(`http://127.0.0.1:5387${path}`, init);
+      expect(response.status, path).toBe(503);
+    }
+    await engine.close();
+  });
+
   it("rejects Basic Auth on MCP path when remote credentials are required", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(
@@ -145,7 +276,7 @@ describe("createHttpServeApp", () => {
 
   it("uses issued remote credentials for protected self-hosted route classes", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -597,7 +728,7 @@ describe("createHttpServeApp", () => {
 
   it("allows both credential roles to revoke only their own remote client", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -762,7 +893,7 @@ describe("createHttpServeApp", () => {
 
   it("requires remote credentials on control path and dispatches authenticated list requests", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -807,7 +938,7 @@ describe("createHttpServeApp", () => {
 
   it("rechecks the live Operator role before the authenticated response leaves the request boundary", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -845,7 +976,7 @@ describe("createHttpServeApp", () => {
   it("records the validated Operator client for administrative Vault mutations", async () => {
     const context = testContext();
     const authDir = tempDir("caplets-http-admin-vault-auth-");
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2084,7 +2215,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("keeps a socket authorized across token rotation", async () => {
+  it("revokes a long-lived socket when token rotation supersedes its credential", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2129,6 +2260,7 @@ describe("createHttpServeApp", () => {
           hostUrl: `${server.origin}/`,
           refreshToken: credentials.refreshToken,
         });
+        const closed = waitForSocketClose(socket);
         socket.send(
           JSON.stringify({
             type: "heartbeat",
@@ -2138,19 +2270,14 @@ describe("createHttpServeApp", () => {
             syncState: "idle",
           }),
         );
-        await withTimeout(
-          waitFor(async () => {
-            const status = await fetch(
-              `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
-              { headers: { authorization: `Bearer ${rotated.accessToken}` } },
-            );
-            await expect(status.json()).resolves.toMatchObject({
-              state: "ready",
-              syncState: "idle",
-            });
-          }),
-          "observe heartbeat after token rotation",
+        await expect(
+          withTimeout(closed, "close Project Binding socket after token rotation"),
+        ).resolves.toMatchObject({ code: 1008 });
+        const status = await fetch(
+          `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+          { headers: { authorization: `Bearer ${rotated.accessToken}` } },
         );
+        await expect(status.json()).resolves.toMatchObject({ state: "not_attached" });
       } finally {
         socket.terminate();
       }
@@ -2671,7 +2798,7 @@ describe("createHttpServeApp", () => {
 
   it("mounts authenticated control dispatch under a base path", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2708,7 +2835,7 @@ describe("createHttpServeApp", () => {
 
   it("returns a structured control error for malformed JSON", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2732,7 +2859,7 @@ describe("createHttpServeApp", () => {
 
   it("dispatches auth callback completion under the control path", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2764,7 +2891,7 @@ describe("createHttpServeApp", () => {
 
   it("hides auth callback failure details from unauthenticated browsers", async () => {
     const context = testContext();
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2802,7 +2929,7 @@ describe("createHttpServeApp", () => {
 
   it("uses the mounted control path when auth login starts under a base path containing control", async () => {
     const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
+    const engine = CapletsEngine.unactivatedForTests({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2832,7 +2959,7 @@ describe("createHttpServeApp", () => {
 
   it("uses CAPLETS_SERVER_URL public scheme for remote auth callback URLs", async () => {
     const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
+    const engine = CapletsEngine.unactivatedForTests({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2866,7 +2993,7 @@ describe("createHttpServeApp", () => {
 
   it("ignores forwarded host and proto for remote auth callback URLs by default", async () => {
     const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
+    const engine = CapletsEngine.unactivatedForTests({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2908,7 +3035,7 @@ describe("createHttpServeApp", () => {
 
   it("ignores spoofed host headers for remote auth callback URLs by default", async () => {
     const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
+    const engine = CapletsEngine.unactivatedForTests({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -2949,7 +3076,7 @@ describe("createHttpServeApp", () => {
 
   it("uses explicit public origin for auth callback URLs behind trusted proxies", async () => {
     const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
+    const engine = CapletsEngine.unactivatedForTests({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -3054,7 +3181,7 @@ describe("createHttpServeApp", () => {
     const capletPath = join(capletDir, "CAPLET.md");
     mkdirSync(capletDir, { recursive: true });
     writeFileSync(capletPath, httpReadmeCaplet("Initial operator notes."));
-    const engine = new CapletsEngine({
+    const engine = activatedTestEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
@@ -3086,7 +3213,17 @@ describe("createHttpServeApp", () => {
         },
       },
     };
-    const { engine, configPath } = testEngine(config);
+    const context = testContext(config);
+    const configPath = context.configPath;
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    vi.spyOn(engine, "requireLiveControlPlane").mockResolvedValue(undefined);
+    vi.spyOn(engine, "currentControlPlaneRuntimeSnapshot").mockReturnValue({
+      securityEpoch: 1,
+    } as never);
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
     const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
     const previous = (await manifestResponse.json()) as AttachManifest;
@@ -3173,6 +3310,94 @@ describe("createHttpServeApp", () => {
     });
     expect(discovery.links).not.toHaveProperty("attachSessions");
 
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects Attach invocation when live authority becomes unavailable before dispatch", async () => {
+    const { engine } = testEngine();
+    vi.spyOn(engine, "requireLiveControlPlane")
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(
+        new CapletsError("SERVER_UNAVAILABLE", "SQL authority is unavailable."),
+      );
+    const sessionFactory = vi.fn(() => ({
+      manifest: async () => attachManifest("default-rev", "default-tool"),
+      invoke: async () => ({ invoked: true }),
+      onManifestChanged: () => () => undefined,
+      close: async () => undefined,
+    }));
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      defaultAttachSessionFactory: sessionFactory,
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: "default-rev",
+        kind: "caplet",
+        exportId: "default-tool",
+        input: {},
+      }),
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "SERVER_UNAVAILABLE" },
+    });
+    expect(sessionFactory).not.toHaveBeenCalled();
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects revoked Attach access before creating or invoking a session", async () => {
+    const { engine } = testEngine();
+    const validateAccessToken = vi
+      .fn()
+      .mockResolvedValueOnce({
+        clientId: "rcli_1234567890abcdef",
+        clientLabel: "Access client",
+        hostUrl: "http://127.0.0.1:5387/",
+        role: "access",
+        createdAt: new Date(0).toISOString(),
+        lastUsedAt: new Date(0).toISOString(),
+      })
+      .mockRejectedValue(new CapletsError("AUTH_FAILED", "Remote client was revoked."));
+    const sessionFactory = vi.fn(() => ({
+      manifest: async () => attachManifest("default-rev", "default-tool"),
+      invoke: async () => ({ invoked: true }),
+      onManifestChanged: () => () => undefined,
+      close: async () => undefined,
+    }));
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      controlPlaneSecurity: {
+        validateAccessToken,
+      } as unknown as ControlPlaneSecurityRepository,
+      defaultAttachSessionFactory: sessionFactory,
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer revoked-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        revision: "default-rev",
+        kind: "caplet",
+        exportId: "default-tool",
+        input: {},
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.toBe("Forbidden: authorization revoked");
+    expect(validateAccessToken).toHaveBeenCalledTimes(3);
+    expect(sessionFactory).not.toHaveBeenCalled();
     await app.closeCapletsSessions();
     await engine.close();
   });
@@ -3311,7 +3536,7 @@ describe("createHttpServeApp", () => {
   it("keeps caller-enabled artifact paths out of stacked MCP and Attach results", async () => {
     const downstream = await startPdfServer();
     const upstreamContext = testContext();
-    const upstreamEngine = new CapletsEngine({
+    const upstreamEngine = activatedTestEngine({
       configPath: upstreamContext.configPath,
       projectConfigPath: upstreamContext.projectConfigPath,
       watch: false,
@@ -3396,7 +3621,7 @@ describe("createHttpServeApp", () => {
       );
       if (!captured) throw new Error("expected stacked serve wiring to capture session factories");
 
-      const wrapperEngine = new CapletsEngine(captured.engineOptions);
+      const wrapperEngine = activatedTestEngine(captured.engineOptions);
       const wrapperApp = createHttpServeApp(httpOptions({ loopback: false }), wrapperEngine, {
         writeErr: () => {},
         ...(captured.exposeAttach === undefined ? {} : { exposeAttach: captured.exposeAttach }),
@@ -3907,6 +4132,8 @@ describe("createHttpServeApp", () => {
     let downstreamToolName = "read";
     const engine = {
       onReload: () => () => undefined,
+      requireLiveControlPlane: async () => undefined,
+      currentControlPlaneRuntimeSnapshot: () => ({ securityEpoch: 1 }),
       currentExposureGeneration: () => 0,
       exposureProjection: async () => ({
         generation: 0,
@@ -4545,18 +4772,29 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
+function activatedTestEngine(
+  options: Parameters<typeof CapletsEngine.unactivatedForTests>[0],
+): CapletsEngine {
+  const engine = CapletsEngine.unactivatedForTests(options);
+  (engine as unknown as { runtimeSnapshot: { securityEpoch: number } }).runtimeSnapshot = {
+    securityEpoch: 1,
+  };
+  return engine;
+}
+
 function testEngine(config: Record<string, unknown> = {}): {
   engine: CapletsEngine;
   configPath: string;
   projectConfigPath: string;
 } {
   const context = testContext(config);
+  const engine = activatedTestEngine({
+    configPath: context.configPath,
+    projectConfigPath: context.projectConfigPath,
+    watch: false,
+  });
   return {
-    engine: new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    }),
+    engine,
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
   };

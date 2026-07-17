@@ -10,6 +10,7 @@ import { useWindowVirtualizer, type VirtualItem } from "@tanstack/react-virtual"
 import { CheckCircle2Icon, CopyIcon, DownloadIcon, ShieldCheckIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CatalogAuthorityButton } from "./CatalogAuthorityButton";
 import { catalogDetailHref } from "./catalog-route";
 import type { CatalogCompactEntry } from "./catalog-state";
 
@@ -25,6 +26,7 @@ export type CatalogResultsProps = {
   visible: CatalogCompactEntry[];
   discoveryKey: string;
   installingKey?: string;
+  installUnavailableReason?: string;
   onInstall(entry: CatalogCompactEntry): void;
   onCopy(command: string, entry: CatalogCompactEntry): Promise<void>;
   onNavigate?(event: ReactMouseEvent<HTMLElement>, entry: CatalogCompactEntry): void;
@@ -40,6 +42,7 @@ export function CatalogResults(props: CatalogResultsProps) {
 function CatalogResultsClient({
   visible,
   installingKey,
+  installUnavailableReason,
   discoveryKey,
   onInstall,
   onCopy,
@@ -129,6 +132,7 @@ function CatalogResultsClient({
                 item={item}
                 scrollMargin={virtualizer.options.scrollMargin ?? 0}
                 installing={installingKey === entry.entryKey}
+                installUnavailableReason={installUnavailableReason}
                 onInstall={onInstall}
                 onCopy={onCopy}
                 onNavigate={onNavigate}
@@ -147,6 +151,7 @@ type CatalogResultRowProps = {
   item: VirtualItem;
   scrollMargin: number;
   installing: boolean;
+  installUnavailableReason?: string;
   onInstall(entry: CatalogCompactEntry): void;
   onCopy(command: string, entry: CatalogCompactEntry): Promise<void>;
   onNavigate(event: ReactMouseEvent<HTMLElement>, entry: CatalogCompactEntry): void;
@@ -158,6 +163,7 @@ function CatalogResultRow({
   item,
   scrollMargin,
   installing,
+  installUnavailableReason,
   onInstall,
   onCopy,
   onNavigate,
@@ -283,16 +289,17 @@ function CatalogResultRow({
             {command}
           </code>
         )}
-        <Button
+        <CatalogAuthorityButton
           type="button"
           size="sm"
           disabled={installing}
+          unavailableReason={installUnavailableReason}
           onClick={() => onInstall(entry)}
           aria-label={`Install ${entry.name}`}
         >
           <DownloadIcon />
           {installing ? "Checking…" : "Install"}
-        </Button>
+        </CatalogAuthorityButton>
         {copyFailed && (
           <code
             className="w-full select-all overflow-x-auto rounded bg-muted p-2 text-xs"

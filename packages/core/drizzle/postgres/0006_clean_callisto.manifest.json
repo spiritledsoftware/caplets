@@ -1,0 +1,40 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0006_clean_callisto",
+  "order": 6,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0006_clean_callisto.sql",
+    "sha256": "212174f6a8f49b4acb483678077b784e114865804a68fcabf43fc8c994ee33ad"
+  },
+  "compatibility": {
+    "binary": { "minimum": "0.34.1", "maximumExclusive": "0.35.0" },
+    "schema": { "minimum": 1, "maximum": 3 },
+    "key": { "minimum": 1, "maximum": 1 },
+    "manifest": { "minimum": 1, "maximum": 1 }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0006_clean_callisto.down.sql",
+      "sha256": "ce49150748ea71159e172bd6682bb0a15b490ef76b4008c0846e47b89c8459bc"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "36ca548b28c18a42a41cf37cdcdc3bdc0ae79134db4ad9dbfea84e45a3a468ef"
+}

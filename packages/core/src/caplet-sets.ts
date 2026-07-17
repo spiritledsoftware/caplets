@@ -10,8 +10,10 @@ import {
   type CapletConfig,
   type CapletSetConfig,
   loadIsolatedConfig,
+  type ConfigVaultResolver,
   vaultResolverForAuthDir,
 } from "./config";
+import type { AuthTokenRepository } from "./auth/store";
 import {
   compactToolSafetyHints,
   compactToolSchemaHints,
@@ -52,6 +54,8 @@ export class CapletSetManager {
     private registry: ServerRegistry,
     private readonly options: {
       authDir?: string;
+      authTokenRepository?: AuthTokenRepository | undefined;
+      vaultResolver?: ConfigVaultResolver | undefined;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
       mediaInlineThresholdBytes?: number;
@@ -243,11 +247,15 @@ export class CapletSetManager {
         ...(config.capletsRoot ? { capletsRoot: config.capletsRoot } : {}),
         defaultSearchLimit: config.defaultSearchLimit,
         maxSearchLimit: config.maxSearchLimit,
-        vaultResolver: vaultResolverForAuthDir(this.options.authDir),
+        vaultResolver: this.options.vaultResolver ?? vaultResolverForAuthDir(this.options.authDir),
       });
       const registry = new ServerRegistry(childConfig);
       const sharedOptions = {
         ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
+        ...(this.options.authTokenRepository
+          ? { authTokenRepository: this.options.authTokenRepository }
+          : {}),
+        ...(this.options.vaultResolver ? { vaultResolver: this.options.vaultResolver } : {}),
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false
           ? { exposeLocalArtifactPaths: false }

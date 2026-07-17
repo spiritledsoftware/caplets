@@ -36,6 +36,34 @@
       "when": 1784138337292,
       "tag": "0004_condemned_cardiac",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784170885930,
+      "tag": "0005_great_matthew_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784231547024,
+      "tag": "0006_mature_bill_hollister",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1784236303625,
+      "tag": "0007_cuddly_cerebro",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1784271370371,
+      "tag": "0008_giant_shard",
+      "breakpoints": true
     }
   ]
 }

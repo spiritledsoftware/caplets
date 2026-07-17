@@ -1,0 +1,40 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0006_mature_bill_hollister",
+  "order": 6,
+  "dialect": "sqlite",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0006_mature_bill_hollister.sql",
+    "sha256": "b4776d5c1e288a395aea91c3a6137282a23561d91c3121215d26eddf85c07e1c"
+  },
+  "compatibility": {
+    "binary": { "minimum": "0.34.1", "maximumExclusive": "0.35.0" },
+    "schema": { "minimum": 1, "maximum": 3 },
+    "key": { "minimum": 1, "maximum": 1 },
+    "manifest": { "minimum": 1, "maximum": 1 }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0006_mature_bill_hollister.down.sql",
+      "sha256": "f3de6c618264aa61ba13b94063c7a740ea4a30a4c3f54228002a244e0507c7ec"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "2d05d47e1b3fea84939d48275ac2abe850dbda103bbebc64253699d5f69aad63"
+}

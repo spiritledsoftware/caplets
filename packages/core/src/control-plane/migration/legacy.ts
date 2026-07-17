@@ -12,7 +12,7 @@ import {
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { hashInstalledArtifact } from "../../cli/install";
 import {
   parseStrictJsonDocument,
@@ -32,6 +32,11 @@ import {
 export type LegacyReviewedSource = Readonly<{
   relativePath: string;
   domain: LegacyDomain;
+}>;
+
+export type LegacyPreservedSource = Readonly<{
+  relativePath: string;
+  kind: "file" | "directory";
 }>;
 
 export type VerifiedLegacyTrackedCaplet = Readonly<{
@@ -87,6 +92,7 @@ export function readVerifiedLegacyMigrationSource(
     globalLockfilePath: string;
     reviewedSources: readonly LegacyReviewedSource[];
     sealedSourceIdentities: readonly LegacySealedSourceIdentity[];
+    preservedSources?: readonly LegacyPreservedSource[];
   }>,
 ): VerifiedLegacyMigrationSource {
   const sourceResolver = createSealedSourceResolver(options);
@@ -128,7 +134,7 @@ export function readVerifiedLegacyMigrationSource(
     );
     const sourceBytes = readFileSync(sourcePath);
     const raw = parseLegacyJson(sourceBytes, source.relativePath);
-    const values = Array.isArray(raw) ? raw : [raw];
+    const values = expandCurrentLegacyDocument(source.domain, raw, source.relativePath);
     for (const [recordIndex, value] of values.entries()) {
       const mapped = mapLegacyRecord(source.domain, value, { sourcePath: source.relativePath });
       if (mapped.status === "accepted") {
@@ -165,6 +171,7 @@ export function readVerifiedLegacyMigrationSource(
     globalCapletsLogicalRoot,
     globalLockfileLogicalPath,
     reviewed,
+    preserved: options.preservedSources ?? [],
     trackedCapletLogicalRoots: lockfile.entries.map((entry) =>
       logicalLockfileDestination(globalCapletsLogicalRoot, entry),
     ),
@@ -199,6 +206,160 @@ export function readVerifiedLegacyMigrationSource(
     }),
   );
   return { trackedCaplets, records, quarantines, manifestSha256 };
+}
+
+function expandCurrentLegacyDocument(
+  domain: LegacyDomain,
+  raw: unknown,
+  sourcePath: string,
+): unknown[] {
+  if (domain === "remote-server-state" && isPlainRecord(raw)) {
+    const keys = Object.keys(raw).sort();
+    if (
+      keys.join(",") !== "clients,pairingCodes,pendingLogins,version" ||
+      raw.version !== 1 ||
+      !Array.isArray(raw.clients) ||
+      !Array.isArray(raw.pairingCodes) ||
+      !Array.isArray(raw.pendingLogins)
+    ) {
+      throw migrationRefusal(
+        `Authoritative legacy remote-server-state source ${sourcePath} is malformed`,
+      );
+    }
+    if (raw.pairingCodes.length > 0 || raw.pendingLogins.length > 0) {
+      throw migrationRefusal(
+        `Authoritative legacy remote-server-state source ${sourcePath} contains live pending authority`,
+      );
+    }
+    return raw.clients.map((client) => {
+      if (!isPlainRecord(client)) {
+        throw migrationRefusal(
+          `Authoritative legacy remote-server-state source ${sourcePath} is malformed`,
+        );
+      }
+      return {
+        serverId: client.clientId,
+        role: client.role,
+        status: client.revokedAt ? "revoked" : "active",
+        hostUrl: client.hostUrl,
+        clientLabel: client.clientLabel,
+        lastAuthenticatedAt: client.lastUsedAt,
+        revokedAt: client.revokedAt,
+      };
+    });
+  }
+  if (domain === "dashboard-session" && isPlainRecord(raw)) {
+    if (
+      Object.keys(raw).sort().join(",") !== "sessions,version" ||
+      raw.version !== 1 ||
+      !Array.isArray(raw.sessions)
+    ) {
+      throw migrationRefusal(
+        `Authoritative legacy dashboard-session source ${sourcePath} is malformed`,
+      );
+    }
+    return raw.sessions.map((session) => {
+      if (!isPlainRecord(session)) {
+        throw migrationRefusal(
+          `Authoritative legacy dashboard-session source ${sourcePath} is malformed`,
+        );
+      }
+      return {
+        id: session.sessionId,
+        clientId: session.operatorClientId,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+        absoluteExpiresAt: session.expiresAt,
+        idleExpiresAt: session.expiresAt,
+        lastSeenAt: session.lastUsedAt,
+        verifier: session.secretHash,
+        csrfVerifier: session.csrfToken,
+      };
+    });
+  }
+  if (domain === "vault-value" && isPlainRecord(raw)) {
+    const encodedName = basename(sourcePath, ".json");
+    let referenceName: string;
+    try {
+      referenceName = decodeURIComponent(encodedName);
+    } catch {
+      throw migrationRefusal(
+        `Authoritative legacy vault-value source ${sourcePath} has an invalid key name`,
+      );
+    }
+    return [{ ...raw, referenceName, keyVersion: raw.keyVersion ?? 1 }];
+  }
+  if (domain === "remote-profile" && isPlainRecord(raw)) {
+    if (typeof raw.profileKey === "string") {
+      return [
+        {
+          id: `remote-profile-selection:${raw.profileKey}`,
+          name: "Selected cloud workspace",
+          url: raw.hostUrl,
+          selectedWorkspace: raw.workspace,
+          createdAt: raw.selectedAt,
+          updatedAt: raw.selectedAt,
+        },
+      ];
+    }
+    const key = raw.key;
+    const label =
+      typeof raw.clientLabel === "string"
+        ? raw.clientLabel
+        : typeof raw.workspaceSlug === "string"
+          ? raw.workspaceSlug
+          : typeof raw.hostIdentity === "string"
+            ? raw.hostIdentity
+            : String(key);
+    return [
+      {
+        id: `remote-profile:${key}`,
+        name: label,
+        url: raw.hostUrl,
+        selectedWorkspace: raw.workspaceId,
+        createdAt: raw.createdAt,
+        updatedAt: raw.updatedAt,
+        ownerId: raw.workspaceId ?? raw.clientId,
+      },
+    ];
+  }
+  if (domain === "remote-profile-credential" && isPlainRecord(raw)) {
+    let profileId: string;
+    try {
+      profileId = decodeURIComponent(basename(sourcePath, ".json"));
+    } catch {
+      throw migrationRefusal(
+        `Authoritative legacy remote-profile-credential source ${sourcePath} has an invalid profile identity`,
+      );
+    }
+    return [
+      {
+        profileId: `remote-profile-credential:${profileId}`,
+        credential: stableJsonStringify(raw),
+        expiresAt: raw.expiresAt,
+        keyVersion: raw.keyVersion,
+        ownerId: raw.ownerId,
+      },
+    ];
+  }
+  if (domain === "cloud-auth" && isPlainRecord(raw)) {
+    return [
+      {
+        profileId: `cloud-auth:${raw.credentialFamilyId ?? raw.workspaceId}`,
+        accessToken: raw.accessToken,
+        refreshToken: raw.refreshToken,
+        expiresAt: raw.expiresAt,
+        workspace: raw.workspaceId,
+        version: raw.version,
+        keyVersion: raw.keyVersion,
+      },
+    ];
+  }
+  return Array.isArray(raw) ? raw : [raw];
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function verifyTrackedCaplet(
@@ -263,6 +424,7 @@ function assertCompleteSourceClassification(
     globalCapletsLogicalRoot: string;
     globalLockfileLogicalPath: string;
     reviewed: readonly LegacyReviewedSource[];
+    preserved: readonly LegacyPreservedSource[];
     trackedCapletLogicalRoots: readonly string[];
     sealedSourceIdentities: readonly LegacySealedSourceIdentity[];
   }>,
@@ -279,16 +441,33 @@ function assertCompleteSourceClassification(
       `reviewed ${source.domain} source`,
     ),
   }));
-  const classifiedFiles = new Set(reviewedPaths.map((source) => resolve(source.path)));
+  const preservedPaths = input.preserved.map((source) => ({
+    ...source,
+    logicalPath: normalizeLogicalSourcePath(source.relativePath, "preserved legacy source"),
+    path: input.sourceResolver.resolve(source.relativePath, source.kind, "preserved legacy source"),
+  }));
+  const classifiedFiles = new Set([
+    ...reviewedPaths.map((source) => resolve(source.path)),
+    ...preservedPaths.map((source) => resolve(source.path)),
+  ]);
   const seenLogicalIdentities = new Set<string>();
   let globalRootClassified = false;
   let lockfileClassified = false;
+  const preservedClassified = new Set<string>();
   const reviewedClassified = new Set<string>();
   const sourceClassification = [...input.sealedSourceIdentities].sort((left, right) =>
     left.relativePath.localeCompare(right.relativePath),
   );
 
   for (const identity of sourceClassification) {
+    const rootIdentity = identity.relativePath === ".";
+    if (rootIdentity) {
+      if (identity.kind !== "directory" || seenLogicalIdentities.has(".")) {
+        throw migrationRefusal("Sealed legacy source classification contains an invalid root");
+      }
+      seenLogicalIdentities.add(".");
+      continue;
+    }
     const logicalIdentity = normalizeLogicalSourcePath(
       identity.relativePath,
       "sealed source classification entry",
@@ -302,7 +481,6 @@ function assertCompleteSourceClassification(
       throw migrationRefusal("Sealed legacy source classification contains a duplicate identity");
     }
     seenLogicalIdentities.add(logicalIdentity);
-
     let classified = false;
     if (logicalIdentity === input.globalCapletsLogicalRoot && identity.kind === "directory") {
       globalRootClassified = true;
@@ -324,8 +502,23 @@ function assertCompleteSourceClassification(
       classified = true;
     }
     for (const reviewed of reviewedPaths) {
-      if (logicalIdentity === reviewed.logicalPath) {
-        reviewedClassified.add(reviewed.logicalPath);
+      if (
+        logicalIdentity === reviewed.logicalPath ||
+        (identity.kind === "directory" &&
+          logicalPathContains(logicalIdentity, reviewed.logicalPath))
+      ) {
+        if (logicalIdentity === reviewed.logicalPath) reviewedClassified.add(reviewed.logicalPath);
+        classified = true;
+      }
+    }
+    for (const preserved of preservedPaths) {
+      if (
+        (logicalIdentity === preserved.logicalPath && identity.kind === preserved.kind) ||
+        (identity.kind === "directory" &&
+          logicalPathContains(logicalIdentity, preserved.logicalPath))
+      ) {
+        if (logicalIdentity === preserved.logicalPath)
+          preservedClassified.add(preserved.logicalPath);
         classified = true;
       }
     }
@@ -337,7 +530,8 @@ function assertCompleteSourceClassification(
   if (
     !globalRootClassified ||
     !lockfileClassified ||
-    reviewedClassified.size !== reviewedPaths.length
+    reviewedClassified.size !== reviewedPaths.length ||
+    preservedClassified.size !== preservedPaths.length
   ) {
     throw migrationRefusal("Sealed legacy source classification is incomplete");
   }
@@ -432,14 +626,18 @@ function createSealedSourceResolver(
     }))
     .sort((left, right) => right.logicalPath.length - left.logicalPath.length);
   for (const [index, mapping] of mappings.entries()) {
+    const isRootMapping = mapping.logicalPath === ".";
     if (
       !mapping.logicalPath ||
       isAbsolute(mapping.logicalPath) ||
-      mapping.logicalPath.split("/").some((part) => !part || part === "." || part === "..") ||
+      (!isRootMapping &&
+        mapping.logicalPath.split("/").some((part) => !part || part === "." || part === "..")) ||
       mappings.some(
         (other, otherIndex) =>
           otherIndex !== index &&
-          (other.logicalPath === mapping.logicalPath ||
+          (isRootMapping ||
+            other.logicalPath === "." ||
+            other.logicalPath === mapping.logicalPath ||
             other.logicalPath.startsWith(`${mapping.logicalPath}/`) ||
             mapping.logicalPath.startsWith(`${other.logicalPath}/`)),
       )
@@ -468,6 +666,7 @@ function createSealedSourceResolver(
       }
       const mapping = mappings.find(
         (candidate) =>
+          candidate.logicalPath === "." ||
           logicalPath === candidate.logicalPath ||
           logicalPath.startsWith(`${candidate.logicalPath}/`),
       );
@@ -475,9 +674,11 @@ function createSealedSourceResolver(
         throw migrationRefusal(`${label} is absent from the canonical sealed source mapping`);
       }
       const suffix =
-        logicalPath === mapping.logicalPath
-          ? ""
-          : logicalPath.slice(mapping.logicalPath.length + 1);
+        mapping.logicalPath === "."
+          ? logicalPath
+          : logicalPath === mapping.logicalPath
+            ? ""
+            : logicalPath.slice(mapping.logicalPath.length + 1);
       const candidate = suffix ? resolve(mapping.sealedPath, suffix) : mapping.sealedPath;
       if (suffix)
         assertPathChainHasNoSymlink(mapping.sealedPath, suffix.split("/").join(sep), label);
@@ -953,6 +1154,7 @@ export type LegacyControlPlaneInitializationOptions = {
     globalCapletsRoot: string;
     globalLockfilePath: string;
     reviewedSources: readonly LegacyReviewedSource[];
+    preservedSources?: readonly LegacyPreservedSource[];
   }>;
   destination: LegacyInitializationDestination;
   election: LegacyMigrationElection;
@@ -1247,6 +1449,9 @@ export async function runLegacyControlPlaneInitialization(
       globalCapletsRoot: options.source.globalCapletsRoot,
       globalLockfilePath: options.source.globalLockfilePath,
       reviewedSources: options.source.reviewedSources,
+      ...(options.source.preservedSources
+        ? { preservedSources: options.source.preservedSources }
+        : {}),
       sealedSourceIdentities: exclusion.sealedSource.identities,
     });
     const initialRehash = await exclusion.verifyFinalScanAndRehash();
@@ -1296,11 +1501,8 @@ export async function runLegacyControlPlaneInitialization(
       ...source.trackedCaplets.map(
         (value): LegacyInitializationEntity => ({ kind: "tracked-caplet", value }),
       ),
-      ...protectedRecords.map(
+      ...orderedLegacyRecords(protectedRecords).map(
         (value): LegacyInitializationEntity => ({ kind: "legacy-record", value }),
-      ),
-      ...source.quarantines.map(
-        (value): LegacyInitializationEntity => ({ kind: "quarantine", value }),
       ),
     ];
     for (const [entityIndex, entity] of entities.entries()) {
@@ -1493,6 +1695,37 @@ async function protectLegacyRecords(
     protectedRecords.push(protectedRecord);
   }
   return protectedRecords;
+}
+
+export function orderedLegacyRecords(
+  records: readonly U6ProtectedLegacyRecord[],
+): U6ProtectedLegacyRecord[] {
+  return [...records].sort(
+    (left, right) =>
+      legacyEntityStageRank(left.canonical.kind) - legacyEntityStageRank(right.canonical.kind),
+  );
+}
+
+function legacyEntityStageRank(kind: string): number {
+  switch (kind) {
+    case "client":
+    case "host-setting":
+    case "oauth-token":
+    case "credential":
+    case "vault-value":
+    case "project-binding-workspace":
+    case "authority-version":
+      return 0;
+    case "dashboard-session":
+    case "vault-grant":
+    case "project-binding-lease":
+    case "project-binding-receipt":
+    case "operator-activity":
+    case "caplet-provenance":
+      return 1;
+    default:
+      return 2;
+  }
 }
 
 async function settle(action: () => Promise<void>): Promise<void> {

@@ -8,10 +8,18 @@ describe("Code Mode CLI", () => {
   const originalMode = process.env.CAPLETS_MODE;
   const originalConfigPath = process.env.CAPLETS_CONFIG;
   const originalProjectConfigPath = process.env.CAPLETS_PROJECT_CONFIG;
+  const originalConfigHome = process.env.XDG_CONFIG_HOME;
+  const originalStateHome = process.env.XDG_STATE_HOME;
+  const originalCacheHome = process.env.XDG_CACHE_HOME;
+  let isolatedHome = "";
 
   beforeEach(() => {
     process.env.CAPLETS_MODE = "local";
     delete process.env.CAPLETS_PROJECT_CONFIG;
+    isolatedHome = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-home-"));
+    process.env.XDG_CONFIG_HOME = join(isolatedHome, "config");
+    process.env.XDG_STATE_HOME = join(isolatedHome, "state");
+    process.env.XDG_CACHE_HOME = join(isolatedHome, "cache");
   });
 
   afterEach(() => {
@@ -30,6 +38,11 @@ describe("Code Mode CLI", () => {
     } else {
       process.env.CAPLETS_PROJECT_CONFIG = originalProjectConfigPath;
     }
+    restoreEnvironment("XDG_CONFIG_HOME", originalConfigHome);
+    restoreEnvironment("XDG_STATE_HOME", originalStateHome);
+    restoreEnvironment("XDG_CACHE_HOME", originalCacheHome);
+    rmSync(isolatedHome, { recursive: true, force: true });
+    isolatedHome = "";
   });
 
   it("runs inline code and prints the JSON envelope", async () => {
@@ -330,22 +343,33 @@ describe("Code Mode CLI", () => {
 
 function writeConfig(dir: string, config: Record<string, unknown>): string {
   const path = join(dir, "config.json");
-  writeFileSync(
-    path,
-    JSON.stringify(
-      Object.keys(config).length > 0
-        ? config
-        : {
-            mcpServers: {
-              placeholder: {
-                name: "Placeholder",
-                description: "Disabled placeholder.",
-                command: "node",
-                disabled: true,
-              },
+  const runtimeConfig =
+    Object.keys(config).length > 0
+      ? config
+      : {
+          mcpServers: {
+            placeholder: {
+              name: "Placeholder",
+              description: "Disabled placeholder.",
+              command: "node",
+              disabled: true,
             },
           },
-    ),
+        };
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ...runtimeConfig,
+      serve: { storage: { kind: "sqlite", stateRoot: join(dir, "sql") } },
+    }),
   );
   return path;
+}
+
+function restoreEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
 }

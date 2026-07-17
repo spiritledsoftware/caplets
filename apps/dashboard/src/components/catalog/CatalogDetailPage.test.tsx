@@ -46,19 +46,25 @@ afterEach(async () => {
   host.remove();
 });
 
-async function render(state: Parameters<typeof CatalogDetailPage>[0]["state"]) {
+async function render(
+  state: Parameters<typeof CatalogDetailPage>[0]["state"],
+  installUnavailableReason?: string,
+) {
+  const onInstall = vi.fn();
   await act(async () =>
     root.render(
       <CatalogDetailPage
         state={state}
         installing={false}
+        installUnavailableReason={installUnavailableReason}
         onRetry={vi.fn()}
         onReturn={vi.fn()}
-        onInstall={vi.fn()}
+        onInstall={onInstall}
         onCopy={vi.fn()}
       />,
     ),
   );
+  return onInstall;
 }
 
 describe("CatalogDetailPage", () => {
@@ -74,6 +80,26 @@ describe("CatalogDetailPage", () => {
     expect(repository?.protocol).toBe("https:");
     expect(repository?.rel).toContain("noopener");
     expect(repository?.rel).toContain("noreferrer");
+  });
+  it("keeps an unavailable detail install explanation focusable without installing", async () => {
+    const reason =
+      "Live SQL authority is unavailable. Installation is disabled until storage is ready.";
+    const onInstall = await render({ status: "available", detail }, reason);
+    const installControl = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent?.trim() === "Install",
+    )!;
+
+    expect(installControl.disabled).toBe(false);
+    expect(installControl.getAttribute("aria-disabled")).toBe("true");
+    expect(installControl.title).toBe(reason);
+    installControl.focus();
+    expect(document.activeElement).toBe(installControl);
+    const reasonId = installControl.getAttribute("aria-describedby");
+    expect(reasonId).toBeTruthy();
+    expect(document.getElementById(reasonId!)?.textContent).toBe(reason);
+
+    await act(async () => installControl.click());
+    expect(onInstall).not.toHaveBeenCalled();
   });
   it("offers Retry only for transient failure and Return for every unsafe state", async () => {
     await render({ status: "failed", message: "timeout" });

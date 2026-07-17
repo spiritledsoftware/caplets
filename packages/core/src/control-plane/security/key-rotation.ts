@@ -8,19 +8,25 @@ import {
   type FileV1Algorithm,
   type FileV1Purpose,
 } from "../key-provider/manifest";
-import { decodeCanonicalJson, encodeCanonicalJson } from "../schema/model-codec";
+import {
+  decodeCanonicalJson,
+  decodeCanonicalVersion,
+  encodeCanonicalJson,
+} from "../schema/model-codec";
 import type {
   ControlPlaneDatabaseRow,
   ControlPlaneSqlTransaction,
   ControlPlaneTransactionalDialect,
 } from "../store";
-import type { ControlPlaneStoreIdentity } from "../types";
+import { STORAGE_BENCHMARK_ENVELOPE } from "../storage-benchmark-envelope";
+import type { ControlPlaneStoreIdentity, ControlPlaneWriterFence } from "../types";
 
 const CANARY_AAD_VERSION = 1;
 const CANARY_LABEL_VERSION = 1;
 const RETIREMENT_PREVIEW_TTL_MS = 5 * 60_000;
 
 export type KeyInventoryState =
+  | "staged"
   | "active"
   | "decrypt-only"
   | "retired"
@@ -80,14 +86,24 @@ export type KeyRetirementResult =
 type NodeCanaryVerification = Readonly<{
   verified: boolean;
   readiness: "canary-verified" | "denied";
-  writerLease: "unavailable-until-u10";
+  writerLease: "active" | "revoked";
 }>;
+type NodeCanaryProof =
+  | Readonly<{ nodeId: string }>
+  | Readonly<{
+      nodeId: string;
+      leaseId: string;
+      writerEpoch: number;
+      authorityGeneration: number;
+    }>;
 
 export interface ControlPlaneKeyRotationManager {
   registerActiveVersion(
     input: Readonly<{
       provider: FileV1KeyProvider;
       purpose: (typeof FILE_V1_RUNTIME_PURPOSES)[number];
+      securityEpoch?: number | undefined;
+      writerFence?: ControlPlaneWriterFence | undefined;
     }>,
   ): Promise<KeyInventoryStatus>;
   verifyNodeCanary(
@@ -96,27 +112,31 @@ export interface ControlPlaneKeyRotationManager {
       purpose: (typeof FILE_V1_RUNTIME_PURPOSES)[number];
       keyVersion: number;
       provider: FileV1KeyProvider;
+      writerFence?: ControlPlaneWriterFence | undefined;
     }>,
-  ): Promise<
-    Readonly<{
-      verified: boolean;
-      readiness: "canary-verified" | "denied";
-      writerLease: "unavailable-until-u10";
-    }>
-  >;
+  ): Promise<NodeCanaryVerification>;
   activationStatus(
     input: Readonly<{
       purpose: (typeof FILE_V1_RUNTIME_PURPOSES)[number];
       keyVersion: number;
-      requiredNodeIds: readonly string[];
+      /** SQLite-only compatibility seam; Postgres always derives the live ready cohort. */
+      requiredNodeIds?: readonly string[] | undefined;
     }>,
   ): Promise<
     Readonly<{
       ready: boolean;
       missingNodeIds: readonly string[];
-      clusterActivation: "unavailable-until-u10";
+      clusterActivation: "active" | "pending";
     }>
   >;
+  activateVersion(
+    input: Readonly<{
+      purpose: (typeof FILE_V1_RUNTIME_PURPOSES)[number];
+      keyVersion: number;
+      securityEpoch?: number | undefined;
+      writerFence?: ControlPlaneWriterFence | undefined;
+    }>,
+  ): Promise<KeyInventoryStatus>;
   listInventory(): Promise<readonly KeyInventoryStatus[]>;
   advancePurgeWatermark(
     input: Readonly<{
@@ -150,6 +170,8 @@ export interface ControlPlaneKeyRotationManager {
       purpose: FileV1Purpose;
       keyVersion: number;
       authorityToken: string;
+      securityEpoch?: number | undefined;
+      writerFence?: ControlPlaneWriterFence | undefined;
       minimumPurgeWatermark: number;
     }>,
   ): Promise<KeyRetirementPreview>;
@@ -157,6 +179,8 @@ export interface ControlPlaneKeyRotationManager {
     input: Readonly<{
       preview: KeyRetirementPreview;
       authorityToken: string;
+      securityEpoch?: number | undefined;
+      writerFence?: ControlPlaneWriterFence | undefined;
     }>,
   ): Promise<KeyRetirementResult>;
   markDestructionIntended(
@@ -193,10 +217,10 @@ export function createControlPlaneKeyRotationManager(
         const rows = await inventoryRows(transaction, identity, input.purpose);
         await assertProviderOverlap(transaction, identity, input.purpose, rows, input.provider);
         const existing = rows.find((row) => row.keyVersion === entry.keyVersion);
-        if (existing && existing.state !== "active") {
+        if (existing && existing.state !== "active" && existing.state !== "staged") {
           throw new CapletsError(
             "REQUEST_INVALID",
-            "Only the active key version may be registered.",
+            "Only an active or staged key version may be registered.",
           );
         }
         if (existing) {
@@ -216,17 +240,35 @@ export function createControlPlaneKeyRotationManager(
         if (entry.keyVersion <= highest) {
           throw new CapletsError("REQUEST_INVALID", "Key versions must advance monotonically.");
         }
-        for (const row of rows) {
-          if (row.state !== "active") continue;
-          await transaction.update(
-            "keyInventory",
-            { state: "decrypt-only", decryptOnlyAt: now, updatedAt: now },
-            scope(identity, {
-              purpose: input.purpose,
-              keyVersion: row.keyVersion,
-              state: "active",
-            }),
+        if (rows.some((row) => row.state === "staged")) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "A staged key version must be activated or aborted before staging another version.",
           );
+        }
+        const stageForCluster =
+          dialect.backend === "postgres" && rows.some((row) => row.state === "active");
+        if (stageForCluster) {
+          await assertKeyMaintenanceFence(
+            transaction,
+            identity,
+            input.securityEpoch,
+            input.writerFence,
+          );
+        }
+        if (!stageForCluster) {
+          for (const row of rows) {
+            if (row.state !== "active") continue;
+            await transaction.update(
+              "keyInventory",
+              { state: "decrypt-only", decryptOnlyAt: now, updatedAt: now },
+              scope(identity, {
+                purpose: input.purpose,
+                keyVersion: row.keyVersion,
+                state: "active",
+              }),
+            );
+          }
         }
         const inventoryId = keyInventoryId(input.purpose, entry.keyVersion);
         await transaction.insert("keyInventory", {
@@ -236,7 +278,7 @@ export function createControlPlaneKeyRotationManager(
           purpose: input.purpose,
           algorithm: entry.algorithm,
           keyVersion: entry.keyVersion,
-          state: "active",
+          state: stageForCluster ? "staged" : "active",
           verifiedNodeIds: encodeCanonicalJson([]),
           purgeWatermark: 0,
           activatedAt: now,
@@ -264,7 +306,7 @@ export function createControlPlaneKeyRotationManager(
           ciphertext: canary.ciphertext,
           authTag: canary.authTag,
           verifier: canary.verifier,
-          state: "active",
+          state: stageForCluster ? "staged" : "active",
         });
         const [created] = await inventoryRows(
           transaction,
@@ -281,42 +323,24 @@ export function createControlPlaneKeyRotationManager(
 
     async verifyNodeCanary(input) {
       const nodeId = requiredNodeId(input.nodeId);
-      if (
-        !providerMatchesIdentity(input.provider, identity) ||
-        !input.provider.hasCapability(
+      const providerEligible =
+        providerMatchesIdentity(input.provider, identity) &&
+        input.provider.hasCapability(
           input.purpose,
           FILE_V1_PURPOSE_SPECS[input.purpose].algorithm === "AES-256-GCM" ? "decrypt" : "verify",
-        )
-      ) {
-        await setNodeVerification(
-          dialect,
-          identity,
-          input.purpose,
-          input.keyVersion,
-          nodeId,
-          false,
         );
-        return deniedCanaryVerification();
-      }
-      const manifestEntry = input.provider.manifest.entries.find(
-        (entry) =>
-          entry.purpose === input.purpose &&
-          entry.keyVersion === input.keyVersion &&
-          entry.algorithm === FILE_V1_PURPOSE_SPECS[input.purpose].algorithm,
-      );
-      if (!manifestEntry) {
-        await setNodeVerification(
-          dialect,
-          identity,
-          input.purpose,
-          input.keyVersion,
-          nodeId,
-          false,
-        );
-        return deniedCanaryVerification();
-      }
+      const manifestEntry = providerEligible
+        ? input.provider.manifest.entries.find(
+            (entry) =>
+              entry.purpose === input.purpose &&
+              entry.keyVersion === input.keyVersion &&
+              entry.algorithm === FILE_V1_PURPOSE_SPECS[input.purpose].algorithm,
+          )
+        : undefined;
       const verified = await dialect.runtimeTransaction(async (transaction) => {
         await transaction.lock(`key-rotation:${input.purpose}`);
+        await transaction.lock(nodeAdmissionLock(identity));
+        const now = await transaction.databaseTime();
         const [inventory] = await inventoryRows(
           transaction,
           identity,
@@ -328,42 +352,91 @@ export function createControlPlaneKeyRotationManager(
           scope(identity, {
             purpose: input.purpose,
             keyVersion: input.keyVersion,
-            state: "active",
           }),
         );
+        const currentAuthorityGeneration =
+          dialect.backend === "postgres"
+            ? await readCurrentAuthorityGeneration(transaction, identity)
+            : undefined;
+        const verifiedFenceState =
+          dialect.backend === "postgres" &&
+          input.writerFence !== undefined &&
+          input.writerFence.authorityGeneration === currentAuthorityGeneration
+            ? await writerFenceState(transaction, identity, nodeId, input.writerFence, now, true)
+            : undefined;
+        const leaseActive = dialect.backend === "sqlite" || verifiedFenceState !== undefined;
         const valid =
+          manifestEntry !== undefined &&
           inventory?.keyId === manifestEntry.keyId &&
-          inventory.state === "active" &&
+          (inventory.state === "active" || inventory.state === "staged") &&
           canary !== undefined &&
+          canary.state === inventory.state &&
+          leaseActive &&
           verifyCanary(identity, input.provider, inventory, canary);
-        const verifiedNodes = new Set(inventory ? parseStringArray(inventory.verifiedNodeIds) : []);
-        if (valid) verifiedNodes.add(nodeId);
-        else verifiedNodes.delete(nodeId);
-        if (inventory) {
+        const proofs = new Map(
+          (inventory ? parseNodeCanaryProofs(inventory.verifiedNodeIds) : []).map((proof) => [
+            proof.nodeId,
+            proof,
+          ]),
+        );
+        if (valid) {
+          proofs.set(
+            nodeId,
+            dialect.backend === "postgres"
+              ? {
+                  nodeId,
+                  leaseId: input.writerFence!.leaseId,
+                  writerEpoch: input.writerFence!.writerEpoch,
+                  authorityGeneration: input.writerFence!.authorityGeneration,
+                }
+              : { nodeId },
+          );
+        } else {
+          proofs.delete(nodeId);
+          if (dialect.backend === "sqlite" || input.writerFence) {
+            await revokeNodeAndWriterFence(transaction, identity, nodeId, now, input.writerFence);
+          }
+        }
+        if (inventory && (inventory.state === "active" || inventory.state === "staged")) {
           await transaction.update(
             "keyInventory",
             {
-              verifiedNodeIds: encodeCanonicalJson([...verifiedNodes].toSorted()),
-              updatedAt: await transaction.databaseTime(),
+              verifiedNodeIds: encodeNodeCanaryProofs([...proofs.values()]),
+              updatedAt: now,
             },
             scope(identity, {
               purpose: input.purpose,
               keyVersion: input.keyVersion,
-              state: "active",
+              state: inventory.state,
             }),
+          );
+        }
+        if (
+          valid &&
+          dialect.backend === "postgres" &&
+          input.writerFence &&
+          verifiedFenceState &&
+          !(await guardWriterFenceForCommit(
+            transaction,
+            identity,
+            nodeId,
+            input.writerFence,
+            verifiedFenceState,
+          ))
+        ) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "The key canary verification lost its writer lease before commit.",
           );
         }
         return valid;
       });
-      return {
-        verified,
-        readiness: verified ? "canary-verified" : "denied",
-        writerLease: "unavailable-until-u10",
-      };
+      return verified
+        ? { verified: true, readiness: "canary-verified", writerLease: "active" }
+        : deniedCanaryVerification();
     },
 
     async activationStatus(input) {
-      const required = [...new Set(input.requiredNodeIds.map(requiredNodeId))].toSorted();
       return dialect.snapshotTransaction(async (transaction) => {
         const [inventory] = await inventoryRows(
           transaction,
@@ -371,15 +444,192 @@ export function createControlPlaneKeyRotationManager(
           input.purpose,
           input.keyVersion,
         );
-        const verified = new Set(
-          inventory?.state === "active" ? parseStringArray(inventory.verifiedNodeIds) : [],
-        );
-        const missingNodeIds = required.filter((nodeId) => !verified.has(nodeId));
+        const proofs =
+          inventory && (inventory.state === "active" || inventory.state === "staged")
+            ? parseNodeCanaryProofs(inventory.verifiedNodeIds)
+            : [];
+        const required =
+          dialect.backend === "postgres"
+            ? await liveReadyNodeIds(transaction, identity)
+            : [...new Set((input.requiredNodeIds ?? []).map(requiredNodeId))].toSorted();
+        const missingNodeIds =
+          dialect.backend === "postgres"
+            ? await missingLiveReadyProofNodeIds(transaction, identity, required, proofs)
+            : required.filter((nodeId) => !proofs.some((proof) => proof.nodeId === nodeId));
+        const ready =
+          Boolean(inventory) &&
+          missingNodeIds.length === 0 &&
+          (dialect.backend === "sqlite" || required.length > 0);
         return {
-          ready: missingNodeIds.length === 0 && Boolean(inventory),
+          ready,
           missingNodeIds,
-          clusterActivation: "unavailable-until-u10",
+          clusterActivation: inventory?.state === "active" ? "active" : "pending",
         };
+      });
+    },
+
+    async activateVersion(input) {
+      return dialect.runtimeTransaction(async (transaction) => {
+        await transaction.lock(`key-rotation:${input.purpose}`);
+        await transaction.lock(authorityGenerationLock(identity));
+        await transaction.lock(securityEpochLock(identity));
+        await transaction.lock(nodeAdmissionLock(identity));
+        const [inventory] = await inventoryRows(
+          transaction,
+          identity,
+          input.purpose,
+          input.keyVersion,
+        );
+        if (!inventory) {
+          throw new CapletsError("CONFIG_INVALID", "Key inventory version is missing.");
+        }
+        if (inventory.state === "active") return inventoryStatus(inventory);
+        if (inventory.state !== "staged") {
+          throw new CapletsError("REQUEST_INVALID", "Key inventory version is not staged.");
+        }
+        const activeVersion = Math.max(
+          0,
+          ...(await inventoryRows(transaction, identity, input.purpose))
+            .filter((row) => row.state === "active")
+            .map((row) => row.keyVersion),
+        );
+        if (input.keyVersion <= activeVersion) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "Key activation cannot move the active version backward.",
+          );
+        }
+        const activationNodeId = input.writerFence?.leaseId.startsWith("writer:")
+          ? input.writerFence.leaseId.slice("writer:".length)
+          : undefined;
+        const activationAuthorityGeneration =
+          dialect.backend === "postgres"
+            ? await readCurrentAuthorityGeneration(transaction, identity)
+            : undefined;
+        const [security] = await transaction.select<SecurityEpochRow>(
+          "securityVersions",
+          scope(identity),
+          [{ column: "epoch", direction: "desc" }],
+          1,
+        );
+        const currentSecurityEpoch = security ? decodeCanonicalVersion(security.epoch) : 0;
+        if (
+          dialect.backend === "postgres" &&
+          (input.writerFence === undefined ||
+            input.securityEpoch === undefined ||
+            input.securityEpoch !== currentSecurityEpoch ||
+            activationNodeId === undefined ||
+            activationNodeId.length === 0 ||
+            input.writerFence.authorityGeneration !== activationAuthorityGeneration ||
+            !(await writerFenceIsLive(
+              transaction,
+              identity,
+              activationNodeId,
+              input.writerFence,
+              await transaction.databaseTime(),
+            )))
+        ) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Key activation requires a live ready-node writer fence.",
+          );
+        }
+        const required = await liveReadyNodeIds(transaction, identity);
+        const proofs = parseNodeCanaryProofs(inventory.verifiedNodeIds);
+        const finalRequired = await liveReadyNodeIds(transaction, identity);
+        const cohortChanged =
+          required.length !== finalRequired.length ||
+          required.some((nodeId, index) => nodeId !== finalRequired[index]);
+        const finalMissingNodeIds = await missingLiveReadyProofNodeIds(
+          transaction,
+          identity,
+          finalRequired,
+          proofs,
+        );
+        if (required.length === 0 || cohortChanged || finalMissingNodeIds.length > 0) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Every ready node must verify the staged key with its current writer lease before activation.",
+          );
+        }
+        const now = await transaction.databaseTime();
+        await transaction.update(
+          "keyInventory",
+          { state: "decrypt-only", decryptOnlyAt: now, updatedAt: now },
+          scope(identity, { purpose: input.purpose, state: "active" }),
+        );
+        const changed = await transaction.update(
+          "keyInventory",
+          { state: "active", activatedAt: now, updatedAt: now },
+          scope(identity, {
+            purpose: input.purpose,
+            keyVersion: input.keyVersion,
+            state: "staged",
+          }),
+        );
+        if (changed !== 1) throw new Error("Staged key activation changed concurrently");
+        await transaction.update(
+          "keyCanaries",
+          { state: "active", updatedAt: now },
+          scope(identity, {
+            purpose: input.purpose,
+            keyVersion: input.keyVersion,
+            state: "staged",
+          }),
+        );
+        const epoch = currentSecurityEpoch + 1;
+        await transaction.insert("securityVersions", {
+          ...baseRow(identity, `key-activation:${input.purpose}:${input.keyVersion}`, now),
+          securityVersion: epoch,
+          epoch,
+          minimumKeyVersion: input.keyVersion,
+          revocationWatermark: security ? decodeCanonicalVersion(security.revocationWatermark) : 0,
+          advancedAt: now,
+        });
+        if (dialect.backend === "postgres") {
+          if (!input.writerFence || activationNodeId === undefined) {
+            throw new CapletsError(
+              "SERVER_UNAVAILABLE",
+              "Key activation requires a live ready-node writer fence.",
+            );
+          }
+          const advanced = await transaction.advanceSnapshotEnvelope({
+            logicalHostId: identity.logicalHostId,
+            storeId: identity.storeId,
+            envelopeId: "control-plane",
+            capletDelta: 0,
+            normalizedRowDelta: 0,
+            encodedByteDelta: 0,
+            maxCaplets: STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets,
+            maxNormalizedRows: STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows,
+            maxEncodedBytes: STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes,
+            expectedAuthorityGeneration: activationAuthorityGeneration!,
+            expectedSecurityEpoch: epoch,
+            leaseId: input.writerFence.leaseId,
+            writerEpoch: input.writerFence.writerEpoch,
+            fenceAuthorityGeneration: input.writerFence.authorityGeneration,
+            fenceState: "active",
+          });
+          if (advanced !== 1) {
+            throw new CapletsError(
+              "SERVER_UNAVAILABLE",
+              "Key activation lost its writer fence before commit.",
+            );
+          }
+        } else {
+          const advanced = await transaction.update(
+            "snapshotEnvelopes",
+            { securityVersion: epoch, updatedAt: now },
+            scope(identity, { envelopeId: "control-plane" }),
+          );
+          if (advanced !== 1) throw new Error("Key activation snapshot envelope is missing");
+        }
+        return inventoryStatus({
+          ...inventory,
+          state: "active",
+          activatedAt: now,
+          updatedAt: now,
+        });
       });
     },
 
@@ -489,6 +739,7 @@ export function createControlPlaneKeyRotationManager(
         throw new CapletsError("REQUEST_INVALID", "Retirement watermark is invalid.");
       }
       return dialect.runtimeTransaction(async (transaction) => {
+        await transaction.lock(`key-retirement:${input.purpose}:${input.keyVersion}`);
         await transaction.lock(authorityGenerationLock(identity));
         const currentAuthorityToken = await readCurrentAuthorityToken(transaction, identity);
         if (currentAuthorityToken !== input.authorityToken) {
@@ -522,6 +773,12 @@ export function createControlPlaneKeyRotationManager(
             "Provider material remains external until destruction is separately receipted.",
           ],
         };
+        await assertKeyMaintenanceFence(
+          transaction,
+          identity,
+          input.securityEpoch,
+          input.writerFence,
+        );
         await transaction.insert("confirmations", {
           ...baseRow(identity, `confirmation:${preview.previewId}`, now),
           confirmationId: preview.previewId,
@@ -549,9 +806,11 @@ export function createControlPlaneKeyRotationManager(
       }
       return dialect.runtimeTransaction(async (transaction) => {
         const now = await transaction.databaseTime();
-        await transaction.lock(authorityGenerationLock(identity));
         await transaction.lock(`key-retirement:${preview.purpose}:${preview.keyVersion}`);
         await transaction.lock(`confirmation:${preview.previewId}`);
+        await transaction.lock(authorityGenerationLock(identity));
+        await transaction.lock(securityEpochLock(identity));
+        await transaction.lock(nodeAdmissionLock(identity));
         const [confirmation] = await transaction.select<ConfirmationRow>(
           "confirmations",
           scope(identity, { confirmationId: preview.previewId }),
@@ -580,20 +839,52 @@ export function createControlPlaneKeyRotationManager(
         if (Date.parse(confirmation.expiresAt) <= Date.parse(now)) {
           return refused("expired-preview", ["preview-expired"]);
         }
+        const retirementNodeId = input.writerFence?.leaseId.startsWith("writer:")
+          ? input.writerFence.leaseId.slice("writer:".length)
+          : undefined;
+        if (dialect.backend === "postgres") {
+          const [security] = await transaction.select<SecurityEpochRow>(
+            "securityVersions",
+            scope(identity),
+            [{ column: "epoch", direction: "desc" }],
+            1,
+          );
+          if (
+            input.writerFence === undefined ||
+            retirementNodeId === undefined ||
+            retirementNodeId.length === 0 ||
+            input.securityEpoch === undefined ||
+            !security ||
+            decodeCanonicalVersion(security.epoch) !== input.securityEpoch ||
+            input.writerFence.authorityGeneration !==
+              (await readCurrentAuthorityGeneration(transaction, identity)) ||
+            !(await writerFenceIsLive(
+              transaction,
+              identity,
+              retirementNodeId,
+              input.writerFence,
+              now,
+            ))
+          ) {
+            return refused("stale-authority", ["security-epoch", "writer-fence"]);
+          }
+        }
         const currentAuthorityToken = await readCurrentAuthorityToken(transaction, identity);
         if (
           !authorityHashMatches(confirmation.authorityToken, identity, input.authorityToken) ||
           !authorityHashMatches(confirmation.authorityToken, identity, currentAuthorityToken)
         ) {
-          await transaction.update(
-            "confirmations",
-            { state: "invalidated", consumedAt: now, updatedAt: now },
-            scope(identity, {
-              confirmationId: preview.previewId,
-              state: "previewed",
-              consumedAt: null,
-            }),
-          );
+          if (dialect.backend === "sqlite") {
+            await transaction.update(
+              "confirmations",
+              { state: "invalidated", consumedAt: now, updatedAt: now },
+              scope(identity, {
+                confirmationId: preview.previewId,
+                state: "previewed",
+                consumedAt: null,
+              }),
+            );
+          }
           return refused("stale-authority", ["authority-token"]);
         }
         const consumed = await transaction.update(
@@ -677,14 +968,31 @@ export function createControlPlaneKeyRotationManager(
         if (changed !== 1) {
           return refused("already-retired", ["inventory-state"]);
         }
-        const [retired] = await inventoryRows(
-          transaction,
-          identity,
-          stored.purpose,
-          stored.keyVersion,
-        );
-        if (!retired) throw new Error("Retired key inventory disappeared");
-        return { status: "retired", inventory: inventoryStatus(retired) } as const;
+        if (
+          dialect.backend === "postgres" &&
+          (input.writerFence === undefined ||
+            retirementNodeId === undefined ||
+            !(await guardWriterFenceForCommit(
+              transaction,
+              identity,
+              retirementNodeId,
+              input.writerFence,
+            )))
+        ) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Key retirement lost its exact writer fence before commit.",
+          );
+        }
+        return {
+          status: "retired",
+          inventory: inventoryStatus({
+            ...target,
+            state: "retired",
+            retiredAt,
+            updatedAt: retiredAt,
+          }),
+        } as const;
       });
     },
 
@@ -767,6 +1075,7 @@ type KeyCanaryRow = ControlPlaneDatabaseRow & {
   ciphertext: Buffer | null;
   authTag: Buffer | null;
   verifier: Buffer | null;
+  state: "active" | "staged";
 };
 type BackupRow = ControlPlaneDatabaseRow & {
   backupId: string;
@@ -799,7 +1108,23 @@ type RetentionRow = ControlPlaneDatabaseRow & {
   resourceId: string;
   destroyedAt: string | null;
 };
-type GenerationRow = ControlPlaneDatabaseRow & { generation: number };
+type GenerationRow = ControlPlaneDatabaseRow & { generation: number | bigint };
+type ClusterNodeRow = ControlPlaneDatabaseRow & {
+  nodeId: string;
+  state: string;
+  expiresAt: string;
+};
+type WriterFenceRow = ControlPlaneDatabaseRow & {
+  leaseId: string;
+  writerEpoch: number | bigint;
+  authorityGeneration: number | bigint;
+  state: string;
+  expiresAt: string;
+};
+type SecurityEpochRow = ControlPlaneDatabaseRow & {
+  epoch: number | bigint;
+  revocationWatermark: number | bigint;
+};
 
 type RetirementConfirmation = Readonly<{
   logicalHostId: string;
@@ -832,7 +1157,9 @@ async function assertProviderOverlap(
     throw new CapletsError("AUTH_FAILED", "Key provider lacks decrypt-only overlap capability.");
   }
   for (const row of inventory) {
-    if (row.state !== "active" && row.state !== "decrypt-only") continue;
+    if (row.state !== "active" && row.state !== "staged" && row.state !== "decrypt-only") {
+      continue;
+    }
     const manifestEntry = provider.manifest.entries.find(
       (entry) =>
         entry.purpose === purpose &&
@@ -842,7 +1169,7 @@ async function assertProviderOverlap(
     );
     const [canary] = await transaction.select<KeyCanaryRow>(
       "keyCanaries",
-      scope(identity, { purpose, keyVersion: row.keyVersion, state: "active" }),
+      scope(identity, { purpose, keyVersion: row.keyVersion }),
     );
     if (!manifestEntry || !canary || !verifyCanary(identity, provider, row, canary)) {
       throw new CapletsError(
@@ -1031,7 +1358,7 @@ function inventoryStatus(row: KeyInventoryRow): KeyInventoryStatus {
     algorithm: row.algorithm,
     keyVersion: row.keyVersion,
     state: row.state,
-    verifiedNodeIds: parseStringArray(row.verifiedNodeIds),
+    verifiedNodeIds: verifiedNodeIds(row.verifiedNodeIds),
     purgeWatermark: row.purgeWatermark,
     activatedAt: row.activatedAt,
     ...(row.decryptOnlyAt ? { decryptOnlyAt: row.decryptOnlyAt } : {}),
@@ -1154,7 +1481,7 @@ function hashRetirementInventory(inventory: RetirementInventory): string {
               keyVersion: inventory.inventory.keyVersion,
               state: inventory.inventory.state,
               purgeWatermark: inventory.inventory.purgeWatermark,
-              verifiedNodeIds: parseStringArray(inventory.inventory.verifiedNodeIds),
+              verifiedNodeIds: verifiedNodeIds(inventory.inventory.verifiedNodeIds),
             }
           : null,
         liveRecordIds: inventory.liveRecordIds,
@@ -1226,6 +1553,14 @@ function authorityGenerationLock(identity: ControlPlaneStoreIdentity): string {
   return `authority-generation:${identity.logicalHostId}:${identity.storeId}`;
 }
 
+function securityEpochLock(identity: ControlPlaneStoreIdentity): string {
+  return `security-epoch:${identity.logicalHostId}:${identity.storeId}`;
+}
+
+function nodeAdmissionLock(identity: ControlPlaneStoreIdentity): string {
+  return `node-admission:${identity.logicalHostId}:${identity.storeId}`;
+}
+
 async function readCurrentAuthorityToken(
   transaction: ControlPlaneSqlTransaction,
   identity: ControlPlaneStoreIdentity,
@@ -1290,34 +1625,225 @@ function deniedCanaryVerification(): NodeCanaryVerification {
   return {
     verified: false,
     readiness: "denied",
-    writerLease: "unavailable-until-u10",
+    writerLease: "revoked",
   };
 }
 
-async function setNodeVerification(
-  dialect: ControlPlaneTransactionalDialect,
+async function revokeNodeAndWriterFence(
+  transaction: ControlPlaneSqlTransaction,
   identity: ControlPlaneStoreIdentity,
-  purpose: FileV1Purpose,
-  keyVersion: number,
   nodeId: string,
-  verified: boolean,
+  now: string,
+  expectedFence?: ControlPlaneWriterFence | undefined,
 ): Promise<void> {
-  await dialect.runtimeTransaction(async (transaction) => {
-    await transaction.lock(`key-rotation:${purpose}`);
-    const [inventory] = await inventoryRows(transaction, identity, purpose, keyVersion);
-    if (!inventory || inventory.state !== "active") return;
-    const verifiedNodes = new Set(parseStringArray(inventory.verifiedNodeIds));
-    if (verified) verifiedNodes.add(nodeId);
-    else verifiedNodes.delete(nodeId);
-    await transaction.update(
-      "keyInventory",
-      {
-        verifiedNodeIds: encodeCanonicalJson([...verifiedNodes].toSorted()),
-        updatedAt: await transaction.databaseTime(),
-      },
-      scope(identity, { purpose, keyVersion, state: "active" }),
+  if (expectedFence) {
+    if (expectedFence.leaseId !== `writer:${nodeId}`) return;
+    const activeChanged = await transaction.update(
+      "writerFences",
+      { state: "revoked", expiresAt: now, updatedAt: now },
+      scope(identity, {
+        leaseId: expectedFence.leaseId,
+        writerEpoch: expectedFence.writerEpoch,
+        authorityGeneration: expectedFence.authorityGeneration,
+        state: "active",
+      }),
     );
+    if (activeChanged !== 1) {
+      const pendingChanged = await transaction.update(
+        "writerFences",
+        { state: "revoked", expiresAt: now, updatedAt: now },
+        scope(identity, {
+          leaseId: expectedFence.leaseId,
+          writerEpoch: expectedFence.writerEpoch,
+          authorityGeneration: expectedFence.authorityGeneration,
+          state: "pending",
+        }),
+      );
+      if (pendingChanged !== 1) return;
+    }
+  } else {
+    await transaction.update(
+      "writerFences",
+      { state: "revoked", expiresAt: now, updatedAt: now },
+      scope(identity, { leaseId: `writer:${nodeId}`, state: "active" }),
+    );
+  }
+  await transaction.update(
+    "clusterNodeLeases",
+    { state: "revoked", expiresAt: now, updatedAt: now },
+    scope(identity, { nodeId }),
+  );
+}
+
+async function readCurrentAuthorityGeneration(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+): Promise<number> {
+  const [authority] = await transaction.select<GenerationRow>(
+    "authorityVersions",
+    scope(identity),
+    [{ column: "generation", direction: "desc" }],
+    1,
+  );
+  if (!authority) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Control-plane authority is not initialized.");
+  }
+  return decodeCanonicalVersion(authority.generation);
+}
+
+async function missingLiveReadyProofNodeIds(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  requiredNodeIds: readonly string[],
+  proofs: readonly NodeCanaryProof[],
+): Promise<readonly string[]> {
+  if (requiredNodeIds.length === 0) return [];
+  const now = await transaction.databaseTime();
+  const authorityGeneration = await readCurrentAuthorityGeneration(transaction, identity);
+  const proofByNode = new Map(proofs.map((proof) => [proof.nodeId, proof]));
+  const missingNodeIds: string[] = [];
+  for (const nodeId of requiredNodeIds) {
+    const proof = proofByNode.get(nodeId);
+    if (
+      !proof ||
+      !("leaseId" in proof) ||
+      proof.authorityGeneration !== authorityGeneration ||
+      !(await writerFenceIsLive(transaction, identity, nodeId, proof, now))
+    ) {
+      missingNodeIds.push(nodeId);
+    }
+  }
+  return missingNodeIds;
+}
+
+async function liveReadyNodeIds(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+): Promise<readonly string[]> {
+  const now = await transaction.databaseTime();
+  const rows = await transaction.select<ClusterNodeRow>("clusterNodeLeases", {
+    equals: {
+      logicalHostId: identity.logicalHostId,
+      storeId: identity.storeId,
+      state: "ready",
+    },
+    greaterThan: { expiresAt: now },
   });
+  return [...new Set(rows.map((row) => requiredNodeId(row.nodeId)))].toSorted();
+}
+
+async function assertKeyMaintenanceFence(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  securityEpoch: number | undefined,
+  fence: ControlPlaneWriterFence | undefined,
+): Promise<void> {
+  if (transaction.backend === "sqlite") return;
+  await transaction.lock(authorityGenerationLock(identity));
+  await transaction.lock(securityEpochLock(identity));
+  await transaction.lock(nodeAdmissionLock(identity));
+  const nodeId = fence?.leaseId.startsWith("writer:")
+    ? fence.leaseId.slice("writer:".length)
+    : undefined;
+  const [security] = await transaction.select<SecurityEpochRow>(
+    "securityVersions",
+    scope(identity),
+    [{ column: "epoch", direction: "desc" }],
+    1,
+  );
+  const now = await transaction.databaseTime();
+  if (
+    !fence ||
+    !nodeId ||
+    securityEpoch === undefined ||
+    !security ||
+    decodeCanonicalVersion(security.epoch) !== securityEpoch ||
+    fence.authorityGeneration !== (await readCurrentAuthorityGeneration(transaction, identity)) ||
+    !(await writerFenceIsLive(transaction, identity, nodeId, fence, now)) ||
+    !(await guardWriterFenceForCommit(transaction, identity, nodeId, fence))
+  ) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Postgres key maintenance requires an exact live authority fence.",
+    );
+  }
+}
+
+async function writerFenceIsLive(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  nodeId: string,
+  fence: ControlPlaneWriterFence,
+  now: string,
+): Promise<boolean> {
+  return (await writerFenceState(transaction, identity, nodeId, fence, now, false)) === "active";
+}
+
+async function writerFenceState(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  nodeId: string,
+  fence: ControlPlaneWriterFence,
+  now: string,
+  allowPending: boolean,
+): Promise<"active" | "pending" | undefined> {
+  if (fence.leaseId !== `writer:${nodeId}`) return undefined;
+  const [node] = await transaction.select<ClusterNodeRow>(
+    "clusterNodeLeases",
+    {
+      equals: {
+        logicalHostId: identity.logicalHostId,
+        storeId: identity.storeId,
+        nodeId,
+      },
+      greaterThan: { expiresAt: now },
+    },
+    [],
+    1,
+  );
+  const [storedFence] = await transaction.select<WriterFenceRow>(
+    "writerFences",
+    {
+      equals: {
+        logicalHostId: identity.logicalHostId,
+        storeId: identity.storeId,
+        leaseId: fence.leaseId,
+        writerEpoch: fence.writerEpoch,
+        authorityGeneration: fence.authorityGeneration,
+      },
+      greaterThan: { expiresAt: now },
+    },
+    [],
+    1,
+  );
+  if (
+    !node ||
+    !storedFence ||
+    (node.state !== "ready" && (!allowPending || node.state !== "catching-up")) ||
+    (storedFence.state !== "active" && (!allowPending || storedFence.state !== "pending"))
+  ) {
+    return undefined;
+  }
+  return storedFence.state;
+}
+
+async function guardWriterFenceForCommit(
+  transaction: ControlPlaneSqlTransaction,
+  identity: ControlPlaneStoreIdentity,
+  nodeId: string,
+  fence: ControlPlaneWriterFence,
+  state: "active" | "pending" = "active",
+): Promise<boolean> {
+  if (fence.leaseId !== `writer:${nodeId}`) return false;
+  const changed = await transaction.finalWriterFenceGuard({
+    logicalHostId: identity.logicalHostId,
+    storeId: identity.storeId,
+    leaseId: fence.leaseId,
+    writerEpoch: fence.writerEpoch,
+    authorityGeneration: fence.authorityGeneration,
+    state,
+  });
+  return changed === 1;
 }
 
 function destructionCovers(
@@ -1396,12 +1922,55 @@ function requiredNodeId(nodeId: string): string {
   return nodeId;
 }
 
-function parseStringArray(value: string): string[] {
+function parseNodeCanaryProofs(value: string): NodeCanaryProof[] {
   const parsed = decodeCanonicalJson(value);
-  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
+  if (!Array.isArray(parsed)) {
     throw new CapletsError("CONFIG_INVALID", "Key node capability inventory is malformed.");
   }
-  return parsed.map((item) => item as string);
+  return parsed.map((item) => {
+    if (typeof item === "string") {
+      if (!item || item.length > 256 || item.includes("\0")) {
+        throw new CapletsError("CONFIG_INVALID", "Key node capability inventory is malformed.");
+      }
+      return { nodeId: item };
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new CapletsError("CONFIG_INVALID", "Key node capability inventory is malformed.");
+    }
+    const record = item as Record<string, unknown>;
+    if (
+      typeof record.nodeId !== "string" ||
+      !record.nodeId ||
+      record.nodeId.length > 256 ||
+      record.nodeId.includes("\0") ||
+      typeof record.leaseId !== "string" ||
+      !record.leaseId ||
+      !Number.isSafeInteger(record.writerEpoch) ||
+      (record.writerEpoch as number) < 0 ||
+      !Number.isSafeInteger(record.authorityGeneration) ||
+      (record.authorityGeneration as number) < 0
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "Key node capability inventory is malformed.");
+    }
+    return {
+      nodeId: record.nodeId,
+      leaseId: record.leaseId,
+      writerEpoch: record.writerEpoch as number,
+      authorityGeneration: record.authorityGeneration as number,
+    };
+  });
+}
+
+function encodeNodeCanaryProofs(proofs: readonly NodeCanaryProof[]): string {
+  return encodeCanonicalJson(
+    proofs
+      .toSorted((left, right) => left.nodeId.localeCompare(right.nodeId))
+      .map((proof) => ("leaseId" in proof ? proof : proof.nodeId)),
+  );
+}
+
+function verifiedNodeIds(value: string): string[] {
+  return [...new Set(parseNodeCanaryProofs(value).map((proof) => proof.nodeId))].toSorted();
 }
 
 function bytes(value: unknown): Buffer {
@@ -1433,5 +2002,11 @@ function scope(
   identity: ControlPlaneStoreIdentity,
   equals: Readonly<Record<string, unknown>> = {},
 ) {
-  return { equals: { logicalHostId: identity.logicalHostId, ...equals } } as const;
+  return {
+    equals: {
+      logicalHostId: identity.logicalHostId,
+      storeId: identity.storeId,
+      ...equals,
+    },
+  } as const;
 }

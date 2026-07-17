@@ -1,8 +1,19 @@
 import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { extname, join, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { CurrentHostAuthorityToken } from "../../current-host/operations";
 import { CapletsError } from "../../errors";
 import { stableJsonStringify } from "../../stable-json";
+import {
+  type CanonicalCapletAggregate,
+  type CanonicalCapletRelationalProjection,
+  type PortableAssetRole,
+  type PortableBackendKind,
+  type PortableJson,
+} from "../caplets/model";
+import { portableCapletFromCapletDocument } from "../caplets/portable-codec";
+import { writeCanonicalCapletRows } from "../caplets/repository";
 import type {
   ControlPlaneDatabaseRow,
   ControlPlaneSqlTransaction,
@@ -35,6 +46,7 @@ import type {
   U6ProtectedLegacyRecord,
   VerifiedLegacyMigrationSource,
 } from "./legacy";
+import { orderedLegacyRecords } from "./legacy";
 import {
   canonicalFields,
   type CanonicalFieldDefinition,
@@ -134,9 +146,16 @@ export type ControlPlaneCatastrophicPersistence = Readonly<{
   readRestoredSqlMarker(recoveryId: string): Promise<RestoredSqlMarker | undefined>;
 }>;
 
+export type ControlPlaneInitializationJournal = Readonly<{
+  kind: "fresh" | "legacy";
+  migrationId: string;
+  state: "inactive" | "active" | "finalized";
+}>;
+
 export type ControlPlaneMigrationPersistence = Readonly<{
   legacyDestination: LegacyInitializationDestination;
   election: ControlPlaneMigrationElection;
+  inspectInitializationJournal(): Promise<ControlPlaneInitializationJournal | undefined>;
   recoveryBackupLifecycle: RecoveryBackupLifecyclePort;
   backupLifecycle: BackupLifecycleLedgerPort;
   restore: ControlPlaneRestorePersistence;
@@ -299,6 +318,9 @@ const ENTITY_TABLES: Readonly<Record<ControlPlaneEntityKind, ControlPlaneTable>>
   "project-binding-workspace": "projectBindingWorkspaces",
   "project-binding-lease": "projectBindingLeases",
   "project-binding-receipt": "projectBindingReceipts",
+  "setup-approval": "setupApprovals",
+  "setup-execution": "setupExecutions",
+  "setup-attempt": "setupAttempts",
   "vault-value": "vaultValues",
   "vault-grant": "vaultGrants",
   "operator-activity": "operatorActivities",
@@ -309,6 +331,7 @@ const ENTITY_TABLES: Readonly<Record<ControlPlaneEntityKind, ControlPlaneTable>>
   "key-canary": "keyCanaries",
   "cluster-node-lease": "clusterNodeLeases",
   "writer-fence": "writerFences",
+  "snapshot-envelope": "snapshotEnvelopes",
   migration: "migrations",
   backup: "backups",
   recovery: "recoveries",
@@ -473,6 +496,42 @@ export function createControlPlaneMigrationPersistence(
     },
   };
 
+  const inspectInitializationJournal = async (): Promise<
+    ControlPlaneInitializationJournal | undefined
+  > => {
+    const inspect = async (
+      transaction: ControlPlaneSqlTransaction,
+    ): Promise<ControlPlaneInitializationJournal | undefined> => {
+      const rows = await transaction.select<MigrationRow>("migrations", scope(identity));
+      const journals = rows
+        .filter(
+          (row) =>
+            (row.migrationId === "fresh-v1" || row.migrationId === "legacy-v1") &&
+            row.phase !== "rolled-back",
+        )
+        .map((row) => {
+          const document = requireMigrationDocument(row.stateDocument);
+          return {
+            kind: document.metadata.kind,
+            migrationId: document.migrationId,
+            state:
+              document.step === "finalized"
+                ? ("finalized" as const)
+                : document.step === "activated"
+                  ? ("active" as const)
+                  : ("inactive" as const),
+          };
+        });
+      if (journals.length > 1) {
+        throw persistenceError("Control-plane initialization journals conflict.");
+      }
+      return journals[0];
+    };
+    return dialect.metadataReadTransaction
+      ? dialect.metadataReadTransaction(inspect)
+      : dialect.maintenanceTransaction(inspect);
+  };
+
   const legacyDestination = createLegacyDestination(options);
   const election = createMigrationElection(options, nodeId, leaseMs);
   const restore = createRestorePersistence(options);
@@ -480,6 +539,7 @@ export function createControlPlaneMigrationPersistence(
   return {
     legacyDestination,
     election,
+    inspectInitializationJournal,
     recoveryBackupLifecycle,
     backupLifecycle,
     restore,
@@ -662,7 +722,12 @@ function createLegacyDestination(
           }
           return;
         }
-        await assertDestinationBootstrapOnly(transaction, identity);
+        await assertDestinationBootstrapOnly(
+          transaction,
+          identity,
+          metadata.kind === "legacy" ? metadata.protectedBundleId : undefined,
+          dialect.backend,
+        );
       });
     },
     async beginInactive({ operation, metadata }) {
@@ -1273,26 +1338,16 @@ async function stageLegacyEntity(
   if (entity.kind === "tracked-caplet") {
     const { entry, installedHash } = entity.value;
     const provenanceId = `legacy-provenance:${entry.id}`;
-    const common = baseRow(identity, entry.id, now, versions, entry.installedAt);
-    const caplet = {
-      ...common,
-      updatedAt: entry.updatedAt,
-      name: entry.id,
-      description: `Migrated global Caplet at ${entry.destination}`,
-      ownership: "global",
-      activation: "active",
-      effective: true,
-      updateState: "current",
-      portableAggregateId: entry.id,
-      installationProvenanceId: provenanceId,
-    };
+    const portable = portableTrackedCaplet(entity.value.sourcePath, entry, now, versions);
     const provenance = {
       ...baseRow(identity, provenanceId, now, versions, entry.installedAt),
       updatedAt: entry.updatedAt,
       capletId: entry.id,
       sourceKind: entry.source.type,
       source: entry.source,
-      contentHash: installedHash,
+      contentHash: installedHash.startsWith("sha256:")
+        ? installedHash.slice("sha256:".length)
+        : installedHash,
       ...(entry.runtimeFingerprint
         ? { runtimeFingerprint: entry.runtimeFingerprint.artifactFingerprint }
         : {}),
@@ -1302,9 +1357,27 @@ async function stageLegacyEntity(
         : {}),
       riskSummary: entry.risk,
     };
-    validateCanonicalEntityShape("caplet", caplet);
+    validateCanonicalEntityShape("caplet", {
+      ...baseRow(identity, entry.id, now, versions, entry.installedAt),
+      name: portable.aggregate.portable.name,
+      description: portable.aggregate.portable.description,
+      ownership: portable.aggregate.ownership,
+      activation: portable.aggregate.activation,
+      effective: portable.aggregate.effective,
+      updateState: portable.aggregate.updateState,
+      portableAggregateId: entry.id,
+      installationProvenanceId: provenanceId,
+    });
     validateCanonicalEntityShape("caplet-provenance", provenance);
-    await transaction.insert("caplets", encodeCanonicalRow(transaction, "caplet", caplet));
+    await writeCanonicalCapletRows(transaction, {
+      identity,
+      aggregate: portable.aggregate,
+      projection: portable.projection,
+      now,
+      authorityGeneration: versions.authorityGeneration,
+      effectiveGeneration: versions.effectiveGeneration,
+      securityEpoch: versions.securityEpoch,
+    });
     await transaction.insert(
       "capletProvenance",
       encodeCanonicalRow(transaction, "caplet-provenance", provenance),
@@ -1313,10 +1386,11 @@ async function stageLegacyEntity(
   }
   const canonicalRecord = entity.value.canonical;
   const table = ENTITY_TABLES[canonicalRecord.kind];
-  const values = canonical({ ...canonicalRecord.identity, ...canonicalRecord.fields }) as Record<
-    string,
-    unknown
-  >;
+  const values = Object.fromEntries(
+    Object.entries({ ...canonicalRecord.identity, ...canonicalRecord.fields }).filter(
+      ([, value]) => value !== undefined,
+    ),
+  ) as Record<string, unknown>;
   for (const key of ["logicalHostId", "storeId"] as const) {
     if (typeof values[key] === "string" && values[key] !== identity[key]) {
       throw persistenceError("Legacy entity targets another store.");
@@ -1334,6 +1408,214 @@ async function stageLegacyEntity(
   };
   validateCanonicalEntityShape(canonicalRecord.kind, row);
   await transaction.insert(table, encodeCanonicalRow(transaction, canonicalRecord.kind, row));
+}
+
+type TrackedCapletEntry = Extract<
+  LegacyInitializationEntity,
+  { kind: "tracked-caplet" }
+>["value"]["entry"];
+
+const PORTABLE_BACKEND_SOURCE_KINDS: Readonly<
+  Record<string, Exclude<PortableBackendKind, "mixed">>
+> = Object.freeze({
+  mcpServer: "mcp",
+  mcpServers: "mcp",
+  openapiEndpoint: "openapi",
+  openapiEndpoints: "openapi",
+  googleDiscoveryApi: "googleDiscovery",
+  googleDiscoveryApis: "googleDiscovery",
+  graphqlEndpoint: "graphql",
+  graphqlEndpoints: "graphql",
+  httpApi: "http",
+  httpApis: "http",
+  cliTools: "cli",
+  capletSet: "caplets",
+  capletSets: "caplets",
+});
+
+function portableTrackedCaplet(
+  sourcePath: string,
+  entry: TrackedCapletEntry,
+  now: string,
+  versions: VersionState,
+): Readonly<{
+  aggregate: CanonicalCapletAggregate;
+  projection: CanonicalCapletRelationalProjection;
+}> {
+  const entryPath = entry.kind === "directory" ? join(sourcePath, "CAPLET.md") : sourcePath;
+  const text = readFileSync(entryPath, "utf8");
+  const portable = portableCapletFromCapletDocument({
+    id: entry.id,
+    path: entry.kind === "directory" ? "CAPLET.md" : entry.destination,
+    text,
+    files: entry.kind === "directory" ? listPortableMigrationFiles(sourcePath, entryPath) : [],
+  });
+  const aggregate: CanonicalCapletAggregate = {
+    modelVersion: 1,
+    id: entry.id,
+    aggregateVersion: 0,
+    ownership: "sql",
+    activation: "active",
+    effective: true,
+    portable,
+    installationProvenanceId: `legacy-provenance:${entry.id}`,
+    updateState: "current",
+  };
+  const projection: CanonicalCapletRelationalProjection = {
+    capletId: entry.id,
+    sourceFrontmatter: portable.frontmatter.source,
+    body: portable.body,
+    backends: portableBackendRows(entry.id, portable.frontmatter.backend),
+    assets: portable.assets.map((asset, ordinal) => ({
+      capletId: entry.id,
+      ordinal,
+      path: asset.path,
+      role: asset.role,
+      mediaType: asset.mediaType,
+      content: Buffer.from(asset.content, "base64"),
+      contentHash: asset.contentHash,
+    })),
+    references: portable.references.map((reference, ordinal) => ({
+      capletId: entry.id,
+      ordinal,
+      reference,
+    })),
+    activationHistory: [
+      {
+        capletId: entry.id,
+        sequence: 1,
+        from: "absent",
+        to: "active",
+        reason: "imported",
+        actorId: "legacy-migration",
+        aggregateVersion: 0,
+        authorityVersion: versions.authorityGeneration,
+        effectiveVersion: versions.effectiveGeneration,
+        occurredAt: now,
+      },
+    ],
+  };
+  return { aggregate, projection };
+}
+
+function portableBackendRows(
+  capletId: string,
+  backend: CanonicalCapletAggregate["portable"]["frontmatter"]["backend"],
+): CanonicalCapletRelationalProjection["backends"] {
+  if (!isPlainObject(backend.config)) {
+    throw persistenceError("Migrated Caplet backend configuration is malformed.");
+  }
+  const singularFields = new Set([
+    "mcpServer",
+    "openapiEndpoint",
+    "googleDiscoveryApi",
+    "graphqlEndpoint",
+    "httpApi",
+    "capletSet",
+  ]);
+  const rows: Array<CanonicalCapletRelationalProjection["backends"][number]> = [];
+  for (const [sourceField, sourceConfig] of Object.entries(backend.config)) {
+    const kind = PORTABLE_BACKEND_SOURCE_KINDS[sourceField];
+    if (!kind || (backend.kind !== "mixed" && kind !== backend.kind)) continue;
+    if (singularFields.has(sourceField)) {
+      if (!isPlainObject(sourceConfig)) {
+        throw persistenceError(`Migrated ${sourceField} configuration is malformed.`);
+      }
+      rows.push({ capletId, ordinal: rows.length, kind, config: sourceConfig });
+      continue;
+    }
+    if (!isPlainObject(sourceConfig)) {
+      throw persistenceError(`Migrated ${sourceField} configuration is malformed.`);
+    }
+    for (const [childId, childConfig] of Object.entries(sourceConfig)) {
+      if (!isPlainObject(childConfig)) {
+        throw persistenceError(`Migrated ${sourceField}.${childId} configuration is malformed.`);
+      }
+      rows.push({
+        capletId,
+        ordinal: rows.length,
+        childId,
+        kind,
+        config: childConfig,
+      });
+    }
+  }
+  if (rows.length === 0) {
+    throw persistenceError("Migrated Caplet has no supported backend projection.");
+  }
+  return rows;
+}
+
+function listPortableMigrationFiles(
+  root: string,
+  entryPath: string,
+): Array<{
+  path: string;
+  role: PortableAssetRole;
+  mediaType: string;
+  content: Uint8Array;
+  sourceKind: "file";
+}> {
+  const files: ReturnType<typeof listPortableMigrationFiles> = [];
+  const visit = (path: string): void => {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink()) {
+      throw persistenceError("Migrated Caplet source contains a symbolic link.");
+    }
+    if (stats.isDirectory()) {
+      for (const entry of readdirSync(path).sort()) visit(join(path, entry));
+      return;
+    }
+    if (!stats.isFile()) {
+      throw persistenceError("Migrated Caplet source contains an unsupported file kind.");
+    }
+    if (path === entryPath) return;
+    const logicalPath = relative(root, path).split(/[\\/]/u).join("/");
+    files.push({
+      path: logicalPath,
+      role: portableAssetRole(logicalPath),
+      mediaType: portableMediaType(logicalPath),
+      content: readFileSync(path),
+      sourceKind: "file",
+    });
+  };
+  visit(root);
+  return files;
+}
+
+function portableAssetRole(path: string): PortableAssetRole {
+  const extension = extname(path).toLowerCase();
+  if (extension === ".graphql" || extension === ".gql") return "graphql-operation";
+  if (extension === ".json" || extension === ".yaml" || extension === ".yml") return "config";
+  return "asset";
+}
+
+function portableMediaType(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case ".json":
+      return "application/json";
+    case ".yaml":
+    case ".yml":
+      return "application/yaml";
+    case ".graphql":
+    case ".gql":
+      return "application/graphql";
+    case ".md":
+      return "text/markdown";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function isPlainObject(value: PortableJson): value is Record<string, PortableJson> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function readInventory(
@@ -1706,18 +1988,55 @@ function legacyBackupInventoryRecord(
 async function assertDestinationBootstrapOnly(
   transaction: ControlPlaneSqlTransaction,
   identity: ControlPlaneStoreIdentity,
+  protectedBundleId: string | undefined,
+  backend: "sqlite" | "postgres",
 ): Promise<void> {
-  const allowed = new Set<ControlPlaneTable>([
-    "migrations",
-    "operationNamespaces",
-    "authorityVersions",
-    "effectiveVersions",
-    "securityVersions",
-  ]);
-  for (const table of new Set(Object.values(ENTITY_TABLES))) {
-    if (allowed.has(table)) continue;
-    if ((await transaction.select(table, scope(identity), [], 1)).length > 0) {
-      throw persistenceError(`Migration destination contains authoritative ${table} rows.`);
+  const allowed: Partial<Record<ControlPlaneTable, true>> = {
+    migrations: true,
+    operationNamespaces: true,
+    authorityVersions: true,
+    effectiveVersions: true,
+    securityVersions: true,
+    backups: true,
+    snapshotEnvelopes: true,
+  };
+  if (transaction.migrationDestinationContainsAuthoritativeRows) {
+    if (
+      await transaction.migrationDestinationContainsAuthoritativeRows(
+        identity.logicalHostId,
+        identity.storeId,
+      )
+    ) {
+      throw persistenceError("Migration destination contains authoritative application rows.");
+    }
+  } else if (transaction.backend === "postgres") {
+    throw persistenceError("Postgres migration destination proof is unavailable.");
+  } else {
+    for (const table of new Set(Object.values(ENTITY_TABLES))) {
+      if (allowed[table]) continue;
+      if ((await transaction.select(table, scope(identity), [], 1)).length > 0) {
+        throw persistenceError(`Migration destination contains authoritative ${table} rows.`);
+      }
+    }
+  }
+  const backups = await transaction.select<BackupRow>("backups", scope(identity), [], 3);
+  if (protectedBundleId === undefined) {
+    if (backups.length !== 0) {
+      throw persistenceError("Fresh migration destination contains authoritative backups rows.");
+    }
+  } else if (backups.length > 0) {
+    const inventory = backups.find((backup) => backup.backupId === INVENTORY_ROW_ID);
+    const protectedBackup = backups.find((backup) => backup.backupId === protectedBundleId);
+    if (
+      backups.length !== 2 ||
+      inventory?.state !== "inventory" ||
+      protectedBackup?.state !== "finalized" ||
+      protectedBackup.destroyedAt != null ||
+      protectedBackup.destructionId != null
+    ) {
+      throw persistenceError(
+        "Migration destination must contain only its finalized protected recovery bundle.",
+      );
     }
   }
   const bootstrapChecks: readonly [ControlPlaneTable, (row: ControlPlaneDatabaseRow) => boolean][] =
@@ -1740,8 +2059,22 @@ async function assertDestinationBootstrapOnly(
       ],
       ["effectiveVersions", (row) => row.id === "initial" && row.generation === 0],
       ["securityVersions", (row) => row.id === "initial" && row.epoch === 0],
+      [
+        "snapshotEnvelopes",
+        (row) =>
+          row.id === "snapshot-envelope:control-plane" &&
+          row.envelopeId === "control-plane" &&
+          row.capletCount === 0 &&
+          row.normalizedRowCount === 0 &&
+          row.encodedByteCount === 0 &&
+          row.aggregateVersion === 0 &&
+          row.authorityVersion === 0 &&
+          row.effectiveVersion === 0 &&
+          row.securityVersion === 0,
+      ],
     ];
   for (const [table, valid] of bootstrapChecks) {
+    if (backend === "postgres" && table === "snapshotEnvelopes") continue;
     const rows = await transaction.select(table, scope(identity));
     if (rows.length > 1 || (rows[0] && !valid(rows[0]))) {
       throw persistenceError(`Migration destination contains non-bootstrap ${table} rows.`);
@@ -2251,6 +2584,7 @@ function assertOperation(state: MigrationStateDocument, operation: LegacyDestina
   if (state.migrationId !== operation.migrationId || state.fencingToken !== operation.fencingToken)
     throw persistenceError("Migration operation fence does not match durable journal.");
 }
+
 function assertLegacyReadback(
   state: MigrationStateDocument,
   source: VerifiedLegacyMigrationSource,
@@ -2260,7 +2594,9 @@ function assertLegacyReadback(
     throw persistenceError("Legacy manifest readback does not match migration metadata.");
   const expected = [
     ...source.trackedCaplets.map((value) => canonical({ kind: "tracked-caplet", value })),
-    ...protectedRecords.map((value) => canonical({ kind: "legacy-record", value })),
+    ...orderedLegacyRecords(protectedRecords).map((value) =>
+      canonical({ kind: "legacy-record", value }),
+    ),
     ...source.quarantines.map((value) => canonical({ kind: "quarantine", value })),
   ];
   if (!isDeepStrictEqual(state.entities, expected))

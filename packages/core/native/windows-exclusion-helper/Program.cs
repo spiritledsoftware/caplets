@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Win32.SafeHandles;
 
 internal static class Program
@@ -107,6 +108,7 @@ internal sealed class Lease : IDisposable
     private const int MoveFileWriteThrough = 0x00000008;
     private const int MoveFileReplaceExisting = 0x00000001;
     private readonly string _sourceBoundaryPath;
+    private readonly string _cleanupId;
     private readonly string _sealedSourcePath;
     private readonly string[] _tombstonePaths;
     private readonly string _journalPath;
@@ -119,6 +121,7 @@ internal sealed class Lease : IDisposable
     private bool _completed;
 
     private Lease(
+        string cleanupId,
         string sourceBoundaryPath,
         string sealedSourcePath,
         string[] tombstonePaths,
@@ -130,6 +133,7 @@ internal sealed class Lease : IDisposable
         string manifestSha256,
         int scannedProcesses)
     {
+        _cleanupId = cleanupId;
         _sourceBoundaryPath = sourceBoundaryPath;
         _sealedSourcePath = sealedSourcePath;
         _tombstonePaths = tombstonePaths;
@@ -187,11 +191,12 @@ internal sealed class Lease : IDisposable
 
             var parent = Directory.GetParent(source)?.FullName ?? throw new RefusalException();
             var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+            var cleanupId = $"u7-cleanup-{nonce}";
             sealedPath = Path.Combine(parent, $".caplets-sealed-{nonce}");
             var tombstoneStaging = Path.Combine(parent, $".caplets-tombstones-{nonce}");
-            WriteJournal(journalPath, new ExclusionJournal(1, "prepared", source, sealedPath, tombstoneStaging, mutable.ToArray()));
+            WriteJournal(journalPath, new ExclusionJournal(1, "prepared", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray()));
             MoveDirectoryDurably(source, sealedPath);
-            WriteJournal(journalPath, new ExclusionJournal(1, "relocated", source, sealedPath, tombstoneStaging, mutable.ToArray()));
+            WriteJournal(journalPath, new ExclusionJournal(1, "relocated", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray()));
 
             var relocatedPaths = EnumerateReviewedPaths(sealedPath);
             if (paths.Count != relocatedPaths.Count ||
@@ -217,7 +222,7 @@ internal sealed class Lease : IDisposable
                 if (Directory.Exists(tombstoneStaging)) Directory.Delete(tombstoneStaging, true);
                 throw;
             }
-            WriteJournal(journalPath, new ExclusionJournal(1, "tombstones-published", source, sealedPath, tombstoneStaging, mutable.ToArray()));
+            WriteJournal(journalPath, new ExclusionJournal(1, "tombstones-published", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray()));
             var tombstoneReviewedPaths = EnumerateReviewedPaths(source);
             ValidateTombstoneShape(tombstoneReviewedPaths, mutable);
             var tombstoneIdentities = tombstoneReviewedPaths.ToDictionary(
@@ -230,6 +235,7 @@ internal sealed class Lease : IDisposable
 
             var manifest = ManifestHash(held);
             return new Lease(
+                cleanupId,
                 source,
                 sealedPath,
                 mutable.Select(item => Path.Combine(source, item.RelativePath)).ToArray(),
@@ -275,6 +281,7 @@ internal sealed class Lease : IDisposable
 
     internal object Describe() => new
     {
+        cleanupId = _cleanupId,
         sealedSourcePath = _sealedSourcePath,
         tombstonePaths = _tombstonePaths,
         manifestSha256 = _manifestSha256,
@@ -324,7 +331,7 @@ internal sealed class Lease : IDisposable
         Verify();
         WriteJournal(
             _journalPath,
-            new ExclusionJournal(1, "activation-cleanup", _sourceBoundaryPath, _sealedSourcePath, "", _mutablePaths));
+            new ExclusionJournal(1, "activation-cleanup", _cleanupId, _sourceBoundaryPath, _sealedSourcePath, "", _mutablePaths));
         foreach (var path in _heldTombstones) path.Dispose();
         foreach (var path in _heldPaths) path.Dispose();
         Directory.Delete(_sealedSourcePath, true);
@@ -363,6 +370,7 @@ internal sealed class Lease : IDisposable
         var stagingName = Path.GetFileName(journal.TombstoneStagingPath);
         if (
             journal.Version != 1 ||
+            !Regex.IsMatch(journal.CleanupId, "^u7-cleanup-[a-f0-9]{48}$", RegexOptions.CultureInvariant) ||
             journal.SourceBoundaryPath != source ||
             Directory.GetParent(journal.SealedSourcePath)?.FullName != parent ||
             !sealedName.StartsWith(".caplets-sealed-", StringComparison.Ordinal) ||
@@ -425,6 +433,7 @@ internal sealed class Lease : IDisposable
     private sealed record ExclusionJournal(
         int Version,
         string Phase,
+        string CleanupId,
         string SourceBoundaryPath,
         string SealedSourcePath,
         string TombstoneStagingPath,

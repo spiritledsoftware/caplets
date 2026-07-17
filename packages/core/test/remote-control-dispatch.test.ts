@@ -16,15 +16,23 @@ import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
 import { createCurrentHostOperations } from "../src/current-host/operations";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { FileVaultStore } from "../src/vault";
+import { CapletsEngine } from "../src/engine";
+import { loadConfigWithSources, type ConfigWithSources } from "../src/config";
+import type { ControlPlaneRuntimeSnapshot } from "../src/control-plane/snapshot";
+import type { AuthTokenRepository, StoredOAuthTokenBundle } from "../src/auth/store";
+import { CapletsError } from "../src/errors";
+import type { ControlPlaneSecurityRepository } from "../src/control-plane/security/repository";
 
 const dirs: string[] = [];
+const borrowedEngines: CapletsEngine[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   mockMcpAuth.mockReset();
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+  await Promise.all(borrowedEngines.splice(0).map((engine) => engine.close()));
 });
 
 describe("dispatchRemoteCliRequest", () => {
@@ -54,7 +62,7 @@ describe("dispatchRemoteCliRequest", () => {
         command: "inspect",
         arguments: { caplet: "server_status", request: { operation: "inspect" } },
       },
-      context,
+      { ...context, engine: borrowEngine(context) },
     );
 
     expect(response).toMatchObject({ ok: true });
@@ -76,7 +84,7 @@ describe("dispatchRemoteCliRequest", () => {
           request: { operation: "search_tools", query: "check", limit: 1 },
         },
       },
-      context,
+      { ...context, engine: borrowEngine(context) },
     );
 
     expect(response).toMatchObject({ ok: true });
@@ -88,6 +96,58 @@ describe("dispatchRemoteCliRequest", () => {
         },
       },
     });
+  });
+
+  it("reuses the activated server engine for engine commands without closing it", async () => {
+    const context = testContext();
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const execute = vi.spyOn(engine, "execute");
+    const close = vi.spyOn(engine, "close");
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "inspect",
+        arguments: { caplet: "server_status", request: { operation: "inspect" } },
+      },
+      { ...context, engine },
+    );
+
+    expect(response).toMatchObject({ ok: true });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    close.mockRestore();
+    await engine.close();
+  });
+
+  it("reuses the activated server engine for CLI completion without closing it", async () => {
+    const context = testContext();
+    const engine = CapletsEngine.unactivatedForTests({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const complete = vi
+      .spyOn(engine, "completeCliWords")
+      .mockResolvedValue(["server_status.check"]);
+    const close = vi.spyOn(engine, "close");
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "complete_cli",
+        arguments: { shell: "bash", words: ["call-tool", "server_status."] },
+      },
+      { ...context, engine },
+    );
+
+    expect(response).toEqual({ ok: true, result: ["server_status.check"] });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    close.mockRestore();
+    await engine.close();
   });
 
   it("rejects engine commands with a missing nested operation", async () => {
@@ -198,7 +258,7 @@ describe("dispatchRemoteCliRequest", () => {
         command: "inspect",
         arguments: { caplet: "github", request: { operation: "inspect" } },
       },
-      { ...context, authDir },
+      { ...context, authDir, engine: borrowEngine({ ...context, authDir }) },
     );
 
     const store = new FileVaultStore({ root: join(authDir, "vault") });
@@ -601,7 +661,7 @@ describe("dispatchRemoteCliRequest", () => {
 
     const response = await dispatchRemoteCliRequest(
       { command: "complete_cli", arguments: { shell: "bash", words: ["inspect", ""] } },
-      context,
+      { ...context, engine: borrowEngine(context) },
     );
 
     expect(response).toEqual({ ok: true, result: ["github", "users"] });
@@ -615,7 +675,7 @@ describe("dispatchRemoteCliRequest", () => {
         command: "complete_cli",
         arguments: { shell: "bash", words: ["call-tool", "server_status."] },
       },
-      context,
+      { ...context, engine: borrowEngine(context) },
     );
 
     expect(response).toMatchObject({ ok: true });
@@ -914,7 +974,167 @@ describe("dispatchRemoteCliRequest", () => {
       mutation: expect.objectContaining({ selector: "underlying-sql" }),
     });
   });
+  it("uses the activated SQL snapshot and repository for remote list and auth across restart", async () => {
+    const context = remoteFixtureWithOAuth().context;
+    const effectiveConfig = loadConfigWithSources(context.configPath, context.projectConfigPath);
+    effectiveConfig.sources.remote = { kind: "sql", path: "" };
+    writeFileSync(
+      context.configPath,
+      JSON.stringify({
+        mcpServers: {
+          residue: {
+            name: "Filesystem residue",
+            description: "Must never become authoritative.",
+            transport: "http",
+            url: "https://residue.invalid/mcp",
+          },
+        },
+      }),
+    );
+    const bundles = new Map<string, StoredOAuthTokenBundle>([
+      [
+        "remote",
+        {
+          server: "remote",
+          accessToken: "sql-token",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+      ],
+    ]);
+    const repository: AuthTokenRepository = {
+      readTokenBundle: async (server) => bundles.get(server),
+      listTokenBundles: async () => [...bundles.values()],
+      writeTokenBundle: async (bundle) => {
+        bundles.set(bundle.server, bundle);
+      },
+      deleteTokenBundle: async (server) => bundles.delete(server),
+    };
+
+    mockMcpAuth.mockResolvedValue("AUTHORIZED");
+    for (let restart = 0; restart < 2; restart += 1) {
+      const engine = activatedEngine(context, effectiveConfig, repository);
+      const listed = await dispatchRemoteCliRequest(
+        { command: "list", arguments: { includeDisabled: true } },
+        { ...context, engine },
+      );
+      const auth = await dispatchRemoteCliRequest(
+        { command: "auth_list", arguments: {} },
+        { ...context, engine },
+      );
+      const login = await dispatchRemoteCliRequest(
+        { command: "auth_login_start", arguments: { server: "remote" } },
+        {
+          ...context,
+          engine,
+          authFlowStore: new RemoteAuthFlowStore(),
+          controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+        },
+      );
+
+      expect(listed).toMatchObject({
+        ok: true,
+        result: [expect.objectContaining({ server: "remote", source: "sql" })],
+      });
+      expect(auth).toEqual({
+        ok: true,
+        result: [
+          expect.objectContaining({
+            server: "remote",
+            source: "global",
+            status: "authenticated",
+          }),
+        ],
+      });
+      expect(login).toEqual({
+        ok: true,
+        result: { server: "remote", authenticated: true },
+      });
+      expect(JSON.stringify(listed)).not.toContain("residue");
+    }
+  });
+
+  it("returns structured unavailable before stale activated auth can mutate", async () => {
+    const context = remoteFixtureWithOAuth().context;
+    const effectiveConfig = loadConfigWithSources(context.configPath, context.projectConfigPath);
+    effectiveConfig.sources.remote = { kind: "sql", path: "" };
+    const deleteTokenBundle = vi.fn(async () => true);
+    const repository: AuthTokenRepository = {
+      readTokenBundle: async () => undefined,
+      listTokenBundles: async () => [],
+      writeTokenBundle: async () => undefined,
+      deleteTokenBundle,
+    };
+    const engine = activatedEngine(context, effectiveConfig, repository);
+    vi.spyOn(engine, "requireLiveControlPlane").mockRejectedValue(
+      new CapletsError("SERVER_UNAVAILABLE", "Control-plane live authority is unavailable."),
+    );
+
+    const response = await dispatchRemoteCliRequest(
+      { command: "auth_logout", arguments: { server: "remote" } },
+      { ...context, engine },
+    );
+
+    expect(response).toEqual({
+      ok: false,
+      error: {
+        code: "SERVER_UNAVAILABLE",
+        message: "Control-plane live authority is unavailable.",
+      },
+    });
+    expect(deleteTokenBundle).not.toHaveBeenCalled();
+  });
 });
+
+function borrowEngine(context: {
+  configPath: string;
+  projectConfigPath: string;
+  authDir?: string | undefined;
+}): CapletsEngine {
+  const engine = CapletsEngine.unactivatedForTests({
+    configPath: context.configPath,
+    projectConfigPath: context.projectConfigPath,
+    ...(context.authDir ? { authDir: context.authDir } : {}),
+    watch: false,
+  });
+  borrowedEngines.push(engine);
+  return engine;
+}
+
+function activatedEngine(
+  context: {
+    configPath: string;
+    projectConfigPath: string;
+    authDir?: string | undefined;
+  },
+  effectiveConfig: ConfigWithSources,
+  repository: AuthTokenRepository,
+): CapletsEngine {
+  const engine = borrowEngine(context);
+  const snapshot = {
+    config: effectiveConfig.config,
+    configWithSources: effectiveConfig,
+    backend: "sqlite",
+    identity: {
+      logicalHostId: "test-host",
+      storeId: "test-store",
+      operationNamespace: "test-operations",
+    },
+    authorityGeneration: 1,
+    effectiveGeneration: 1,
+    securityEpoch: 1,
+    bootstrapFingerprint: "bootstrap",
+    effectiveRuntimeFingerprint: "effective",
+    caplets: {},
+    hostSettings: {},
+    sqlSnapshot: {},
+  } as unknown as ControlPlaneRuntimeSnapshot;
+  vi.spyOn(engine, "currentControlPlaneRuntimeSnapshot").mockReturnValue(snapshot);
+  vi.spyOn(engine, "controlPlaneSecurityRepository").mockReturnValue(
+    repository as unknown as ControlPlaneSecurityRepository,
+  );
+  vi.spyOn(engine, "requireLiveControlPlane").mockResolvedValue();
+  return engine;
+}
 
 function testContext(options: { writeConfig?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "caplets-dispatch-"));
@@ -945,6 +1165,7 @@ function testContext(options: { writeConfig?: boolean } = {}) {
     tempRoot: dir,
     configPath,
     projectConfigPath,
+    authDir: join(dir, "auth"),
     projectCapletsRoot: projectRoot,
     watch: false,
   };

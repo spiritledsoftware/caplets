@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "platform": "linux",
+  "node": "v22.23.1",
+  "supportedWindowsHelperArchitectures": ["win32-x64"],
+  "focusedTests": [
+    "test/control-plane-migration-exclusion.test.ts",
+    "test/windows-exclusion-helper.test.ts"
+  ],
+  "priorPackage": {
+    "status": "unavailable",
+    "reason": "Published caplets@0.25.10 is not installed locally; external proof was not run."
+  },
+  "platforms": {
+    "linux": {
+      "status": "passed",
+      "evidence": [
+        "dedicated-boundary-atomic-rename",
+        "relocated-file-and-directory-inodes",
+        "proc-real-child-open-handle",
+        "unsafe-coverage-refusal",
+        "offline-replica-stop-required",
+        "final-scan-and-rehash",
+        "exact-rollback-before-tombstone-removal"
+      ]
+    },
+    "darwin": {
+      "status": "unavailable",
+      "reason": "macOS lsof coverage requires a macOS runner."
+    },
+    "win32": {
+      "status": "unavailable",
+      "reason": "Windows Restart Manager and Authenticode require a Windows runner."
+    }
+  }
+}

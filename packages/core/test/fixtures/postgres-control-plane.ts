@@ -18,9 +18,15 @@ type PostgresPoolConstructor = new (
   configuration: Readonly<Record<string, unknown>>,
 ) => PostgresPool;
 
+export type PostgresRuntimeNodeFixture = Readonly<{
+  dialect: PostgresControlPlaneDialect;
+  close(): Promise<void>;
+}>;
+
 export type PostgresControlPlaneFixture = Readonly<{
   dialect: PostgresControlPlaneDialect;
   adminQuery<T>(sql: string, parameters?: readonly unknown[]): Promise<readonly T[]>;
+  openRuntimeNode(): Promise<PostgresRuntimeNodeFixture>;
   close(): Promise<void>;
 }>;
 
@@ -43,6 +49,7 @@ export async function openPostgresControlPlaneFixture(
   const migratorPassword = `${input.rolePrefix}-migrator-password`;
   const maintenancePassword = `${input.rolePrefix}-maintenance-password`;
   const databaseName = new URL(input.adminUrl).pathname.slice(1);
+  const runtimeDialects = new Set<PostgresControlPlaneDialect>();
   let dialect: PostgresControlPlaneDialect | undefined;
   try {
     await admin.query(`
@@ -62,6 +69,10 @@ export async function openPostgresControlPlaneFixture(
       GRANT CREATE ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(migratorRole)};
     `);
     const storage = postgresStorage(input.identity, input.keyProviderManifest);
+    const registry = await loadMigrationRegistry({
+      dialect: "postgres",
+      assetRoot: input.assetRoot,
+    });
     dialect = await attachVerifiedPostgresPools({
       storage,
       pools: postgresPools(Pool, input.adminUrl, [
@@ -74,7 +85,7 @@ export async function openPostgresControlPlaneFixture(
         migrator: migratorRole,
         maintenance: maintenanceRole,
       },
-      registry: await loadMigrationRegistry({ dialect: "postgres", assetRoot: input.assetRoot }),
+      registry,
       environment: input.environment,
     });
     await dialect.migrate();
@@ -93,7 +104,54 @@ export async function openPostgresControlPlaneFixture(
         const result = await admin.query(sql, parameters);
         return result.rows as readonly T[];
       },
+      async openRuntimeNode() {
+        const pools = postgresPools(
+          Pool,
+          input.adminUrl,
+          [
+            [runtimeRole, runtimePassword],
+            [migratorRole, migratorPassword],
+            [maintenanceRole, maintenancePassword],
+          ],
+          2,
+        );
+        let nodeDialect: PostgresControlPlaneDialect | undefined;
+        try {
+          nodeDialect = await attachVerifiedPostgresPools({
+            storage,
+            pools,
+            roles: {
+              runtime: runtimeRole,
+              migrator: migratorRole,
+              maintenance: maintenanceRole,
+            },
+            registry,
+            environment: input.environment,
+          });
+          const openedDialect = nodeDialect;
+          await openedDialect.migrate();
+          runtimeDialects.add(openedDialect);
+          let closed = false;
+          return {
+            dialect: openedDialect,
+            async close() {
+              if (closed) return;
+              closed = true;
+              runtimeDialects.delete(openedDialect);
+              await openedDialect.close();
+            },
+          };
+        } catch (error) {
+          await nodeDialect?.close().catch(() => undefined);
+          if (!nodeDialect) await closePools(pools);
+          throw error;
+        }
+      },
       async close() {
+        await Promise.all(
+          [...runtimeDialects].map((nodeDialect) => nodeDialect.close().catch(() => undefined)),
+        );
+        runtimeDialects.clear();
         await openDialect.close();
         await dropFixture(admin, runtimeRole, migratorRole, maintenanceRole);
       },
@@ -102,6 +160,32 @@ export async function openPostgresControlPlaneFixture(
     await dialect?.close().catch(() => undefined);
     await dropFixture(admin, runtimeRole, migratorRole, maintenanceRole);
     throw error;
+  }
+}
+export async function inspectPostgresControlPlaneFixtureCleanup(
+  adminUrl: string,
+  rolePrefix: string,
+): Promise<Readonly<{ schemaPresent: boolean; roles: readonly string[] }>> {
+  const Pool = postgresPoolConstructor();
+  const admin = new Pool({ connectionString: adminUrl, max: 1 });
+  try {
+    const result = await admin.query(
+      `SELECT to_regnamespace('caplets') IS NOT NULL AS "schemaPresent",
+        to_jsonb(ARRAY(
+          SELECT rolname
+          FROM pg_roles
+          WHERE rolname = ANY($1)
+          ORDER BY rolname
+        )) AS roles`,
+      [[`${rolePrefix}_runtime`, `${rolePrefix}_migrator`, `${rolePrefix}_maintenance`]],
+    );
+    const row = result.rows[0] as
+      | Readonly<{ schemaPresent: boolean; roles: readonly string[] }>
+      | undefined;
+    if (!row) throw new Error("Postgres cleanup inspection returned no row");
+    return row;
+  } finally {
+    await admin.end();
   }
 }
 
@@ -119,12 +203,13 @@ function postgresPools(
   Pool: PostgresPoolConstructor,
   adminUrl: string,
   credentials: readonly (readonly [string, string])[],
+  max = 4,
 ) {
   const [runtime, migrator, maintenance] = credentials.map(([role, password]) => {
     const url = new URL(adminUrl);
     url.username = role;
     url.password = password;
-    return new Pool({ connectionString: url.href, max: 4 });
+    return new Pool({ connectionString: url.href, max });
   });
   if (!runtime || !migrator || !maintenance) {
     throw new Error("Postgres fixture roles are incomplete");
@@ -152,6 +237,18 @@ function postgresStorage(
       }),
     },
   };
+}
+
+async function closePools(pools: {
+  runtime: PostgresPool;
+  migrator: PostgresPool;
+  maintenance: PostgresPool;
+}): Promise<void> {
+  await Promise.all([
+    pools.runtime.end().catch(() => undefined),
+    pools.migrator.end().catch(() => undefined),
+    pools.maintenance.end().catch(() => undefined),
+  ]);
 }
 
 async function dropFixture(

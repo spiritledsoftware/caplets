@@ -1,0 +1,40 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0007_cuddly_cerebro",
+  "order": 7,
+  "dialect": "sqlite",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0007_cuddly_cerebro.sql",
+    "sha256": "40358b88267edd9cde650f5e916b8755adc04b3b7a2dff243839a1ca6837bde4"
+  },
+  "compatibility": {
+    "binary": { "minimum": "0.34.1", "maximumExclusive": "0.35.0" },
+    "schema": { "minimum": 1, "maximum": 3 },
+    "key": { "minimum": 1, "maximum": 1 },
+    "manifest": { "minimum": 1, "maximum": 1 }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "down",
+    "windowSeconds": 604800,
+    "down": {
+      "file": "0007_cuddly_cerebro.down.sql",
+      "sha256": "304640600206a86620f9ffcbda5691d09a1b5abaf99f3e117a4417d35fd0dbc7"
+    },
+    "requiresVerifiedBackup": false,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "17079f88f309b49aa4645dd0bd5a04c1ab7a4b6a88b500a9cd21a4ad0b26d5fb"
+}

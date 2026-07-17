@@ -99,6 +99,50 @@ export type RemotePendingApprovalResult = Readonly<{
   expiresAt: string;
 }>;
 
+export type CreatedPendingLogin = Readonly<{
+  flowId: string;
+  operatorCode: string;
+  operatorCodeFingerprint: string;
+  pendingRefreshSecret: string;
+  pendingCompletionSecret: string;
+  codeExpiresAt: string;
+  flowExpiresAt: string;
+  intervalSeconds: number;
+}>;
+
+export type ApprovedPendingLogin = Readonly<{
+  flowId: string;
+  status: "approved";
+  clientLabel: string;
+  requestedRole: RemoteClientRole;
+  grantedRole: RemoteClientRole;
+  clientFingerprint?: string | undefined;
+  sourceHint?: string | undefined;
+}>;
+
+export interface RemotePendingLoginRepository {
+  createPendingLogin(input: CreatePendingLoginInput): Promise<CreatedPendingLogin>;
+  pollPendingLogin(
+    input: PendingLoginPossessionInput,
+  ): Promise<Readonly<{ flowId: string; status: RemotePendingLoginStatus["status"] }>>;
+  refreshPendingLogin(
+    input: RefreshPendingLoginInput,
+  ): Promise<Omit<CreatedPendingLogin, "pendingCompletionSecret">>;
+  approvePendingLogin(input: ApprovePendingLoginInput): Promise<ApprovedPendingLogin>;
+  approvePendingLoginFlow(
+    input: DashboardPendingLoginActionInput,
+  ): Promise<RemotePendingLoginStatus>;
+  denyPendingLogin(input: ApprovePendingLoginInput): Promise<RemotePendingLoginStatus>;
+  denyPendingLoginFlow(input: DashboardPendingLoginActionInput): Promise<RemotePendingLoginStatus>;
+  cancelPendingLogin(
+    input: PendingLoginPossessionInput,
+  ): Promise<Readonly<{ flowId: string; status: "cancelled" }>>;
+  completePendingLogin(input: CompletePendingLoginInput): Promise<IssuedRemoteClientCredentials>;
+  listPendingLogins(): Promise<RemotePendingLoginStatus[]>;
+}
+
+export type RemoteCredentialMutationAudit = Readonly<{ actorClientId: string }>;
+
 /** Async persistence seam used by the internal SQL activation path; the file store remains live. */
 export interface RemoteCredentialRepository {
   issueClient(
@@ -115,10 +159,14 @@ export interface RemoteCredentialRepository {
   refreshClientCredentials(
     input: RefreshClientCredentialsInput,
   ): Promise<IssuedRemoteClientCredentials>;
-  revokeClient(clientId: string): Promise<boolean>;
+  revokeClient(
+    clientId: string,
+    audit?: RemoteCredentialMutationAudit | undefined,
+  ): Promise<boolean>;
   changeClientRole(
     clientId: string,
     role: RemoteClientRole,
+    audit?: RemoteCredentialMutationAudit | undefined,
   ): Promise<RemoteClientStatus | undefined>;
   createPendingApproval(
     input?: Readonly<{ ttlMs?: number | undefined }>,
