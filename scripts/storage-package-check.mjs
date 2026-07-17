@@ -13,7 +13,7 @@ const runtimeKind = process.env.CAPLETS_STORAGE_RUNTIME ?? (process.versions.bun
 const runtimeVersion =
   process.env.CAPLETS_STORAGE_RUNTIME_VERSION ??
   (runtimeKind === "bun" ? process.versions.bun : process.versions.node);
-const libc = process.platform === "linux" ? "glibc" : "system";
+const libc = detectLibc();
 const detected = matrix.supported.find(
   (tuple) =>
     tuple.runtime === runtimeKind &&
@@ -70,7 +70,7 @@ try {
     {
       cwd: root,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "inherit"],
+      stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
         CAPLETS_REQUIRE_WINDOWS_EXCLUSION_HELPER: "1",
@@ -81,7 +81,12 @@ try {
       shell: process.platform === "win32",
     },
   );
-  if (packed.status !== 0) throw new Error("core package packing failed");
+  if (packed.error) throw packed.error;
+  if (packed.status !== 0) {
+    if (packed.stdout) process.stderr.write(packed.stdout);
+    if (packed.stderr) process.stderr.write(packed.stderr);
+    throw new Error("core package packing failed");
+  }
   const archive = (await readdir(temporary)).find((name) => name.endsWith(".tgz"));
   if (!archive) throw new Error("core package archive was not produced");
   result.checks.pack = { status: "pass", archive: archive.replace(/\d+\.\d+\.\d+/u, "<version>") };
@@ -108,11 +113,14 @@ allowBuilds:
   );
   result.checks.install = { status: "pass" };
   const installedCoreRoot = join(installRoot, "node_modules", "@caplets", "core");
-  const installedExclusionBundle = await readFile(
-    join(installedCoreRoot, "dist", "control-plane", "migration", "exclusion.js"),
-    "utf8",
-  );
-  if (!installedExclusionBundle.includes("../../native/windows-exclusion-helper/manifest.json")) {
+  const installedDistRoot = join(installedCoreRoot, "dist");
+  const installedBundles = (await readdir(installedDistRoot, { recursive: true }))
+    .filter((path) => path.endsWith(".js"))
+    .map((path) => join(installedDistRoot, path));
+  const resolverInsideDistNative = (
+    await Promise.all(installedBundles.map((path) => readFile(path, "utf8")))
+  ).some((source) => source.includes("../../native/windows-exclusion-helper/manifest.json"));
+  if (!resolverInsideDistNative) {
     throw new Error("packed Windows exclusion helper manifest resolver escapes dist/native");
   }
 
@@ -169,15 +177,53 @@ function argumentValue(name) {
 }
 
 function unsupportedReason(id) {
-  if (id) return `tuple ${id} is not present in the supported package matrix`;
-  const match = matrix.unsupported.find(
+  const unsupported = matrix.unsupported.find(
     (tuple) =>
-      (tuple.os === process.platform ||
-        tuple.os === "any" ||
-        tuple.os.startsWith(`${process.platform}-`)) &&
-      (tuple.arch === process.arch || tuple.arch === "32-bit" || tuple.arch.includes(process.arch)),
+      matchesRuntime(tuple.runtime) &&
+      matchesOperatingSystem(tuple.os) &&
+      matchesArchitecture(tuple.arch),
   );
-  return match?.reason ?? "detected runtime tuple is unavailable and has no passing manifest";
+  const localAlternatives = matrix.supported
+    .filter(
+      (tuple) =>
+        (tuple.runtime === runtimeKind || (runtimeKind === "node" && tuple.runtime === "docker")) &&
+        tuple.os === process.platform &&
+        tuple.arch === process.arch &&
+        tuple.libc === libc,
+    )
+    .map((tuple) => tuple.id);
+  const prefix = id
+    ? `tuple ${id} is not present in the supported package matrix`
+    : `detected runtime tuple ${runtimeKind}-${runtimeVersion}-${process.platform}-${process.arch}-${libc} is unsupported`;
+  const reason = unsupported?.reason ?? "this runtime/version tuple has no release-blocking proof";
+  const guidance =
+    unsupported?.guidance ??
+    (localAlternatives.length > 0
+      ? `Use a declared tuple: ${localAlternatives.join(", ")}`
+      : "Use a declared Node 22/24 or Bun runtime and platform tuple");
+  return `${prefix}: ${reason}. ${guidance}. See storage/package-matrix.json`;
+}
+
+function detectLibc() {
+  if (process.platform !== "linux") return "system";
+  const report = process.report?.getReport?.();
+  return report?.header?.glibcVersionRuntime ? "glibc" : "musl";
+}
+
+function matchesRuntime(runtime = "any") {
+  return runtime === "any" || runtime === runtimeKind;
+}
+
+function matchesOperatingSystem(os) {
+  if (os === "any") return true;
+  if (os === "linux-musl") return process.platform === "linux" && libc === "musl";
+  return os === process.platform;
+}
+
+function matchesArchitecture(architecture) {
+  if (architecture === "any") return true;
+  if (architecture === "32-bit") return process.arch === "ia32" || process.arch === "arm";
+  return architecture.split("/").includes(process.arch);
 }
 
 async function createPackagedHelperFixture(directory) {
@@ -233,11 +279,36 @@ import {
 if (STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets !== 2000 || nearestRank([1, 2, 3, 4], 0.75) !== 3) {
   throw new Error("packed storage fixture is invalid");
 }
-for (const dialect of ["sqlite", "postgres"]) {
-  const registry = await loadMigrationRegistry({ dialect });
-  if (registry.migrations.length !== 4 || registry.migrations.some((migration) => !migration.sql || !migration.downSql)) {
-    throw new Error("packed " + dialect + " migration history is unavailable");
-  }
+const registries = await Promise.all(
+  ["sqlite", "postgres"].map((dialect) => loadMigrationRegistry({ dialect })),
+);
+if (
+  registries.some(
+    (registry) =>
+      registry.migrations.length === 0 ||
+      registry.migrations.some(
+        (migration) =>
+          !migration.sql ||
+          (migration.manifest.rollback.mode === "down" && !migration.downSql),
+      ),
+  )
+) {
+  throw new Error("packed migration history is incomplete");
+}
+const migrationShapes = registries.map((registry) =>
+  registry.migrations.map((migration) => ({
+    order: migration.manifest.order,
+    sourceSchemaVersion: migration.manifest.sourceSchemaVersion,
+    destinationSchemaVersion: migration.manifest.destinationSchemaVersion,
+    phase: migration.manifest.phase,
+    classification: migration.manifest.classification,
+    executionPolicy: migration.manifest.executionPolicy,
+    automatic: migration.manifest.automatic,
+    rollbackMode: migration.manifest.rollback.mode,
+  })),
+);
+if (JSON.stringify(migrationShapes[0]) !== JSON.stringify(migrationShapes[1])) {
+  throw new Error("packed SQLite and Postgres migration histories are not paired");
 }
 const coreRequire = createRequire(import.meta.resolve("@caplets/core/control-plane/storage"));
 const bunRuntime = Boolean(process.versions.bun);

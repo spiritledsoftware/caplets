@@ -412,3 +412,230 @@ function decodeCanonicalBase64(value: string): Buffer {
 function invalidManifest(): CapletsError {
   return new CapletsError("AUTH_FAILED", "Recovery envelope verification failed.");
 }
+
+export const SQL_TRANSFER_MANIFEST_FORMAT = "caplets-sql-transfer-manifest-v1" as const;
+export const MAX_SQL_TRANSFER_CHUNK_BYTES = 4 * 1024 * 1024;
+export const SQL_TRANSFER_SEMANTIC_DOMAIN_NAMES = [
+  "normalized-state",
+  "portable-projection",
+  "effective-projection",
+  "provenance",
+  "activity",
+  "consumed-operations",
+  "lifecycle-ledgers",
+] as const;
+
+export type SqlTransferSemanticDomainName = (typeof SQL_TRANSFER_SEMANTIC_DOMAIN_NAMES)[number];
+
+export type SqlTransferIdentity = Readonly<{
+  logicalHostId: string;
+  storeId: string;
+  operationNamespace: string;
+}>;
+
+export type SqlTransferDescriptorBinding = Readonly<{
+  backend: "sqlite" | "postgres";
+  descriptorDigest: string;
+  keyProviderIdentity: string;
+}>;
+
+export type SqlTransferSemanticDomain = Readonly<{
+  name: SqlTransferSemanticDomainName;
+  count: number;
+  sha256: string;
+}>;
+
+/**
+ * Secret-free semantic commitment shared by the source ledger, destination ledger, recovery
+ * backup, descriptor transition, and transfer-only key capabilities.
+ */
+export type SqlTransferSemanticManifest = Readonly<{
+  format: typeof SQL_TRANSFER_MANIFEST_FORMAT;
+  transferId: string;
+  identity: SqlTransferIdentity;
+  source: SqlTransferDescriptorBinding & Readonly<{ backend: "sqlite" }>;
+  destination: SqlTransferDescriptorBinding & Readonly<{ backend: "postgres" }>;
+  schemaDigest: string;
+  semanticDomains: readonly SqlTransferSemanticDomain[];
+  sourceAuthorityGeneration: number;
+  sourceSecurityEpoch: number;
+  sourceWriterEpoch: number;
+  destinationAuthorityGeneration: number;
+  projectedSecurityEpoch: number;
+  invalidationDigest: string;
+  expectedSealedSourceDigest: string;
+  chunkCount: number;
+  totalBytes: number;
+  maxChunkBytes: number;
+  requiredDestinationNodeIds: readonly string[];
+}>;
+
+export function assertSqlTransferSemanticManifest(
+  value: SqlTransferSemanticManifest,
+): asserts value is SqlTransferSemanticManifest {
+  try {
+    assertExactTransferKeys(value, [
+      "format",
+      "transferId",
+      "identity",
+      "source",
+      "destination",
+      "schemaDigest",
+      "semanticDomains",
+      "sourceAuthorityGeneration",
+      "sourceSecurityEpoch",
+      "sourceWriterEpoch",
+      "destinationAuthorityGeneration",
+      "projectedSecurityEpoch",
+      "invalidationDigest",
+      "expectedSealedSourceDigest",
+      "chunkCount",
+      "totalBytes",
+      "maxChunkBytes",
+      "requiredDestinationNodeIds",
+    ]);
+    if (
+      value.format !== SQL_TRANSFER_MANIFEST_FORMAT ||
+      !CANONICAL_ASCII_ID_PATTERN.test(value.transferId)
+    ) {
+      throw new Error("invalid transfer header");
+    }
+    assertTransferIdentity(value.identity);
+    assertTransferDescriptor(value.source, "sqlite");
+    assertTransferDescriptor(value.destination, "postgres");
+    assertTransferHash(value.schemaDigest);
+    assertTransferHash(value.invalidationDigest);
+    assertTransferHash(value.expectedSealedSourceDigest);
+    assertTransferVersion(value.sourceAuthorityGeneration);
+    assertTransferVersion(value.sourceSecurityEpoch);
+    assertTransferVersion(value.sourceWriterEpoch);
+    assertTransferVersion(value.destinationAuthorityGeneration);
+    assertTransferVersion(value.projectedSecurityEpoch);
+    if (
+      value.destinationAuthorityGeneration !== value.sourceAuthorityGeneration + 1 ||
+      value.projectedSecurityEpoch <= value.sourceSecurityEpoch
+    ) {
+      throw new Error("invalid authority projection");
+    }
+    assertTransferSize(value.chunkCount, true);
+    assertTransferSize(value.totalBytes, true);
+    assertTransferSize(value.maxChunkBytes, false);
+    if (
+      value.maxChunkBytes > MAX_SQL_TRANSFER_CHUNK_BYTES ||
+      (value.chunkCount === 0) !== (value.totalBytes === 0) ||
+      value.totalBytes > value.chunkCount * value.maxChunkBytes
+    ) {
+      throw new Error("invalid chunk bounds");
+    }
+    if (
+      !Array.isArray(value.semanticDomains) ||
+      value.semanticDomains.length !== SQL_TRANSFER_SEMANTIC_DOMAIN_NAMES.length
+    ) {
+      throw new Error("invalid semantic coverage");
+    }
+    for (const [index, domain] of value.semanticDomains.entries()) {
+      assertExactTransferKeys(domain, ["name", "count", "sha256"]);
+      if (domain.name !== SQL_TRANSFER_SEMANTIC_DOMAIN_NAMES[index]) {
+        throw new Error("non-canonical semantic domain");
+      }
+      assertTransferSize(domain.count, true);
+      assertTransferHash(domain.sha256);
+    }
+    assertCanonicalTransferNodeIds(value.requiredDestinationNodeIds);
+  } catch {
+    throw invalidTransferManifest();
+  }
+}
+
+export function sqlTransferManifestCanonicalBytes(manifest: SqlTransferSemanticManifest): Buffer {
+  assertSqlTransferSemanticManifest(manifest);
+  return canonicalBytes({
+    domain: "caplets/sqlite-to-postgres-transfer/manifest/v1",
+    manifest,
+  });
+}
+
+export function sqlTransferManifestDigest(manifest: SqlTransferSemanticManifest): string {
+  return sha256(sqlTransferManifestCanonicalBytes(manifest));
+}
+
+export function sameSqlTransferSemanticManifest(
+  left: SqlTransferSemanticManifest,
+  right: SqlTransferSemanticManifest,
+): boolean {
+  assertSqlTransferSemanticManifest(left);
+  assertSqlTransferSemanticManifest(right);
+  return isDeepStrictEqual(left, right);
+}
+
+function assertTransferIdentity(identity: SqlTransferIdentity): void {
+  assertExactTransferKeys(identity, ["logicalHostId", "storeId", "operationNamespace"]);
+  if (
+    !CANONICAL_ASCII_ID_PATTERN.test(identity.logicalHostId) ||
+    !CANONICAL_ASCII_ID_PATTERN.test(identity.storeId) ||
+    !CANONICAL_ASCII_ID_PATTERN.test(identity.operationNamespace)
+  ) {
+    throw new Error("invalid transfer identity");
+  }
+}
+
+function assertTransferDescriptor(
+  descriptor: SqlTransferDescriptorBinding,
+  backend: "sqlite" | "postgres",
+): void {
+  assertExactTransferKeys(descriptor, ["backend", "descriptorDigest", "keyProviderIdentity"]);
+  if (
+    descriptor.backend !== backend ||
+    !CANONICAL_ASCII_ID_PATTERN.test(descriptor.keyProviderIdentity)
+  ) {
+    throw new Error("invalid transfer descriptor");
+  }
+  assertTransferHash(descriptor.descriptorDigest);
+}
+
+function assertCanonicalTransferNodeIds(nodeIds: readonly string[]): void {
+  if (!Array.isArray(nodeIds) || nodeIds.length < 2) {
+    throw new Error("insufficient destination readiness set");
+  }
+  let previous: string | undefined;
+  for (const nodeId of nodeIds) {
+    if (
+      !CANONICAL_ASCII_ID_PATTERN.test(nodeId) ||
+      (previous !== undefined && nodeId <= previous)
+    ) {
+      throw new Error("non-canonical destination readiness set");
+    }
+    previous = nodeId;
+  }
+}
+
+function assertTransferHash(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
+    throw new Error("invalid transfer digest");
+  }
+}
+
+function assertTransferVersion(value: unknown): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error("invalid transfer version");
+  }
+}
+
+function assertTransferSize(value: unknown, allowZero: boolean): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < (allowZero ? 0 : 1)) {
+    throw new Error("invalid transfer size");
+  }
+}
+
+function assertExactTransferKeys(value: unknown, expected: readonly string[]): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid transfer object");
+  }
+  if (!isDeepStrictEqual(Object.keys(value).sort(), [...expected].sort())) {
+    throw new Error("invalid transfer fields");
+  }
+}
+
+function invalidTransferManifest(): CapletsError {
+  return new CapletsError("AUTH_FAILED", "SQL transfer manifest verification failed.");
+}

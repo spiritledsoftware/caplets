@@ -8,6 +8,7 @@ import {
   previewBackupDestruction,
   reconcileBackupDestruction,
   recordBackupInventory,
+  writeDriverConsistentRecoveryEnvelope,
   writeRecoveryEnvelope,
   type BackupDestructionIntent,
   type BackupDestructionPreviewRecord,
@@ -16,6 +17,11 @@ import {
   type RecoveryBackupIntent,
   type RecoveryBackupLifecyclePort,
   type RecoveryBackupLifecycleTransaction,
+  type DriverConsistentRecoverySnapshotIntent,
+  type DriverConsistentRecoverySnapshotLifecyclePort,
+  type DriverConsistentRecoverySnapshotLifecycleTransaction,
+  type DriverConsistentRecoverySnapshotPort,
+  type RecoveryStagedMaterialReconciliationPort,
   type BackupLifecycleLedgerPort,
   type BackupLifecycleTransaction,
   type RecoveryEnvelopeSink,
@@ -148,6 +154,10 @@ class MemoryBackupLifecycle implements RecoveryBackupLifecyclePort {
       writeBackupIntent: async (intent) => {
         this.intent = structuredClone(intent);
         this.events.push(`intent:${intent.phase}`);
+      },
+      deleteBackupIntent: async () => {
+        this.intent = undefined;
+        this.events.push("intent:discarded");
       },
     };
     return work(transaction);
@@ -502,6 +512,100 @@ describe("protected recovery envelope", () => {
     expect([...unwrapped].every((value) => value === 0)).toBe(true);
     expect(stagedPlaintext.length).toBeGreaterThan(0);
     expect([...stagedPlaintext].every((value) => value === 0)).toBe(true);
+  });
+});
+
+describe("driver-consistent recovery backup", () => {
+  it("records destruction before snapshot I/O, retries partial encryption, and bounds plaintext", async () => {
+    const memory = new EnvelopeMemory();
+    const backup = backupLifecycleInput(memory, "backup-driver-consistent");
+    const events: string[] = [];
+    let snapshotIntent: DriverConsistentRecoverySnapshotIntent | undefined;
+    const snapshotLifecycle: DriverConsistentRecoverySnapshotLifecyclePort = {
+      transaction: async (work) => {
+        const transaction: DriverConsistentRecoverySnapshotLifecycleTransaction = {
+          readSnapshotIntent: async () => snapshotIntent,
+          writeSnapshotIntent: async (intent) => {
+            snapshotIntent = structuredClone(intent);
+            events.push(`snapshot:${intent.phase}`);
+          },
+        };
+        return work(transaction);
+      },
+    };
+    const yielded: Buffer[] = [];
+    const snapshot: DriverConsistentRecoverySnapshotPort = {
+      checkpoint: async () => {
+        events.push("checkpoint");
+      },
+      integrityCheck: async () => {
+        events.push("integrity");
+      },
+      createConsistentSnapshot: async () => {
+        events.push("create");
+      },
+      readSnapshotChunks: async function* (_reference, maxChunkBytes) {
+        expect(maxChunkBytes).toBe(4);
+        for (const value of ["snap", "shot", "-db"]) {
+          const bytes = Buffer.from(value);
+          yielded.push(bytes);
+          yield bytes;
+        }
+      },
+      destroySnapshot: async () => {
+        events.push("destroy");
+      },
+    };
+    const originalWrite = memory.writeEnvelopeBytes.bind(memory);
+    let failOnce = true;
+    memory.writeEnvelopeBytes = async (bytes) => {
+      if (failOnce && memory.frames.length === 1) {
+        failOnce = false;
+        throw new Error("injected snapshot plaintext");
+      }
+      await originalWrite(bytes);
+    };
+    const reconciliation: RecoveryStagedMaterialReconciliationPort = {
+      discardStagedRecoveryMaterial: async () => {
+        memory.frames = [];
+        delete memory.wrappedKey;
+        events.push("discard");
+      },
+    };
+    const input = {
+      ...backup,
+      binding,
+      wrapAuthority: new TestWrapAuthority(),
+      envelopeSink: memory,
+      wrappedKeySink: memory,
+      snapshot,
+      snapshotLifecycle,
+      reconciliation,
+      snapshotIntent: {
+        version: 1,
+        backupId: backup.backupIntent.backupId,
+        bindingDigest: backup.backupIntent.bindingDigest,
+        snapshotReference: "sqlite-snapshot:transfer",
+        createdAt: "2026-07-14T00:00:00.000Z",
+        phase: "destruction-intended",
+      } satisfies DriverConsistentRecoverySnapshotIntent,
+      chunkPlaintextLimit: 4,
+    };
+
+    await expect(writeDriverConsistentRecoveryEnvelope(input)).rejects.toMatchObject({
+      code: "AUTH_FAILED",
+      message: "Recovery envelope verification failed.",
+    });
+    const result = await writeDriverConsistentRecoveryEnvelope(input);
+    expect(await decrypt(memory)).toBe("snapshot-db");
+    expect(result.plaintextLength).toBe(11);
+    expect(snapshotIntent?.phase).toBe("snapshot-destroyed");
+    expect(events.indexOf("snapshot:destruction-intended")).toBeLessThan(
+      events.indexOf("checkpoint"),
+    );
+    expect(events).toContain("discard");
+    expect(yielded.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+    expect(JSON.stringify({ result, snapshotIntent })).not.toContain("snapshot-db");
   });
 });
 

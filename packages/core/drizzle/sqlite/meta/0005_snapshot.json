@@ -2,7 +2,7 @@
   "version": "6",
   "dialect": "sqlite",
   "id": "cd13b257-ecf4-4152-922a-e42408f0c82e",
-  "prevId": "212fd074-36cf-48cf-a1ec-0c87eb7aad3c",
+  "prevId": "b1d02570-9b1a-432e-9e53-343b978f608c",
   "tables": {
     "cp_authority_version": {
       "name": "cp_authority_version",

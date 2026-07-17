@@ -54,6 +54,7 @@ export type SqliteControlPlaneDialect = ControlPlaneTransactionalDialect & {
   readonly ready: boolean;
   migrate(): readonly string[];
   rollbackLatest(): string;
+  migrationQuery<T>(sql: string, parameters?: readonly unknown[]): readonly T[];
   query<T>(sql: string, parameters?: readonly unknown[]): readonly T[];
   execute(sql: string, parameters?: readonly unknown[]): number;
   immediateTransaction<T>(work: () => T): T;
@@ -389,6 +390,21 @@ function createDialect(
     return column;
   }
 
+  function isEmptyBootstrapDatabase(database: SqliteDatabase): boolean {
+    return (
+      database
+        .prepare(
+          `SELECT name
+         FROM sqlite_master
+         WHERE type = 'table'
+           AND name NOT LIKE 'sqlite_%'
+           AND name NOT IN ('__caplets_storage_identity_v1', '${SQLITE_HISTORY_TABLE}')
+         LIMIT 1`,
+        )
+        .get() === undefined
+    );
+  }
+
   const transaction = <T>(mode: "IMMEDIATE" | "EXCLUSIVE", work: () => T): T => {
     requireOpen();
     database.exec(`BEGIN ${mode}`);
@@ -429,9 +445,14 @@ function createDialect(
       database.pragma("foreign_keys = OFF");
       try {
         const appliedIds = transaction("EXCLUSIVE", () => {
+          const emptyBootstrap = isEmptyBootstrapDatabase(database);
           ensureHistoryTable(database);
           const applied = readAppliedMigrations(database);
-          const pending = planPendingMigrations(registry, applied, environment);
+          const migrationEnvironment =
+            applied.length === 0 && emptyBootstrap && environment.activationEvidence === undefined
+              ? { ...environment, activationEvidence: { kind: "empty-bootstrap" } as const }
+              : environment;
+          const pending = planPendingMigrations(registry, applied, migrationEnvironment);
           const activated: string[] = [];
           for (const migration of pending) {
             database.exec(migration.sql);
@@ -500,6 +521,10 @@ function createDialect(
       } finally {
         database.pragma("foreign_keys = ON");
       }
+    },
+    migrationQuery<T>(sql: string, parameters: readonly unknown[] = []) {
+      requireOpen();
+      return database.prepare(sql).all(...parameters) as T[];
     },
     query<T>(sql: string, parameters: readonly unknown[] = []) {
       requireReady();

@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import { CapletsError } from "../../errors";
+export const MAX_PORTABLE_ARTIFACT_BYTES = 256 * 1024 * 1024;
+export const MAX_ARTIFACT_PART_BYTES = 16 * 1024 * 1024;
+export const ARTIFACT_UPLOAD_CHUNK_BYTES = 1024 * 1024;
+export const ARTIFACT_QUOTA_BYTES_PER_ACTOR_WINDOW = 1024 * 1024 * 1024;
+export const ARTIFACT_QUOTA_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const ARTIFACT_REFERENCE_TTL_MS = 15 * 60 * 1000;
 
 export type ArtifactProviderIdentity = {
   kind: "filesystem" | "s3";
@@ -27,6 +33,23 @@ export interface ArtifactProvider {
   head(key: string): Promise<ArtifactObjectHead | undefined>;
   getRange(key: string, start: number, endExclusive: number): Promise<Buffer>;
   delete(key: string): Promise<void>;
+}
+export async function verifyArtifactProviderContinuity(
+  provider: ArtifactProvider,
+  expectedIdentity: ArtifactProviderIdentity,
+  expectedCanary: string,
+): Promise<void> {
+  if (
+    provider.identity.identityId !== expectedIdentity.identityId ||
+    provider.identity.kind !== expectedIdentity.kind ||
+    provider.identity.provider !== expectedIdentity.provider ||
+    provider.identity.namespace !== expectedIdentity.namespace ||
+    provider.identity.logicalHostId !== expectedIdentity.logicalHostId ||
+    provider.identity.storeId !== expectedIdentity.storeId
+  ) {
+    throw new CapletsError("AUTH_FAILED", "Artifact provider identity drift was detected.");
+  }
+  await provider.verifyCanary(expectedCanary);
 }
 
 export function createArtifactProviderIdentity(

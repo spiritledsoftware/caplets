@@ -22,6 +22,7 @@ import type { ControlPlaneRuntimeSnapshot } from "../src/control-plane/snapshot"
 import type { AuthTokenRepository, StoredOAuthTokenBundle } from "../src/auth/store";
 import { CapletsError } from "../src/errors";
 import type { ControlPlaneSecurityRepository } from "../src/control-plane/security/repository";
+import { createPortableArtifactReference } from "../src/media/artifacts";
 
 const dirs: string[] = [];
 const borrowedEngines: CapletsEngine[] = [];
@@ -570,13 +571,17 @@ describe("dispatchRemoteCliRequest", () => {
           globalLockfilePath,
         }),
       ),
-    ).resolves.toMatchObject({ ok: true, result: { remote: true } });
-
-    expect(existsSync(join(globalRoot, "sample.md"))).toBe(true);
-    expect(existsSync(join(context.projectCapletsRoot, "sample.md"))).toBe(false);
-    expect(JSON.parse(readFileSync(globalLockfilePath, "utf8"))).toMatchObject({
-      entries: [expect.objectContaining({ id: "sample" })],
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        remote: true,
+        installed: [expect.objectContaining({ id: "sample" })],
+      },
     });
+
+    expect(existsSync(join(globalRoot, "sample.md"))).toBe(false);
+    expect(existsSync(join(context.projectCapletsRoot, "sample.md"))).toBe(false);
+    expect(existsSync(globalLockfilePath)).toBe(false);
   });
 
   it("honors remote catalog indexing opt-out from the client request", async () => {
@@ -632,11 +637,7 @@ describe("dispatchRemoteCliRequest", () => {
         ],
       },
     });
-    expect(
-      JSON.parse(readFileSync(join(context.tempRoot, "remote-state", "caplets.lock.json"), "utf8")),
-    ).toMatchObject({
-      entries: [expect.objectContaining({ id: "sample" })],
-    });
+    expect(existsSync(join(context.tempRoot, "remote-state", "caplets.lock.json"))).toBe(false);
   });
 
   it("dispatches complete_cli using server-owned config", async () => {
@@ -974,6 +975,106 @@ describe("dispatchRemoteCliRequest", () => {
       mutation: expect.objectContaining({ selector: "underlying-sql" }),
     });
   });
+
+  it("transports portable artifact chunks and ranges without JSON byte corruption", async () => {
+    const context = testContext();
+    const administration = currentHostAdministration(context);
+    const binding = {
+      operationId: "operation-portable-remote",
+      target: "remote" as const,
+      logicalHostId: "host-portable-remote",
+      storeId: "store-portable-remote",
+      operationNamespace: "namespace-portable-remote",
+      actorId: administration.principal.clientId,
+      requestIdentity: "request-portable-remote",
+      operationClass: "external-effect" as const,
+    };
+    const reference = createPortableArtifactReference({
+      artifactId: "artifact_portable_remote",
+      logicalHostId: binding.logicalHostId,
+      storeId: binding.storeId,
+      providerIdentityId: "provider_portable_remote",
+      actorId: binding.actorId,
+      operationId: binding.operationId,
+      direction: "download",
+      byteLength: 4,
+      sha256: "a".repeat(64),
+      mimeType: "application/octet-stream",
+      expiresAt: "2026-07-17T12:15:00.000Z",
+    });
+    const execute = vi
+      .spyOn(administration.operations, "execute")
+      .mockResolvedValueOnce({
+        kind: "portable_import_session_append",
+        status: "accepted",
+        session: { nextOffset: 4 },
+      } as never)
+      .mockResolvedValueOnce({
+        kind: "portable_artifact_download_range",
+        status: "ok",
+        bytes: Uint8Array.from([0, 1, 2, 255]),
+        start: 0,
+        endExclusive: 4,
+        totalLength: 4,
+      } as never);
+
+    const appended = await dispatchRemoteCliRequest(
+      {
+        command: "current_host_portable",
+        arguments: {
+          binding,
+          operation: {
+            kind: "portable_import_session_append",
+            sessionId: "session_portable_remote",
+            offset: 0,
+            chunkSha256: "b".repeat(64),
+            bytesBase64: "AAEC/w==",
+          },
+        },
+      },
+      context,
+      administration,
+    );
+    const downloaded = await dispatchRemoteCliRequest(
+      {
+        command: "current_host_portable",
+        arguments: {
+          binding,
+          operation: {
+            kind: "portable_artifact_download_range",
+            artifactReference: reference,
+            start: 0,
+            endExclusive: 4,
+          },
+        },
+      },
+      context,
+      administration,
+    );
+
+    expect(appended).toMatchObject({
+      ok: true,
+      result: { kind: "portable_import_session_append", status: "accepted" },
+    });
+    expect(downloaded).toEqual({
+      ok: true,
+      result: {
+        kind: "portable_artifact_download_range",
+        status: "ok",
+        start: 0,
+        endExclusive: 4,
+        totalLength: 4,
+        bytesBase64: "AAEC/w==",
+      },
+    });
+    const appendedOperation = execute.mock.calls[0]?.[1] as { bytes: Uint8Array };
+    expect(appendedOperation).toMatchObject({
+      binding,
+      kind: "portable_import_session_append",
+      offset: 0,
+    });
+    expect(Array.from(appendedOperation.bytes)).toEqual([0, 1, 2, 255]);
+  });
   it("uses the activated SQL snapshot and repository for remote list and auth across restart", async () => {
     const context = remoteFixtureWithOAuth().context;
     const effectiveConfig = loadConfigWithSources(context.configPath, context.projectConfigPath);
@@ -1193,6 +1294,10 @@ function currentHostAdministration(context: DispatchAdministrationContext) {
           context.globalLockfilePath ?? join(context.tempRoot, "remote-state", "caplets.lock.json"),
       },
       activityLog: new DashboardActivityLog({ dir: join(context.tempRoot, "activity") }),
+      loadGlobalCatalogProvenance: async () => [],
+      persistGlobalCatalogChange: async (input) => ({
+        installed: input.artifacts.map((artifact) => artifact.installed),
+      }),
       version: "test-version",
     }),
     principal: {

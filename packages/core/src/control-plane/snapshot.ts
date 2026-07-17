@@ -320,22 +320,14 @@ export function createControlPlaneRuntimeSnapshotLoader(
   ): Promise<ControlPlaneRuntimeSnapshot> => {
     const running = compose(sequence, context);
     activeReload = running;
-    void running.then(
-      () => {
-        if (activeReload === running) activeReload = undefined;
-        const queued = pendingReload;
-        pendingReload = undefined;
-        if (!queued) return;
-        launchReload(queued.context, queued.sequence).then(queued.resolve, queued.reject);
-      },
-      () => {
-        if (activeReload === running) activeReload = undefined;
-        const queued = pendingReload;
-        pendingReload = undefined;
-        if (!queued) return;
-        launchReload(queued.context, queued.sequence).then(queued.resolve, queued.reject);
-      },
-    );
+    const launchPending = (): void => {
+      if (activeReload === running) activeReload = undefined;
+      const queued = pendingReload;
+      pendingReload = undefined;
+      if (!queued) return;
+      void launchReload(queued.context, queued.sequence).then(queued.resolve, queued.reject);
+    };
+    void running.then(launchPending, launchPending);
     return running;
   };
 
@@ -575,6 +567,24 @@ const materializedSqlAssetValidationCache = new Map<
   Readonly<{ device: number; inode: number; size: number; mtimeMs: number; ctimeMs: number }>
 >();
 const MAX_CACHED_SQL_ASSET_VALIDATIONS = 50_000;
+const PORTABLE_COMMON_RUNTIME_KEYS: Readonly<Record<string, true>> = {
+  tags: true,
+  exposure: true,
+  shadowing: true,
+  setup: true,
+  projectBinding: true,
+  runtime: true,
+};
+const RUNTIME_BACKEND_KEY_BY_KIND = {
+  mcp: "mcpServers",
+  openapi: "openapiEndpoints",
+  googleDiscovery: "googleDiscoveryApis",
+  graphql: "graphqlEndpoints",
+  http: "httpApis",
+  cli: "cliTools",
+  caplets: "capletSets",
+} as const;
+
 function validatedFilesystemRuntimeFingerprints(
   layers: readonly RuntimeConfigLayerInput[],
   vaultResolver: ConfigVaultResolver | undefined,
@@ -883,14 +893,7 @@ function portableCommonRuntimeFields(aggregate: CanonicalCapletAggregate): Recor
   const source = isRecord(aggregate.portable.frontmatter.source)
     ? aggregate.portable.frontmatter.source
     : {};
-  const commonKeys: Record<string, true> = {
-    tags: true,
-    exposure: true,
-    shadowing: true,
-    setup: true,
-    projectBinding: true,
-    runtime: true,
-  };
+  const commonKeys = PORTABLE_COMMON_RUNTIME_KEYS;
   return {
     name: aggregate.portable.name,
     description: aggregate.portable.description,
@@ -908,16 +911,7 @@ function runtimeBackendKey(
   | "httpApis"
   | "cliTools"
   | "capletSets" {
-  const keyByKind = {
-    mcp: "mcpServers",
-    openapi: "openapiEndpoints",
-    googleDiscovery: "googleDiscoveryApis",
-    graphql: "graphqlEndpoints",
-    http: "httpApis",
-    cli: "cliTools",
-    caplets: "capletSets",
-  } as const;
-  return keyByKind[kind];
+  return RUNTIME_BACKEND_KEY_BY_KIND[kind];
 }
 
 function resolvePortableRuntimeReferences(
@@ -1111,7 +1105,8 @@ function composeCapletOwnership(
   sql: SqlRuntimeProjection,
 ): Record<string, RuntimeCapletOwnership> {
   const rows: Record<string, RuntimeCapletOwnership> = {};
-  const ids = new Set([...Object.keys(composed.sources), ...Object.keys(sql.capletProvenance)]);
+  const ids = new Set(Object.keys(composed.sources));
+  for (const id of Object.keys(sql.capletProvenance)) ids.add(id);
   for (const id of ids) {
     const effectiveSource = composed.sources[id];
     const sources = [
@@ -1160,7 +1155,8 @@ function composeHostSettingOwnership(
   const rows: Record<string, RuntimeHostSettingOwnership> = {};
   const settingSources = composed.settingSources ?? {};
   const settingShadows = composed.settingShadows ?? {};
-  const keys = new Set([...Object.keys(settingSources), ...sql.settingKeys]);
+  const keys = new Set(Object.keys(settingSources));
+  for (const key of sql.settingKeys) keys.add(key);
   for (const key of keys) {
     const effectiveSource = settingSources[key];
     const sources = [...(settingShadows[key] ?? []), ...(effectiveSource ? [effectiveSource] : [])];

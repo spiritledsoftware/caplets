@@ -104,6 +104,7 @@ export type RecoveryBackupIntent = Readonly<{
 export interface RecoveryBackupLifecycleTransaction {
   readBackupIntent(backupId: string): Promise<RecoveryBackupIntent | undefined>;
   writeBackupIntent(intent: RecoveryBackupIntent): Promise<void>;
+  deleteBackupIntent?(backupId: string): Promise<void>;
 }
 
 export interface RecoveryBackupLifecyclePort {
@@ -287,6 +288,282 @@ export async function writeRecoveryEnvelope(
   } finally {
     dataKey.fill(0);
     noncePrefix.fill(0);
+  }
+}
+
+export type DriverConsistentRecoverySnapshotPhase =
+  | "destruction-intended"
+  | "snapshot-created"
+  | "envelope-finalized"
+  | "snapshot-destroyed";
+
+export type DriverConsistentRecoverySnapshotIntent = Readonly<{
+  version: 1;
+  backupId: string;
+  bindingDigest: string;
+  snapshotReference: string;
+  createdAt: string;
+  phase: DriverConsistentRecoverySnapshotPhase;
+  envelopeResult?: RecoveryEnvelopeWriteResult | undefined;
+  destroyedAt?: string | undefined;
+}>;
+
+export interface DriverConsistentRecoverySnapshotLifecycleTransaction {
+  readSnapshotIntent(backupId: string): Promise<DriverConsistentRecoverySnapshotIntent | undefined>;
+  writeSnapshotIntent(intent: DriverConsistentRecoverySnapshotIntent): Promise<void>;
+}
+
+export interface DriverConsistentRecoverySnapshotLifecyclePort {
+  transaction<T>(
+    work: (transaction: DriverConsistentRecoverySnapshotLifecycleTransaction) => Promise<T>,
+  ): Promise<T>;
+}
+
+export interface DriverConsistentRecoverySnapshotPort {
+  checkpoint(): Promise<void>;
+  integrityCheck(): Promise<void>;
+  /** Must be idempotent for the durable snapshot reference. */
+  createConsistentSnapshot(snapshotReference: string): Promise<void>;
+  readSnapshotChunks(snapshotReference: string, maxChunkBytes: number): AsyncIterable<Uint8Array>;
+  /** Must report success only after verified absence and remain idempotent on retry. */
+  destroySnapshot(snapshotReference: string): Promise<void>;
+}
+
+export interface RecoveryStagedMaterialReconciliationPort {
+  /** Idempotently discards a partial envelope and wrapped key before lifecycle reset. */
+  discardStagedRecoveryMaterial(backupId: string): Promise<void>;
+}
+
+/**
+ * Coordinates a driver-consistent SQLite snapshot with encrypted streaming. The snapshot
+ * destruction intent is durable before checkpoint or snapshot access; partial envelope retries
+ * discard staging, while a finalized envelope resumes directly at verified snapshot destruction.
+ */
+export async function writeDriverConsistentRecoveryEnvelope(
+  input: Readonly<{
+    binding: RecoveryEnvelopeBinding;
+    wrapAuthority: RecoveryWrapAuthority;
+    envelopeSink: RecoveryEnvelopeSink;
+    wrappedKeySink: RecoveryWrappedKeySink;
+    backupLifecycle: RecoveryBackupLifecyclePort;
+    backupIntent: RecoveryBackupIntent;
+    finalizedAt: string;
+    chunkPlaintextLimit?: number | undefined;
+    snapshot: DriverConsistentRecoverySnapshotPort;
+    snapshotLifecycle: DriverConsistentRecoverySnapshotLifecyclePort;
+    snapshotIntent: DriverConsistentRecoverySnapshotIntent;
+    reconciliation: RecoveryStagedMaterialReconciliationPort;
+  }>,
+): Promise<RecoveryEnvelopeWriteResult> {
+  try {
+    assertDriverSnapshotIntent(input.snapshotIntent, input.backupIntent);
+    let intent = await input.snapshotLifecycle.transaction(async (transaction) => {
+      const existing = await transaction.readSnapshotIntent(input.snapshotIntent.backupId);
+      if (existing === undefined) {
+        await transaction.writeSnapshotIntent(input.snapshotIntent);
+        return input.snapshotIntent;
+      }
+      assertSameDriverSnapshot(existing, input.snapshotIntent);
+      return existing;
+    });
+
+    if (intent.phase === "destruction-intended") {
+      await input.snapshot.checkpoint();
+      await input.snapshot.integrityCheck();
+      await input.snapshot.createConsistentSnapshot(intent.snapshotReference);
+      intent = await persistDriverSnapshotPhase(
+        input.snapshotLifecycle,
+        intent,
+        "snapshot-created",
+      );
+    }
+
+    let result: RecoveryEnvelopeWriteResult;
+    if (intent.phase === "snapshot-created") {
+      const existingBackup = await readRecoveryBackupIntent(
+        input.backupLifecycle,
+        input.backupIntent.backupId,
+      );
+      if (existingBackup?.phase === "finalized") {
+        result = recoveryResultFromIntent(existingBackup);
+      } else {
+        if (existingBackup !== undefined) {
+          await input.reconciliation.discardStagedRecoveryMaterial(input.backupIntent.backupId);
+          await input.backupLifecycle.transaction(async (transaction) => {
+            const current = await transaction.readBackupIntent(input.backupIntent.backupId);
+            if (!isDeepStrictEqual(current, existingBackup) || !transaction.deleteBackupIntent) {
+              throw recoveryVerificationError();
+            }
+            await transaction.deleteBackupIntent(input.backupIntent.backupId);
+          });
+        }
+        result = await writeRecoveryEnvelope({
+          binding: input.binding,
+          source: boundedSnapshotChunks(
+            input.snapshot.readSnapshotChunks(
+              intent.snapshotReference,
+              input.chunkPlaintextLimit ?? DEFAULT_RECOVERY_CHUNK_PLAINTEXT_LIMIT,
+            ),
+            input.chunkPlaintextLimit ?? DEFAULT_RECOVERY_CHUNK_PLAINTEXT_LIMIT,
+          ),
+          wrapAuthority: input.wrapAuthority,
+          envelopeSink: input.envelopeSink,
+          wrappedKeySink: input.wrappedKeySink,
+          backupLifecycle: input.backupLifecycle,
+          backupIntent: input.backupIntent,
+          finalizedAt: input.finalizedAt,
+          ...(input.chunkPlaintextLimit === undefined
+            ? {}
+            : { chunkPlaintextLimit: input.chunkPlaintextLimit }),
+        });
+      }
+      intent = await persistDriverSnapshotPhase(
+        input.snapshotLifecycle,
+        intent,
+        "envelope-finalized",
+        { envelopeResult: result },
+      );
+    } else {
+      result =
+        intent.envelopeResult ??
+        recoveryResultFromIntent(
+          await requireRecoveryBackupIntent(input.backupLifecycle, input.backupIntent.backupId),
+        );
+    }
+
+    if (intent.phase === "envelope-finalized") {
+      await input.snapshot.destroySnapshot(intent.snapshotReference);
+      intent = await persistDriverSnapshotPhase(
+        input.snapshotLifecycle,
+        intent,
+        "snapshot-destroyed",
+        { destroyedAt: input.finalizedAt },
+      );
+    }
+    if (intent.phase !== "snapshot-destroyed") throw recoveryVerificationError();
+    return result;
+  } catch (error) {
+    if (
+      error instanceof CapletsError &&
+      error.message === "Recovery envelope verification failed."
+    ) {
+      throw error;
+    }
+    throw recoveryVerificationError();
+  }
+}
+
+async function* boundedSnapshotChunks(
+  source: AsyncIterable<Uint8Array>,
+  maxChunkBytes: number,
+): AsyncGenerator<Uint8Array, void, void> {
+  if (
+    !Number.isSafeInteger(maxChunkBytes) ||
+    maxChunkBytes < 1 ||
+    maxChunkBytes > DEFAULT_RECOVERY_CHUNK_PLAINTEXT_LIMIT
+  ) {
+    throw recoveryVerificationError();
+  }
+  for await (const supplied of source) {
+    if (
+      !(supplied instanceof Uint8Array) ||
+      supplied.byteLength < 1 ||
+      supplied.byteLength > maxChunkBytes
+    ) {
+      supplied?.fill(0);
+      throw recoveryVerificationError();
+    }
+    try {
+      yield supplied;
+    } finally {
+      supplied.fill(0);
+    }
+  }
+}
+
+async function readRecoveryBackupIntent(
+  lifecycle: RecoveryBackupLifecyclePort,
+  backupId: string,
+): Promise<RecoveryBackupIntent | undefined> {
+  return lifecycle.transaction((transaction) => transaction.readBackupIntent(backupId));
+}
+
+async function requireRecoveryBackupIntent(
+  lifecycle: RecoveryBackupLifecyclePort,
+  backupId: string,
+): Promise<RecoveryBackupIntent> {
+  const intent = await readRecoveryBackupIntent(lifecycle, backupId);
+  if (intent === undefined) throw recoveryVerificationError();
+  return intent;
+}
+
+function recoveryResultFromIntent(intent: RecoveryBackupIntent): RecoveryEnvelopeWriteResult {
+  assertBackupIntent(intent);
+  if (
+    intent.phase !== "finalized" ||
+    intent.headerDigest === undefined ||
+    intent.terminalManifestDigest === undefined ||
+    intent.wrappedKeyDigest === undefined ||
+    intent.chunkCount === undefined ||
+    intent.plaintextLength === undefined
+  ) {
+    throw recoveryVerificationError();
+  }
+  return {
+    bindingDigest: intent.bindingDigest,
+    headerDigest: intent.headerDigest,
+    terminalManifestDigest: intent.terminalManifestDigest,
+    wrappedKeyDigest: intent.wrappedKeyDigest,
+    chunkCount: intent.chunkCount,
+    plaintextLength: intent.plaintextLength,
+  };
+}
+
+async function persistDriverSnapshotPhase(
+  lifecycle: DriverConsistentRecoverySnapshotLifecyclePort,
+  expected: DriverConsistentRecoverySnapshotIntent,
+  phase: DriverConsistentRecoverySnapshotPhase,
+  fields: Partial<DriverConsistentRecoverySnapshotIntent> = {},
+): Promise<DriverConsistentRecoverySnapshotIntent> {
+  return lifecycle.transaction(async (transaction) => {
+    const current = await transaction.readSnapshotIntent(expected.backupId);
+    if (!isDeepStrictEqual(current, expected)) throw recoveryVerificationError();
+    const next = { ...expected, ...fields, phase };
+    await transaction.writeSnapshotIntent(next);
+    return next;
+  });
+}
+
+function assertDriverSnapshotIntent(
+  intent: DriverConsistentRecoverySnapshotIntent,
+  backup: RecoveryBackupIntent,
+): void {
+  if (
+    intent.version !== 1 ||
+    intent.phase !== "destruction-intended" ||
+    intent.backupId !== backup.backupId ||
+    intent.bindingDigest !== backup.bindingDigest ||
+    intent.envelopeResult !== undefined ||
+    intent.destroyedAt !== undefined
+  ) {
+    throw recoveryVerificationError();
+  }
+  assertNonEmpty(intent.snapshotReference);
+  assertTimestamp(intent.createdAt);
+}
+
+function assertSameDriverSnapshot(
+  current: DriverConsistentRecoverySnapshotIntent,
+  expected: DriverConsistentRecoverySnapshotIntent,
+): void {
+  if (
+    current.version !== expected.version ||
+    current.backupId !== expected.backupId ||
+    current.bindingDigest !== expected.bindingDigest ||
+    current.snapshotReference !== expected.snapshotReference ||
+    current.createdAt !== expected.createdAt
+  ) {
+    throw recoveryVerificationError();
   }
 }
 

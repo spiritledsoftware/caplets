@@ -17,6 +17,7 @@ internal static class Program
     {
         if (args.Length != 1 || args[0] != "--stdio" || !OperatingSystem.IsWindows()) return 2;
         Lease? lease = null;
+        HeldPathChain? securePath = null;
         try
         {
             string? line;
@@ -38,10 +39,16 @@ internal static class Program
                     var payload = root.GetProperty("payload");
                     object result = action switch
                     {
-                        "acquire" when lease is null => (lease = Lease.Acquire(payload)).Describe(),
-                        "verify" when lease is not null => lease.Verify(),
-                        "rollback" when lease is not null => Rollback(ref lease),
-                        "complete" when lease is not null => Complete(ref lease, payload),
+                        "acquire" when lease is null && securePath is null => (lease = Lease.Acquire(payload)).Describe(),
+                        "resume" when lease is null && securePath is null => (lease = Lease.Resume(payload)).Describe(),
+                        "verify" when lease is not null && securePath is null => lease.Verify(),
+                        "rollback" when lease is not null && securePath is null => Rollback(ref lease),
+                        "complete" when lease is not null && securePath is null => Complete(ref lease, payload),
+                        "current-sid" when lease is null && securePath is null => SecureFilesystem.CurrentSid(),
+                        "verify-dacl" when lease is null && securePath is null => SecureFilesystem.VerifyDacl(payload),
+                        "create-directory" when lease is null && securePath is null => SecureFilesystem.CreateDirectory(payload),
+                        "hold-path" when lease is null && securePath is null => (securePath = SecureFilesystem.HoldPath(payload)).Describe(),
+                        "release-path" when lease is null && securePath is not null => ReleaseSecurePath(ref securePath),
                         _ => throw new RefusalException(),
                     };
                     await WriteResponse(id, true, result);
@@ -51,16 +58,21 @@ internal static class Program
                     await WriteResponse(id ?? "invalid", false, new { code = "exclusion_refused" });
                 }
             }
-            return lease is null ? 0 : 3;
+            return lease is null && securePath is null ? 0 : 3;
         }
         finally
         {
-            if (lease is not null)
-            {
-                try { lease.Rollback(); } catch { }
-                lease.Dispose();
-            }
+            lease?.Dispose();
+            securePath?.Dispose();
         }
+    }
+
+    private static object ReleaseSecurePath(ref HeldPathChain? path)
+    {
+        path!.VerifyIdentityAndLinkCount();
+        path.Dispose();
+        path = null;
+        return new { state = "released" };
     }
 
     private static object Rollback(ref Lease? lease)
@@ -118,6 +130,7 @@ internal sealed class Lease : IDisposable
     private readonly string _manifestSha256;
     private readonly int _scannedProcesses;
     private readonly SecurityIdentifier _owner;
+    private readonly bool _cleanupPrepared;
     private bool _completed;
 
     private Lease(
@@ -131,7 +144,8 @@ internal sealed class Lease : IDisposable
         MutablePath[] mutablePaths,
         SecurityIdentifier owner,
         string manifestSha256,
-        int scannedProcesses)
+        int scannedProcesses,
+        bool cleanupPrepared = false)
     {
         _cleanupId = cleanupId;
         _sourceBoundaryPath = sourceBoundaryPath;
@@ -144,6 +158,7 @@ internal sealed class Lease : IDisposable
         _manifestSha256 = manifestSha256;
         _owner = owner;
         _scannedProcesses = scannedProcesses;
+        _cleanupPrepared = cleanupPrepared;
     }
 
     internal static Lease Acquire(JsonElement payload)
@@ -194,9 +209,9 @@ internal sealed class Lease : IDisposable
             var cleanupId = $"u7-cleanup-{nonce}";
             sealedPath = Path.Combine(parent, $".caplets-sealed-{nonce}");
             var tombstoneStaging = Path.Combine(parent, $".caplets-tombstones-{nonce}");
-            WriteJournal(journalPath, new ExclusionJournal(1, "prepared", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray()));
+            WriteJournal(journalPath, new ExclusionJournal(1, "prepared", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray(), null));
             MoveDirectoryDurably(source, sealedPath);
-            WriteJournal(journalPath, new ExclusionJournal(1, "relocated", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray()));
+            WriteJournal(journalPath, new ExclusionJournal(1, "relocated", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray(), null));
 
             var relocatedPaths = EnumerateReviewedPaths(sealedPath);
             if (paths.Count != relocatedPaths.Count ||
@@ -222,7 +237,7 @@ internal sealed class Lease : IDisposable
                 if (Directory.Exists(tombstoneStaging)) Directory.Delete(tombstoneStaging, true);
                 throw;
             }
-            WriteJournal(journalPath, new ExclusionJournal(1, "tombstones-published", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray()));
+            WriteJournal(journalPath, new ExclusionJournal(1, "tombstones-published", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray(), null));
             var tombstoneReviewedPaths = EnumerateReviewedPaths(source);
             ValidateTombstoneShape(tombstoneReviewedPaths, mutable);
             var tombstoneIdentities = tombstoneReviewedPaths.ToDictionary(
@@ -234,6 +249,7 @@ internal sealed class Lease : IDisposable
                 .ToList();
 
             var manifest = ManifestHash(held);
+            WriteJournal(journalPath, new ExclusionJournal(1, "exclusion-durable", cleanupId, source, sealedPath, tombstoneStaging, mutable.ToArray(), manifest));
             return new Lease(
                 cleanupId,
                 source,
@@ -257,6 +273,174 @@ internal sealed class Lease : IDisposable
             throw;
         }
     }
+
+    internal static Lease Resume(JsonElement payload)
+    {
+        var source = Path.GetFullPath(Program.RequiredString(payload, "sourceBoundaryPath"));
+        var cleanupId = Program.RequiredString(payload, "cleanupId");
+        var expectedOwnerSid = Program.RequiredString(payload, "expectedOwnerSid");
+        var mode = Program.RequiredString(payload, "mode");
+        if (mode != "automatic" && mode != "offline") throw new RefusalException();
+        if (!payload.TryGetProperty("allReplicasStopped", out var replicasStopped) ||
+            replicasStopped.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+            (mode == "offline") != (replicasStopped.ValueKind == JsonValueKind.True) ||
+            !Regex.IsMatch(cleanupId, "^u7-cleanup-[a-f0-9]{48}$", RegexOptions.CultureInvariant))
+            throw new RefusalException();
+        var currentSid = WindowsIdentity.GetCurrent().User?.Value;
+        if (currentSid is null || !StringComparer.Ordinal.Equals(currentSid, expectedOwnerSid))
+            throw new RefusalException();
+        var owner = new SecurityIdentifier(expectedOwnerSid);
+        var parent = Directory.GetParent(source)?.FullName ?? throw new RefusalException();
+        ValidateOwnerPrivate(parent, true, owner);
+        ValidateExpectedServices(payload.GetProperty("expectedServices"));
+        var mutable = ParseMutablePaths(payload.GetProperty("mutablePaths")).ToArray();
+        var suffix = cleanupId["u7-cleanup-".Length..];
+        var expectedSealedPath = Path.Combine(parent, $".caplets-sealed-{suffix}");
+        var expectedStagingPath = Path.Combine(parent, $".caplets-tombstones-{suffix}");
+        var journalPath = JournalPath(source);
+        var tombstonePaths = mutable.Select(item => Path.Combine(source, item.RelativePath)).ToArray();
+
+        if (!File.Exists(journalPath))
+        {
+            if (Directory.Exists(expectedSealedPath)) throw new RefusalException();
+            ValidateResumedTombstones(source, mutable, owner);
+            return new Lease(
+                cleanupId,
+                source,
+                expectedSealedPath,
+                tombstonePaths,
+                journalPath,
+                new List<HeldPath>(),
+                new List<HeldPath>(),
+                mutable,
+                owner,
+                new string('0', 64),
+                0,
+                cleanupPrepared: true);
+        }
+
+        ExclusionJournal journal;
+        try
+        {
+            journal = JsonSerializer.Deserialize<ExclusionJournal>(File.ReadAllText(journalPath))
+                ?? throw new RefusalException();
+        }
+        catch
+        {
+            throw new RefusalException();
+        }
+        if (
+            journal.Version != 1 ||
+            journal.CleanupId != cleanupId ||
+            journal.SourceBoundaryPath != source ||
+            journal.SealedSourcePath != expectedSealedPath ||
+            (journal.TombstoneStagingPath.Length > 0 &&
+             journal.TombstoneStagingPath != expectedStagingPath) ||
+            journal.MutablePaths.Length != mutable.Length ||
+            journal.MutablePaths.Zip(mutable).Any(pair =>
+                pair.First.RelativePath != pair.Second.RelativePath ||
+                pair.First.Kind != pair.Second.Kind))
+            throw new RefusalException();
+
+        ValidateResumedTombstones(source, mutable, owner);
+        if (journal.Phase == "activation-cleanup")
+        {
+            if (Directory.Exists(expectedSealedPath)) Directory.Delete(expectedSealedPath, true);
+            DeleteJournal(journalPath);
+            return new Lease(
+                cleanupId,
+                source,
+                expectedSealedPath,
+                tombstonePaths,
+                journalPath,
+                new List<HeldPath>(),
+                new List<HeldPath>(),
+                mutable,
+                owner,
+                ValidManifestOrZero(journal.ManifestSha256),
+                0,
+                cleanupPrepared: true);
+        }
+        if (
+            journal.Phase != "exclusion-durable" ||
+            journal.ManifestSha256 is null ||
+            !Regex.IsMatch(journal.ManifestSha256, "^[a-f0-9]{64}$", RegexOptions.CultureInvariant) ||
+            !Directory.Exists(expectedSealedPath))
+            throw new RefusalException();
+
+        var reviewed = EnumerateReviewedPaths(expectedSealedPath);
+        foreach (var path in reviewed) ValidateOwnerPrivate(path.AbsolutePath, path.Kind == "directory", owner);
+        var firstProcesses = RestartManager.Inspect(
+            reviewed.Where(path => path.Kind == "file").Select(path => path.AbsolutePath));
+        ValidateRestartManagerOwners(firstProcesses, payload.GetProperty("expectedServices"));
+        if (firstProcesses.Any(process => process.ProcessId != Environment.ProcessId))
+            throw new RefusalException();
+        var identities = reviewed.ToDictionary(
+            path => path.RelativePath,
+            HeldPath.InspectShared,
+            StringComparer.Ordinal);
+        var held = new List<HeldPath>();
+        var heldTombstones = new List<HeldPath>();
+        try
+        {
+            held = reviewed.Select(path => HeldPath.OpenNoShare(path, identities[path.RelativePath])).ToList();
+            var tombstones = EnumerateReviewedPaths(source);
+            var tombstoneIdentities = tombstones.ToDictionary(
+                path => path.RelativePath,
+                HeldPath.InspectShared,
+                StringComparer.Ordinal);
+            heldTombstones = tombstones
+                .Select(path => HeldPath.OpenNoShare(path, tombstoneIdentities[path.RelativePath]))
+                .ToList();
+            var finalProcesses = RestartManager.Inspect(
+                held.Where(path => path.Kind == "file").Select(path => path.AbsolutePath));
+            ValidateRestartManagerOwners(finalProcesses, payload.GetProperty("expectedServices"));
+            if (finalProcesses.Any(process => process.ProcessId != Environment.ProcessId))
+                throw new RefusalException();
+            var manifest = ManifestHash(held);
+            if (!CryptographicOperations.FixedTimeEquals(
+                    Convert.FromHexString(manifest),
+                    Convert.FromHexString(journal.ManifestSha256)))
+                throw new RefusalException();
+            return new Lease(
+                cleanupId,
+                source,
+                expectedSealedPath,
+                tombstonePaths,
+                journalPath,
+                held,
+                heldTombstones,
+                mutable,
+                owner,
+                manifest,
+                finalProcesses.Count);
+        }
+        catch
+        {
+            foreach (var path in held) path.Dispose();
+            foreach (var path in heldTombstones) path.Dispose();
+            throw;
+        }
+    }
+
+    private static void ValidateResumedTombstones(
+        string source,
+        IReadOnlyCollection<MutablePath> mutable,
+        SecurityIdentifier owner)
+    {
+        var paths = EnumerateReviewedPaths(source);
+        ValidateTombstoneShape(paths, mutable);
+        foreach (var path in paths) ValidateOwnerPrivate(path.AbsolutePath, path.Kind == "directory", owner);
+    }
+
+    private static string ValidManifestOrZero(string? manifest)
+    {
+        return manifest is not null &&
+               Regex.IsMatch(manifest, "^[a-f0-9]{64}$", RegexOptions.CultureInvariant)
+            ? manifest
+            : new string('0', 64);
+    }
+
     private static void RestoreBoundary(string source, string sealedPath)
     {
         var parent = Directory.GetParent(source)?.FullName ?? throw new RefusalException();
@@ -298,6 +482,7 @@ internal sealed class Lease : IDisposable
     internal object Verify()
     {
         if (_completed) throw new RefusalException();
+        if (_cleanupPrepared) return new { manifestSha256 = _manifestSha256 };
         var processes = RestartManager.Inspect(_heldPaths.Where(path => path.Kind == "file").Select(path => path.AbsolutePath));
         if (processes.Any(process => process.ProcessId != Environment.ProcessId)) throw new RefusalException();
         foreach (var path in _heldPaths) path.VerifyIdentityAndLinkCount();
@@ -317,6 +502,7 @@ internal sealed class Lease : IDisposable
     internal void Rollback()
     {
         if (_completed) return;
+        if (_cleanupPrepared) throw new RefusalException();
         Verify();
         foreach (var path in _heldTombstones) path.Dispose();
         foreach (var path in _heldPaths) path.Dispose();
@@ -329,12 +515,18 @@ internal sealed class Lease : IDisposable
     {
         if (_completed) throw new RefusalException();
         Verify();
+        if (_cleanupPrepared)
+        {
+            DeleteJournal(_journalPath);
+            _completed = true;
+            return;
+        }
         WriteJournal(
             _journalPath,
-            new ExclusionJournal(1, "activation-cleanup", _cleanupId, _sourceBoundaryPath, _sealedSourcePath, "", _mutablePaths));
+            new ExclusionJournal(1, "activation-cleanup", _cleanupId, _sourceBoundaryPath, _sealedSourcePath, "", _mutablePaths, _manifestSha256));
         foreach (var path in _heldTombstones) path.Dispose();
         foreach (var path in _heldPaths) path.Dispose();
-        Directory.Delete(_sealedSourcePath, true);
+        if (Directory.Exists(_sealedSourcePath)) Directory.Delete(_sealedSourcePath, true);
         DeleteJournal(_journalPath);
         _completed = true;
     }
@@ -388,7 +580,7 @@ internal sealed class Lease : IDisposable
             DeleteJournal(journalPath);
             throw new RefusalException();
         }
-        if (journal.Phase is not ("prepared" or "relocated" or "tombstones-published"))
+        if (journal.Phase is not ("prepared" or "relocated" or "tombstones-published" or "exclusion-durable"))
             throw new RefusalException();
         if (Directory.Exists(journal.SealedSourcePath))
             RestoreBoundary(source, journal.SealedSourcePath);
@@ -437,7 +629,8 @@ internal sealed class Lease : IDisposable
         string SourceBoundaryPath,
         string SealedSourcePath,
         string TombstoneStagingPath,
-        MutablePath[] MutablePaths);
+        MutablePath[] MutablePaths,
+        string? ManifestSha256);
 
     private static void MoveDirectoryDurably(string source, string target)
     {
@@ -536,11 +729,21 @@ internal sealed class Lease : IDisposable
         return paths.OrderBy(path => path.RelativePath, StringComparer.Ordinal).ToList();
     }
 
-    private static void ValidateOwnerPrivate(string path, bool directory, SecurityIdentifier owner)
+    internal static void ValidateOwnerPrivate(
+        string path,
+        bool directory,
+        SecurityIdentifier owner,
+        bool requireProtected = true)
     {
+        var attributes = File.GetAttributes(path);
+        if (
+            (attributes & FileAttributes.ReparsePoint) != 0 ||
+            ((attributes & FileAttributes.Directory) != 0) != directory)
+            throw new RefusalException();
         FileSystemSecurity security = directory
             ? FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path), AccessControlSections.Owner | AccessControlSections.Access)
             : FileSystemAclExtensions.GetAccessControl(new FileInfo(path), AccessControlSections.Owner | AccessControlSections.Access);
+        if (requireProtected && directory && !security.AreAccessRulesProtected) throw new RefusalException();
         if (!owner.Equals(security.GetOwner(typeof(SecurityIdentifier)))) throw new RefusalException();
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -552,7 +755,7 @@ internal sealed class Lease : IDisposable
         }
     }
 
-    private static void CreateOwnerPrivateDirectory(string path, SecurityIdentifier owner)
+    internal static void CreateOwnerPrivateDirectory(string path, SecurityIdentifier owner)
     {
         Directory.CreateDirectory(path);
         var security = new DirectorySecurity();
@@ -599,6 +802,134 @@ internal sealed class Lease : IDisposable
     internal sealed record ReviewedPath(string AbsolutePath, string RelativePath, string Kind);
 }
 
+internal static class SecureFilesystem
+{
+    internal static object CurrentSid()
+    {
+        var sid = WindowsIdentity.GetCurrent().User?.Value ?? throw new RefusalException();
+        return new { sid };
+    }
+
+    internal static object VerifyDacl(JsonElement payload)
+    {
+        var path = Path.GetFullPath(Program.RequiredString(payload, "path"));
+        var expectedSid = Program.RequiredString(payload, "expectedServiceSid");
+        var currentSid = WindowsIdentity.GetCurrent().User?.Value;
+        if (currentSid is null || !StringComparer.Ordinal.Equals(currentSid, expectedSid))
+            throw new RefusalException();
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0) throw new RefusalException();
+        var directory = (attributes & FileAttributes.Directory) != 0;
+        using var held = HeldPathChain.OpenDeleteDenied(path, directory ? "directory" : "file");
+        Lease.ValidateOwnerPrivate(path, directory, new SecurityIdentifier(expectedSid));
+        held.VerifyIdentityAndLinkCount();
+        return new { restricted = true };
+    }
+
+    internal static object CreateDirectory(JsonElement payload)
+    {
+        var path = Path.GetFullPath(Program.RequiredString(payload, "path"));
+        var expectedSid = Program.RequiredString(payload, "expectedServiceSid");
+        var currentSid = WindowsIdentity.GetCurrent().User?.Value;
+        if (currentSid is null || !StringComparer.Ordinal.Equals(currentSid, expectedSid))
+            throw new RefusalException();
+        var owner = new SecurityIdentifier(expectedSid);
+        var parent = Directory.GetParent(path)?.FullName ?? throw new RefusalException();
+        using var heldParent = HeldPathChain.OpenDeleteDenied(parent, "directory");
+        Lease.ValidateOwnerPrivate(parent, true, owner, requireProtected: false);
+        if (Directory.Exists(path))
+        {
+            Lease.ValidateOwnerPrivate(path, true, owner);
+            return new { state = "exists" };
+        }
+        Lease.CreateOwnerPrivateDirectory(path, owner);
+        Lease.ValidateOwnerPrivate(path, true, owner);
+        heldParent.VerifyIdentityAndLinkCount();
+        return new { state = "created" };
+    }
+
+    internal static HeldPathChain HoldPath(JsonElement payload)
+    {
+        var path = Path.GetFullPath(Program.RequiredString(payload, "path"));
+        var kind = Program.RequiredString(payload, "kind");
+        var expectedSid = Program.RequiredString(payload, "expectedServiceSid");
+        var currentSid = WindowsIdentity.GetCurrent().User?.Value;
+        if (currentSid is null || !StringComparer.Ordinal.Equals(currentSid, expectedSid))
+            throw new RefusalException();
+        if (kind is not ("file" or "directory")) throw new RefusalException();
+        var held = HeldPathChain.OpenDeleteDenied(path, kind);
+        try
+        {
+            Lease.ValidateOwnerPrivate(path, kind == "directory", new SecurityIdentifier(expectedSid));
+            return held;
+        }
+        catch
+        {
+            held.Dispose();
+            throw;
+        }
+    }
+}
+
+internal sealed class HeldPathChain : IDisposable
+{
+    private readonly List<HeldPath> _paths;
+
+    private HeldPathChain(List<HeldPath> paths)
+    {
+        _paths = paths;
+    }
+
+    internal static HeldPathChain OpenDeleteDenied(string path, string finalKind)
+    {
+        var absolutePath = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(absolutePath) ?? throw new RefusalException();
+        var relative = Path.GetRelativePath(root, absolutePath);
+        var components = relative == "."
+            ? Array.Empty<string>()
+            : relative.Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+        var held = new List<HeldPath>();
+        try
+        {
+            if (components.Length == 0)
+            {
+                held.Add(HeldPath.OpenDeleteDenied(root, finalKind));
+            }
+            else
+            {
+                var current = root;
+                for (var index = 0; index < components.Length; index += 1)
+                {
+                    current = Path.Combine(current, components[index]);
+                    held.Add(HeldPath.OpenDeleteDenied(
+                        current,
+                        index == components.Length - 1 ? finalKind : "directory"));
+                }
+            }
+            return new HeldPathChain(held);
+        }
+        catch
+        {
+            foreach (var entry in held.AsEnumerable().Reverse()) entry.Dispose();
+            throw;
+        }
+    }
+
+    internal object Describe() => _paths[^1].Describe();
+
+    internal void VerifyIdentityAndLinkCount()
+    {
+        foreach (var path in _paths) path.VerifyIdentityAndLinkCount();
+    }
+
+    public void Dispose()
+    {
+        foreach (var path in _paths.AsEnumerable().Reverse()) path.Dispose();
+    }
+}
+
 internal sealed class HeldPath : IDisposable
 {
     private const uint GenericRead = 0x80000000;
@@ -642,6 +973,7 @@ internal sealed class HeldPath : IDisposable
             flags,
             IntPtr.Zero);
         if (handle.IsInvalid) throw new RefusalException();
+        ValidateHandleKind(handle, path.Kind);
         return Identity(handle);
     }
 
@@ -650,6 +982,7 @@ internal sealed class HeldPath : IDisposable
         var flags = FileFlagOpenReparsePoint | (path.Kind == "directory" ? FileFlagBackupSemantics : 0u);
         var handle = CreateFileW(path.AbsolutePath, GenericRead, 0, IntPtr.Zero, OpenExisting, flags, IntPtr.Zero);
         if (handle.IsInvalid) throw new RefusalException();
+        ValidateHandleKind(handle, path.Kind);
         var identity = Identity(handle);
         if (
             identity.Device != expected.Device ||
@@ -669,6 +1002,54 @@ internal sealed class HeldPath : IDisposable
             identity.Inode,
             identity.LinkCount);
     }
+
+    internal static HeldPath OpenDeleteDenied(string absolutePath, string kind)
+    {
+        var attributes = File.GetAttributes(absolutePath);
+        if ((attributes & FileAttributes.ReparsePoint) != 0 ||
+            ((attributes & FileAttributes.Directory) != 0) != (kind == "directory"))
+            throw new RefusalException();
+        var path = new Lease.ReviewedPath(absolutePath, ".", kind);
+        var expected = InspectShared(path);
+        var flags = FileFlagOpenReparsePoint | (kind == "directory" ? FileFlagBackupSemantics : 0u);
+        var handle = CreateFileW(
+            absolutePath,
+            GenericRead,
+            FileShareRead | FileShareWrite,
+            IntPtr.Zero,
+            OpenExisting,
+            flags,
+            IntPtr.Zero);
+        if (handle.IsInvalid) throw new RefusalException();
+        ValidateHandleKind(handle, kind);
+        var identity = Identity(handle);
+        if (
+            identity.Device != expected.Device ||
+            identity.Inode != expected.Inode ||
+            identity.LinkCount != expected.LinkCount ||
+            (kind == "file" && identity.LinkCount != 1))
+        {
+            handle.Dispose();
+            throw new RefusalException();
+        }
+        return new HeldPath(
+            handle,
+            absolutePath,
+            ".",
+            kind,
+            identity.Device,
+            identity.Inode,
+            identity.LinkCount);
+    }
+
+    internal object Describe() => new
+    {
+        path = AbsolutePath,
+        kind = Kind,
+        device = Device,
+        inode = Inode,
+        linkCount = LinkCount,
+    };
 
     internal void VerifyIdentityAndLinkCount()
     {
@@ -702,6 +1083,23 @@ internal sealed class HeldPath : IDisposable
     }
 
     public void Dispose() => _handle.Dispose();
+
+    private static void ValidateHandleKind(SafeFileHandle handle, string kind)
+    {
+        if (!GetFileInformationByHandle(handle, out var info))
+        {
+            handle.Dispose();
+            throw new RefusalException();
+        }
+        var attributes = (FileAttributes)info.FileAttributes;
+        if (
+            (attributes & FileAttributes.ReparsePoint) != 0 ||
+            ((attributes & FileAttributes.Directory) != 0) != (kind == "directory"))
+        {
+            handle.Dispose();
+            throw new RefusalException();
+        }
+    }
 
     private static PathIdentity Identity(SafeFileHandle handle)
     {

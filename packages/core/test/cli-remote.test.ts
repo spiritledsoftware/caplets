@@ -1649,6 +1649,147 @@ describe("remote CLI routing", () => {
         "Complete authentication in your browser. The server callback will store credentials.\n",
     );
   });
+  it("calls authenticated remote Current Host management with caller-known binding inputs", async () => {
+    const context = testContext("caplets-cli-remote-management-");
+    const requests: Array<{ body: unknown; authorization: string | null }> = [];
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        requests.push({
+          body: JSON.parse(String(init?.body)),
+          authorization: headers.get("authorization"),
+        });
+        return Response.json({ ok: true, result: { status: "ok", binding: {} } });
+      },
+    );
+
+    await runCli(["storage", "management", "status", "--remote"], {
+      env: remoteEnv(context),
+      authDir: context.authDir,
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      authorization: "Bearer remote-profile-access-token",
+      body: {
+        command: "current_host_status",
+        arguments: {
+          operationId: expect.stringMatching(/^operation_/),
+          requestIdentity: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      },
+    });
+    expect(JSON.parse(out.join(""))).toMatchObject({ status: "ok" });
+  });
+
+  it("rejects remote management operation identities outside the server contract", async () => {
+    const context = testContext("caplets-cli-remote-management-operation-id-");
+    const fetchMock = vi.fn();
+
+    await expect(
+      runCli(
+        ["storage", "management", "status", "--remote", "--operation-id", "operation.not-accepted"],
+        {
+          env: remoteEnv(context),
+          authDir: context.authDir,
+          fetch: fetchMock as typeof fetch,
+          writeOut: () => undefined,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reads remote portable status from the availability-independent health endpoint", async () => {
+    const context = testContext("caplets-cli-remote-portable-status-");
+    const requests: Array<{
+      url: string;
+      method: string | undefined;
+      body: unknown;
+    }> = [];
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        requests.push({ url: String(url), method: init?.method, body: init?.body });
+        return Response.json({
+          kind: "portable_status",
+          status: "stale-read-only",
+          health: {
+            backend: "postgres",
+            readiness: "stale-read-only",
+            connectivity: "unavailable",
+            migration: "current",
+            authorityToken: { authorityGeneration: 3, effectiveGeneration: 7 },
+            bootstrapCompatibility: "current",
+            staleAgeMs: 250,
+            convergence: "within-budget",
+            guidanceCode: "storage-unavailable",
+          },
+          guidanceCode: "storage-unavailable",
+        });
+      },
+    );
+
+    await runCli(["storage", "portable", "status", "--remote", "--json"], {
+      env: remoteEnv(context),
+      authDir: context.authDir,
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(requests).toEqual([
+      {
+        url: "http://127.0.0.1:5387/caplets/v1/healthz?portable=1",
+        method: "GET",
+        body: undefined,
+      },
+    ]);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      kind: "portable_status",
+      status: "stale-read-only",
+    });
+  });
+
+  it("rejects malformed remote portable variants before trusting nested fields", async () => {
+    const context = testContext("caplets-cli-remote-portable-invalid-");
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        result: {
+          kind: "portable_export_create",
+          status: "created",
+          artifact: { byteLength: 1 },
+          artifactType: "file",
+        },
+      }),
+    );
+
+    await expect(
+      runCli(
+        [
+          "storage",
+          "portable",
+          "operation",
+          JSON.stringify({
+            kind: "portable_export_create",
+            capletId: "fixture",
+            selector: "effective",
+          }),
+          "--remote",
+          "--json",
+        ],
+        {
+          env: remoteEnv(context),
+          authDir: context.authDir,
+          fetch: fetchMock as typeof fetch,
+          writeOut: () => undefined,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+  });
 });
 
 async function runRemoteAdd(args: string[]): Promise<unknown> {

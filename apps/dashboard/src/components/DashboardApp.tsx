@@ -105,6 +105,7 @@ import { dashboardBasePath, dashboardPath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 
 import { CatalogPage } from "@/components/catalog/CatalogPage";
+import { PortableCapletsPage } from "@/components/PortableCapletsPage";
 const REVEAL_DURATION_SECONDS = EPHEMERAL_REVEAL_TTL_MS / 1_000;
 const ACTION_DISCARDED = Symbol("dashboard-action-discarded");
 const STORAGE_HEALTH_POLL_MS = 2_000;
@@ -233,14 +234,20 @@ function liveAuthorityAvailable(
   );
 }
 
+type DashboardHealthRead = {
+  generation: number;
+  health: DashboardStorageHealth;
+};
+
 type DashboardHealthCoordinator = {
-  read: (options?: { supersede?: boolean }) => Promise<DashboardStorageHealth | undefined>;
+  generation: () => number;
+  read: (options?: { supersede?: boolean }) => Promise<DashboardHealthRead | undefined>;
   stop: () => void;
 };
 
 function createDashboardHealthCoordinator(
-  publish: (health: DashboardStorageHealth) => void,
-  publishFailure: (error: unknown) => void,
+  publish: (health: DashboardStorageHealth, generation: number) => void,
+  publishFailure: (error: unknown, generation: number) => void,
 ): DashboardHealthCoordinator {
   let stopped = false;
   let requestGeneration = 0;
@@ -248,11 +255,14 @@ function createDashboardHealthCoordinator(
     | {
         controller: AbortController;
         generation: number;
-        promise: Promise<DashboardStorageHealth | undefined>;
+        promise: Promise<DashboardHealthRead | undefined>;
       }
     | undefined;
 
   return {
+    generation() {
+      return requestGeneration;
+    },
     read(options = {}) {
       if (stopped) return Promise.resolve(undefined);
       if (active && !options.supersede) return active.promise;
@@ -267,16 +277,20 @@ function createDashboardHealthCoordinator(
         deadlineExpired = true;
         controller.abort();
         if (!stopped && generation === requestGeneration) {
-          publishFailure(new Error("Storage health request exceeded its hard deadline."));
+          publishFailure(
+            new Error("Storage health request exceeded its hard deadline."),
+            generation,
+          );
         }
         resolveDeadline(undefined);
       }, STORAGE_HEALTH_DEADLINE_MS);
       const requestPromise = dashboardStorageHealth({ signal: controller.signal })
         .then((health) => {
-          if (!deadlineExpired && !stopped && generation === requestGeneration) publish(health);
-          return !deadlineExpired && !stopped && generation === requestGeneration
-            ? health
-            : undefined;
+          if (!deadlineExpired && !stopped && generation === requestGeneration) {
+            publish(health, generation);
+            return { generation, health };
+          }
+          return undefined;
         })
         .catch((error: unknown) => {
           if (
@@ -285,7 +299,7 @@ function createDashboardHealthCoordinator(
             !stopped &&
             generation === requestGeneration
           ) {
-            publishFailure(error);
+            publishFailure(error, generation);
           }
           return undefined;
         });
@@ -327,15 +341,11 @@ function invalidateLiveDashboardData(
   current: DashboardData,
   health: DashboardStorageHealth,
 ): DashboardData {
+  const liveReads = DASHBOARD_READS.filter((read) => read.mode === "live-required");
   const unavailable = Object.fromEntries(
-    DASHBOARD_READS.filter((read) => read.mode === "live-required").map((read) => [
-      read.name,
-      { error: "Live SQL authority is unavailable." },
-    ]),
+    liveReads.map((read) => [read.name, { error: "Live SQL authority is unavailable." }]),
   ) as Partial<DashboardData>;
-  const unavailableLiveReads = DASHBOARD_READS.filter((read) => read.mode === "live-required").map(
-    (read) => read.name,
-  );
+  const unavailableLiveReads = liveReads.map((read) => read.name);
   return {
     ...current,
     ...unavailable,
@@ -578,6 +588,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   const authorizationPollGenerationRef = useRef(0);
   const refreshGenerationRef = useRef(0);
   const storageHealthRef = useRef<DashboardStorageHealth | undefined>(undefined);
+  const storageHealthGenerationRef = useRef(0);
   const refreshAvailabilityRef = useRef<DashboardRefreshAvailability | undefined>(data.refresh);
   refreshAvailabilityRef.current = data.refresh;
   const refreshInFlightRef = useRef(false);
@@ -587,7 +598,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   );
   if (!healthCoordinatorRef.current) {
     healthCoordinatorRef.current = createDashboardHealthCoordinator(
-      (health) => {
+      (health, generation) => {
         const previous = storageHealthRef.current;
         const recovered =
           !liveAuthorityAvailable(previous, undefined) && liveAuthorityAvailable(health, undefined);
@@ -595,6 +606,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         const retryPartialRefresh =
           !authorityUnavailable && refreshAvailabilityRef.current?.status === "partial";
         storageHealthRef.current = health;
+        storageHealthGenerationRef.current = generation;
         setData((current) => {
           if (authorityUnavailable) return invalidateLiveDashboardData(current, health);
           if (recovered && !sessionRef.current) {
@@ -625,7 +637,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
           });
         }
       },
-      (error) => {
+      (error, generation) => {
         const currentHealth = storageHealthRef.current;
         const unavailableHealth: DashboardStorageHealth = {
           ...currentHealth,
@@ -638,6 +650,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
           error: error instanceof Error ? error.message : String(error),
         };
         storageHealthRef.current = unavailableHealth;
+        storageHealthGenerationRef.current = generation;
         setData((current) => invalidateLiveDashboardData(current, unavailableHealth));
       },
     );
@@ -778,8 +791,20 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
       ]);
       if (refreshGeneration !== refreshGenerationRef.current) return undefined;
 
-      const currentHealth = refreshedHealth ?? storageHealthRef.current;
-      const hasLiveAuthority = liveAuthorityAvailable(currentHealth, undefined);
+      const coordinatorGeneration =
+        healthCoordinatorRef.current?.generation() ??
+        refreshedHealth?.generation ??
+        storageHealthGenerationRef.current;
+      const healthGeneration = refreshedHealth?.generation ?? storageHealthGenerationRef.current;
+      const currentHealth =
+        refreshedHealth?.generation === coordinatorGeneration
+          ? refreshedHealth.health
+          : storageHealthRef.current;
+      const healthGenerationCurrent =
+        healthGeneration === coordinatorGeneration &&
+        storageHealthGenerationRef.current === coordinatorGeneration;
+      const hasLiveAuthority =
+        healthGenerationCurrent && liveAuthorityAvailable(currentHealth, undefined);
       const unavailableLiveReads = loaded
         .filter(
           (entry) =>
@@ -799,6 +824,12 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         staleSnapshotReads,
       };
       setData((current) => {
+        if (
+          healthCoordinatorRef.current?.generation() !== coordinatorGeneration ||
+          storageHealthGenerationRef.current !== coordinatorGeneration
+        ) {
+          return current;
+        }
         const refreshedData = Object.fromEntries(
           loaded.map((entry) => [
             entry.name,
@@ -2259,72 +2290,63 @@ function CapletsPage({
   onUnauthorized: () => void;
 }) {
   const { confirmTyped } = useActionConfirm();
+  const hasLiveAuthority = useContext(LiveAuthorityContext);
   const caplets = data.caplets?.caplets ?? [];
   const updateRisks = new Map(
     (data.updates?.updates ?? []).map((update) => [String(update.id), update]),
   );
-  if (loading && !data.caplets) return <DashboardLoadingState title="Caplets" />;
   return (
-    <PageFrame title="Caplets" description="Installed Caplets on this host.">
-      <Card>
-        <CardContent className="pt-6">
-          <div className="grid gap-2">
-            {caplets.length ? (
-              caplets.map((caplet) => {
-                const capletId = caplet.id ?? caplet.name ?? "caplet";
-                const update = updateRisks.get(String(capletId));
-                return (
-                  <Row
-                    key={capletId}
-                    title={capletId}
-                    detail={<CapletUpdateReadiness caplet={caplet} update={update} />}
-                    actions={
-                      update ? (
-                        <TooltipIconButton
-                          requiresLiveAuthority
-                          size="icon-sm"
-                          variant="outline"
-                          label={`Review update for ${capletId}`}
-                          onClick={async () => {
-                            if (
-                              !(await confirmTyped(
-                                "Review Caplet update?",
-                                capletUpdateReviewSummary(caplet, update),
-                                `update ${capletId}`,
-                              ))
-                            )
-                              return;
-                            await action(catalogMutationLabel, () =>
-                              dashboardApi<CatalogMutationResult>("catalog/update", {
-                                method: "POST",
-                                body: JSON.stringify({
-                                  capletId,
-                                  acknowledgeRiskIncrease: true,
-                                }),
-                              }),
-                            );
-                          }}
-                        >
-                          <RefreshCwIcon />
-                        </TooltipIconButton>
-                      ) : (
-                        <TooltipIconBadge
-                          label={`No update available for ${capletId}`}
-                          variant="secondary"
-                        >
-                          <CheckIcon />
-                        </TooltipIconBadge>
-                      )
-                    }
-                  />
+    <>
+      <PortableCapletsPage
+        caplets={caplets}
+        managementTargets={data.managementCaplets?.items ?? []}
+        loading={loading && !data.caplets}
+        liveAuthorityAvailable={hasLiveAuthority}
+        liveAuthorityUnavailableReason={LIVE_AUTHORITY_DISABLED_REASON}
+        renderCapletSummary={(caplet) => {
+          const capletId = caplet.id ?? caplet.name ?? "caplet";
+          return (
+            <CapletUpdateReadiness caplet={caplet} update={updateRisks.get(String(capletId))} />
+          );
+        }}
+        renderCapletAction={(caplet) => {
+          const capletId = caplet.id ?? caplet.name ?? "caplet";
+          const update = updateRisks.get(String(capletId));
+          return update ? (
+            <TooltipIconButton
+              requiresLiveAuthority
+              size="icon-sm"
+              variant="outline"
+              label={`Review update for ${capletId}`}
+              onClick={async () => {
+                if (
+                  !(await confirmTyped(
+                    "Review Caplet update?",
+                    capletUpdateReviewSummary(caplet, update),
+                    `update ${capletId}`,
+                  ))
+                )
+                  return;
+                await action(catalogMutationLabel, () =>
+                  dashboardApi<CatalogMutationResult>("catalog/update", {
+                    method: "POST",
+                    body: JSON.stringify({
+                      capletId,
+                      acknowledgeRiskIncrease: true,
+                    }),
+                  }),
                 );
-              })
-            ) : (
-              <EmptyLine text="No Caplets are installed." />
-            )}
-          </div>
-        </CardContent>
-      </Card>
+              }}
+            >
+              <RefreshCwIcon />
+            </TooltipIconButton>
+          ) : (
+            <TooltipIconBadge label={`No update available for ${capletId}`} variant="secondary">
+              <CheckIcon />
+            </TooltipIconBadge>
+          );
+        }}
+      />
       <ManagementOwnershipList
         resource="caplet"
         items={data.managementCaplets?.items}
@@ -2332,7 +2354,7 @@ function CapletsPage({
         action={action}
         onUnauthorized={onUnauthorized}
       />
-    </PageFrame>
+    </>
   );
 }
 
@@ -3281,8 +3303,20 @@ function ManagementOwnershipList({
   const detailRef = useRef<HTMLDivElement>(null);
   const detailId = `management-detail-${resource}`;
   const hasLiveAuthority = useContext(LiveAuthorityContext);
+  const liveAuthorityRef = useRef(hasLiveAuthority);
+  liveAuthorityRef.current = hasLiveAuthority;
+  const mountedRef = useRef(false);
+  const previewGenerationRef = useRef(0);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      previewGenerationRef.current += 1;
+    };
+  }, []);
   useEffect(() => {
     if (hasLiveAuthority) return;
+    previewGenerationRef.current += 1;
     setInspection(undefined);
     setDraft("");
     setPrepared(undefined);
@@ -3293,6 +3327,7 @@ function ManagementOwnershipList({
   if (!items && !error) return null;
 
   async function inspectUnderlying(item: ManagementTarget) {
+    previewGenerationRef.current += 1;
     setBusy("inspect");
     setManagementError(undefined);
     setPrepared(undefined);
@@ -3346,6 +3381,7 @@ function ManagementOwnershipList({
   }
 
   async function previewChange() {
+    const generation = ++previewGenerationRef.current;
     setBusy("preview");
     setPrepared(undefined);
     setOutcome(undefined);
@@ -3353,26 +3389,41 @@ function ManagementOwnershipList({
     try {
       const mutation = mutationForInspection();
       const preview = await dashboardManagementPreview(mutation);
+      if (
+        !mountedRef.current ||
+        !liveAuthorityRef.current ||
+        generation !== previewGenerationRef.current
+      ) {
+        return;
+      }
       setPrepared({ mutation, operation: preview.operation, result: preview.result });
     } catch (error) {
+      if (!mountedRef.current || generation !== previewGenerationRef.current) return;
       if (isDashboardUnauthorized(error)) {
         onUnauthorized();
         return;
       }
       setManagementError(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy(undefined);
+      if (mountedRef.current && generation === previewGenerationRef.current) {
+        setBusy(undefined);
+      }
     }
   }
 
   async function applyChange() {
     if (!prepared) return;
+    const preparedChange = prepared;
+    previewGenerationRef.current += 1;
+    setPrepared(undefined);
     setBusy("apply");
     setManagementError(undefined);
     try {
-      const result = await dashboardManagementMutation(prepared.mutation, prepared.operation);
+      const result = await dashboardManagementMutation(
+        preparedChange.mutation,
+        preparedChange.operation,
+      );
       setOutcome(result);
-      setPrepared(undefined);
       const status = stringFieldFromRecord(isUnknownRecord(result) ? result : undefined, "status");
       if (status === "committed") {
         setInspection(undefined);
@@ -3511,6 +3562,8 @@ function ManagementOwnershipList({
                 <Input
                   value={draft}
                   onChange={(event) => {
+                    previewGenerationRef.current += 1;
+                    setBusy((current) => (current === "preview" ? undefined : current));
                     setDraft(event.target.value);
                     setPrepared(undefined);
                     setOutcome(undefined);

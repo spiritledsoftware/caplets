@@ -19,6 +19,210 @@ export type DashboardStorageHealth = {
   guidanceCode?: string;
   error?: string;
 };
+export type DashboardPortableAuthorityToken = {
+  authorityGeneration: number;
+  effectiveGeneration: number;
+};
+
+export const DASHBOARD_PORTABLE_CHUNK_BYTES = 1024 * 1024;
+
+export type DashboardPortableOperation =
+  | { kind: "portable_status" }
+  | {
+      kind: "portable_import_session_create";
+      expectedByteLength: number;
+      expectedSha256: string;
+      mimeType: string;
+    }
+  | { kind: "portable_import_session_status"; sessionId: string }
+  | { kind: "portable_import_session_finalize"; sessionId: string }
+  | {
+      kind: "portable_import_preview";
+      artifactReference: string | DashboardPortableArtifactReference;
+      collisionPolicy: "reject" | "replace";
+      replacementConfirmed: boolean;
+    }
+  | { kind: "portable_import_activate"; proposalId: string; proposalHash: string }
+  | {
+      kind: "portable_setup_revalidate";
+      capletId: string;
+      expectedAggregateVersion: number;
+      expectedAuthorityToken: DashboardPortableAuthorityToken;
+      expectedSecurityEpoch: number;
+    }
+  | {
+      kind: "portable_export_create";
+      capletId: string;
+      selector: "effective" | "underlying-sql";
+    };
+
+export type DashboardPortableArtifactReference = {
+  uri: string;
+  artifactId: string;
+  logicalHostId: string;
+  storeId: string;
+  providerIdentityId: string;
+  actorId: string;
+  operationId: string;
+  direction: "upload" | "download";
+  byteLength: number;
+  sha256: string;
+  mimeType: string;
+  expiresAt: string;
+};
+
+export type DashboardPortableArtifact = {
+  reference: DashboardPortableArtifactReference;
+  sha256: string;
+  byteLength: number;
+  mimeType: string;
+};
+
+export type DashboardPortableSetupDependency = {
+  name: string;
+  type: "local" | "external" | "unresolved-setup";
+  status: "required" | "satisfied";
+};
+
+export type DashboardPortableDifference = {
+  field: string;
+  beforeHash?: string;
+  afterHash?: string;
+  effect: "added" | "changed" | "removed" | "unchanged";
+};
+
+export type DashboardPortableSession = {
+  sessionId: string;
+  artifactId: string;
+  actorId: string;
+  operationId: string;
+  direction: "upload" | "download";
+  state: "uploading" | "finalized" | "consumed" | "revoked" | "expired";
+  nextOffset: number;
+  expectedByteLength: number;
+  expectedSha256: string;
+  mimeType: string;
+  providerIdentityId: string;
+  expiresAt: string;
+  finalizedAt?: string;
+  revokedAt?: string;
+};
+
+export type DashboardPortableProposal = {
+  proposalId: string;
+  artifactId: string;
+  actorId: string;
+  operationId: string;
+  capletId: string;
+  proposalHash: string;
+  expectedAuthorityGeneration: number;
+  expectedEffectiveGeneration: number;
+  expectedAggregateVersion: number;
+  expectedSecurityEpoch: number;
+  expectedRuntimeFingerprint: string;
+  collisionPolicy: "reject" | "replace";
+  replacementConfirmed: boolean;
+  consequence: "effective-runtime-changes" | "no-effective-change-while-shadowed";
+  differences: readonly DashboardPortableDifference[];
+  setupDependencies: readonly DashboardPortableSetupDependency[];
+  state: "previewed" | "consumed" | "expired" | "rejected";
+  expiresAt: string;
+  consumedAt?: string;
+};
+
+export type DashboardPortableRejectedReason =
+  | "filesystem-owned"
+  | "sql-collision"
+  | "invalid-artifact"
+  | "stale"
+  | "changed-bytes"
+  | "revoked-actor"
+  | "consumed"
+  | "expired"
+  | "replacement-unconfirmed"
+  | "collision"
+  | "stale-generation"
+  | "stale-caplet"
+  | "not-found"
+  | "proposal-mismatch"
+  | "wrong-actor"
+  | "wrong-operation"
+  | "setup-incomplete";
+
+export type DashboardPortableOutcome =
+  | {
+      kind:
+        | "portable_import_session_create"
+        | "portable_import_session_status"
+        | "portable_import_session_append";
+      status: "created" | "ok" | "accepted";
+      session: DashboardPortableSession;
+    }
+  | {
+      kind: "portable_import_session_finalize";
+      status: "finalized";
+      session: DashboardPortableSession;
+      artifact: DashboardPortableArtifact;
+    }
+  | {
+      kind: "portable_import_preview";
+      status: "previewed";
+      proposal: DashboardPortableProposal;
+    }
+  | {
+      kind: "portable_import_preview";
+      status: "rejected";
+      reason: DashboardPortableRejectedReason;
+    }
+  | {
+      kind: "portable_import_activate";
+      status: "committed";
+      receipt: Record<string, unknown>;
+      caplet: {
+        id: string;
+        activation: string;
+        setupDependencies: DashboardPortableSetupDependency[];
+      };
+    }
+  | {
+      kind: "portable_import_activate";
+      status: "rejected";
+      reason: DashboardPortableRejectedReason;
+    }
+  | {
+      kind: "portable_setup_revalidate";
+      status: "committed";
+      receipt: Record<string, unknown>;
+      caplet: {
+        id: string;
+        activation: string;
+      };
+    }
+  | {
+      kind: "portable_setup_revalidate";
+      status: "rejected";
+      reason: DashboardPortableRejectedReason;
+    }
+  | {
+      kind: "portable_export_create";
+      status: "created";
+      artifact: DashboardPortableArtifact;
+      artifactType: "file" | "bundle";
+    }
+  | {
+      kind: "portable_status";
+      status: "live" | "stale-read-only" | "not-ready";
+      health: DashboardStorageHealth;
+      guidanceCode: string;
+    };
+
+export type DashboardPortableUploadChunk = {
+  sessionId: string;
+  operationId: string;
+  offset: number;
+  sha256: string;
+  bytes: Uint8Array<ArrayBuffer>;
+};
 
 export type DashboardManagementMutation =
   | {
@@ -127,6 +331,142 @@ export async function dashboardApi<T>(path: string, options: RequestInit = {}): 
   }
   return body as T;
 }
+export async function dashboardPortableOperation<
+  T extends DashboardPortableOutcome = DashboardPortableOutcome,
+>(operation: DashboardPortableOperation, operationId?: string): Promise<T> {
+  if (operationId !== undefined) assertDashboardPortableOperationId(operationId);
+  try {
+    return await dashboardApi<T>("portable", {
+      method: "POST",
+      body: JSON.stringify({ operation, ...(operationId ? { operationId } : {}) }),
+    });
+  } catch (error) {
+    if (
+      error instanceof DashboardApiError &&
+      error.status === 409 &&
+      isDashboardPortableRejection(error.body, operation.kind)
+    ) {
+      return error.body as T;
+    }
+    throw error;
+  }
+}
+
+export async function dashboardPortableUploadChunk(
+  chunk: DashboardPortableUploadChunk,
+): Promise<Record<string, unknown>> {
+  if (!Number.isSafeInteger(chunk.offset) || chunk.offset < 0) {
+    throw new Error("Portable artifact offset is invalid.");
+  }
+  if (!/^[0-9a-f]{64}$/u.test(chunk.sha256)) {
+    throw new Error("Portable artifact chunk hash is invalid.");
+  }
+  if (chunk.bytes.byteLength === 0 || chunk.bytes.byteLength > DASHBOARD_PORTABLE_CHUNK_BYTES) {
+    throw new Error("Portable artifact chunks must be between 1 byte and 1 MiB.");
+  }
+  assertDashboardPortableOperationId(chunk.operationId);
+
+  const response = await fetch(dashboardApiUrl("portable/artifacts"), {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: {
+      ...csrfHeaders(),
+      "x-caplets-session-id": chunk.sessionId,
+      "x-caplets-operation-id": chunk.operationId,
+      "x-caplets-offset": String(chunk.offset),
+      "x-caplets-sha256": chunk.sha256,
+    },
+    body: chunk.bytes,
+  });
+  const body = parseResponseBody(await response.text());
+  if (!response.ok) {
+    throw new DashboardApiError(apiErrorMessage(body, response), {
+      status: response.status,
+      body,
+    });
+  }
+  return isApiRecord(body) ? body : {};
+}
+
+export function dashboardPortableDownload(artifactReference: string): string {
+  assertDashboardPortableReference(artifactReference);
+  return `${dashboardApiUrl("portable/artifacts")}?ref=${encodeURIComponent(artifactReference)}`;
+}
+
+export async function dashboardPortableStatus(): Promise<
+  Extract<DashboardPortableOutcome, { kind: "portable_status" }>
+> {
+  const response = await fetch(`${dashboardHealthUrl()}?portable=1`, {
+    credentials: "same-origin",
+  });
+  const body = parseResponseBody(await response.text());
+  if ((response.status === 200 || response.status === 503) && isDashboardPortableStatus(body)) {
+    return body;
+  }
+  throw new DashboardApiError(apiErrorMessage(body, response), {
+    status: response.status,
+    body,
+  });
+}
+
+function assertDashboardPortableReference(reference: string): void {
+  if (!reference.startsWith("caplets://artifacts/")) {
+    throw new Error("Portable artifact reference is invalid.");
+  }
+}
+
+function assertDashboardPortableOperationId(operationId: string): void {
+  if (!/^[A-Za-z0-9_-]{1,160}$/u.test(operationId)) {
+    throw new Error("Portable operation ID is invalid.");
+  }
+}
+
+function isDashboardPortableRejection(
+  value: unknown,
+  expectedKind: DashboardPortableOperation["kind"],
+): value is Extract<DashboardPortableOutcome, { status: "rejected" }> {
+  return (
+    isApiRecord(value) &&
+    value.kind === expectedKind &&
+    value.status === "rejected" &&
+    typeof value.reason === "string" &&
+    Object.hasOwn(DASHBOARD_PORTABLE_REJECTION_REASONS, value.reason)
+  );
+}
+
+function isDashboardPortableStatus(
+  value: unknown,
+): value is Extract<DashboardPortableOutcome, { kind: "portable_status" }> {
+  return (
+    isApiRecord(value) &&
+    value.kind === "portable_status" &&
+    (value.status === "live" ||
+      value.status === "stale-read-only" ||
+      value.status === "not-ready") &&
+    typeof value.guidanceCode === "string" &&
+    isDashboardStorageHealth(value.health)
+  );
+}
+
+const DASHBOARD_PORTABLE_REJECTION_REASONS: Record<DashboardPortableRejectedReason, true> = {
+  "filesystem-owned": true,
+  "sql-collision": true,
+  "invalid-artifact": true,
+  stale: true,
+  "changed-bytes": true,
+  "revoked-actor": true,
+  consumed: true,
+  expired: true,
+  "replacement-unconfirmed": true,
+  collision: true,
+  "stale-generation": true,
+  "stale-caplet": true,
+  "setup-incomplete": true,
+  "not-found": true,
+  "proposal-mismatch": true,
+  "wrong-actor": true,
+  "wrong-operation": true,
+};
 
 export async function dashboardStorageHealth(
   options: RequestInit = {},
@@ -405,14 +745,16 @@ function dashboardManagementLookupFailure(
 ): Record<string, unknown> | undefined {
   if (error.status !== 403 && error.status !== 409 && error.status !== 503) return undefined;
   const body = isApiRecord(error.body) ? error.body : { message: error.message };
-  const status =
-    typeof body.status === "string"
-      ? body.status
-      : error.status === 403
-        ? "lookup_forbidden"
-        : error.status === 409
-          ? "lookup_conflict"
-          : "lookup_unavailable";
+  let status: string;
+  if (typeof body.status === "string") {
+    status = body.status;
+  } else if (error.status === 403) {
+    status = "lookup_forbidden";
+  } else if (error.status === 409) {
+    status = "lookup_conflict";
+  } else {
+    status = "lookup_unavailable";
+  }
   return {
     ...body,
     status,

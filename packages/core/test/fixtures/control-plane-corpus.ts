@@ -6,6 +6,7 @@ export const CANONICAL_ENTITY_KINDS_FIXTURE = [
   "host-setting",
   "caplet",
   "caplet-provenance",
+  "import-proposal",
   "operation-namespace",
   "operation-reservation",
   "operation-outcome",
@@ -40,6 +41,11 @@ export const CANONICAL_ENTITY_KINDS_FIXTURE = [
   "external-destruction",
   "recovery-checkpoint",
   "quarantine",
+  "artifact-session",
+  "artifact-part",
+  "artifact-manifest",
+  "artifact-quota-reservation",
+  "artifact-cleanup-intent",
 ] as const satisfies readonly ControlPlaneEntityKind[];
 
 export const PORTABLE_BACKEND_KINDS_FIXTURE = [

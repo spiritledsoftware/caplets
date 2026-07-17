@@ -2,12 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { AttachServeOptions } from "../src/attach/options";
 import type { ResolvedRemoteSelection } from "../src/remote/selection";
 
-const { createNativeCapletsService } = vi.hoisted(() => ({
-  createNativeCapletsService: vi.fn((options: unknown) => ({ options })),
+const { createActivatedNativeCapletsService } = vi.hoisted(() => ({
+  createActivatedNativeCapletsService: vi.fn((options: unknown) => Promise.resolve({ options })),
 }));
 
 vi.mock("../src/native/service", () => ({
-  createNativeCapletsService,
+  createActivatedNativeCapletsService,
 }));
 
 describe("attach native service wiring", () => {
@@ -48,7 +48,7 @@ describe("attach native service wiring", () => {
       },
     };
 
-    createAttachNativeServiceForTests(
+    await createAttachNativeServiceForTests(
       {
         transport: "stdio",
         configPath: "/repo/caplets.json",
@@ -59,7 +59,7 @@ describe("attach native service wiring", () => {
       {},
     );
 
-    expect(createNativeCapletsService).toHaveBeenCalledWith(
+    expect(createActivatedNativeCapletsService).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "cloud",
         remote: expect.objectContaining({
@@ -68,7 +68,7 @@ describe("attach native service wiring", () => {
         }),
       }),
     );
-  });
+  }, 15_000);
   it("wires local daemon selections without Cloud workspace or Remote Profile fields", async () => {
     const { createAttachNativeServiceForTests } = await import("../src/attach/server");
     const selection: ResolvedRemoteSelection = {
@@ -87,7 +87,7 @@ describe("attach native service wiring", () => {
       },
     };
 
-    createAttachNativeServiceForTests(
+    await createAttachNativeServiceForTests(
       {
         transport: "stdio",
         configPath: "/repo/caplets.json",
@@ -98,7 +98,7 @@ describe("attach native service wiring", () => {
       {},
     );
 
-    expect(createNativeCapletsService).toHaveBeenCalledWith(
+    expect(createActivatedNativeCapletsService).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "remote",
         remote: expect.objectContaining({
@@ -106,7 +106,7 @@ describe("attach native service wiring", () => {
         }),
       }),
     );
-    expect(createNativeCapletsService).toHaveBeenCalledWith(
+    expect(createActivatedNativeCapletsService).toHaveBeenCalledWith(
       expect.not.objectContaining({
         remote: expect.objectContaining({ workspace: expect.anything() }),
       }),

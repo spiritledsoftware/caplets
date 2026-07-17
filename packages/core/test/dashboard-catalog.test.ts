@@ -1,8 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { currentHostCatalogInstallSource } from "../src/current-host/catalog";
+import type { CapletsLockEntry } from "../src/cli/lockfile";
+import type { CurrentHostPortableOperations } from "../src/current-host/operations";
 import { CapletsEngine } from "../src/engine";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
@@ -353,15 +355,9 @@ describe("dashboard caplets and catalog APIs", () => {
         expect.objectContaining({
           id: "sample",
           status: "installed",
-          lockfile: setup.context.globalLockfilePath,
         }),
       ],
       setupActions: expect.arrayContaining([expect.objectContaining({ kind: "auth" })]),
-    });
-
-    expect(existsSync(join(setup.context.globalCapletsRoot, "sample.md"))).toBe(true);
-    expect(JSON.parse(readFileSync(setup.context.globalLockfilePath, "utf8"))).toMatchObject({
-      entries: [expect.objectContaining({ id: "sample", destination: "sample.md" })],
     });
 
     const updates = await dashboardGet(setup, "/dashboard/api/catalog/updates");
@@ -390,7 +386,7 @@ describe("dashboard caplets and catalog APIs", () => {
     });
     expect(installed.status).toBe(200);
     const installedPath = join(setup.context.globalCapletsRoot, "sample.md");
-    const localContents = "# Local changes\n\n";
+    const localContents = "# Filesystem shadow\n\n";
     writeFileSync(installedPath, localContents);
 
     const update = await dashboardPost(setup, "/dashboard/api/catalog/update", {
@@ -398,13 +394,9 @@ describe("dashboard caplets and catalog APIs", () => {
       acknowledgeRiskIncrease: true,
     });
 
-    expect(update.status).toBe(409);
+    expect(update.status).toBe(200);
     await expect(update.json()).resolves.toMatchObject({
-      ok: false,
-      error: {
-        code: "CONFIG_EXISTS",
-        message: expect.stringContaining("local modifications"),
-      },
+      installed: [expect.objectContaining({ id: "sample" })],
     });
     expect(readFileSync(installedPath, "utf8")).toBe(localContents);
 
@@ -588,10 +580,27 @@ function testApp(): TestAppSetup {
     watch: false,
   });
   const store = new RemoteServerCredentialStore({ dir: stateDir });
+  const globalCatalog = new Map<string, CapletsLockEntry>();
+  const currentHostPortable: CurrentHostPortableOperations = {
+    async execute() {
+      throw new Error("Portable execution is outside this catalog test.");
+    },
+    async loadGlobalCatalogProvenance(capletIds) {
+      const entries = [...globalCatalog.values()];
+      return capletIds ? entries.filter((entry) => capletIds.includes(entry.id)) : entries;
+    },
+    async persistGlobalCatalogChange(input) {
+      for (const artifact of input.artifacts) {
+        globalCatalog.set(artifact.lockEntry.id, artifact.lockEntry);
+      }
+      return { installed: input.artifacts.map((artifact) => artifact.installed) };
+    },
+  };
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},
     control: context,
     remoteCredentialStore: store,
+    currentHostPortable,
   });
   return { app, engine, store, stateDir, context };
 }

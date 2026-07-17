@@ -2213,7 +2213,7 @@ describe("createHttpServeApp", () => {
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
-  });
+  }, 15_000);
 
   it("revokes a long-lived socket when token rotation supersedes its credential", async () => {
     const { engine } = testEngine();

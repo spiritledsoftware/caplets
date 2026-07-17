@@ -35,6 +35,14 @@ export type SecureDirectoryMetadata = {
   inode: string;
 };
 
+export type SecureFilesystemNativeAdapter = {
+  platform: "darwin" | "win32";
+  withPinnedDirectory<T>(path: string, action: (pinnedPath: string) => Promise<T>): Promise<T>;
+  openPinnedPath(path: string, flags: number, mode?: number | undefined): Promise<FileHandle>;
+  syncDirectory(path: string): Promise<void>;
+  createDirectory?(path: string): Promise<"created" | "exists">;
+};
+
 export type SecureFilesystemOptions = {
   expectedUid?: number | undefined;
   expectedServiceSid?: string | undefined;
@@ -43,6 +51,7 @@ export type SecureFilesystemOptions = {
   verifyWindowsDacl?:
     | ((path: string, expectedServiceSid?: string) => boolean | Promise<boolean>)
     | undefined;
+  nativeAdapter?: SecureFilesystemNativeAdapter | undefined;
 };
 
 export type SecureFileRead = {
@@ -79,7 +88,11 @@ export async function createOrOpenSecureStateRoot(
     await lstat(absolutePath);
   } catch (error) {
     if (!isNotFound(error)) throw secureError("Secure state root could not be inspected.");
-    fresh = await createSecureDirectoryChain(absolutePath, options.platform ?? process.platform);
+    fresh = await createSecureDirectoryChain(
+      absolutePath,
+      options.platform ?? process.platform,
+      options.nativeAdapter,
+    );
   }
   await assertNoSymlinkComponents(absolutePath);
   await assertSecureStateDirectory(absolutePath, options);
@@ -96,16 +109,26 @@ export async function ensureSecureStateDirectory(
   const absolutePath = resolve(path);
   const parent = dirname(absolutePath);
   await assertNoSymlinkComponents(parent);
-  await withPinnedDirectory(parent, options.platform ?? process.platform, async (pinnedParent) => {
-    try {
-      await mkdir(join(pinnedParent, basename(absolutePath)), {
-        recursive: false,
-        mode: OWNER_ONLY_DIRECTORY_MODE,
-      });
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw secureError("Secure directory could not be created.");
-    }
-  });
+  await withPinnedDirectory(
+    parent,
+    options.platform ?? process.platform,
+    options.nativeAdapter,
+    async (pinnedParent) => {
+      const target = join(pinnedParent, basename(absolutePath));
+      if (options.nativeAdapter?.createDirectory) {
+        await options.nativeAdapter.createDirectory(absolutePath);
+        return;
+      }
+      try {
+        await mkdir(target, {
+          recursive: false,
+          mode: OWNER_ONLY_DIRECTORY_MODE,
+        });
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw secureError("Secure directory could not be created.");
+      }
+    },
+  );
   await assertNoSymlinkComponents(absolutePath);
   await assertSecureStateDirectory(absolutePath, options);
 }
@@ -129,6 +152,7 @@ export async function inspectSecureStateDirectory(
       constants.O_RDONLY | DIRECTORY | NOFOLLOW,
       undefined,
       platform,
+      options.nativeAdapter,
     );
   } catch {
     throw secureError("Secure state directory could not be opened without following links.");
@@ -156,7 +180,12 @@ export async function withSecureStateDirectory<T>(
   action: (pinnedPath: string) => Promise<T>,
 ): Promise<T> {
   await assertSecureStateDirectory(path, options);
-  return withPinnedDirectory(path, options.platform ?? process.platform, action);
+  return withPinnedDirectory(
+    path,
+    options.platform ?? process.platform,
+    options.nativeAdapter,
+    action,
+  );
 }
 
 export async function inspectSecureRegularFile(
@@ -167,7 +196,13 @@ export async function inspectSecureRegularFile(
   const platform = options.platform ?? process.platform;
   let handle;
   try {
-    handle = await openPinnedPath(path, constants.O_RDONLY | NOFOLLOW, undefined, platform);
+    handle = await openPinnedPath(
+      path,
+      constants.O_RDONLY | NOFOLLOW,
+      undefined,
+      platform,
+      options.nativeAdapter,
+    );
   } catch {
     throw secureError("Secure file must be an existing no-follow regular file.");
   }
@@ -179,15 +214,7 @@ export async function inspectSecureRegularFile(
     if (!pathIdentity || pathIdentity.isSymbolicLink() || !sameSnapshot(file, pathIdentity)) {
       throw secureError("Secure file identity changed during inspection.");
     }
-    return {
-      revision: revisionFor(file),
-      device: file.dev.toString(),
-      inode: file.ino.toString(),
-      ...(platform === "win32"
-        ? { windowsDaclRestricted: true }
-        : { uid: Number(file.uid), posixMode: Number(file.mode) & 0o777 }),
-      size: Number(file.size),
-    };
+    return secureFileMetadata(file, platform);
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -201,7 +228,13 @@ export async function withSecureRegularFile<T>(
   const platform = options.platform ?? process.platform;
   let handle: FileHandle;
   try {
-    handle = await openPinnedPath(path, constants.O_RDONLY | NOFOLLOW, undefined, platform);
+    handle = await openPinnedPath(
+      path,
+      constants.O_RDONLY | NOFOLLOW,
+      undefined,
+      platform,
+      options.nativeAdapter,
+    );
   } catch {
     throw secureError("Secure file must be an existing no-follow regular file.");
   }
@@ -213,15 +246,7 @@ export async function withSecureRegularFile<T>(
     if (!pathBefore || pathBefore.isSymbolicLink() || !sameSnapshot(before, pathBefore)) {
       throw secureError("Secure file identity changed before use.");
     }
-    const metadata: SecureFileMetadata = {
-      revision: revisionFor(before),
-      device: before.dev.toString(),
-      inode: before.ino.toString(),
-      ...(platform === "win32"
-        ? { windowsDaclRestricted: true }
-        : { uid: Number(before.uid), posixMode: Number(before.mode) & 0o777 }),
-      size: Number(before.size),
-    };
+    const metadata = secureFileMetadata(before, platform);
     const value = await action(handle, metadata);
     const after = await handle.stat({ bigint: true });
     const pathAfter = await lstat(path, { bigint: true }).catch(() => undefined);
@@ -233,6 +258,54 @@ export async function withSecureRegularFile<T>(
     ) {
       throw secureError("Secure file identity changed during use.");
     }
+    return { value, metadata };
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+export async function withSecureMutableRegularFile<T>(
+  path: string,
+  options: SecureFilesystemOptions,
+  action: (handle: FileHandle, metadata: SecureFileMetadata) => Promise<T>,
+): Promise<{ value: T; metadata: SecureFileMetadata }> {
+  await assertNoSymlinkComponents(path);
+  const platform = options.platform ?? process.platform;
+  let handle: FileHandle;
+  try {
+    handle = await openPinnedPath(
+      path,
+      constants.O_RDONLY | NOFOLLOW,
+      undefined,
+      platform,
+      options.nativeAdapter,
+    );
+  } catch {
+    throw secureError("Secure file must be an existing no-follow regular file.");
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    validateRegularFile(before);
+    await validateOwnershipAndPermissions(path, before, false, platform, options);
+    const pathBefore = await lstat(path, { bigint: true }).catch(() => undefined);
+    if (!pathBefore || pathBefore.isSymbolicLink() || !sameSnapshot(before, pathBefore)) {
+      throw secureError("Secure file identity changed before use.");
+    }
+    const metadata = secureFileMetadata(before, platform);
+    const value = await action(handle, metadata);
+    const after = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(path, { bigint: true }).catch(() => undefined);
+    if (
+      !pathAfter ||
+      pathAfter.isSymbolicLink() ||
+      !sameIdentity(before, after) ||
+      !sameIdentity(after, pathAfter) ||
+      after.mode !== pathAfter.mode ||
+      after.uid !== pathAfter.uid
+    ) {
+      throw secureError("Secure file identity changed during use.");
+    }
+    await validateOwnershipAndPermissions(path, after, false, platform, options);
     return { value, metadata };
   } finally {
     await handle.close().catch(() => undefined);
@@ -265,7 +338,13 @@ export async function readSecureFileRange(
   const platform = options.platform ?? process.platform;
   let handle;
   try {
-    handle = await openPinnedPath(path, constants.O_RDONLY | NOFOLLOW, undefined, platform);
+    handle = await openPinnedPath(
+      path,
+      constants.O_RDONLY | NOFOLLOW,
+      undefined,
+      platform,
+      options.nativeAdapter,
+    );
   } catch {
     throw secureError("Secure file must be an existing no-follow regular file.");
   }
@@ -313,7 +392,13 @@ export async function readBoundedSecureFileWithMetadata(
   const platform = options.platform ?? process.platform;
   let handle;
   try {
-    handle = await openPinnedPath(path, constants.O_RDONLY | NOFOLLOW, undefined, platform);
+    handle = await openPinnedPath(
+      path,
+      constants.O_RDONLY | NOFOLLOW,
+      undefined,
+      platform,
+      options.nativeAdapter,
+    );
   } catch {
     throw secureError("Secure file must be an existing no-follow regular file.");
   }
@@ -338,18 +423,7 @@ export async function readBoundedSecureFileWithMetadata(
     if (!pathIdentity || pathIdentity.isSymbolicLink() || !sameSnapshot(after, pathIdentity)) {
       throw secureError("Secure file identity changed during read.");
     }
-    return {
-      bytes,
-      metadata: {
-        revision: revisionFor(after),
-        device: after.dev.toString(),
-        inode: after.ino.toString(),
-        ...(platform === "win32"
-          ? { windowsDaclRestricted: true }
-          : { uid: Number(after.uid), posixMode: Number(after.mode) & 0o777 }),
-        size,
-      },
-    };
+    return { bytes, metadata: secureFileMetadata(after, platform) };
   } catch (error) {
     if (error instanceof CapletsError) throw error;
     throw secureError("Secure file could not be read safely.");
@@ -366,7 +440,7 @@ export async function writeSecureFileExclusive(
   const parent = dirname(path);
   await assertSecureStateDirectory(parent, options);
   const platform = options.platform ?? process.platform;
-  return withPinnedDirectory(parent, platform, async (pinnedParent) => {
+  return withPinnedDirectory(parent, platform, options.nativeAdapter, async (pinnedParent) => {
     const target = join(pinnedParent, basename(path));
     const temporary = join(pinnedParent, `.secure-create-${randomBytes(12).toString("hex")}`);
     let handle: FileHandle | undefined;
@@ -402,18 +476,7 @@ export async function writeSecureFileExclusive(
       }
       await validateOwnershipAndPermissions(path, publishedIdentity, false, platform, options);
       await syncDirectory(pinnedParent);
-      return {
-        revision: revisionFor(publishedIdentity),
-        device: publishedIdentity.dev.toString(),
-        inode: publishedIdentity.ino.toString(),
-        ...(platform === "win32"
-          ? { windowsDaclRestricted: true }
-          : {
-              uid: Number(publishedIdentity.uid),
-              posixMode: Number(publishedIdentity.mode) & 0o777,
-            }),
-        size: Number(publishedIdentity.size),
-      };
+      return secureFileMetadata(publishedIdentity, platform);
     } catch (error) {
       if (error instanceof CapletsError) throw error;
       throw secureError("Secure file could not be written atomically.");
@@ -434,7 +497,7 @@ export async function replaceSecureFileAtomically(
   const parent = dirname(path);
   await assertSecureStateDirectory(parent, options);
   const platform = options.platform ?? process.platform;
-  return withPinnedDirectory(parent, platform, async (pinnedParent) => {
+  return withPinnedDirectory(parent, platform, options.nativeAdapter, async (pinnedParent) => {
     const lock = join(pinnedParent, `${basename(path)}.lock`);
     const temporary = join(
       pinnedParent,
@@ -496,7 +559,7 @@ export async function deleteSecureRegularFile(
   const parent = dirname(path);
   await assertSecureStateDirectory(parent, options);
   const platform = options.platform ?? process.platform;
-  await withPinnedDirectory(parent, platform, async (pinnedParent) => {
+  await withPinnedDirectory(parent, platform, options.nativeAdapter, async (pinnedParent) => {
     const target = join(pinnedParent, basename(path));
     const file = await lstat(target, { bigint: true }).catch((error: unknown) => {
       if (isNotFound(error)) return undefined;
@@ -560,6 +623,18 @@ function validateRegularFile(file: BigIntStats): void {
   if (!file.isFile()) throw secureError("Secure state must be a no-follow regular file.");
 }
 
+function secureFileMetadata(file: BigIntStats, platform: NodeJS.Platform): SecureFileMetadata {
+  return {
+    revision: revisionFor(file),
+    device: file.dev.toString(),
+    inode: file.ino.toString(),
+    ...(platform === "win32"
+      ? { windowsDaclRestricted: true }
+      : { uid: Number(file.uid), posixMode: Number(file.mode) & 0o777 }),
+    size: Number(file.size),
+  };
+}
+
 function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
@@ -582,9 +657,16 @@ function revisionFor(file: BigIntStats): string {
 async function withPinnedDirectory<T>(
   path: string,
   platform: NodeJS.Platform,
+  nativeAdapter: SecureFilesystemNativeAdapter | undefined,
   action: (pinnedPath: string) => Promise<T>,
 ): Promise<T> {
-  if (platform === "win32") {
+  if (nativeAdapter) {
+    if (nativeAdapter.platform !== platform) {
+      throw secureError("Secure filesystem native adapter does not match the target platform.");
+    }
+    return nativeAdapter.withPinnedDirectory(resolve(path), action);
+  }
+  if (platform === "win32" && process.platform === "win32") {
     throw secureError("Windows secure filesystem requires a native handle-relative adapter.");
   }
   if (platform === "darwin") {
@@ -635,7 +717,14 @@ async function openPinnedPath(
   flags: number,
   mode: number | undefined,
   platform: NodeJS.Platform,
+  nativeAdapter: SecureFilesystemNativeAdapter | undefined,
 ): Promise<FileHandle> {
+  if (nativeAdapter) {
+    if (nativeAdapter.platform !== platform) {
+      throw secureError("Secure filesystem native adapter does not match the target platform.");
+    }
+    return nativeAdapter.openPinnedPath(path, flags, mode);
+  }
   if (platform === "win32" && process.platform === "win32") {
     throw secureError("Windows secure filesystem requires a native handle-relative adapter.");
   }
@@ -711,6 +800,7 @@ async function openPinnedDirectoryPath(
 async function createSecureDirectoryChain(
   path: string,
   platform: NodeJS.Platform,
+  nativeAdapter: SecureFilesystemNativeAdapter | undefined,
 ): Promise<boolean> {
   const normalized = resolve(path);
   const root = parse(normalized).root;
@@ -732,19 +822,23 @@ async function createSecureDirectoryChain(
       }
     } else {
       let created = false;
-      await withPinnedDirectory(current, platform, async (pinnedParent) => {
-        try {
-          await mkdir(join(pinnedParent, component), {
-            recursive: false,
-            mode: OWNER_ONLY_DIRECTORY_MODE,
-          });
-          created = true;
-        } catch (error) {
-          if (!isAlreadyExists(error)) {
-            throw secureError("Secure state root could not be created.");
+      if (nativeAdapter?.createDirectory) {
+        created = (await nativeAdapter.createDirectory(nextPath)) === "created";
+      } else {
+        await withPinnedDirectory(current, platform, nativeAdapter, async (pinnedParent) => {
+          try {
+            await mkdir(join(pinnedParent, component), {
+              recursive: false,
+              mode: OWNER_ONLY_DIRECTORY_MODE,
+            });
+            created = true;
+          } catch (error) {
+            if (!isAlreadyExists(error)) {
+              throw secureError("Secure state root could not be created.");
+            }
           }
-        }
-      });
+        });
+      }
       if (index === components.length - 1) finalComponentCreated = created;
     }
     current = nextPath;
@@ -783,8 +877,15 @@ export async function syncSecureDirectory(
   options: SecureFilesystemOptions = {},
 ): Promise<void> {
   const platform = options.platform ?? process.platform;
+  if (options.nativeAdapter) {
+    if (options.nativeAdapter.platform !== platform) {
+      throw secureError("Secure filesystem native adapter does not match the target platform.");
+    }
+    await options.nativeAdapter.syncDirectory(path);
+    return;
+  }
   if (platform === "win32") return;
-  await withPinnedDirectory(path, platform, syncDirectory);
+  await withPinnedDirectory(path, platform, undefined, syncDirectory);
 }
 
 function isNotFound(error: unknown): boolean {

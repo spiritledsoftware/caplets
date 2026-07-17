@@ -50,8 +50,11 @@ import { normalizeRemoteProfileHostUrl } from "../../remote/options";
 import { normalizeVaultGrant, sameOrigin } from "../../vault/access";
 import {
   decryptSqlVaultValue,
+  decryptVaultValue,
   encryptSqlVaultValue,
+  encryptVaultValue,
   type SqlVaultEncryptedRecord,
+  type VaultEncryptedRecord,
 } from "../../vault/crypto";
 import { assertSqlVaultKeyProvider, validateVaultKeyName } from "../../vault/keys";
 import type {
@@ -1583,6 +1586,14 @@ const SQL_PENDING_FLOW_TTL_MS = 24 * 60 * 60_000;
 const SQL_PENDING_POLL_INTERVAL_SECONDS = 5;
 const SQL_PENDING_MAX_ACTIVE_FLOWS = 64;
 const SQL_PENDING_MAX_ACTIVE_FLOWS_PER_SOURCE = 8;
+const SQL_PENDING_COMPLETION_REPLAY_TTL_MS = 30_000;
+const SQL_PENDING_TERMINAL_RETENTION_MS = 24 * 60 * 60_000;
+const SQL_PENDING_COMPLETION_REPLAY_MAX_BYTES = 8 * 1024;
+
+type SqlPendingCompletionReplay = Readonly<{
+  expiresAt: string;
+  encryptedCredentials: VaultEncryptedRecord;
+}>;
 
 type SqlPendingLoginMetadata = Readonly<{
   version: 1;
@@ -1593,6 +1604,7 @@ type SqlPendingLoginMetadata = Readonly<{
   hostIdentity?: string | undefined;
   clientFingerprint?: string | undefined;
   sourceHint?: string | undefined;
+  completionReplay?: SqlPendingCompletionReplay | undefined;
 }>;
 
 type MutationAuthorityProvider =
@@ -1619,7 +1631,19 @@ async function createSqlPendingLogin(
   );
   const active: Array<{ row: PendingApprovalRow; metadata: SqlPendingLoginMetadata }> = [];
   for (const row of rows) {
-    if (row.state !== "pending" && row.state !== "approved") continue;
+    if (row.state !== "pending" && row.state !== "approved") {
+      const terminalAt = Date.parse(row.consumedAt ?? row.updatedAt);
+      if (
+        Number.isFinite(terminalAt) &&
+        Date.parse(now) - terminalAt >= SQL_PENDING_TERMINAL_RETENTION_MS
+      ) {
+        await transaction.delete(
+          "pendingApprovals",
+          scope(identity, { approvalId: row.approvalId, state: row.state }),
+        );
+      }
+      continue;
+    }
     if (isExpired(row.expiresAt, now)) {
       await transaction.update(
         "pendingApprovals",
@@ -1966,7 +1990,7 @@ async function completeSqlPendingLogin(
     authorityProvider,
   );
   await transaction.lock(sqlPendingLoginLock(input.flowId));
-  const { row, now } = await requireSqlPendingLogin(
+  const { row, metadata, now } = await requireSqlPendingLogin(
     transaction,
     identity,
     keyProvider,
@@ -1974,12 +1998,21 @@ async function completeSqlPendingLogin(
     input.pendingCompletionSecret,
   );
   if (
-    row.state !== "approved" ||
     isExpired(row.expiresAt, now) ||
     row.hostUrl !== normalizeRemoteProfileHostUrl(input.hostUrl)
   ) {
     throw authFailed();
   }
+  if (row.state === "exchanged") {
+    const replay = metadata.completionReplay;
+    if (!replay || isExpired(replay.expiresAt, now)) throw authFailed();
+    const credentials = decryptSqlPendingCompletionReplay(replay, input.pendingCompletionSecret);
+    if (input.requiredRole !== undefined && !roleAllows(credentials.role, input.requiredRole)) {
+      throw authFailed();
+    }
+    return credentials;
+  }
+  if (row.state !== "approved") throw authFailed();
   const role = row.grantedRole ?? row.requestedRole ?? "access";
   if (
     (role !== "access" && role !== "operator") ||
@@ -1992,9 +2025,27 @@ async function completeSqlPendingLogin(
     clientLabel: row.clientLabel ?? "Caplets Remote Client",
     role,
   });
+  const completionReplay = encryptSqlPendingCompletionReplay(
+    credentials,
+    input.pendingCompletionSecret,
+    now,
+  );
+  const protectedMetadata = encryptSqlPendingLoginMetadata(
+    row.approvalId,
+    { ...metadata, completionReplay },
+    identity,
+    keyProvider,
+  );
   const changed = await transaction.update(
     "pendingApprovals",
-    { state: "exchanged", consumedAt: now, updatedAt: now },
+    {
+      state: "exchanged",
+      consumedAt: now,
+      updatedAt: now,
+      verifier: protectedMetadata.verifier,
+      algorithm: protectedMetadata.algorithm,
+      keyVersion: protectedMetadata.keyVersion,
+    },
     scope(identity, { approvalId: row.approvalId, state: "approved" }),
   );
   if (changed !== 1) throw authFailed();
@@ -2226,7 +2277,100 @@ function decryptSqlPendingLoginMetadata(
       ? { clientFingerprint: metadata.clientFingerprint }
       : {}),
     ...(typeof metadata.sourceHint === "string" ? { sourceHint: metadata.sourceHint } : {}),
+    ...(metadata.completionReplay === undefined
+      ? {}
+      : { completionReplay: parseSqlPendingCompletionReplay(metadata.completionReplay) }),
   };
+}
+function encryptSqlPendingCompletionReplay(
+  credentials: IssuedRemoteClientCredentials,
+  pendingCompletionSecret: string,
+  now: string,
+): SqlPendingCompletionReplay {
+  const plaintext = encodeCanonicalJson(credentials);
+  if (Buffer.byteLength(plaintext, "utf8") > SQL_PENDING_COMPLETION_REPLAY_MAX_BYTES) {
+    throw authFailed();
+  }
+  return {
+    expiresAt: addMilliseconds(now, SQL_PENDING_COMPLETION_REPLAY_TTL_MS),
+    encryptedCredentials: encryptVaultValue({
+      plaintext,
+      key: sqlPendingReplayEncryptionKey(pendingCompletionSecret),
+      now: new Date(now),
+    }),
+  };
+}
+
+function decryptSqlPendingCompletionReplay(
+  replay: SqlPendingCompletionReplay,
+  pendingCompletionSecret: string,
+): IssuedRemoteClientCredentials {
+  if (replay.encryptedCredentials.valueBytes > SQL_PENDING_COMPLETION_REPLAY_MAX_BYTES) {
+    throw authFailed();
+  }
+  try {
+    const parsed = decodeCanonicalJson(
+      decryptVaultValue(
+        replay.encryptedCredentials,
+        sqlPendingReplayEncryptionKey(pendingCompletionSecret),
+      ),
+    );
+    if (
+      !isRecord(parsed) ||
+      typeof parsed.clientId !== "string" ||
+      typeof parsed.clientLabel !== "string" ||
+      typeof parsed.hostUrl !== "string" ||
+      (parsed.role !== "access" && parsed.role !== "operator") ||
+      typeof parsed.accessToken !== "string" ||
+      typeof parsed.refreshToken !== "string" ||
+      typeof parsed.expiresAt !== "string" ||
+      typeof parsed.createdAt !== "string" ||
+      parsed.tokenType !== "Bearer"
+    ) {
+      throw authFailed();
+    }
+    return {
+      clientId: parsed.clientId,
+      clientLabel: parsed.clientLabel,
+      hostUrl: parsed.hostUrl,
+      role: parsed.role,
+      accessToken: parsed.accessToken,
+      refreshToken: parsed.refreshToken,
+      expiresAt: parsed.expiresAt,
+      createdAt: parsed.createdAt,
+      tokenType: "Bearer",
+    };
+  } catch {
+    throw authFailed();
+  }
+}
+
+function parseSqlPendingCompletionReplay(value: unknown): SqlPendingCompletionReplay {
+  if (!isRecord(value) || typeof value.expiresAt !== "string") throw authFailed();
+  const encrypted = value.encryptedCredentials;
+  if (
+    !isRecord(encrypted) ||
+    encrypted.version !== 1 ||
+    encrypted.algorithm !== "aes-256-gcm" ||
+    typeof encrypted.nonce !== "string" ||
+    typeof encrypted.ciphertext !== "string" ||
+    typeof encrypted.authTag !== "string" ||
+    typeof encrypted.valueBytes !== "number" ||
+    !Number.isSafeInteger(encrypted.valueBytes) ||
+    encrypted.valueBytes < 0 ||
+    encrypted.valueBytes > SQL_PENDING_COMPLETION_REPLAY_MAX_BYTES ||
+    typeof encrypted.createdAt !== "string" ||
+    typeof encrypted.updatedAt !== "string"
+  ) {
+    throw authFailed();
+  }
+  return { expiresAt: value.expiresAt, encryptedCredentials: encrypted as VaultEncryptedRecord };
+}
+
+function sqlPendingReplayEncryptionKey(pendingCompletionSecret: string): Buffer {
+  return createHash("sha256")
+    .update(`caplets-pending-login-replay:${pendingCompletionSecret}`)
+    .digest();
 }
 
 function sqlPendingLoginStatus(

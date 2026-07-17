@@ -109,36 +109,27 @@ async function serveHttpWithUpstream(
         loader,
       ),
     );
+  const createAttachSession = async (
+    metadata: AttachSessionMetadata,
+    context: { stackChain: string[] },
+  ) =>
+    nativeAttachSession(
+      await createReloadedUpstreamService(
+        upstreamUrl,
+        remoteEngineOptions,
+        writeErr,
+        metadata,
+        context.stackChain,
+        loader,
+      ),
+    );
   const io = {
     exposeAttach: true,
-    defaultAttachSessionFactory: async (
+    defaultAttachSessionFactory: (
       _metadata: AttachSessionMetadata,
       context: { stackChain: string[] },
-    ) =>
-      nativeAttachSession(
-        await createReloadedUpstreamService(
-          upstreamUrl,
-          remoteEngineOptions,
-          writeErr,
-          {},
-          context.stackChain,
-          loader,
-        ),
-      ),
-    attachSessionFactory: async (
-      metadata: AttachSessionMetadata,
-      context: { stackChain: string[] },
-    ) =>
-      nativeAttachSession(
-        await createReloadedUpstreamService(
-          upstreamUrl,
-          remoteEngineOptions,
-          writeErr,
-          metadata,
-          context.stackChain,
-          loader,
-        ),
-      ),
+    ) => createAttachSession({}, context),
+    attachSessionFactory: createAttachSession,
   };
   if (loader) {
     await serveInternalHttpWithSessionFactory(

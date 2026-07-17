@@ -27,6 +27,13 @@ writeFileSync(
   )}\n`,
 );
 
+const runtimeEnv = {
+  ...process.env,
+  CAPLETS_CONFIG: tempConfigPath,
+  XDG_STATE_HOME: join(tempCwd, "state"),
+  NO_COLOR: "1",
+};
+
 async function main() {
   const versionResult = spawnSync(
     process.execPath,
@@ -34,11 +41,7 @@ async function main() {
     {
       cwd: tempCwd,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        CAPLETS_CONFIG: tempConfigPath,
-        NO_COLOR: "1",
-      },
+      env: runtimeEnv,
     },
   );
 
@@ -73,11 +76,7 @@ async function main() {
     ],
     {
       cwd: tempCwd,
-      env: {
-        ...process.env,
-        CAPLETS_CONFIG: tempConfigPath,
-        NO_COLOR: "1",
-      },
+      env: runtimeEnv,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

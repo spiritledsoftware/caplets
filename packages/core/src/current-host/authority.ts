@@ -57,6 +57,71 @@ export type LocalAuthorityTransition =
   | "begin-transfer"
   | "activate-transfer-destination"
   | "abort-transfer";
+type BoundLocalAuthorityDescriptor = Extract<LocalAuthorityDescriptor, { state: "bound" }>;
+type PendingTransferLocalAuthorityDescriptor = Extract<
+  LocalAuthorityDescriptor,
+  { state: "transfer-pending" }
+>;
+
+/**
+ * Builds U12's one-way transfer binding without changing the logical store or operation namespace.
+ * The destination fields name the destination ledger's binding, not a new logical identity.
+ */
+export function createPendingOfflineTransferAuthority(
+  current: BoundLocalAuthorityDescriptor,
+  transferId: string,
+): PendingTransferLocalAuthorityDescriptor {
+  return parseLocalAuthorityDescriptor(
+    JSON.stringify({
+      version: current.version,
+      state: "transfer-pending",
+      logicalHostId: current.logicalHostId,
+      owner: current.owner,
+      authorityGeneration: current.authorityGeneration,
+      authorityToken: current.authorityToken,
+      transferId,
+      sourceStoreId: current.storeId,
+      sourceOperationNamespace: current.operationNamespace,
+      destinationStoreId: current.storeId,
+      destinationOperationNamespace: current.operationNamespace,
+    }),
+  ) as PendingTransferLocalAuthorityDescriptor;
+}
+
+export function createActivatedOfflineTransferAuthority(
+  current: PendingTransferLocalAuthorityDescriptor,
+  nextAuthority: Readonly<{ authorityGeneration: number; authorityToken: string }>,
+): BoundLocalAuthorityDescriptor {
+  return parseLocalAuthorityDescriptor(
+    JSON.stringify({
+      version: current.version,
+      state: "bound",
+      logicalHostId: current.logicalHostId,
+      owner: current.owner,
+      storeId: current.sourceStoreId,
+      operationNamespace: current.sourceOperationNamespace,
+      authorityGeneration: nextAuthority.authorityGeneration,
+      authorityToken: nextAuthority.authorityToken,
+    }),
+  ) as BoundLocalAuthorityDescriptor;
+}
+
+export function createRolledBackOfflineTransferAuthority(
+  current: PendingTransferLocalAuthorityDescriptor,
+): BoundLocalAuthorityDescriptor {
+  return parseLocalAuthorityDescriptor(
+    JSON.stringify({
+      version: current.version,
+      state: "bound",
+      logicalHostId: current.logicalHostId,
+      owner: current.owner,
+      storeId: current.sourceStoreId,
+      operationNamespace: current.sourceOperationNamespace,
+      authorityGeneration: current.authorityGeneration,
+      authorityToken: current.authorityToken,
+    }),
+  ) as BoundLocalAuthorityDescriptor;
+}
 
 export async function readAuthorizedLocalAuthorityDescriptor(
   port: LocalAuthorityDescriptorPort,
@@ -182,13 +247,13 @@ export function parseLocalAuthorityDescriptor(contents: string): LocalAuthorityD
         "operations",
       ),
     };
-    if (
-      parsed.sourceStoreId === parsed.destinationStoreId ||
-      parsed.sourceOperationNamespace === parsed.destinationOperationNamespace
-    ) {
+    const storeIdentityPreserved = parsed.sourceStoreId === parsed.destinationStoreId;
+    const operationNamespacePreserved =
+      parsed.sourceOperationNamespace === parsed.destinationOperationNamespace;
+    if (storeIdentityPreserved !== operationNamespacePreserved) {
       throw new CapletsError(
         "REQUEST_INVALID",
-        "Transfer authority must identify distinct source and destination stores.",
+        "Transfer authority must preserve or rebind store and operation identities together.",
       );
     }
     return parsed;

@@ -49,6 +49,6 @@ describe("install human output", () => {
       writeOut: (value) => out.push(value),
     });
 
-    expect(out.join("")).toBe(`Content updated github to ${destination}\n`);
+    expect(out.join("")).toBe(`Content updated github to project ${destination}\n`);
   });
 });

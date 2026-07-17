@@ -107,8 +107,26 @@ function migrationEnvironment(now = new Date("2026-07-14T00:00:00.000Z")): Migra
     verifiedSchemaAwareBackup: true,
     oldNodesDrained: true,
     retainedKeyVersions: [1],
+    activationEvidence: { kind: "empty-bootstrap" },
     hostAdministrator: true,
     now,
+  };
+}
+function storeBoundMigrationEnvironment(sourceSchemaVersion: number): MigrationEnvironment {
+  return {
+    ...migrationEnvironment(),
+    activationEvidence: {
+      kind: "store-bound",
+      logicalHostId,
+      storeId,
+      backup: {
+        backupId: `backup-schema-${sourceSchemaVersion}`,
+        manifestHash: "a".repeat(64),
+        sourceSchemaVersion,
+        finalizedAt: "2026-07-14T00:00:00.000Z",
+      },
+      retainedKeyVersions: [1],
+    },
   };
 }
 
@@ -137,6 +155,8 @@ async function copiedAssets() {
     [
       ["sqlite", "0008_giant_shard"],
       ["postgres", "0008_living_gwen_stacy"],
+      ["sqlite", "0009_harsh_gideon"],
+      ["postgres", "0009_quiet_magdalen"],
     ].flatMap(([dialect, migration]) =>
       [".sql", ".down.sql", ".manifest.json"].map((suffix) =>
         rm(join(root, dialect!, `${migration}${suffix}`), { force: true }),
@@ -289,10 +309,56 @@ describe("control-plane migration registry and SQLite executor", () => {
       }),
     ).toEqual([]);
   });
+  it("requires store-bound backup and retained-key evidence for an existing contract schema", async () => {
+    const registry = await loadMigrationRegistry({
+      dialect: "postgres",
+      assetRoot: sourceAssetRoot,
+    });
+    const applied = registry.migrations.slice(0, 2).map((migration) => ({
+      migrationId: migration.manifest.migrationId,
+      sqlSha256: migration.manifest.sql.sha256,
+      manifestSha256: migration.manifest.manifestSha256,
+      destinationSchemaVersion: migration.manifest.destinationSchemaVersion,
+      appliedAt: "2026-07-16T00:00:00.000Z",
+    }));
+    const claimed = {
+      ...migrationEnvironment(),
+      activationEvidence: undefined,
+      verifiedSchemaAwareBackup: true,
+      retainedKeyVersions: [1],
+    };
+    expect(() => planPendingMigrations(registry, applied, claimed)).toThrow(
+      /store-bound activation evidence/u,
+    );
+    const evidence = {
+      kind: "store-bound" as const,
+      logicalHostId: "host_01J00000000000000000000000",
+      storeId: "store_01J0000000000000000000000",
+      backup: {
+        backupId: "backup-01J000000000000000000000",
+        manifestHash: "a".repeat(64),
+        sourceSchemaVersion: registry.migrations[2]!.manifest.sourceSchemaVersion,
+        finalizedAt: "2026-07-16T00:01:00.000Z",
+      },
+      retainedKeyVersions: [1],
+    };
+    expect(
+      planPendingMigrations(registry, applied, {
+        ...claimed,
+        activationEvidence: evidence,
+      }).map(({ manifest }) => manifest.migrationId),
+    ).toEqual(registry.migrations.slice(2).map(({ manifest }) => manifest.migrationId));
+    expect(() =>
+      planPendingMigrations(registry, applied, {
+        ...claimed,
+        activationEvidence: { ...evidence, retainedKeyVersions: [] },
+      }),
+    ).toThrow(/retained key 1/u);
+  });
 
   it("migrates fresh/current databases idempotently, excludes a second writer, and rolls back", async () => {
     const fixture = await sqliteFixture();
-    const environment = migrationEnvironment();
+    let environment = migrationEnvironment();
     let dialect = await openSqliteControlPlaneDialect({
       storage: fixture.storage,
       environment,
@@ -309,6 +375,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       "0006_mature_bill_hollister",
       "0007_cuddly_cerebro",
       "0008_giant_shard",
+      "0009_harsh_gideon",
     ]);
     expect(dialect.ready).toBe(true);
     expect(dialect.migrate()).toEqual([]);
@@ -316,7 +383,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       "SELECT name FROM sqlite_master WHERE type = ? AND name LIKE ? ORDER BY name",
       ["table", "cp_%"],
     );
-    expect(tables).toHaveLength(45);
+    expect(tables).toHaveLength(51);
     for (const [index, [key, value]] of validHostSettings.entries()) {
       insertSqliteHostSetting(dialect, fixture.storage, `valid-setting-${index}`, key, value);
     }
@@ -366,9 +433,18 @@ describe("control-plane migration registry and SQLite executor", () => {
     const backupPath = join(fixture.root, "backup.sqlite3");
     await dialect.onlineBackup(backupPath);
     expect((await stat(backupPath)).size).toBeGreaterThan(0);
+    await dialect.close();
+    environment = storeBoundMigrationEnvironment(3);
+    dialect = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment,
+      assetRoot: fixture.assetRoot,
+    });
+    expect(dialect.migrate()).toEqual([]);
     expect(() => dialect.rollbackLatest()).toThrow(/requires reviewed down SQL/u);
-    dialect.execute("DELETE FROM __caplets_migration_history_v1 WHERE migration_id = ?", [
+    dialect.execute("DELETE FROM __caplets_migration_history_v1 WHERE migration_id IN (?, ?)", [
       "0008_giant_shard",
+      "0009_harsh_gideon",
     ]);
     const preU10AssetRoot = await copiedAssets();
     await dialect.close();
@@ -618,7 +694,7 @@ describe("control-plane migration registry and SQLite executor", () => {
 
     const upgraded = await openSqliteControlPlaneDialect({
       storage: fixture.storage,
-      environment: migrationEnvironment(),
+      environment: storeBoundMigrationEnvironment(3),
       assetRoot: currentAssetRoot,
     });
     expect(upgraded.migrate()).toEqual([
@@ -655,7 +731,7 @@ describe("control-plane migration registry and SQLite executor", () => {
     await upgraded.close();
     const rollback = await openSqliteControlPlaneDialect({
       storage: fixture.storage,
-      environment: migrationEnvironment(),
+      environment: storeBoundMigrationEnvironment(3),
       assetRoot: u8AssetRoot,
     });
     expect(rollback.migrate()).toEqual([]);
@@ -757,7 +833,7 @@ describe("control-plane migration registry and SQLite executor", () => {
 
     const upgraded = await openSqliteControlPlaneDialect({
       storage: fixture.storage,
-      environment: migrationEnvironment(),
+      environment: storeBoundMigrationEnvironment(2),
       assetRoot: currentAssetRoot,
     });
     expect(upgraded.migrate()).toEqual([
@@ -830,12 +906,19 @@ describe("control-plane migration registry and SQLite executor", () => {
       ].map((file) => rm(join(partialAssetRoot, "sqlite", file))),
     );
     const fixture = await sqliteFixture(partialAssetRoot);
-    const dialect = await openSqliteControlPlaneDialect({
+    let dialect = await openSqliteControlPlaneDialect({
       storage: fixture.storage,
       environment: migrationEnvironment(),
       assetRoot: fixture.assetRoot,
     });
     dialect.migrate();
+    await dialect.close();
+    dialect = await openSqliteControlPlaneDialect({
+      storage: fixture.storage,
+      environment: storeBoundMigrationEnvironment(3),
+      assetRoot: fixture.assetRoot,
+    });
+    expect(dialect.migrate()).toEqual([]);
     const now = "2026-07-14T00:00:00.000Z";
     dialect.execute(
       "INSERT INTO cp_caplet (" +
@@ -969,8 +1052,8 @@ describe("control-plane migration registry and SQLite executor", () => {
 
     const fixture = await sqliteFixture(sourceAssetRoot);
     const incompatibleEnvironments: MigrationEnvironment[] = [
-      { ...migrationEnvironment(), binaryVersion: "0.35.0" },
-      { ...migrationEnvironment(), supportedSchemaVersion: 2 },
+      { ...migrationEnvironment(), binaryVersion: "0.36.0" },
+      { ...migrationEnvironment(), supportedSchemaVersion: 4 },
       { ...migrationEnvironment(), keyVersion: 2 },
       { ...migrationEnvironment(), manifestVersion: 2 },
     ];

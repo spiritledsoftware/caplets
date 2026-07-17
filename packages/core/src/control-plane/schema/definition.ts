@@ -68,6 +68,12 @@ const SEMANTIC_KEYS: Partial<Record<ControlPlaneEntityKind, readonly string[]>> 
   backup: ["backupId"],
   recovery: ["recoveryId"],
   retention: ["retentionId"],
+  "artifact-manifest": ["artifactId"],
+  "artifact-part": ["artifactId", "ordinal"],
+  "artifact-session": ["sessionId"],
+  "artifact-quota-reservation": ["reservationId"],
+  "import-proposal": ["proposalId"],
+  "artifact-cleanup-intent": ["cleanupId"],
   "external-destruction": ["destructionId"],
   "recovery-checkpoint": ["checkpointId"],
   quarantine: ["quarantineId"],
@@ -83,6 +89,8 @@ export const ENTITY_RELATION_TARGET_KEYS: Partial<
   "key-inventory": ["logicalHostId", "purpose", "keyVersion"],
   "project-binding-workspace": ["logicalHostId", "workspaceId"],
   backup: ["logicalHostId", "backupId"],
+  "artifact-manifest": ["logicalHostId", "artifactId"],
+  "artifact-session": ["logicalHostId", "sessionId"],
 };
 
 const QUERY_INDEXES: Partial<Record<ControlPlaneEntityKind, readonly (readonly string[])[]>> = {
@@ -118,6 +126,24 @@ const QUERY_INDEXES: Partial<Record<ControlPlaneEntityKind, readonly (readonly s
   migration: [["logicalHostId", "phase"]],
   backup: [["logicalHostId", "retentionUntil", "state"]],
   retention: [["logicalHostId", "retainUntil", "destroyedAt"]],
+  "artifact-manifest": [
+    ["logicalHostId", "state", "expiresAt"],
+    ["logicalHostId", "actorId", "operationId"],
+  ],
+  "artifact-part": [["logicalHostId", "artifactId", "ordinal"]],
+  "artifact-session": [
+    ["logicalHostId", "actorId", "state", "expiresAt"],
+    ["logicalHostId", "operationId"],
+  ],
+  "artifact-quota-reservation": [
+    ["logicalHostId", "actorId", "state", "windowExpiresAt"],
+    ["logicalHostId", "sessionId"],
+  ],
+  "import-proposal": [
+    ["logicalHostId", "actorId", "state", "expiresAt"],
+    ["logicalHostId", "capletId", "state"],
+  ],
+  "artifact-cleanup-intent": [["logicalHostId", "state", "claimExpiresAt"]],
   quarantine: [
     ["logicalHostId", "sourceDomain", "rawDigest"],
     ["logicalHostId", "disposition"],
@@ -202,6 +228,41 @@ const RELATIONS: Partial<
       columns: ["logicalHostId", "backupId"],
       target: "backup",
       targetColumns: ["logicalHostId", "backupId"],
+    },
+  ],
+  "artifact-part": [
+    {
+      columns: ["logicalHostId", "artifactId"],
+      target: "artifact-manifest",
+      targetColumns: ["logicalHostId", "artifactId"],
+    },
+  ],
+  "artifact-session": [
+    {
+      columns: ["logicalHostId", "artifactId"],
+      target: "artifact-manifest",
+      targetColumns: ["logicalHostId", "artifactId"],
+    },
+  ],
+  "artifact-quota-reservation": [
+    {
+      columns: ["logicalHostId", "sessionId"],
+      target: "artifact-session",
+      targetColumns: ["logicalHostId", "sessionId"],
+    },
+  ],
+  "import-proposal": [
+    {
+      columns: ["logicalHostId", "artifactId"],
+      target: "artifact-manifest",
+      targetColumns: ["logicalHostId", "artifactId"],
+    },
+  ],
+  "artifact-cleanup-intent": [
+    {
+      columns: ["logicalHostId", "artifactId"],
+      target: "artifact-manifest",
+      targetColumns: ["logicalHostId", "artifactId"],
     },
   ],
   "external-destruction": [

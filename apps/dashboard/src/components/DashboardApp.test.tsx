@@ -9,6 +9,10 @@ const {
   dashboardApi,
   dashboardManagementMutation,
   dashboardManagementPreview,
+  dashboardPortableDownload,
+  dashboardPortableOperation,
+  dashboardPortableStatus,
+  dashboardPortableUploadChunk,
   dashboardManagementRecoveryNoticesAcknowledged,
   dashboardStorageHealth,
   isDashboardUnauthorized,
@@ -19,6 +23,10 @@ const {
   dashboardApi: vi.fn(),
   dashboardManagementMutation: vi.fn(),
   dashboardManagementPreview: vi.fn(),
+  dashboardPortableDownload: vi.fn(),
+  dashboardPortableOperation: vi.fn(),
+  dashboardPortableStatus: vi.fn(),
+  dashboardPortableUploadChunk: vi.fn(),
   recoverDashboardManagementOperations: vi.fn<() => Promise<unknown[]>>(async () => []),
   acknowledgeRecoveredDashboardManagementOperations: vi.fn(),
   dashboardManagementRecoveryNoticesAcknowledged: vi.fn(() => false),
@@ -33,11 +41,16 @@ const {
 }));
 
 vi.mock("@/lib/api", () => ({
+  DASHBOARD_PORTABLE_CHUNK_BYTES: 1024 * 1024,
   acknowledgeRecoveredDashboardManagementOperations,
   dashboardApi,
   dashboardManagementMutation,
   dashboardManagementRecoveryNoticesAcknowledged,
   dashboardManagementPreview,
+  dashboardPortableDownload,
+  dashboardPortableOperation,
+  dashboardPortableUploadChunk,
+  dashboardPortableStatus,
   dashboardStorageHealth,
   isDashboardUnauthorized,
   recoverDashboardManagementOperations,
@@ -173,6 +186,45 @@ async function mountVault() {
   );
 }
 
+async function mountSettings() {
+  window.history.replaceState({}, "", "/dashboard/settings");
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(<DashboardApp initialRoute="settings" />);
+  });
+  await waitFor(() =>
+    document.body.textContent?.includes("filesystem owner") ? document.body : undefined,
+  );
+}
+
+async function inspectHostSetting() {
+  await act(async () => {
+    button("Inspect underlying SQL").click();
+  });
+  await waitFor(() =>
+    document.body.textContent?.includes("sql owner") ? document.body : undefined,
+  );
+}
+
+function proposedValueInput(): HTMLInputElement {
+  const input = Array.from(document.querySelectorAll("label"))
+    .find((label) => label.textContent?.includes("Proposed JSON value"))
+    ?.querySelector("input");
+  if (!input) throw new Error("Proposed JSON value input is missing.");
+  return input;
+}
+
+async function setProposedValue(value: string) {
+  const input = proposedValueInput();
+  await act(async () => {
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    valueSetter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 async function openRevealConfirmation() {
   await act(async () => {
     button(`Reveal vault value ${vaultKey}`).click();
@@ -225,10 +277,27 @@ beforeEach(() => {
   isDashboardUnauthorized.mockClear();
   dashboardApi.mockImplementation((path: string) => Promise.resolve(responseFor(path)));
   dashboardApi.mockClear();
+  dashboardPortableOperation.mockResolvedValue({
+    kind: "portable_status",
+    status: "live",
+    health: storageHealthResponse,
+    guidanceCode: "ok",
+  });
+  dashboardPortableOperation.mockClear();
+  dashboardPortableStatus.mockReset();
+  dashboardPortableStatus.mockResolvedValue({
+    kind: "portable_status",
+    status: "live",
+    health: storageHealthResponse,
+    guidanceCode: "ok",
+  });
+  dashboardPortableDownload.mockReset();
+  dashboardPortableUploadChunk.mockReset();
   setDashboardSession.mockClear();
   toast.error.mockClear();
   toast.success.mockClear();
   toast.warning.mockClear();
+  dashboardManagementPreview.mockReset();
   dashboardManagementPreview.mockResolvedValue({
     operation: {
       operationId: "operation-dashboard-ui-u9",
@@ -245,12 +314,14 @@ beforeEach(() => {
       target: { consequence: "no-effective-change-while-shadowed" },
     },
   });
+  dashboardManagementMutation.mockReset();
   dashboardManagementMutation.mockResolvedValue({
     status: "committed",
     receipt: {
       management: { consequence: "no-effective-change-while-shadowed" },
     },
   });
+  recoverDashboardManagementOperations.mockReset();
   recoverDashboardManagementOperations.mockResolvedValue([]);
   window.history.replaceState({}, "", "/dashboard/vault");
   window.matchMedia = vi.fn().mockReturnValue({
@@ -371,6 +442,60 @@ describe("activated SQL storage status", () => {
 
     expect(container?.textContent).toContain("Stale read-only");
     expect(container?.textContent).not.toContain("Postgres storage ready");
+  });
+
+  it("does not publish an old refresh after a newer health generation becomes unavailable", async () => {
+    vi.useFakeTimers();
+    const delayedSummary = deferred<Record<string, unknown>>();
+    let delaySummary = false;
+    dashboardApi.mockImplementation((path: string) => {
+      if (path === "summary" && delaySummary) return delayedSummary.promise;
+      return Promise.resolve(responseFor(path));
+    });
+    window.history.replaceState({}, "", "/dashboard/runtime");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<DashboardApp initialRoute="runtime" />);
+    });
+    await waitFor(() => (button("Restart runtime").disabled ? undefined : true));
+
+    delaySummary = true;
+    await act(async () => {
+      button("Refresh dashboard").click();
+    });
+    await waitFor(() =>
+      dashboardApi.mock.calls.filter(([path]) => path === "summary").length >= 2 ? true : undefined,
+    );
+
+    storageHealthResponse = {
+      backend: "postgres",
+      authorityToken: { authorityGeneration: 2, effectiveGeneration: 1 },
+      readiness: "stale-read-only",
+      connectivity: "unavailable",
+      migration: "current",
+      bootstrapCompatibility: "current",
+      staleAgeMs: 1_000,
+      convergence: "overdue",
+      guidanceCode: "storage-unavailable",
+    };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    await waitFor(() =>
+      container?.textContent?.includes("Stale read-only") ? container : undefined,
+    );
+
+    await act(async () => {
+      delayedSummary.resolve({});
+    });
+    await flush();
+
+    expect(container?.textContent).toContain("Stale read-only");
+    expect(container?.textContent).not.toContain("Postgres storage ready");
+    expect(button("Restart runtime").getAttribute("aria-disabled")).toBe("true");
   });
 
   it("shows availability-independent degraded guidance without dashboard authorization", async () => {
@@ -970,6 +1095,172 @@ describe("SQL ownership controls", () => {
 
     expect(setDashboardSession).toHaveBeenLastCalledWith(undefined);
     expect(document.body.textContent).not.toContain("Mutable host setting ownership");
+  });
+
+  it("does not restore a prepared change when its preview resolves after a draft edit", async () => {
+    const stalePreview = deferred<{
+      operation: Record<string, unknown>;
+      result: Record<string, unknown>;
+    }>();
+    dashboardManagementPreview.mockImplementationOnce(() => stalePreview.promise);
+    await mountSettings();
+    await inspectHostSetting();
+
+    await act(async () => {
+      button("Preview SQL change").click();
+    });
+    await setProposedValue("false");
+    await act(async () => {
+      stalePreview.resolve({
+        operation: {
+          operationId: "operation-stale-draft",
+          requestIdentity: "request-stale-draft",
+        },
+        result: {
+          status: "preview",
+          target: { consequence: "no-effective-change-while-shadowed" },
+        },
+      });
+    });
+    await flush();
+
+    expect(proposedValueInput().value).toBe("false");
+    expect(container?.textContent).not.toContain("Prepared against the underlying SQL record");
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (candidate) => candidate.textContent?.trim() === "Apply prepared change",
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores a late preview failure after live authority is lost", async () => {
+    const stalePreview = deferred<{
+      operation: Record<string, unknown>;
+      result: Record<string, unknown>;
+    }>();
+    dashboardManagementPreview.mockImplementationOnce(() => stalePreview.promise);
+    await mountSettings();
+    await inspectHostSetting();
+
+    await act(async () => {
+      button("Preview SQL change").click();
+    });
+    storageHealthResponse = {
+      backend: "postgres",
+      authorityToken: { authorityGeneration: 2, effectiveGeneration: 1 },
+      readiness: "stale-read-only",
+      connectivity: "unavailable",
+      migration: "current",
+      bootstrapCompatibility: "current",
+      staleAgeMs: 1_000,
+      convergence: "overdue",
+      guidanceCode: "storage-unavailable",
+    };
+    await act(async () => {
+      button("Refresh dashboard").click();
+    });
+    await waitFor(() =>
+      container?.textContent?.includes("Stale read-only") ? container : undefined,
+    );
+    await act(async () => {
+      stalePreview.reject(new Error("stale preview failed"));
+    });
+    await flush();
+
+    expect(container?.textContent).not.toContain("stale preview failed");
+    expect(container?.textContent).not.toContain("Prepared against the underlying SQL record");
+    expect(container?.textContent).not.toContain("Proposed JSON value");
+  });
+
+  it("ignores a late preview authorization response after the management page unmounts", async () => {
+    const stalePreview = deferred<{
+      operation: Record<string, unknown>;
+      result: Record<string, unknown>;
+    }>();
+    dashboardManagementPreview.mockImplementationOnce(() => stalePreview.promise);
+    await mountSettings();
+    await inspectHostSetting();
+
+    await act(async () => {
+      button("Preview SQL change").click();
+      window.history.replaceState({}, "", "/dashboard");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => (container?.textContent?.includes("Overview") ? container : undefined));
+    await act(async () => {
+      stalePreview.reject(unauthorizedError);
+    });
+    await flush();
+
+    expect(container?.textContent).toContain("Overview");
+    expect(container?.textContent).not.toContain("Authorize this browser");
+    expect(setDashboardSession).not.toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("keeps the newest preview fenced through Apply and uses its operation identity", async () => {
+    const stalePreview = deferred<{
+      operation: Record<string, unknown>;
+      result: Record<string, unknown>;
+    }>();
+    const currentPreview = deferred<{
+      operation: Record<string, unknown>;
+      result: Record<string, unknown>;
+    }>();
+    dashboardManagementPreview
+      .mockImplementationOnce(() => stalePreview.promise)
+      .mockImplementationOnce(() => currentPreview.promise);
+    dashboardManagementMutation.mockResolvedValueOnce({ status: "not_committed" });
+    await mountSettings();
+    await inspectHostSetting();
+
+    await act(async () => {
+      button("Preview SQL change").click();
+    });
+    await setProposedValue("false");
+    await waitFor(() => (button("Preview SQL change").disabled ? undefined : true));
+    await act(async () => {
+      button("Preview SQL change").click();
+      currentPreview.resolve({
+        operation: {
+          operationId: "operation-current-draft",
+          requestIdentity: "request-current-draft",
+        },
+        result: {
+          status: "preview",
+          target: { consequence: "no-effective-change-while-shadowed" },
+        },
+      });
+    });
+    await waitFor(() => button("Apply prepared change"));
+
+    await act(async () => {
+      button("Apply prepared change").click();
+    });
+    await waitFor(() => (dashboardManagementMutation.mock.calls.length === 1 ? true : undefined));
+    await act(async () => {
+      stalePreview.resolve({
+        operation: {
+          operationId: "operation-stale-draft",
+          requestIdentity: "request-stale-draft",
+        },
+        result: {
+          status: "preview",
+          target: { consequence: "no-effective-change-while-shadowed" },
+        },
+      });
+    });
+    await flush();
+
+    expect(dashboardManagementMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ value: false }),
+      expect.objectContaining({ operationId: "operation-current-draft" }),
+    );
+    expect(container?.textContent).not.toContain("Prepared against the underlying SQL record");
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (candidate) => candidate.textContent?.trim() === "Apply prepared change",
+      ),
+    ).toBe(false);
   });
 
   it("reveals the shadow chain and repeats a no-effective-change consequence in preview and receipt", async () => {

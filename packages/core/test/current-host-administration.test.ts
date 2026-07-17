@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,7 @@ import {
   type CurrentHostOperationReservationState,
   type CurrentHostPrincipal,
 } from "../src/current-host/operations";
+import type { PersistGlobalCatalogChangeInput } from "../src/current-host/catalog-operations";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
@@ -302,6 +303,32 @@ describe("Current Host administration operations", () => {
           installed: [expect.objectContaining({ id: "sample" })],
         }),
       );
+      expect(setup.persistGlobalCatalogChange).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          action: "install",
+          artifacts: [
+            expect.objectContaining({
+              portable: expect.objectContaining({ id: "sample" }),
+              provenance: expect.objectContaining({ sourceKind: "local" }),
+            }),
+          ],
+        }),
+      );
+      expect(setup.loadGlobalCatalogProvenance).toHaveBeenCalledWith(["sample"]);
+      expect(setup.persistGlobalCatalogChange).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          action: "update",
+          artifacts: [
+            expect.objectContaining({
+              portable: expect.objectContaining({ id: "sample" }),
+            }),
+          ],
+        }),
+      );
+      expect(existsSync(join(setup.globalCapletsRoot, "sample.md"))).toBe(false);
+      expect(existsSync(setup.globalLockfilePath)).toBe(false);
       const entries = setup.activity.list().entries;
       expect(entries.filter((entry) => entry.action === "catalog_installed")).toEqual([
         expect.objectContaining({
@@ -909,11 +936,32 @@ function testOperations() {
   const store = new RemoteServerCredentialStore({ dir: join(root, "remote-state") });
   const operator = issueOperator(store, "Direct Operator");
   const activity = new DashboardActivityLog({ dir: join(root, "activity") });
+  let globalCatalogEntries: PersistGlobalCatalogChangeInput["artifacts"][number]["lockEntry"][] =
+    [];
+  const loadGlobalCatalogProvenance = vi.fn(async (capletIds: readonly string[] | undefined) => {
+    const selected = capletIds === undefined ? undefined : new Set(capletIds);
+    return globalCatalogEntries.filter((entry) => selected === undefined || selected.has(entry.id));
+  });
+  const persistGlobalCatalogChange = vi.fn(async (input: PersistGlobalCatalogChangeInput) => {
+    const changed = new Set(input.artifacts.map((artifact) => artifact.lockEntry.id));
+    globalCatalogEntries = [
+      ...globalCatalogEntries.filter((entry) => !changed.has(entry.id)),
+      ...input.artifacts.map((artifact) => artifact.lockEntry),
+    ];
+    return {
+      installed: input.artifacts.map((artifact) => ({
+        ...artifact.installed,
+        destination: `sql:${artifact.installed.id}`,
+      })),
+    };
+  });
   const operations = createCurrentHostOperations({
     engine,
     control: { configPath, projectConfigPath, authDir, globalCapletsRoot, globalLockfilePath },
     activityLog: activity,
     remoteCredentialStore: store,
+    loadGlobalCatalogProvenance,
+    persistGlobalCatalogChange,
     version: "test-version",
   });
   return {
@@ -922,6 +970,10 @@ function testOperations() {
     engine,
     store,
     activity,
+    globalCapletsRoot,
+    globalLockfilePath,
+    loadGlobalCatalogProvenance,
+    persistGlobalCatalogChange,
     operations,
     principal: {
       clientId: operator.clientId,

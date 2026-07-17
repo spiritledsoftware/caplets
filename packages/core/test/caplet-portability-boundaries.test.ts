@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   allocatePortablePath,
   decodePortableCaplet,
+  decodePortableCapletArtifact,
+  encodePortableCapletArtifact,
   portableCapletFromBundle,
+  portableCapletFromCapletDocument,
   type PortableCapletBundle,
 } from "../src/control-plane/caplets/portable-codec";
 
@@ -153,6 +156,49 @@ describe("portable Caplet rejection boundaries", () => {
         maxEnvelopeBytes: 64,
       }),
     ).toThrow(/limit/i);
+  });
+
+  it("bounds ZIP artifacts and rejects traversal before extracting entries", () => {
+    const portable = portableCapletFromCapletDocument({
+      id: "safe",
+      path: "CAPLET.md",
+      text: [
+        "---",
+        "name: Safe ZIP",
+        "description: A safe portable ZIP boundary fixture",
+        "mcpServer:",
+        "  command: node",
+        "---",
+        "# Safe ZIP",
+        "",
+      ].join("\n"),
+      files: [
+        {
+          path: "asset.txt",
+          role: "asset",
+          mediaType: "text/plain",
+          content: new TextEncoder().encode("asset"),
+        },
+      ],
+    });
+    const artifact = encodePortableCapletArtifact(portable);
+    expect(() =>
+      decodePortableCapletArtifact(artifact.bytes, {
+        maxEnvelopeBytes: artifact.bytes.byteLength - 1,
+      }),
+    ).toThrow(/limit/iu);
+
+    const traversal = Buffer.from(artifact.bytes);
+    const original = Buffer.from("safe/CAPLET.md");
+    const replacement = Buffer.from("../x/CAPLET.md");
+    for (
+      let offset = traversal.indexOf(original);
+      offset >= 0;
+      offset = traversal.indexOf(original, offset + replacement.byteLength)
+    ) {
+      replacement.copy(traversal, offset);
+    }
+    expect(() => decodePortableCapletArtifact(traversal)).toThrow(/path traversal/iu);
   });
 
   it("allocates collision-safe normalized export paths", () => {

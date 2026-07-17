@@ -2,7 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createControlPlaneRepository } from "../src/control-plane/caplets/repository";
+import { CapletsError } from "../src/errors";
+import {
+  createControlPlaneRepository,
+  type TransactionBoundCapletMutation,
+} from "../src/control-plane/caplets/repository";
 import { openSqliteControlPlaneDialect } from "../src/control-plane/dialect/sqlite";
 import type { MigrationEnvironment } from "../src/control-plane/dialect/migrations";
 import type { ResolvedSqliteStorage } from "../src/control-plane/storage-config";
@@ -50,6 +54,7 @@ function environment(): MigrationEnvironment {
     verifiedSchemaAwareBackup: true,
     oldNodesDrained: true,
     retainedKeyVersions: [1],
+    activationEvidence: { kind: "empty-bootstrap" },
     hostAdministrator: true,
     now: new Date(NOW),
   };
@@ -722,16 +727,61 @@ describe("control-plane management transaction atomicity", () => {
     expect(locks).toContain(`management-rate:${identity.logicalHostId}:${identity.storeId}`);
   });
 
-  it("advances the runtime snapshot token for a committed disabled Caplet mutation", async () => {
+  it("rolls back a transaction-bound Caplet mutation with its outer action", async () => {
     const test = await fixture();
-    const input = mutation("disabled-token-caplet", "disabled-token-operation", test.fence);
-    const disabledInput = {
-      ...input,
-      aggregate: {
-        ...input.aggregate,
-        activation: "disabled" as const,
-        effective: false,
+    let transactions = 0;
+    const dialect = {
+      ...test.dialect,
+      runtimeTransaction<T>(work: (transaction: ControlPlaneSqlTransaction) => Promise<T>) {
+        transactions += 1;
+        return test.dialect.runtimeTransaction(work);
       },
+    };
+    const store = createControlPlaneRepository({ identity, dialect });
+    const input = mutation(
+      "transaction-bound-rollback",
+      "transaction-bound-rollback-op",
+      test.fence,
+    );
+    await store.reserveOperation(input.binding, input.aggregateId);
+    transactions = 0;
+
+    await expect(
+      dialect.runtimeTransaction(async (transaction) => {
+        await store.mutateCapletInTransaction(transaction, input);
+        throw new Error("abort outer action");
+      }),
+    ).rejects.toThrow("abort outer action");
+    expect(transactions).toBe(1);
+    expect(
+      test.dialect.query<{ count: number }>(
+        "SELECT count(*) AS count FROM cp_caplet WHERE id = ?",
+        [input.aggregateId],
+      ),
+    ).toEqual([{ count: 0 }]);
+    expect(
+      test.dialect.query<{ count: number }>(
+        "SELECT count(*) AS count FROM cp_operation_outcome WHERE operation_id = ?",
+        [input.binding.operationId],
+      ),
+    ).toEqual([{ count: 0 }]);
+  });
+
+  it("defers publication until a transaction-bound mutation has committed", async () => {
+    const test = await fixture();
+    let publications = 0;
+    const dialect = {
+      ...test.dialect,
+      async publishChange(): Promise<void> {
+        publications += 1;
+      },
+    };
+    const store = createControlPlaneRepository({ identity, dialect });
+    const reader = createControlPlaneRepository({ identity, dialect: test.dialect });
+    const input = mutation("transaction-bound-commit", "transaction-bound-commit-op", test.fence);
+    const dormantInput = {
+      ...input,
+      aggregate: { ...input.aggregate, activation: "disabled" as const, effective: false },
       projection: {
         ...input.projection,
         activationHistory: input.projection.activationHistory.map((event) => ({
@@ -741,23 +791,275 @@ describe("control-plane management transaction atomicity", () => {
         })),
       },
     };
-    await test.store.reserveOperation(disabledInput.binding, disabledInput.aggregateId);
+    await reader.loadSnapshot();
+    await store.reserveOperation(dormantInput.binding, dormantInput.aggregateId);
+    let committed: TransactionBoundCapletMutation | undefined;
 
-    await expect(test.store.mutateCaplet(disabledInput)).resolves.toMatchObject({
-      status: "committed",
-      receipt: {
-        authorityToken: {
-          authorityGeneration: test.versions.authorityGeneration,
-          effectiveGeneration: test.versions.effectiveGeneration + 1,
-        },
+    await dialect.runtimeTransaction(async (transaction) => {
+      committed = await store.mutateCapletInTransaction(transaction, dormantInput);
+      expect(publications).toBe(0);
+    });
+    expect(publications).toBe(0);
+    if (!committed) throw new Error("transaction-bound mutation did not commit");
+    await expect(committed.afterCommit()).resolves.toMatchObject({ status: "committed" });
+    expect(publications).toBe(1);
+    await expect(committed.afterCommit()).resolves.toMatchObject({ status: "committed" });
+    expect(publications).toBe(1);
+    await expect(reader.loadSnapshot()).resolves.toMatchObject({
+      caplets: [{ aggregate: { id: dormantInput.aggregateId, effective: false } }],
+    });
+  });
+
+  it("reuses immutable installation provenance when setup becomes active", async () => {
+    const test = await fixture();
+    const initial = mutation("setup-provenance-caplet", "setup-provenance-import", test.fence);
+    const setupRequired = {
+      ...initial,
+      aggregate: {
+        ...initial.aggregate,
+        activation: "setup-required" as const,
+        effective: false,
       },
+      projection: {
+        ...initial.projection,
+        activationHistory: initial.projection.activationHistory.map((event) => ({
+          ...event,
+          to: "setup-required" as const,
+          reason: "setup-required" as const,
+        })),
+      },
+    };
+    await test.store.reserveOperation(setupRequired.binding, setupRequired.aggregateId);
+    await expect(test.store.mutateCaplet(setupRequired)).resolves.toMatchObject({
+      status: "committed",
     });
-    await expect(test.store.convergenceToken()).resolves.toMatchObject({
-      authorityGeneration: test.versions.authorityGeneration,
-      effectiveGeneration: test.versions.effectiveGeneration + 1,
+    const activated = {
+      ...setupRequired,
+      binding: binding("setup-provenance-activate"),
+      expectedAggregateVersion: 1,
+      aggregate: {
+        ...setupRequired.aggregate,
+        aggregateVersion: 2,
+        activation: "active" as const,
+        effective: true,
+      },
+      projection: {
+        ...setupRequired.projection,
+        activationHistory: [
+          ...setupRequired.projection.activationHistory,
+          {
+            ...setupRequired.projection.activationHistory[0]!,
+            sequence: 2,
+            from: "setup-required" as const,
+            to: "active" as const,
+            reason: "setup-remediated" as const,
+            aggregateVersion: 2,
+          },
+        ],
+      },
+      activity: {
+        ...setupRequired.activity,
+        id: "activity:setup-provenance-activate",
+      },
+    };
+    const mismatched = {
+      ...activated,
+      binding: binding("setup-provenance-mismatch"),
+      provenance: { ...activated.provenance, contentHash: "e".repeat(64) },
+    };
+    await test.store.reserveOperation(mismatched.binding, mismatched.aggregateId);
+    await expect(test.store.mutateCaplet(mismatched)).resolves.toEqual({
+      status: "conflict",
+      reason: "aggregate-version",
     });
-    await expect(test.store.loadSnapshot()).resolves.toMatchObject({
-      caplets: [{ aggregate: { id: disabledInput.aggregateId, effective: false } }],
+
+    await test.store.reserveOperation(activated.binding, activated.aggregateId);
+    await expect(test.store.mutateCaplet(activated)).resolves.toMatchObject({
+      status: "committed",
+      receipt: { aggregateVersion: 2 },
+    });
+    expect(
+      test.dialect.query<{ count: number }>(
+        "SELECT count(*) AS count FROM cp_caplet_provenance WHERE id = ?",
+        [activated.provenance.id],
+      ),
+    ).toEqual([{ count: 1 }]);
+  });
+
+  it.each([
+    ["dormant", "disabled", "disabled"],
+    ["shadowed", "dormant-shadowed", "filesystem-shadowed"],
+  ] as const)(
+    "does not advance the effective generation for a %s Caplet mutation",
+    async (kind, activation, reason) => {
+      const test = await fixture();
+      const reader = createControlPlaneRepository({ identity, dialect: test.dialect });
+      const input = mutation(`${kind}-token-caplet`, `${kind}-token-operation`, test.fence);
+      const ineffectiveInput = {
+        ...input,
+        aggregate: {
+          ...input.aggregate,
+          activation,
+          effective: false,
+        },
+        projection: {
+          ...input.projection,
+          activationHistory: input.projection.activationHistory.map((event) => ({
+            ...event,
+            to: activation,
+            reason,
+          })),
+        },
+      };
+      await expect(reader.loadSnapshot()).resolves.toMatchObject({ caplets: [] });
+      await test.store.reserveOperation(ineffectiveInput.binding, ineffectiveInput.aggregateId);
+
+      await expect(test.store.mutateCaplet(ineffectiveInput)).resolves.toMatchObject({
+        status: "committed",
+        receipt: {
+          authorityToken: {
+            authorityGeneration: test.versions.authorityGeneration,
+            effectiveGeneration: test.versions.effectiveGeneration,
+          },
+        },
+      });
+      await expect(test.store.convergenceToken()).resolves.toMatchObject({
+        authorityGeneration: test.versions.authorityGeneration,
+        effectiveGeneration: test.versions.effectiveGeneration,
+      });
+      await expect(reader.loadSnapshot()).resolves.toMatchObject({
+        caplets: [{ aggregate: { id: ineffectiveInput.aggregateId, effective: false } }],
+      });
+    },
+  );
+
+  it("requires operation lookup after an indeterminate commit acknowledgement", async () => {
+    const test = await fixture();
+    let loseCommitAcknowledgement = false;
+    const dialect = {
+      ...test.dialect,
+      backend: "postgres" as const,
+      async runtimeTransaction<T>(
+        work: (transaction: ControlPlaneSqlTransaction) => Promise<T>,
+      ): Promise<T> {
+        const result = await test.dialect.runtimeTransaction(work);
+        if (loseCommitAcknowledgement) {
+          loseCommitAcknowledgement = false;
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Postgres commit acknowledgement was lost.",
+            { transactionOutcome: "indeterminate", recovery: "operation-lookup" },
+          );
+        }
+        return result;
+      },
+    };
+    const store = createControlPlaneRepository({ identity, dialect });
+    await store.initialize();
+    const input = mutation("commit-ack-caplet", "commit-ack-operation", test.fence);
+    await store.reserveOperation(input.binding, input.aggregateId);
+
+    loseCommitAcknowledgement = true;
+    await expect(store.mutateCaplet(input)).resolves.toEqual({
+      status: "indeterminate",
+      binding: input.binding,
+    });
+    await expect(store.lookupOrReserveNotCommitted(input.binding)).resolves.toMatchObject({
+      status: "committed",
+      receipt: { binding: input.binding },
+    });
+  });
+
+  it("settles an old receipt overdue while newer writes keep convergence fresh", async () => {
+    const test = await fixture();
+    insertPendingReceipt(test.dialect, "sustained-write-overdue", {
+      deadline: "1970-01-01T00:00:00.000Z",
+    });
+    for (let index = 0; index < 3; index += 1) {
+      const input = mutation(
+        `sustained-write-caplet-${index}`,
+        `sustained-write-operation-${index}`,
+        test.fence,
+      );
+      await test.store.reserveOperation(input.binding, input.aggregateId);
+      await expect(test.store.mutateCaplet(input)).resolves.toMatchObject({ status: "committed" });
+    }
+
+    await expect(
+      test.store.sweepOverdueNodes(STORAGE_BENCHMARK_ENVELOPE.maxConvergenceP99Ms),
+    ).resolves.toBe(0);
+    expect(
+      test.dialect.query<{ convergenceClass: string }>(
+        "SELECT convergence_class AS convergenceClass FROM cp_operation_outcome " +
+          "WHERE operation_id = 'sustained-write-overdue'",
+      ),
+    ).toEqual([{ convergenceClass: "overdue" }]);
+  });
+
+  it("keeps an applied local node ready while a peer is still converging", async () => {
+    const test = await fixture();
+    const dialect = { ...test.dialect, backend: "postgres" as const };
+    const store = createControlPlaneRepository({ identity, dialect });
+    const peerStore = createControlPlaneRepository({ identity, dialect });
+    const local = await store.registerNode({
+      nodeId: "node-1",
+      bootstrapFingerprint: "a".repeat(64),
+      effectiveRuntimeFingerprint: "a".repeat(64),
+      compatibility: runtimeCompatibility,
+      appliedToken: test.versions,
+      ttlMs: 60_000,
+    });
+    if (local.status !== "ready") throw new Error(`node-1 was ${local.status}`);
+    const peer = await peerStore.registerNode({
+      nodeId: "node-2",
+      bootstrapFingerprint: "a".repeat(64),
+      effectiveRuntimeFingerprint: "a".repeat(64),
+      compatibility: runtimeCompatibility,
+      appliedToken: test.versions,
+      ttlMs: 60_000,
+    });
+    if (peer.status !== "ready") throw new Error(`node-2 was ${peer.status}`);
+    await peerStore.acknowledgeNode({
+      nodeId: "node-2",
+      bootstrapFingerprint: "a".repeat(64),
+      effectiveRuntimeFingerprint: "a".repeat(64),
+      appliedToken: test.versions,
+      writerFence: peer.writerFence,
+    });
+    const input = mutation("local-ready-caplet", "local-ready-operation", local.writerFence);
+    await store.reserveOperation(input.binding, input.aggregateId);
+    await expect(store.mutateCaplet(input)).resolves.toMatchObject({ status: "committed" });
+    const advanced = await store.convergenceToken();
+    await expect(
+      store.acknowledgeNode({
+        nodeId: "node-1",
+        bootstrapFingerprint: "a".repeat(64),
+        effectiveRuntimeFingerprint: "a".repeat(64),
+        appliedToken: advanced,
+        writerFence: local.writerFence,
+      }),
+    ).resolves.toEqual({ status: "applied", appliedNodes: 1 });
+
+    await expect(store.health()).resolves.toMatchObject({
+      backend: "postgres",
+      readiness: "ready",
+      connectivity: "connected",
+      convergence: "pending",
+      guidanceCode: "convergence-pending",
+    });
+    test.dialect.execute("UPDATE cp_authority_version SET updated_at = ?", [
+      "1970-01-01T00:00:00.000Z",
+    ]);
+    test.dialect.execute("UPDATE cp_effective_version SET published_at = ?", [
+      "1970-01-01T00:00:00.000Z",
+    ]);
+    test.dialect.execute("UPDATE cp_security_version SET advanced_at = ?", [
+      "1970-01-01T00:00:00.000Z",
+    ]);
+    await expect(store.health()).resolves.toMatchObject({
+      readiness: "ready",
+      convergence: "overdue",
+      guidanceCode: "convergence-overdue",
     });
   });
 

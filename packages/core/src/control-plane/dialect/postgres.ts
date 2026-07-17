@@ -125,6 +125,7 @@ export type PostgresControlPlaneDialect = ControlPlaneTransactionalDialect & {
   releaseMigrationDrain(gateId: string, outcome: "finalized" | "rolled-back"): Promise<void>;
   migrate(): Promise<readonly string[]>;
   rollbackLatest(): Promise<string>;
+  migrationQuery<T>(sql: string, parameters?: readonly unknown[]): Promise<readonly T[]>;
   query<T>(sql: string, parameters?: readonly unknown[]): Promise<readonly T[]>;
   maintenanceQuery<T>(sql: string, parameters?: readonly unknown[]): Promise<readonly T[]>;
   close(): Promise<void>;
@@ -790,6 +791,11 @@ function createDialect(
       ready = false;
       return migrationId;
     },
+    async migrationQuery<T>(sql: string, parameters: readonly unknown[] = []) {
+      requireOpen();
+      if (!options.pools.maintenance) throw new Error("Postgres maintenance pool is unavailable");
+      return queryWithFixedSearchPath<T>(options.pools.maintenance, schema, sql, parameters);
+    },
     async query<T>(sql: string, parameters: readonly unknown[] = []) {
       requireReady();
       return queryWithFixedSearchPath<T>(options.pools.runtime, schema, sql, parameters);
@@ -800,7 +806,7 @@ function createDialect(
       return queryWithFixedSearchPath<T>(options.pools.maintenance, schema, sql, parameters);
     },
     async close() {
-      await Promise.all([...notificationSubscriptions].map((unsubscribe) => unsubscribe()));
+      await Promise.all(Array.from(notificationSubscriptions, (unsubscribe) => unsubscribe()));
       if (closed) return;
       closed = true;
       ready = false;
@@ -1059,7 +1065,19 @@ async function withRuntimeTransaction<T>(
         },
       };
       const result = await work(transaction);
-      await client.query("COMMIT");
+      try {
+        await client.query("COMMIT");
+      } catch (error) {
+        const normalized = normalizePostgresAvailabilityError(error);
+        if (normalized instanceof CapletsError && normalized.code === "SERVER_UNAVAILABLE") {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Postgres commit acknowledgement was lost; operation lookup is required.",
+            { transactionOutcome: "indeterminate", recovery: "operation-lookup" },
+          );
+        }
+        throw normalized;
+      }
       return result;
     } catch (error) {
       try {
@@ -1506,6 +1524,67 @@ async function verifyRole(
     const memberships = singleRecord(membershipsResult, `${purpose} Postgres memberships`);
     if (memberships.memberships !== 0) {
       throw new Error(`${purpose} Postgres role can SET ROLE through a membership`);
+    }
+    if (purpose !== "migrator") {
+      const authorityResult = await client.query(
+        `WITH active_role AS (
+           SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user
+         ), target_namespace AS (
+           SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = $1
+         )
+         SELECT
+           EXISTS (
+             SELECT 1 FROM pg_catalog.pg_database database, active_role
+             WHERE database.datname = current_database() AND database.datdba = active_role.oid
+           ) AS owns_database,
+           EXISTS (
+             SELECT 1 FROM pg_catalog.pg_namespace namespace, active_role
+             WHERE namespace.nspname = $1 AND namespace.nspowner = active_role.oid
+           ) AS owns_schema,
+           (
+             EXISTS (
+               SELECT 1
+               FROM pg_catalog.pg_class relation, target_namespace, active_role
+               WHERE relation.relnamespace = target_namespace.oid
+                 AND relation.relowner = active_role.oid
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_catalog.pg_proc function, target_namespace, active_role
+               WHERE function.pronamespace = target_namespace.oid
+                 AND function.proowner = active_role.oid
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_catalog.pg_type type, target_namespace, active_role
+               WHERE type.typnamespace = target_namespace.oid
+                 AND type.typowner = active_role.oid
+             )
+           ) AS owns_control_plane_object,
+           COALESCE(
+             pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE'),
+             false
+           ) AS can_create_in_database,
+           COALESCE(
+             pg_catalog.has_schema_privilege(
+               current_user,
+               pg_catalog.to_regnamespace($1),
+               'CREATE'
+             ),
+             false
+           ) AS can_create_in_schema`,
+        [schema],
+      );
+      const authority = singleRecord(authorityResult, `${purpose} Postgres role authority`);
+      if (
+        authority.owns_database !== false ||
+        authority.owns_schema !== false ||
+        authority.owns_control_plane_object !== false ||
+        authority.can_create_in_database !== false ||
+        authority.can_create_in_schema !== false
+      ) {
+        throw new Error(`${purpose} Postgres role retains owner or DDL authority`);
+      }
     }
     const searchPathResult = await client.query("SHOW search_path");
     const searchPath = singleRecord(searchPathResult, `${purpose} Postgres search path`);

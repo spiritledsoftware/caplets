@@ -25,6 +25,136 @@ export type MediaArtifact = {
   sha256: string;
 };
 
+export type PortableArtifactReference = Readonly<{
+  uri: string;
+  artifactId: string;
+  logicalHostId: string;
+  storeId: string;
+  providerIdentityId: string;
+  actorId: string;
+  operationId: string;
+  direction: "upload" | "download";
+  byteLength: number;
+  sha256: string;
+  mimeType: string;
+  expiresAt: string;
+}>;
+
+export type CreatePortableArtifactReferenceInput = Omit<PortableArtifactReference, "uri">;
+
+const PORTABLE_ARTIFACT_REFERENCE_QUERY_KEYS = [
+  "storeId",
+  "providerIdentityId",
+  "actorId",
+  "operationId",
+  "direction",
+  "byteLength",
+  "sha256",
+  "mimeType",
+  "expiresAt",
+] as const;
+
+export function createPortableArtifactReference(
+  input: CreatePortableArtifactReferenceInput,
+): PortableArtifactReference {
+  const artifactId = portableReferenceSegment(input.artifactId, "artifactId");
+  const logicalHostId = portableReferenceSegment(input.logicalHostId, "logicalHostId");
+  const storeId = portableReferenceClaim(input.storeId, "storeId");
+  const providerIdentityId = portableReferenceClaim(input.providerIdentityId, "providerIdentityId");
+  const actorId = portableReferenceClaim(input.actorId, "actorId");
+  const operationId = portableReferenceClaim(input.operationId, "operationId");
+  if (input.direction !== "upload" && input.direction !== "download") {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact direction is invalid");
+  }
+  const byteLength = portableReferenceByteLength(input.byteLength);
+  const sha256 = portableReferenceSha256(input.sha256);
+  const mimeType = portableReferenceMimeType(input.mimeType);
+  const expiresAt = portableReferenceExpiry(input.expiresAt);
+  const query = new URLSearchParams();
+  query.set("storeId", storeId);
+  query.set("providerIdentityId", providerIdentityId);
+  query.set("actorId", actorId);
+  query.set("operationId", operationId);
+  query.set("direction", input.direction);
+  query.set("byteLength", String(byteLength));
+  query.set("sha256", sha256);
+  query.set("mimeType", mimeType);
+  query.set("expiresAt", expiresAt);
+  const uri = `caplets://artifacts/${encodeURIComponent(logicalHostId)}/${encodeURIComponent(
+    artifactId,
+  )}?${query.toString()}`;
+  return Object.freeze({
+    uri,
+    artifactId,
+    logicalHostId,
+    storeId,
+    providerIdentityId,
+    actorId,
+    operationId,
+    direction: input.direction,
+    byteLength,
+    sha256,
+    mimeType,
+    expiresAt,
+  });
+}
+
+export function parsePortableArtifactReference(uri: string): PortableArtifactReference {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact reference is invalid");
+  }
+  if (url.protocol !== "caplets:" || url.hostname !== "artifacts" || url.hash) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Portable artifact reference must start with caplets://artifacts/",
+    );
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 2) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Portable artifact reference is missing required parts",
+    );
+  }
+  const seen = new Set<string>();
+  for (const [key] of url.searchParams) {
+    if (
+      !PORTABLE_ARTIFACT_REFERENCE_QUERY_KEYS.includes(
+        key as (typeof PORTABLE_ARTIFACT_REFERENCE_QUERY_KEYS)[number],
+      ) ||
+      seen.has(key)
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Portable artifact reference claims are invalid");
+    }
+    seen.add(key);
+  }
+  if (seen.size !== PORTABLE_ARTIFACT_REFERENCE_QUERY_KEYS.length) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact reference claims are incomplete");
+  }
+  const reference = createPortableArtifactReference({
+    logicalHostId: decodePortableReferenceSegment(parts[0]!, "logicalHostId"),
+    artifactId: decodePortableReferenceSegment(parts[1]!, "artifactId"),
+    storeId: requiredPortableReferenceQuery(url, "storeId"),
+    providerIdentityId: requiredPortableReferenceQuery(url, "providerIdentityId"),
+    actorId: requiredPortableReferenceQuery(url, "actorId"),
+    operationId: requiredPortableReferenceQuery(url, "operationId"),
+    direction: portableReferenceDirection(requiredPortableReferenceQuery(url, "direction")),
+    byteLength: portableReferenceByteLengthFromText(
+      requiredPortableReferenceQuery(url, "byteLength"),
+    ),
+    sha256: requiredPortableReferenceQuery(url, "sha256"),
+    mimeType: requiredPortableReferenceQuery(url, "mimeType"),
+    expiresAt: requiredPortableReferenceQuery(url, "expiresAt"),
+  });
+  if (reference.uri !== uri) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact reference is not canonical");
+  }
+  return reference;
+}
+
 export type WriteMediaArtifactInput = {
   rootDir?: string;
   capletId: string;
@@ -444,6 +574,102 @@ function decodeSafePathSegment(value: string, label: string): string {
     throw new CapletsError("REQUEST_INVALID", `Media artifact URI ${label} is invalid`);
   }
   return safe;
+}
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function portableReferenceSegment(value: string, label: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 256 ||
+    hasControlCharacter(value) ||
+    /[/\\]/u.test(value)
+  ) {
+    throw new CapletsError("REQUEST_INVALID", `Portable artifact ${label} is invalid`);
+  }
+  return value;
+}
+
+function portableReferenceClaim(value: string, label: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 512 ||
+    hasControlCharacter(value)
+  ) {
+    throw new CapletsError("REQUEST_INVALID", `Portable artifact ${label} claim is invalid`);
+  }
+  return value;
+}
+
+function portableReferenceByteLength(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 256 * 1024 * 1024) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact byteLength is invalid");
+  }
+  return value;
+}
+
+function portableReferenceByteLengthFromText(value: string): number {
+  if (!/^(?:0|[1-9]\d*)$/u.test(value)) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact byteLength is invalid");
+  }
+  return portableReferenceByteLength(Number(value));
+}
+
+function portableReferenceSha256(value: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact sha256 is invalid");
+  }
+  return value;
+}
+
+function portableReferenceMimeType(value: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 256 ||
+    !/^[\u0020-\u007e]+$/u.test(value) ||
+    !value.includes("/")
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact mimeType is invalid");
+  }
+  return value;
+}
+
+function portableReferenceExpiry(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact expiresAt is invalid");
+  }
+  return value;
+}
+
+function decodePortableReferenceSegment(value: string, label: string): string {
+  try {
+    return portableReferenceSegment(decodeURIComponent(value), label);
+  } catch (error) {
+    if (error instanceof CapletsError) throw error;
+    throw new CapletsError("REQUEST_INVALID", `Portable artifact ${label} is invalid`);
+  }
+}
+
+function requiredPortableReferenceQuery(url: URL, key: string): string {
+  const value = url.searchParams.get(key);
+  if (value === null) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact reference claims are incomplete");
+  }
+  return value;
+}
+
+function portableReferenceDirection(value: string): "upload" | "download" {
+  if (value === "upload" || value === "download") return value;
+  throw new CapletsError("REQUEST_INVALID", "Portable artifact direction is invalid");
 }
 
 function decodeSafeFilename(value: string): string {

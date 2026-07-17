@@ -13,7 +13,7 @@ import capletsPiExtension, {
 } from "../src/index";
 
 const nativeMocks = vi.hoisted(() => ({
-  createNativeCapletsService: vi.fn(),
+  createActivatedNativeCapletsService: vi.fn(),
   registerNativeCapletsProcessCleanup: vi.fn(),
   hasNativeRuntimeSelectionEnv: vi.fn<() => boolean>(() => false),
   readNativeDefaults: vi.fn<() => unknown>(() => undefined),
@@ -769,28 +769,28 @@ describe("@caplets/pi", () => {
 
   it("registers process cleanup for owned services", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
 
     await capletsPiExtension({ registerTool: vi.fn() });
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith({
       telemetryIntegration: "pi",
     });
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
   });
 
-  it("passes explicit factory args to owned native service creation", () => {
+  it("passes explicit factory args to owned native service creation", async () => {
     const service = mockService([]);
     const args = {
       mode: "remote",
       remote: { url: "https://caplets.example.com" },
     } satisfies Pick<NativeCapletsServiceOptions, "mode" | "remote">;
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
 
-    createCapletsPiExtension({ args })({ registerTool: vi.fn() });
+    await createCapletsPiExtension({ args })({ registerTool: vi.fn() });
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith({
       ...args,
       telemetryIntegration: "pi",
     });
@@ -814,7 +814,7 @@ describe("@caplets/pi", () => {
       reloaded = true;
       return true;
     });
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     const { api, registered } = mockPiApi();
 
     await createCapletsPiExtension({ args: { mode: "remote" } })(api as unknown as PiExtensionApi);
@@ -1073,7 +1073,7 @@ describe("@caplets/pi", () => {
 
   it("project Pi settings override user Pi settings", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile
       .mockResolvedValueOnce(
         JSON.stringify({
@@ -1104,7 +1104,7 @@ describe("@caplets/pi", () => {
       expect.stringContaining(".pi/settings.json"),
       "utf8",
     );
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "remote",
       remote: { url: "http://localhost:5387" },
       telemetryIntegration: "pi",
@@ -1220,7 +1220,7 @@ describe("@caplets/pi", () => {
 
   it("default export loads top-level Pi settings for the native service", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
@@ -1238,7 +1238,7 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "remote",
       remote: {
         url: "https://caplets.example.com",
@@ -1250,7 +1250,7 @@ describe("@caplets/pi", () => {
 
   it("loads cloud mode from Pi settings", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockImplementation(async (path: string) =>
       path.includes(".pi/agent/settings.json")
         ? JSON.stringify({
@@ -1262,7 +1262,7 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith(
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "cloud",
         remote: { url: "https://cloud.caplets.dev" },
@@ -1272,7 +1272,7 @@ describe("@caplets/pi", () => {
 
   it("ignores package entry args and uses empty settings without top-level caplets config", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: [
@@ -1288,14 +1288,14 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenLastCalledWith({
       telemetryIntegration: "pi",
     });
   });
 
   it("default export uses Caplets native defaults when Pi settings are missing", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     nativeMocks.readNativeDefaults.mockReturnValueOnce({
       version: 1,
       source: "setup",
@@ -1309,7 +1309,7 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "daemon",
       daemon: { url: "http://127.0.0.1:5387/caplets" },
       telemetryIntegration: "pi",
@@ -1318,7 +1318,7 @@ describe("@caplets/pi", () => {
 
   it("lets native environment selectors override Caplets native defaults when Pi settings are missing", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     nativeMocks.hasNativeRuntimeSelectionEnv.mockReturnValueOnce(true);
     nativeMocks.readNativeDefaults.mockReturnValueOnce({
       version: 1,
@@ -1334,14 +1334,14 @@ describe("@caplets/pi", () => {
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
     expect(nativeMocks.readNativeDefaults).not.toHaveBeenCalled();
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenLastCalledWith({
       telemetryIntegration: "pi",
     });
   });
 
   it("default export falls back to empty args when Pi settings are missing", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile
       .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }))
       .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
@@ -1349,7 +1349,7 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenLastCalledWith({
       telemetryIntegration: "pi",
     });
   });
@@ -1368,7 +1368,7 @@ describe("@caplets/pi", () => {
 
   it("does not show a status widget for local settings", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
@@ -1386,7 +1386,7 @@ describe("@caplets/pi", () => {
 
   it("shows a remote status widget by default for remote settings", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
@@ -1412,7 +1412,7 @@ describe("@caplets/pi", () => {
     const previousDaemonUrl = process.env.CAPLETS_DAEMON_URL;
     process.env.CAPLETS_DAEMON_URL = "http://127.0.0.1:5387/caplets";
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     nativeMocks.hasNativeRuntimeSelectionEnv.mockReturnValueOnce(true);
     fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
     const { api } = mockPiApi();
@@ -1435,7 +1435,7 @@ describe("@caplets/pi", () => {
 
   it("can disable nerd font icons in the remote status widget", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
@@ -1460,7 +1460,7 @@ describe("@caplets/pi", () => {
 
   it("can disable the remote status widget from settings", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
@@ -1483,7 +1483,7 @@ describe("@caplets/pi", () => {
   it("shows remote offline when initial reload fails", async () => {
     const service = mockService([]);
     service.reload.mockResolvedValueOnce(false);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
@@ -1504,13 +1504,13 @@ describe("@caplets/pi", () => {
 
   it("programmatic args override Pi settings without reading the settings file", async () => {
     const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     const { api } = mockPiApi();
 
     await createCapletsPiExtension({ args: { mode: "local" } })(api as unknown as PiExtensionApi);
 
     expect(fsMocks.readFile).not.toHaveBeenCalled();
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "local",
       telemetryIntegration: "pi",
     });
@@ -1519,7 +1519,7 @@ describe("@caplets/pi", () => {
   it("closes owned services on Pi session shutdown", async () => {
     const service = mockService([]);
     const { api } = mockPiApi();
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.createActivatedNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
 
     await capletsPiExtension(api as unknown as PiExtensionApi);

@@ -250,6 +250,82 @@ function entityChecks(
       ),
     );
   }
+  if (definitionValue.kind === "artifact-manifest") {
+    checks.push(
+      check(
+        "cp_artifact_manifest_bounds_check",
+        sql`${requireColumn(table, "byteLength")} BETWEEN 1 AND ${sql.raw("268435456")} AND ${requireColumn(table, "partCount")} BETWEEN 1 AND 256`,
+      ),
+      check(
+        "cp_artifact_manifest_direction_check",
+        sql`${requireColumn(table, "direction")} IN ('upload', 'download')`,
+      ),
+      check(
+        "cp_artifact_manifest_state_check",
+        sql`${requireColumn(table, "state")} IN ('staging', 'finalized', 'destruction-intended', 'destroyed')`,
+      ),
+    );
+  }
+  if (definitionValue.kind === "artifact-part") {
+    checks.push(
+      check(
+        "cp_artifact_part_bounds_check",
+        sql`${requireColumn(table, "byteLength")} BETWEEN 1 AND ${sql.raw("16777216")}`,
+      ),
+      check(
+        "cp_artifact_part_state_check",
+        sql`${requireColumn(table, "state")} IN ('published', 'destruction-intended', 'destroyed')`,
+      ),
+    );
+  }
+  if (definitionValue.kind === "artifact-session") {
+    checks.push(
+      check(
+        "cp_artifact_session_direction_check",
+        sql`${requireColumn(table, "direction")} IN ('upload', 'download')`,
+      ),
+      check(
+        "cp_artifact_session_state_check",
+        sql`${requireColumn(table, "state")} IN ('uploading', 'finalized', 'consumed', 'revoked', 'expired')`,
+      ),
+      check(
+        "cp_artifact_session_bounds_check",
+        sql`${requireColumn(table, "expectedByteLength")} BETWEEN 1 AND ${sql.raw("268435456")} AND ${requireColumn(table, "nextOffset")} BETWEEN 0 AND ${requireColumn(table, "expectedByteLength")}`,
+      ),
+    );
+  }
+  if (definitionValue.kind === "artifact-quota-reservation") {
+    checks.push(
+      check(
+        "cp_artifact_quota_reservation_state_check",
+        sql`${requireColumn(table, "state")} IN ('reserved', 'destruction-intended', 'released')`,
+      ),
+      check(
+        "cp_artifact_quota_reservation_bounds_check",
+        sql`${requireColumn(table, "reservedBytes")} BETWEEN 1 AND ${sql.raw("268435456")}`,
+      ),
+    );
+  }
+  if (definitionValue.kind === "import-proposal") {
+    checks.push(
+      check(
+        "cp_import_proposal_collision_check",
+        sql`${requireColumn(table, "collisionPolicy")} IN ('reject', 'replace')`,
+      ),
+      check(
+        "cp_import_proposal_state_check",
+        sql`${requireColumn(table, "state")} IN ('previewed', 'consumed', 'expired', 'rejected')`,
+      ),
+    );
+  }
+  if (definitionValue.kind === "artifact-cleanup-intent") {
+    checks.push(
+      check(
+        "cp_artifact_cleanup_intent_state_check",
+        sql`${requireColumn(table, "state")} IN ('intended', 'claimed', 'completed', 'failed')`,
+      ),
+    );
+  }
   if (definitionValue.kind === "external-destruction") {
     checks.push(
       check(
@@ -353,6 +429,14 @@ export const migrations = createEntityTable(definition("migration"));
 export const backups = createEntityTable(definition("backup"));
 export const recoveries = createEntityTable(definition("recovery"));
 export const retentions = createEntityTable(definition("retention"));
+export const artifactManifests = createEntityTable(definition("artifact-manifest"));
+export const artifactParts = createEntityTable(definition("artifact-part"));
+export const artifactSessions = createEntityTable(definition("artifact-session"));
+export const artifactQuotaReservations = createEntityTable(
+  definition("artifact-quota-reservation"),
+);
+export const importProposals = createEntityTable(definition("import-proposal"));
+export const artifactCleanupIntents = createEntityTable(definition("artifact-cleanup-intent"));
 export const externalDestructions = createEntityTable(definition("external-destruction"));
 export const recoveryCheckpoints = createEntityTable(definition("recovery-checkpoint"));
 export const quarantines = createEntityTable(definition("quarantine"));
@@ -520,6 +604,12 @@ export const sqliteControlPlaneSchema = {
   backups,
   recoveries,
   retentions,
+  artifactManifests,
+  artifactParts,
+  artifactSessions,
+  artifactQuotaReservations,
+  importProposals,
+  artifactCleanupIntents,
   externalDestructions,
   recoveryCheckpoints,
   quarantines,

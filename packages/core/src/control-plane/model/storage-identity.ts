@@ -1,4 +1,10 @@
 export const STORAGE_IDENTITY_TABLE = "__caplets_storage_identity_v1" as const;
+const STORAGE_IDENTITY_FIELDS: Readonly<Record<string, true>> = {
+  singleton: true,
+  logicalHostId: true,
+  storeId: true,
+};
+const STORAGE_IDENTITY_STRING_FIELDS = ["logicalHostId", "storeId"] as const;
 
 /** Exact logical/store parent row established by U2's singleton identity table. */
 export type ControlPlaneStorageIdentityV1 = {
@@ -31,13 +37,12 @@ export function assertControlPlaneStorageIdentity(
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Storage identity must be an object");
   const record = value as Record<string, unknown>;
-  const allowed: Record<string, true> = { singleton: true, logicalHostId: true, storeId: true };
   for (const key of Object.keys(record))
-    if (!allowed[key]) throw new Error(`Unsupported storage identity field ${key}`);
-  for (const key of Object.keys(allowed))
+    if (!STORAGE_IDENTITY_FIELDS[key]) throw new Error(`Unsupported storage identity field ${key}`);
+  for (const key of Object.keys(STORAGE_IDENTITY_FIELDS))
     if (!(key in record)) throw new Error(`Missing storage identity field ${key}`);
   if (record.singleton !== 1) throw new Error("Storage identity singleton is invalid");
-  for (const key of ["logicalHostId", "storeId"] as const) {
+  for (const key of STORAGE_IDENTITY_STRING_FIELDS) {
     if (typeof record[key] !== "string" || record[key].length === 0)
       throw new Error(`Storage identity ${key} is invalid`);
   }

@@ -39,7 +39,10 @@ import {
   createProductionControlPlane,
 } from "./control-plane/production-runtime";
 import type { ControlPlaneSecurityRepository } from "./control-plane/security/repository";
-import type { CurrentHostManagementDependencies } from "./current-host/operations";
+import type {
+  CurrentHostManagementDependencies,
+  CurrentHostPortableOperations,
+} from "./current-host/operations";
 import type {
   ControlPlaneDetailedDiagnostics,
   ControlPlaneHealthSummary,
@@ -142,6 +145,7 @@ type InternalCapletsEngineInitialization = Readonly<{
   security?: ControlPlaneSecurityRepository | undefined;
   maintenance?: ControlPlaneMaintenanceCoordinator | undefined;
   health?: (() => Promise<ControlPlaneHealthSummary>) | undefined;
+  portable?: CurrentHostPortableOperations | undefined;
   detailedDiagnostics?:
     | ((reauthorize: () => Promise<boolean>) => Promise<ControlPlaneDetailedDiagnostics>)
     | undefined;
@@ -186,6 +190,7 @@ export async function createCapletsEngine(
       production.activated.read,
       production.activated.detailedDiagnostics,
       production.maintenance,
+      production.portable,
     );
     bindProductionSnapshotPublisher(production, async (snapshot, publication) => {
       if (!(await engine.publishActivatedSnapshot(snapshot, publication.signal))) {
@@ -219,6 +224,7 @@ export async function createInternalCapletsEngine(
     | ((reauthorize: () => Promise<boolean>) => Promise<ControlPlaneDetailedDiagnostics>)
     | undefined,
   maintenance?: ControlPlaneMaintenanceCoordinator | undefined,
+  portable?: CurrentHostPortableOperations | undefined,
 ): Promise<CapletsEngine> {
   const snapshot =
     initializedSnapshot ??
@@ -235,6 +241,7 @@ export async function createInternalCapletsEngine(
     requireLive,
     security,
     maintenance,
+    portable,
     refresh,
     vaultResolver,
     read,
@@ -282,6 +289,7 @@ export class CapletsEngine {
   private readonly controlPlaneMaintenance: ControlPlaneMaintenanceCoordinator | undefined;
   private readonly runtimeVaultResolver: ConfigVaultResolver;
   private readonly activatedHealth: (() => Promise<ControlPlaneHealthSummary>) | undefined;
+  private readonly currentHostPortable: CurrentHostPortableOperations | undefined;
   private readonly activatedDetailedDiagnostics:
     | ((reauthorize: () => Promise<boolean>) => Promise<ControlPlaneDetailedDiagnostics>)
     | undefined;
@@ -317,6 +325,7 @@ export class CapletsEngine {
     this.controlPlaneMaintenance = activated?.maintenance;
     const config = activated?.snapshot.config ?? this.loadConfigWithWarnings();
     this.activatedHealth = activated?.health;
+    this.currentHostPortable = activated?.portable;
     this.activatedDetailedDiagnostics = activated?.detailedDiagnostics;
     this.requireActivatedLive = activated?.requireLive;
     this.activatedRead = activated?.read;
@@ -407,6 +416,9 @@ export class CapletsEngine {
 
   controlPlaneSecurityRepository(): ControlPlaneSecurityRepository | undefined {
     return this.controlPlaneSecurity;
+  }
+  currentHostPortableOperations(): CurrentHostPortableOperations | undefined {
+    return this.currentHostPortable;
   }
 
   /** @internal Local production orchestration only; never project into callable Caplet surfaces. */

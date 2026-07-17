@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import corePackage from "../package.json";
 
@@ -56,7 +56,10 @@ describe("package boundaries", () => {
       const source = readFileSync(filePath, "utf8");
       const specifiers = importSpecifiers(source);
       const relativeCrossPackageImports = specifiers
-        .filter((specifier) => /^\.\.\/(core|cli|opencode|pi|benchmarks)(?:\/|$)/.test(specifier))
+        .filter((specifier) => /^\.\.\/(core|cli|opencode|pi|benchmarks)(?:\/|$)/u.test(specifier))
+        .filter(
+          (specifier) => packageNameForFile(resolve(dirname(filePath), specifier)) !== packageName,
+        )
         .map((specifier) => `${formatPath(filePath)} imports ${specifier}`);
       const undeclaredCoreExports = specifiers
         .filter((specifier) => specifier.startsWith("@caplets/core"))

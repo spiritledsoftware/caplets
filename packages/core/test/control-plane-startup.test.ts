@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import {
 import type { CapletsError } from "../src/errors";
 import { acquireLegacyMigrationMutex } from "../src/control-plane/migration/legacy";
 import type { CurrentHostManagementClient } from "../src/current-host/client-operations";
+import type { CurrentHostManagementMutationResult } from "../src/current-host/operations";
 
 describe("internal control-plane storage initialization seam", () => {
   it("runs the explicit global-only offline command through the internal service", async () => {
@@ -106,6 +107,7 @@ describe("internal control-plane storage initialization seam", () => {
       inspect: unavailable,
       preview: unavailable,
       status: unavailable,
+      executePortable: unavailable,
       lookupOperation: unavailable,
     };
     const out: string[] = [];
@@ -151,6 +153,180 @@ describe("internal control-plane storage initialization seam", () => {
       },
     });
   });
+  it.each([
+    { status: "denied", reason: "revoked-role" },
+    { status: "unavailable" },
+    { status: "conflict", reason: "aggregate-version" },
+    { status: "rejected", reason: "filesystem-owned" },
+    { status: "not_found" },
+    { status: "unknown", retryAllowed: false, guidance: "lookup-original-target" },
+  ] as const)("sets a nonzero exit for $status management outcomes", async (failure) => {
+    const binding = {
+      operationId: "operation-semantic-failure",
+      target: "global" as const,
+      logicalHostId: "host-cli-u9",
+      storeId: "store-cli-u9",
+      operationNamespace: "namespace-cli-u9",
+      actorId: "operator-cli-u9",
+      requestIdentity: "request-semantic-failure",
+      operationClass: "logical-state" as const,
+    };
+    const target = {
+      resource: "host-setting" as const,
+      id: "telemetry",
+      selector: "underlying-sql" as const,
+      owner: "filesystem" as const,
+      source: { kind: "filesystem" },
+      effective: true,
+      effectiveChanged: false,
+      shadowChain: [{ owner: "filesystem" as const, source: { kind: "filesystem" } }],
+      underlyingSqlAvailable: false,
+      consequence: "effective-runtime-changes" as const,
+    };
+    const outcome: CurrentHostManagementMutationResult = (() => {
+      switch (failure.status) {
+        case "denied":
+          return { status: "denied", reason: failure.reason, binding };
+        case "unavailable":
+          return { status: "unavailable", binding };
+        case "conflict":
+          return { status: "conflict", reason: failure.reason, binding };
+        case "rejected":
+          return { status: "rejected", reason: failure.reason, binding, target };
+        case "not_found":
+          return {
+            status: "not_found",
+            binding,
+            resource: "host-setting",
+            id: "telemetry",
+            selector: "underlying-sql",
+          };
+        case "unknown":
+          return {
+            status: "unknown",
+            binding,
+            retryAllowed: false,
+            guidance: "lookup-original-target",
+          };
+      }
+    })();
+    const createBinding: CurrentHostManagementClient["createBinding"] = () => binding;
+    const unavailable = async () => {
+      throw new Error("not used");
+    };
+    const client: CurrentHostManagementClient = {
+      target: "global",
+      identity: binding,
+      createBinding,
+      mutate: async () => outcome,
+      list: unavailable,
+      inspect: unavailable,
+      preview: unavailable,
+      status: unavailable,
+      executePortable: unavailable,
+      lookupOperation: unavailable,
+    };
+    const setExitCode = vi.fn();
+    await runCli(
+      [
+        "storage",
+        "management",
+        "mutate",
+        JSON.stringify({
+          kind: "host-setting-set",
+          key: "telemetry",
+          value: false,
+          selector: "underlying-sql",
+        }),
+        "--global",
+      ],
+      {
+        internalCurrentHostManagement: client,
+        setExitCode,
+        writeOut: () => undefined,
+        writeErr: () => undefined,
+      },
+    );
+    expect(setExitCode).toHaveBeenCalledWith(1);
+  });
+
+  it("keeps local and authenticated remote management targets mutually exclusive", async () => {
+    for (const args of [
+      ["storage", "management", "status"],
+      ["storage", "management", "status", "--global", "--remote"],
+      ["storage", "management", "status", "--global", "--project"],
+    ]) {
+      await expect(
+        runCli(args, { writeOut: () => undefined, writeErr: () => undefined }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    }
+  });
+
+  it("opens verified local SQL management and portable operations without injection or leaked locks", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-cli-management-"));
+    const stateRoot = join(root, "state");
+    const configPath = join(root, "config.json");
+    const projectConfigPath = join(root, "project.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        serve: { storage: { kind: "sqlite", stateRoot } },
+        mcpServers: {
+          fixture: {
+            name: "CLI management fixture",
+            description: "Production local administration fixture.",
+            command: process.execPath,
+          },
+        },
+      }),
+      "utf8",
+    );
+    writeFileSync(projectConfigPath, "{}", "utf8");
+    const env = {
+      ...process.env,
+      CAPLETS_CONFIG: configPath,
+      CAPLETS_PROJECT_CONFIG: projectConfigPath,
+      XDG_STATE_HOME: join(root, "xdg-state"),
+    };
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const out: string[] = [];
+        await runCli(["storage", "management", "status", "--global"], {
+          env,
+          writeOut: (value) => out.push(value),
+          writeErr: () => undefined,
+        });
+        expect(JSON.parse(out.join(""))).toMatchObject({
+          status: "ok",
+          health: { backend: "sqlite" },
+        });
+        out.length = 0;
+        await runCli(["storage", "management", "list", "--global", "--resource", "caplet"], {
+          env,
+          writeOut: (value) => out.push(value),
+          writeErr: () => undefined,
+        });
+        expect(JSON.parse(out.join(""))).toMatchObject({
+          status: "ok",
+          items: expect.any(Array),
+        });
+        out.length = 0;
+        await runCli(["storage", "portable", "status", "--global", "--json"], {
+          env,
+          writeOut: (value) => out.push(value),
+          writeErr: () => undefined,
+        });
+        expect(JSON.parse(out.join(""))).toMatchObject({
+          kind: "portable_status",
+          status: "live",
+          health: { backend: "sqlite" },
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("serializes new-process migration attempts with an owner-private mutex", async () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-legacy-mutex-"));
     const path = join(root, "migration.lock");

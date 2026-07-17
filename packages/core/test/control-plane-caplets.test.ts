@@ -38,6 +38,7 @@ import {
   type SqliteControlPlaneDialect,
 } from "../src/control-plane/dialect/sqlite";
 import {
+  assertMigrationEnvironment,
   loadMigrationRegistry,
   type MigrationEnvironment,
 } from "../src/control-plane/dialect/migrations";
@@ -209,6 +210,61 @@ afterEach(async () => {
 });
 
 describe("transactional Caplet and host-setting repository", () => {
+  it("accepts the next 0.35.0 binary across both paired migration registries", async () => {
+    for (const dialect of ["sqlite", "postgres"] as const) {
+      const registry = await loadMigrationRegistry({ dialect, assetRoot });
+      expect(() =>
+        assertMigrationEnvironment(registry, {
+          ...migrationEnvironment,
+          binaryVersion: "0.35.0",
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("reports key compatibility from live node advertisements", async () => {
+    const fixture = await createSqliteFixture();
+    const opened = await openRepository(fixture.storage);
+    const initial = await opened.store.initialize();
+    const registration = await opened.store.registerNode({
+      nodeId: "diagnostics-node",
+      bootstrapFingerprint: "diagnostics-fingerprint",
+      effectiveRuntimeFingerprint: "diagnostics-fingerprint",
+      compatibility: {
+        binaryVersion: "0.34.1",
+        schemaVersion: 3,
+        keyVersion: 1,
+        manifestVersion: 1,
+        providerCommitment: "1".repeat(64),
+        keyCanaryCommitment: "2".repeat(64),
+        capabilities: ["ordered-tuple-polling", "writer-fence-v1", "complete-snapshot-v1"],
+      },
+      appliedToken: { authorityGeneration: 0, effectiveGeneration: 0, securityEpoch: 0 },
+      ttlMs: 60_000,
+    });
+    expect(registration.status).toBe("ready");
+    if (registration.status !== "ready") throw new Error("fixture node did not register");
+    await expect(
+      opened.store.acknowledgeNode({
+        nodeId: "diagnostics-node",
+        bootstrapFingerprint: "diagnostics-fingerprint",
+        effectiveRuntimeFingerprint: "diagnostics-fingerprint",
+        appliedToken: initial,
+        writerFence: registration.writerFence,
+      }),
+    ).resolves.toEqual({ status: "applied", appliedNodes: 1 });
+
+    await expect(opened.store.detailedDiagnostics()).resolves.toMatchObject({
+      keyCompatibility: {
+        status: "compatible",
+        activeVersion: 1,
+        providerCommitmentPresent: true,
+        canaryCommitmentPresent: true,
+      },
+      readyNodes: 1,
+    });
+  });
+
   it("persists and rehydrates canonical aggregates with an equal portable projection", async () => {
     const fixture = await createSqliteFixture();
     const first = await openRepository(fixture.storage);
@@ -1680,45 +1736,90 @@ describe("transactional Caplet and host-setting repository", () => {
           materializedGenerationChanges += 1;
           return effectiveGeneration;
         };
-        const loadChangedSnapshot = async (): Promise<number> => {
-          const previousGeneration = publishedSnapshotGeneration;
-          const materializer = createControlPlaneRepository({
+        const materializers = Array.from({ length: STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes }, () =>
+          createControlPlaneRepository({
             identity: { logicalHostId, storeId, operationNamespace },
             dialect: fixture.dialect,
-          });
-          await materializer.initialize();
+          }),
+        );
+        await Promise.all(materializers.map((materializer) => materializer.initialize()));
+        const loadChangedSnapshots = async (): Promise<readonly number[]> => {
+          const previousGeneration = publishedSnapshotGeneration;
           const expectedGeneration = await advanceAuthoritativeSnapshot();
-          const startedAt = performance.now();
-          const snapshot = await materializer.loadSnapshot();
-          const elapsedMs = performance.now() - startedAt;
-          if (
-            snapshot.normalizedRows !== STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows ||
-            snapshot.encodedBytes !== STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes
-          ) {
-            throw new Error("full-envelope snapshot changed shape during measurement");
-          }
-          if (
-            snapshot.versions.effectiveGeneration !== expectedGeneration ||
-            snapshot.versions.effectiveGeneration <= previousGeneration
-          ) {
-            throw new Error("full-envelope measurement did not materialize a changed snapshot");
-          }
           const publicationStartedAt = performance.now();
-          publishedSnapshotGeneration = snapshot.versions.effectiveGeneration;
-          publicationLatencies.push(performance.now() - publicationStartedAt);
-          materializationQueries += 1;
-          return elapsedMs;
+          const samples = await Promise.all(
+            materializers.map(async (materializer) => {
+              const startedAt = performance.now();
+              const snapshot = await materializer.loadSnapshot();
+              const elapsedMs = performance.now() - startedAt;
+              if (
+                snapshot.caplets.length !== STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets ||
+                snapshot.normalizedRows !== STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows ||
+                snapshot.encodedBytes !== STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes
+              ) {
+                throw new Error("full-envelope snapshot changed shape during measurement");
+              }
+              if (
+                snapshot.versions.effectiveGeneration !== expectedGeneration ||
+                snapshot.versions.effectiveGeneration <= previousGeneration
+              ) {
+                throw new Error("full-envelope measurement did not materialize a changed snapshot");
+              }
+              publicationLatencies.push(performance.now() - publicationStartedAt);
+              return elapsedMs;
+            }),
+          );
+          publishedSnapshotGeneration = expectedGeneration;
+          materializationQueries += samples.length;
+          return samples;
         };
-        const fullBoundarySamples: number[] = [];
-        for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
-          fullBoundarySamples.push(await loadChangedSnapshot());
+        const runP99Ms: number[] = [];
+        const measuredSamplesPerRun: number[] = [];
+        for (
+          let runIndex = 0;
+          runIndex < STORAGE_BENCHMARK_ENVELOPE.independentRuns;
+          runIndex += 1
+        ) {
+          for (
+            let warmupIndex = 0;
+            warmupIndex < STORAGE_BENCHMARK_ENVELOPE.warmupSamples;
+            warmupIndex += 1
+          ) {
+            await loadChangedSnapshots();
+          }
+          const runSamples: number[] = [];
+          for (
+            let sampleIndex = 0;
+            sampleIndex < STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun;
+            sampleIndex += 1
+          ) {
+            runSamples.push(...(await loadChangedSnapshots()));
+          }
+          measuredSamplesPerRun.push(runSamples.length);
+          runP99Ms.push(nearestRank(runSamples, 0.99));
         }
-        expect(materializedGenerationChanges).toBe(3);
-        expect(materializationQueries).toBe(materializedGenerationChanges);
-        expect(publicationLatencies).toHaveLength(materializedGenerationChanges);
-        const p99Ms = [nearestRank(fullBoundarySamples, 0.99)];
+        const generationChangesPerRun =
+          STORAGE_BENCHMARK_ENVELOPE.warmupSamples +
+          STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun;
+        const expectedGenerationChanges =
+          generationChangesPerRun * STORAGE_BENCHMARK_ENVELOPE.independentRuns;
+        const expectedQueries =
+          expectedGenerationChanges * STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes;
+        expect(materializedGenerationChanges).toBe(expectedGenerationChanges);
+        expect(materializationQueries).toBe(expectedQueries);
+        expect(publicationLatencies).toHaveLength(expectedQueries);
+        expect(measuredSamplesPerRun).toEqual(
+          Array.from(
+            { length: STORAGE_BENCHMARK_ENVELOPE.independentRuns },
+            () =>
+              STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun *
+              STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes,
+          ),
+        );
         const publicationP99Ms = nearestRank(publicationLatencies, 0.99);
-        expect(p99Ms[0]).toBeLessThanOrEqual(STORAGE_BENCHMARK_ENVELOPE.maxSnapshotLoadP99Ms);
+        expect(
+          runP99Ms.every((value) => value <= STORAGE_BENCHMARK_ENVELOPE.maxSnapshotLoadP99Ms),
+        ).toBe(true);
         expect(publicationP99Ms).toBeLessThanOrEqual(
           STORAGE_BENCHMARK_ENVELOPE.maxConvergenceP99Ms,
         );
@@ -1728,14 +1829,21 @@ describe("transactional Caplet and host-setting repository", () => {
               profile: "full-envelope",
               backend: "postgres",
               architecture: "generation-indexed-materialization",
+              evidence: "full-envelope",
+              notificationMode: "suppressed",
+              passRule: "every-independent-run",
               effectiveCaplets: STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets,
               normalizedRows: STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows,
               encodedBytes: STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes,
-              fullBoundarySamples: fullBoundarySamples.length,
+              concurrentRefreshers: STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes,
+              warmupSamplesPerRun: STORAGE_BENCHMARK_ENVELOPE.warmupSamples,
+              measuredSamplesPerRun: STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun,
+              independentRuns: STORAGE_BENCHMARK_ENVELOPE.independentRuns,
+              measuredRefresherSamplesPerRun: measuredSamplesPerRun,
               authoritativeGenerationChanges: materializedGenerationChanges,
               percentile: 0.99,
               percentileMethod: "nearest-rank",
-              p99Ms,
+              runP99Ms,
               publicationP99Ms,
               maxP99Ms: STORAGE_BENCHMARK_ENVELOPE.maxSnapshotLoadP99Ms,
               passed: true,
@@ -1746,7 +1854,7 @@ describe("transactional Caplet and host-setting repository", () => {
         await fixture.close();
       }
     },
-    180_000,
+    7_200_000,
   );
 
   it.skipIf(!postgresAdminUrl || process.env.CAPLETS_FULL_ENVELOPE_BENCHMARK !== "1")(

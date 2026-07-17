@@ -1,12 +1,18 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { mkdir, open as openFile } from "node:fs/promises";
+import { mkdir, open as openFile, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { version as packageVersion } from "../../package.json";
-import { readCapletsLockfile, validateLockfileDestination } from "../cli/lockfile";
+import {
+  readCapletsLockfile,
+  validateLockfileDestination,
+  parseCapletsLockfile,
+  type CapletsLockEntry,
+} from "../cli/lockfile";
 import { cloudAuthPath } from "../cloud-auth/store";
 import {
   defaultStorageStateDir,
+  loadGlobalConfig,
   loadLocalRuntimeConfig,
   loadRuntimeConfigLayers,
   resolveConfigPath,
@@ -22,7 +28,17 @@ import {
 } from "../config";
 import { defaultAuthDir, defaultCapletsLockfilePath } from "../config/paths";
 import { createBootstrapFingerprintSnapshot } from "../caplet-source/runtime-fingerprint";
-import type { CurrentHostManagementDependencies } from "../current-host/operations";
+import {
+  createCurrentHostOfflineTransferClient,
+  createCurrentHostPortableOperations,
+  type CurrentHostManagementDependencies,
+  type CurrentHostOfflineTransferClient,
+  type CurrentHostOperationBinding,
+  type CurrentHostOperationReceipt,
+  type CurrentHostPortableOperations,
+  type CurrentHostPortableRejectedReason,
+} from "../current-host/operations";
+import type { PersistGlobalCatalogChangeInput } from "../current-host/catalog-operations";
 import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
 import { decryptVaultValue, type VaultEncryptedRecord } from "../vault/crypto";
@@ -35,24 +51,46 @@ import type {
   ControlPlaneAuthorizationDecision,
   ControlPlaneAuthorizationRequest,
 } from "./authorization";
-import { createControlPlaneRepository } from "./caplets/repository";
+import { createPortableCapletExportService } from "./caplets/export";
+import { createOfflineSqlTransferOperations } from "./operations";
+import { createPortableCapletImportService, relationalProjection } from "./caplets/import";
+import { decodePortableCapletArtifact } from "./caplets/portable-codec";
+import type {
+  CanonicalCapletAggregate,
+  CanonicalCapletRelationalProjection,
+} from "./caplets/model";
+import {
+  createControlPlaneRepository,
+  TransactionBoundCapletMutationError,
+  type TransactionBoundCapletMutation,
+} from "./caplets/repository";
+import { FilesystemArtifactProvider } from "./artifacts/filesystem";
+import {
+  createArtifactSessionManager,
+  type ConsumeImportProposalResult,
+} from "./artifacts/sessions";
+import type { ArtifactProvider, ArtifactProviderIdentity } from "./artifacts/provider";
 import {
   assertPostgresConnectionProfile,
   openPostgresOperationalControlPlaneDialect,
   openPostgresRuntimeControlPlaneDialect,
   verifyPostgresOldNodesDrained,
   type PostgresConnectionProfile,
+  type PostgresControlPlaneDialect,
 } from "./dialect/postgres";
-import { openSqliteControlPlaneDialect } from "./dialect/sqlite";
-import type { MigrationEnvironment } from "./dialect/migrations";
+import { openSqliteControlPlaneDialect, type SqliteControlPlaneDialect } from "./dialect/sqlite";
+import type { MigrationActivationEvidence, MigrationEnvironment } from "./dialect/migrations";
 import {
   fileV1AssociatedData,
   loadFileV1KeyProvider,
   type FileV1KeyProvider,
 } from "./key-provider/file-v1";
+import type { FileV1Profile } from "./key-provider/manifest";
 import { FILE_V1_RUNTIME_PURPOSES } from "./key-provider/manifest";
 import {
   createProductionPostgresVerifier,
+  createProductionSecureFilesystemOptions,
+  createProductionS3ArtifactProvider,
   createProductionS3CanaryVerifier,
   type ProductionStorageAdapterOptions,
 } from "./production-adapters";
@@ -62,12 +100,16 @@ import {
   recordBackupInventory,
   writeRecoveryEnvelope,
   type RecoveryEnvelopeSink,
+  type RecoveryBackupIntent,
   type RecoveryWrappedKeySink,
 } from "./migration/backup";
 import {
   acquireLegacyMigrationExclusion,
   resumeLegacyMigrationExclusion,
+  resumeWindowsLegacyMigrationExclusion,
 } from "./migration/exclusion";
+import { createProductionSqliteToPostgresTransferPort } from "./migration/production-transfer";
+import { createSqliteToPostgresTransferCoordinator } from "./migration/transfer";
 import {
   recoveryEnvelopeBindingDigest,
   type RecoveryEnvelopeBinding,
@@ -115,13 +157,24 @@ import {
 import {
   resolveDeploymentSecret,
   resolveStorageDeployment,
+  storageArtifactProviderBinding,
+  resolveOfflineTransferStorageDeployment,
+  storageBootstrapFingerprintCommitment,
   type ResolveStorageDeploymentOptions,
   type ResolvedPostgresStorage,
   type ResolvedStorageDeployment,
+  type S3CanaryVerificationRequest,
 } from "./storage-config";
-import type { ControlPlaneStore } from "./store";
-import type { ControlPlaneTransactionalDialect } from "./store";
-import type { ControlPlaneStoreIdentity } from "./types";
+import type { ControlPlaneSqlTransaction, ControlPlaneStore } from "./store";
+import type {
+  CapletManagementMutation,
+  ControlPlaneActivity,
+  ControlPlaneFinalAuthorization,
+  ControlPlaneMutationResult,
+  UntrustedCapletManagementMutation,
+  ControlPlaneProvenance,
+  ControlPlaneStoreIdentity,
+} from "./types";
 
 const PROVIDER_VERSIONS = Object.freeze({
   runtimeAbi: 1,
@@ -129,6 +182,18 @@ const PROVIDER_VERSIONS = Object.freeze({
   keyProviderAbi: 1,
   manifest: 1,
 });
+type ProductionMetadataReadTransaction = Omit<ControlPlaneSqlTransaction, "select"> &
+  Readonly<{
+    select<Row extends Record<string, unknown>>(
+      tableName: string,
+      filter: Readonly<{ equals: Readonly<Record<string, unknown>> }>,
+      order?: readonly Readonly<{ column: string; direction: "desc" }>[],
+    ): Promise<readonly Row[]>;
+  }>;
+
+function isProductionRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 const SQL_VAULT_HYDRATION_CONCURRENCY = 16;
 
 export type ProductionControlPlaneOptions = Readonly<{
@@ -143,6 +208,7 @@ export type ProductionControlPlaneOptions = Readonly<{
       verifyPostgres?: ResolveStorageDeploymentOptions["verifyPostgres"];
       verifyS3Canary?: ResolveStorageDeploymentOptions["verifyS3Canary"];
       adapters?: ProductionStorageAdapterOptions | undefined;
+      windowsLegacyExclusionOwnerSid?: string | undefined;
     }>;
 }>;
 
@@ -150,6 +216,7 @@ export type ProductionControlPlane = Readonly<{
   storage: ResolvedStorageDeployment;
   store: ControlPlaneStore;
   loader: ControlPlaneRuntimeSnapshotLoader;
+  portable: CurrentHostPortableOperations;
   activated: ActivatedControlPlane;
   management: CurrentHostManagementDependencies;
   security: ControlPlaneSecurityRepository;
@@ -203,16 +270,25 @@ export async function createProductionControlPlane(
     );
   }
   const adapterOptions = options.storage?.adapters;
+  let verifiedS3Request: S3CanaryVerificationRequest | undefined;
+  const verifyS3Canary =
+    options.storage?.verifyS3Canary ?? createProductionS3CanaryVerifier(adapterOptions);
+  const secureFilesystem = await createProductionSecureFilesystemOptions();
   const deployment = await resolveStorageDeployment(config.serve?.storage, {
     ...options.storage,
     defaultStateRoot: options.storage?.defaultStateRoot ?? defaultStorageStateDir(runtimeEnv),
+    expectedOwner: options.storage?.expectedOwner ?? secureFilesystem.expectedOwner,
+    filesystem: options.storage?.filesystem ?? secureFilesystem.filesystem,
     resolveSecret:
       options.storage?.resolveSecret ??
       ((reference) => resolveProductionSecret(reference, runtimeEnv)),
     verifyPostgres:
       options.storage?.verifyPostgres ?? createProductionPostgresVerifier(adapterOptions),
-    verifyS3Canary:
-      options.storage?.verifyS3Canary ?? createProductionS3CanaryVerifier(adapterOptions),
+    verifyS3Canary: async (request) => {
+      const result = await verifyS3Canary(request);
+      verifiedS3Request = request;
+      return result;
+    },
   });
   const environment = migrationEnvironment(config.serve?.storage, false);
   const dialect = await openProductionDialect(
@@ -222,9 +298,15 @@ export async function createProductionControlPlane(
     runtimeEnv,
   );
   let activated: ActivatedControlPlane | undefined;
+  let artifactProviderClose: (() => void) | undefined;
   let abortPendingAssets: (() => Promise<void>) | undefined;
   try {
     if (deployment.backend === "sqlite") {
+      environment.activationEvidence = await loadMigrationActivationEvidence(
+        dialect,
+        deployment,
+        "online",
+      );
       await dialect.migrate();
     }
     const identity = Object.freeze({
@@ -232,6 +314,32 @@ export async function createProductionControlPlane(
       storeId: deployment.storeId,
       operationNamespace: deployment.operationNamespace,
     });
+    const artifactBinding = storageArtifactProviderBinding(deployment);
+    let artifactProvider: ArtifactProvider;
+    if (deployment.backend === "sqlite") {
+      const providerIdentity: ArtifactProviderIdentity = {
+        kind: "filesystem",
+        provider: "owner-private",
+        namespace: "portable",
+        logicalHostId: identity.logicalHostId,
+        storeId: identity.storeId,
+        identityId: artifactBinding.identityId,
+      };
+      artifactProvider = new FilesystemArtifactProvider(
+        deployment.artifacts.root,
+        providerIdentity,
+      );
+    } else {
+      if (!verifiedS3Request) {
+        throw new CapletsError(
+          "AUTH_FAILED",
+          "Verified S3 artifact provider request is unavailable.",
+        );
+      }
+      const created = createProductionS3ArtifactProvider(verifiedS3Request, adapterOptions);
+      artifactProvider = created.provider;
+      artifactProviderClose = created.close;
+    }
     const nodeId = options.nodeId ?? productionNodeId(options.env ?? process.env);
     const migration = createControlPlaneMigrationPersistence({ identity, dialect, nodeId });
     if (deployment.backend === "sqlite") {
@@ -243,6 +351,11 @@ export async function createProductionControlPlane(
         configPath,
         authDir: options.authDir,
         env: options.env ?? process.env,
+        windowsLegacyExclusionOwnerSid:
+          options.storage?.windowsLegacyExclusionOwnerSid ??
+          (secureFilesystem.expectedOwner.kind === "windows"
+            ? secureFilesystem.expectedOwner.sid
+            : undefined),
       });
       if (initialization.status === "not-ready") {
         throw new CapletsError(
@@ -649,6 +762,640 @@ export async function createProductionControlPlane(
         void activated!.refresh().catch(() => undefined);
       },
     });
+    const sessions = createArtifactSessionManager({
+      identity,
+      dialect,
+      provider: artifactProvider,
+      expectedProviderIdentity: artifactProvider.identity,
+      expectedCanary: artifactBinding.expectedCanary,
+    });
+    const mutationFailureReason = (
+      result: ControlPlaneMutationResult,
+    ): CurrentHostPortableRejectedReason => {
+      if (result.status === "denied") {
+        return result.reason === "revoked-role" ? "revoked-actor" : "stale-generation";
+      }
+      if (result.status === "conflict") return "stale-generation";
+      if (result.status === "unavailable" || result.status === "indeterminate") {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Portable SQL mutation outcome requires authoritative operation lookup.",
+        );
+      }
+      throw new CapletsError("INTERNAL_ERROR", "Committed portable mutation was misclassified.");
+    };
+    const authorizationFailure = (
+      decision: Extract<ControlPlaneAuthorizationDecision, { status: "denied" }>,
+    ): Exclude<ControlPlaneFinalAuthorization, { status: "authorized" }> =>
+      decision.reason === "unavailable"
+        ? { status: "unavailable" }
+        : {
+            status: "denied",
+            reason:
+              decision.reason === "namespace-mismatch"
+                ? "stale-authority"
+                : decision.reason === "revoked" || decision.reason === "role-insufficient"
+                  ? "revoked-role"
+                  : "wrong-store",
+          };
+    const authorizeCapletMutation = async (
+      input: UntrustedCapletManagementMutation,
+    ): Promise<CapletManagementMutation | ControlPlaneMutationResult> => {
+      if (input.binding.logicalHostId !== store.identity.logicalHostId) {
+        return { status: "denied", reason: "wrong-host" };
+      }
+      if (input.binding.storeId !== store.identity.storeId) {
+        return { status: "denied", reason: "wrong-store" };
+      }
+      const request: ControlPlaneAuthorizationRequest = {
+        actorId: input.binding.actorId,
+        logicalHostId: input.binding.logicalHostId,
+        storeId: input.binding.storeId,
+        operationNamespace: input.binding.operationNamespace,
+        requiredRole: "operator",
+      };
+      const decision = await authorization.authorize(request);
+      if (decision.status === "denied") return authorizationFailure(decision);
+      if (decision.authorization.securityEpoch !== input.expectedSecurityEpoch) {
+        return { status: "denied", reason: "stale-security" };
+      }
+      const reservation = await store.reserveOperation(input.binding, input.aggregateId);
+      if (reservation.status === "unavailable") return { status: "unavailable" };
+      if (reservation.status === "conflict") {
+        return { status: "conflict", reason: "operation-reservation" };
+      }
+      if (reservation.status === "committed") {
+        return { status: "committed", receipt: reservation.receipt };
+      }
+      return {
+        ...input,
+        expectedSecurityEpoch: decision.authorization.securityEpoch,
+        writerFence: decision.authorization.writerFence,
+        finalAuthorization: async (transaction) => {
+          const finalDecision = await authorization.authorizeInTransaction(transaction, request);
+          if (finalDecision.status === "denied") return authorizationFailure(finalDecision);
+          if (finalDecision.authorization.securityEpoch !== input.expectedSecurityEpoch) {
+            return { status: "denied", reason: "stale-security" };
+          }
+          return {
+            status: "authorized",
+            securityEpoch: finalDecision.authorization.securityEpoch,
+            writerFence: finalDecision.authorization.writerFence,
+          };
+        },
+      };
+    };
+    const commitCanonicalCaplet = async (
+      input: Readonly<{
+        binding: CurrentHostOperationBinding;
+        aggregate: CanonicalCapletAggregate;
+        projection: CanonicalCapletRelationalProjection;
+        provenance: ControlPlaneProvenance;
+        activity: ControlPlaneActivity;
+        expectedAggregateVersion: number;
+        expectedAuthorityGeneration: number;
+        expectedSecurityEpoch: number;
+      }>,
+    ) =>
+      controlPlaneService.mutateCaplet({
+        ...input,
+        aggregateId: input.aggregate.id,
+        localApplication: "pending",
+      });
+    const targetFor = async (capletId: string) => {
+      const runtime = activated!.current();
+      const sqlSnapshot = await store.loadSnapshot();
+      const existing = sqlSnapshot.caplets.find((entry) => entry.aggregate.id === capletId);
+      return {
+        current: {
+          ...runtime,
+          sqlSnapshot,
+          authorityGeneration: sqlSnapshot.versions.authorityGeneration,
+          effectiveGeneration: sqlSnapshot.versions.effectiveGeneration,
+          securityEpoch: sqlSnapshot.versions.securityEpoch,
+        },
+        existing,
+        filesystemOwned: runtime.caplets[capletId]?.owner === "filesystem",
+        fence: {
+          authorityGeneration: sqlSnapshot.versions.authorityGeneration,
+          effectiveGeneration: sqlSnapshot.versions.effectiveGeneration,
+          securityEpoch: sqlSnapshot.versions.securityEpoch,
+          runtimeFingerprint: runtime.effectiveRuntimeFingerprint,
+          aggregateVersion: existing?.aggregate.aggregateVersion ?? 0,
+        },
+      };
+    };
+    const imports = createPortableCapletImportService({
+      sessions,
+      async loadTarget({ capletId }) {
+        const target = await targetFor(capletId);
+        return {
+          existingSql: target.existing
+            ? {
+                aggregateVersion: target.existing.aggregate.aggregateVersion,
+                portable: target.existing.aggregate.portable,
+              }
+            : undefined,
+          filesystemOwned: target.filesystemOwned,
+          fence: target.fence,
+        };
+      },
+      async activate() {
+        throw new CapletsError(
+          "INTERNAL_ERROR",
+          "Production portable activation must use the durable mutation path.",
+        );
+      },
+    });
+    const exports = createPortableCapletExportService({
+      sessions,
+      async loadCaplet({ capletId, selector }) {
+        const current = activated!.current();
+        const source = current.sqlSnapshot.caplets.find((entry) => entry.aggregate.id === capletId);
+        if (!source) throw new CapletsError("CONFIG_NOT_FOUND", "SQL Caplet is unavailable.");
+        if (
+          selector === "effective" &&
+          (current.caplets[capletId]?.owner !== "sql" ||
+            !source.aggregate.effective ||
+            source.aggregate.activation !== "active")
+        ) {
+          throw new CapletsError(
+            "CONFIG_NOT_FOUND",
+            "The effective Caplet is not the underlying SQL aggregate.",
+          );
+        }
+        return source;
+      },
+    });
+    const loadGlobalCatalogProvenance = async (
+      capletIds: readonly string[] | undefined,
+    ): Promise<readonly CapletsLockEntry[]> =>
+      dialect.snapshotTransaction(async (transaction) => {
+        // The dialect schemas expose provenance, while the neutral mutation table union
+        // intentionally hides it from ordinary repository consumers.
+        const provenanceTransaction = transaction as ProductionMetadataReadTransaction;
+        const rows = await provenanceTransaction.select<Record<string, unknown>>(
+          "capletProvenance",
+          {
+            equals: {
+              logicalHostId: identity.logicalHostId,
+              storeId: identity.storeId,
+            },
+          },
+          [{ column: "aggregateVersion", direction: "desc" }],
+        );
+        const requested = capletIds ? new Set(capletIds) : undefined;
+        const seen = new Set<string>();
+        const entries: CapletsLockEntry[] = [];
+        for (const row of rows) {
+          const capletId = typeof row.capletId === "string" ? row.capletId : undefined;
+          if (!capletId || seen.has(capletId) || (requested && !requested.has(capletId))) continue;
+          const source: unknown =
+            typeof row.source === "string" ? JSON.parse(row.source) : row.source;
+          if (!source || typeof source !== "object" || !("lockEntry" in source)) continue;
+          const [lockEntry] = parseCapletsLockfile(
+            { version: 1, entries: [source.lockEntry] },
+            `SQL installation provenance for ${capletId}`,
+          ).entries;
+          if (!lockEntry || lockEntry.id !== capletId) continue;
+          seen.add(capletId);
+          entries.push(lockEntry);
+        }
+        return entries.sort((left, right) => left.id.localeCompare(right.id));
+      });
+    const loadInstallationProvenance = async (
+      capletId: string,
+      provenanceId: string | undefined,
+    ): Promise<ControlPlaneProvenance> => {
+      if (!provenanceId) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "SQL Caplet installation provenance is absent.",
+        );
+      }
+      return dialect.snapshotTransaction(async (transaction) => {
+        const provenanceTransaction = transaction as ProductionMetadataReadTransaction;
+        const [row] = await provenanceTransaction.select<Record<string, unknown>>(
+          "capletProvenance",
+          {
+            equals: {
+              logicalHostId: identity.logicalHostId,
+              storeId: identity.storeId,
+              id: provenanceId,
+              capletId,
+            },
+          },
+        );
+        const source: unknown =
+          typeof row?.source === "string" ? JSON.parse(row.source) : row?.source;
+        const riskSummary: unknown =
+          typeof row?.riskSummary === "string" ? JSON.parse(row.riskSummary) : row?.riskSummary;
+        if (
+          !row ||
+          typeof row.sourceKind !== "string" ||
+          !isProductionRecord(source) ||
+          typeof row.contentHash !== "string" ||
+          (riskSummary !== undefined && !isProductionRecord(riskSummary))
+        ) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "SQL Caplet installation provenance is invalid.",
+          );
+        }
+        return {
+          id: provenanceId,
+          sourceKind: row.sourceKind,
+          source,
+          contentHash: row.contentHash,
+          ...(typeof row.runtimeFingerprint === "string"
+            ? { runtimeFingerprint: row.runtimeFingerprint }
+            : {}),
+          ...(typeof row.installedAt === "string" ? { installedAt: row.installedAt } : {}),
+          ...(typeof row.resolvedRevision === "string"
+            ? { resolvedRevision: row.resolvedRevision }
+            : {}),
+          ...(riskSummary ? { riskSummary } : {}),
+          ...(typeof row.ownerId === "string" ? { ownerId: row.ownerId } : {}),
+        };
+      });
+    };
+    const persistGlobalCatalogChange = async (
+      input: PersistGlobalCatalogChangeInput,
+    ): Promise<Readonly<{ installed: (typeof input.artifacts)[number]["installed"][] }>> => {
+      for (const artifact of input.artifacts) {
+        const target = await targetFor(artifact.portable.id);
+        if (target.filesystemOwned) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "A filesystem-owned Caplet cannot be replaced by global SQL catalog persistence.",
+          );
+        }
+        const operationId = `catalog_${randomUUID()}`;
+        const binding: CurrentHostOperationBinding = {
+          operationId,
+          target: "global",
+          logicalHostId: identity.logicalHostId,
+          storeId: identity.storeId,
+          operationNamespace: identity.operationNamespace,
+          actorId: input.principal.clientId,
+          requestIdentity: createHash("sha256")
+            .update(
+              stableJsonStringify({
+                action: input.action,
+                source: input.source,
+                lockEntry: artifact.lockEntry,
+                portable: artifact.portable,
+              }),
+            )
+            .digest("hex"),
+          operationClass: "logical-state",
+        };
+        const hasSetup = artifact.portable.references.some(
+          (reference) => reference.type === "unresolved-setup",
+        );
+        const activation = hasSetup ? ("setup-required" as const) : ("active" as const);
+        const aggregateVersion = target.fence.aggregateVersion + 1;
+        const provenance: ControlPlaneProvenance = {
+          id: `provenance:${operationId}`,
+          sourceKind: "global-catalog",
+          source: {
+            action: input.action,
+            ...input.source,
+            lockEntry: artifact.lockEntry,
+          },
+          contentHash: createHash("sha256")
+            .update(stableJsonStringify(artifact.portable))
+            .digest("hex"),
+          ...(artifact.lockEntry.runtimeFingerprint
+            ? { runtimeFingerprint: artifact.lockEntry.runtimeFingerprint.artifactFingerprint }
+            : {}),
+          ...(artifact.lockEntry.source.type === "git" && artifact.lockEntry.source.resolvedRevision
+            ? { resolvedRevision: artifact.lockEntry.source.resolvedRevision }
+            : {}),
+          installedAt: artifact.lockEntry.installedAt,
+          riskSummary: artifact.lockEntry.risk,
+          ownerId: input.principal.clientId,
+        };
+        const aggregate: CanonicalCapletAggregate = {
+          modelVersion: 1,
+          id: artifact.portable.id,
+          aggregateVersion,
+          ownership: "sql",
+          activation,
+          effective: activation === "active",
+          portable: artifact.portable,
+          installationProvenanceId: provenance.id,
+          updateState: "current",
+        };
+        const projection = relationalProjection(
+          artifact.portable,
+          aggregateVersion,
+          target.fence,
+          input.principal.clientId,
+          new Date(),
+          target.existing !== undefined,
+        );
+        const result = await commitCanonicalCaplet({
+          binding,
+          aggregate,
+          projection,
+          provenance,
+          expectedAggregateVersion: target.fence.aggregateVersion,
+          expectedAuthorityGeneration: target.fence.authorityGeneration,
+          expectedSecurityEpoch: target.fence.securityEpoch,
+          activity: {
+            id: `activity:${operationId}`,
+            action: `catalog-${input.action}`,
+            target: { type: "caplet", id: aggregate.id, selector: "underlying-sql" },
+            detail: { sourceKind: provenance.sourceKind },
+          },
+        });
+        if (result.status !== "committed") {
+          const reason = mutationFailureReason(result);
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            `Global catalog SQL persistence was rejected: ${reason}.`,
+          );
+        }
+        void activated!.refresh().catch(() => undefined);
+      }
+      return { installed: input.artifacts.map((artifact) => artifact.installed) };
+    };
+    const portable = createCurrentHostPortableOperations({
+      sessions,
+      imports,
+      exports,
+      loadGlobalCatalogProvenance,
+      persistGlobalCatalogChange,
+      async status() {
+        const health = await activated!.health();
+        return {
+          kind: "portable_status",
+          status:
+            health.readiness === "ready"
+              ? "live"
+              : health.readiness === "stale-read-only"
+                ? "stale-read-only"
+                : "not-ready",
+          health,
+          guidanceCode: health.guidanceCode,
+        };
+      },
+      async activate({ principal, operation }) {
+        const proposal = await sessions.readImportProposal(operation.proposalId);
+        if (!proposal) {
+          return { kind: operation.kind, status: "rejected", reason: "not-found" };
+        }
+        if (proposal.actorId !== principal.clientId) {
+          return { kind: operation.kind, status: "rejected", reason: "wrong-actor" };
+        }
+        if (proposal.operationId !== operation.binding.operationId) {
+          return { kind: operation.kind, status: "rejected", reason: "wrong-operation" };
+        }
+        if (proposal.proposalHash !== operation.proposalHash) {
+          return { kind: operation.kind, status: "rejected", reason: "proposal-mismatch" };
+        }
+        if (proposal.state === "consumed") {
+          return { kind: operation.kind, status: "rejected", reason: "consumed" };
+        }
+        const now = new Date();
+        if (proposal.state !== "previewed" || Date.parse(proposal.expiresAt) <= now.getTime()) {
+          return { kind: operation.kind, status: "rejected", reason: "expired" };
+        }
+        const bytes = await sessions.readFinalizedArtifact(
+          proposal.artifactId,
+          principal.clientId,
+          operation.binding.operationId,
+        );
+        const artifactSha256 = createHash("sha256").update(bytes).digest("hex");
+        const imported = decodePortableCapletArtifact(bytes);
+        if (imported.id !== proposal.capletId) {
+          return { kind: operation.kind, status: "rejected", reason: "changed-bytes" };
+        }
+        const target = await targetFor(imported.id);
+        if (
+          target.filesystemOwned ||
+          proposal.expectedAuthorityGeneration !== target.fence.authorityGeneration ||
+          proposal.expectedEffectiveGeneration !== target.fence.effectiveGeneration ||
+          proposal.expectedAggregateVersion !== target.fence.aggregateVersion ||
+          proposal.expectedSecurityEpoch !== target.fence.securityEpoch ||
+          proposal.expectedRuntimeFingerprint !== target.fence.runtimeFingerprint
+        ) {
+          return { kind: operation.kind, status: "rejected", reason: "stale-generation" };
+        }
+        const activation = proposal.setupDependencies.some(
+          (dependency) => dependency.status === "required",
+        )
+          ? ("setup-required" as const)
+          : ("active" as const);
+        const aggregateVersion = target.fence.aggregateVersion + 1;
+        const provenance: ControlPlaneProvenance = {
+          id: `provenance:${operation.proposalId}`,
+          sourceKind: "portable-import",
+          source: { artifactId: proposal.artifactId, proposalId: proposal.proposalId },
+          contentHash: artifactSha256,
+          installedAt: now.toISOString(),
+          ownerId: principal.clientId,
+        };
+        const aggregate: CanonicalCapletAggregate = {
+          modelVersion: 1,
+          id: imported.id,
+          aggregateVersion,
+          ownership: "sql",
+          activation,
+          effective: activation === "active",
+          portable: imported,
+          installationProvenanceId: provenance.id,
+          updateState: "current",
+        };
+        const projection = relationalProjection(
+          imported,
+          aggregateVersion,
+          target.fence,
+          principal.clientId,
+          now,
+          target.existing !== undefined,
+        );
+        const mutation: UntrustedCapletManagementMutation = {
+          binding: operation.binding,
+          aggregateId: aggregate.id,
+          aggregate,
+          projection,
+          provenance,
+          expectedAggregateVersion: target.fence.aggregateVersion,
+          expectedAuthorityGeneration: target.fence.authorityGeneration,
+          expectedSecurityEpoch: target.fence.securityEpoch,
+          localApplication: "pending",
+          activity: {
+            id: `activity:${operation.binding.operationId}`,
+            action: "portable-import",
+            target: { type: "caplet", id: aggregate.id, selector: "underlying-sql" },
+            detail: { proposalId: proposal.proposalId },
+          },
+        };
+        const prepared = await authorizeCapletMutation(mutation);
+        if ("status" in prepared && prepared.status !== "committed") {
+          return {
+            kind: operation.kind,
+            status: "rejected",
+            reason: mutationFailureReason(prepared),
+          };
+        }
+        let transactionBound: TransactionBoundCapletMutation | undefined;
+        let consumed: ConsumeImportProposalResult<CurrentHostOperationReceipt>;
+        try {
+          consumed = await sessions.consumeImportProposal(
+            {
+              actorId: principal.clientId,
+              operationId: operation.binding.operationId,
+              proposalId: operation.proposalId,
+              proposalHash: operation.proposalHash,
+              artifactSha256,
+              fence: target.fence,
+              now,
+            },
+            async (transaction) => {
+              if ("status" in prepared) return prepared.receipt;
+              transactionBound = await store.mutateCapletInTransaction(transaction, prepared);
+              return transactionBound.result.receipt;
+            },
+          );
+        } catch (error) {
+          if (error instanceof TransactionBoundCapletMutationError) {
+            return {
+              kind: operation.kind,
+              status: "rejected",
+              reason: mutationFailureReason(error.result),
+            };
+          }
+          throw error;
+        }
+        if (consumed.status === "rejected") {
+          return {
+            kind: operation.kind,
+            status: "rejected",
+            reason: consumed.reason,
+          };
+        }
+        if (transactionBound) {
+          const acknowledged = await transactionBound.afterCommit();
+          if (acknowledged.status !== "committed") {
+            const durable = await store.lookupOrReserveNotCommitted(operation.binding);
+            if (durable.status !== "committed") {
+              throw new CapletsError(
+                "SERVER_UNAVAILABLE",
+                "Portable import commit acknowledgement requires authoritative recovery.",
+              );
+            }
+          }
+        }
+        void activated!.refresh().catch(() => undefined);
+        return {
+          kind: operation.kind,
+          status: "committed",
+          receipt: consumed.value,
+          caplet: {
+            id: aggregate.id,
+            activation: aggregate.activation,
+            setupDependencies: proposal.setupDependencies,
+          },
+        };
+      },
+      async revalidate({ principal, operation }) {
+        const target = await targetFor(operation.capletId);
+        const caplet = target.existing;
+        if (
+          !caplet ||
+          caplet.aggregate.activation !== "setup-required" ||
+          caplet.aggregate.aggregateVersion !== operation.expectedAggregateVersion ||
+          target.current.authorityGeneration !==
+            operation.expectedAuthorityToken.authorityGeneration ||
+          target.current.effectiveGeneration !==
+            operation.expectedAuthorityToken.effectiveGeneration ||
+          target.current.securityEpoch !== operation.expectedSecurityEpoch
+        ) {
+          return {
+            kind: operation.kind,
+            status: "rejected",
+            reason: "stale-caplet",
+          };
+        }
+        const required = caplet.aggregate.portable.references.filter(
+          (reference) => reference.type === "unresolved-setup",
+        );
+        const resolved = await Promise.all(
+          required.map(async (dependency) => {
+            if (runtimeEnv[dependency.name]) return true;
+            return (await security.getStatus(dependency.name)).present;
+          }),
+        );
+        if (resolved.some((present) => !present)) {
+          return {
+            kind: operation.kind,
+            status: "rejected",
+            reason: "setup-incomplete",
+          };
+        }
+        const aggregateVersion = caplet.aggregate.aggregateVersion + 1;
+        const occurredAt = new Date().toISOString();
+        const aggregate: CanonicalCapletAggregate = {
+          ...caplet.aggregate,
+          aggregateVersion,
+          activation: "active",
+          effective: true,
+        };
+        const projection: CanonicalCapletRelationalProjection = {
+          ...caplet.projection,
+          activationHistory: [
+            ...caplet.projection.activationHistory,
+            {
+              capletId: aggregate.id,
+              sequence: caplet.projection.activationHistory.length + 1,
+              from: "setup-required",
+              to: "active",
+              reason: "setup-remediated",
+              actorId: principal.clientId,
+              aggregateVersion,
+              authorityVersion: target.fence.authorityGeneration,
+              effectiveVersion: target.fence.effectiveGeneration + 1,
+              occurredAt,
+            },
+          ],
+        };
+        const provenance = await loadInstallationProvenance(
+          aggregate.id,
+          aggregate.installationProvenanceId,
+        );
+        const result = await commitCanonicalCaplet({
+          binding: operation.binding,
+          aggregate,
+          projection,
+          expectedAggregateVersion: operation.expectedAggregateVersion,
+          expectedAuthorityGeneration: operation.expectedAuthorityToken.authorityGeneration,
+          expectedSecurityEpoch: operation.expectedSecurityEpoch,
+          provenance,
+          activity: {
+            id: `activity:${operation.binding.operationId}`,
+            action: "portable-setup-revalidated",
+            target: { type: "caplet", id: aggregate.id, selector: "underlying-sql" },
+          },
+        });
+        if (result.status !== "committed") {
+          return {
+            kind: operation.kind,
+            status: "rejected",
+            reason: mutationFailureReason(result),
+          };
+        }
+        void activated!.refresh().catch(() => undefined);
+        return {
+          kind: operation.kind,
+          status: "committed",
+          receipt: result.receipt,
+          caplet: { id: aggregate.id, activation: aggregate.activation },
+        };
+      },
+    });
     const active = activated;
     const maintenance = createControlPlaneMaintenanceCoordinator({
       store,
@@ -677,6 +1424,7 @@ export async function createProductionControlPlane(
       storage: deployment,
       store,
       loader,
+      portable,
       activated: active,
       management,
       security,
@@ -696,12 +1444,14 @@ export async function createProductionControlPlane(
       async close() {
         await active.close();
         await dialect.close();
+        artifactProviderClose?.();
       },
     });
   } catch (error) {
     await abortPendingAssets?.().catch(() => undefined);
     await activated?.close().catch(() => undefined);
     await dialect.close().catch(() => undefined);
+    artifactProviderClose?.();
     throw error;
   }
 }
@@ -717,6 +1467,192 @@ export function bindProductionSnapshotPublisher(
 }
 
 export type ProductionControlPlaneInitializationResult = LegacyControlPlaneInitializationResult;
+
+export type ProductionCurrentHostOfflineTransferClientOptions = Readonly<{
+  configPath?: string | undefined;
+  projectConfigPath?: string | undefined;
+  destinationConfigPath: string;
+  authDir?: string | undefined;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined> | undefined;
+}>;
+
+export async function createProductionCurrentHostOfflineTransferClient(
+  options: ProductionCurrentHostOfflineTransferClientOptions,
+): Promise<CurrentHostOfflineTransferClient & Readonly<{ close(): Promise<void> }>> {
+  const env = (options.env ?? process.env) as NodeJS.ProcessEnv;
+  const configPath = resolveConfigPath(options.configPath);
+  const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
+  const authDir = options.authDir ?? defaultAuthDir(env);
+  const vaultResolver = vaultResolverForAuthDir(authDir, env);
+  const sourceConfig = loadLocalRuntimeConfig(configPath, projectConfigPath, {
+    vaultResolver,
+  });
+  const destinationConfig = loadGlobalConfig(options.destinationConfigPath, {
+    vaultResolver,
+  });
+  if (
+    sourceConfig.serve?.storage?.kind === "postgres" ||
+    destinationConfig.serve?.storage?.kind !== "postgres"
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Offline SQL transfer requires an active SQLite source and a Postgres destination.",
+    );
+  }
+  const destinationStorage = destinationConfig.serve.storage;
+  if (destinationStorage.processRole === "online" || !destinationStorage.migration.designated) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Offline SQL transfer destination requires a designated operational Postgres role.",
+    );
+  }
+  const secureFilesystem = await createProductionSecureFilesystemOptions();
+  const adapterOptions: ProductionStorageAdapterOptions | undefined = undefined;
+  const sourceDeployment = await resolveOfflineTransferStorageDeployment(
+    sourceConfig.serve?.storage,
+    "source",
+    {
+      defaultStateRoot: defaultStorageStateDir(env),
+      expectedOwner: secureFilesystem.expectedOwner,
+      filesystem: secureFilesystem.filesystem,
+      resolveSecret: (reference) => resolveProductionSecret(reference, env),
+    },
+  );
+  let verifiedS3Request: S3CanaryVerificationRequest | undefined;
+  const destinationDeployment = await resolveOfflineTransferStorageDeployment(
+    destinationStorage,
+    "destination",
+    {
+      defaultStateRoot: defaultStorageStateDir(env),
+      expectedOwner: secureFilesystem.expectedOwner,
+      filesystem: secureFilesystem.filesystem,
+      resolveSecret: (reference) => resolveProductionSecret(reference, env),
+      verifyPostgres: createProductionPostgresVerifier(adapterOptions),
+      verifyS3Canary: async (request) => {
+        const result = await createProductionS3CanaryVerifier(adapterOptions)(request);
+        verifiedS3Request = request;
+        return result;
+      },
+    },
+  );
+  if (
+    sourceDeployment.backend !== "sqlite" ||
+    destinationDeployment.backend !== "postgres" ||
+    sourceDeployment.logicalHostId !== destinationDeployment.logicalHostId ||
+    sourceDeployment.storeId !== destinationDeployment.storeId ||
+    sourceDeployment.operationNamespace !== destinationDeployment.operationNamespace
+  ) {
+    throw new CapletsError(
+      "AUTH_FAILED",
+      "Offline SQL transfer source and destination authority identities do not match.",
+    );
+  }
+  if (!verifiedS3Request) {
+    throw new CapletsError("AUTH_FAILED", "Verified destination artifact identity is unavailable.");
+  }
+  const migratorStorage = { ...destinationStorage, processRole: "migrator" as const };
+  const migratorProfile = await resolveProductionPostgresProcessProfile(migratorStorage, env);
+  const migratorEnvironment = migrationEnvironment(migratorStorage, true);
+  const migrator = await openPostgresOperationalControlPlaneDialect({
+    storage: destinationDeployment,
+    purpose: "migrator",
+    profile: migratorProfile,
+    runtimeRole: destinationStorage.connection.roles.runtime.role,
+    environment: migratorEnvironment,
+    assetRoot: productionMigrationAssetRoot(),
+  });
+  try {
+    migratorEnvironment.activationEvidence = await loadMigrationActivationEvidence(
+      migrator,
+      destinationDeployment,
+      "migrator",
+    );
+    await migrator.migrate();
+  } finally {
+    await migrator.close();
+  }
+  const sourceDialect = await openSqliteControlPlaneDialect({
+    storage: sourceDeployment,
+    environment: migrationEnvironment(sourceConfig.serve?.storage, true),
+    assetRoot: productionMigrationAssetRoot(),
+  });
+  const maintenanceStorage = {
+    ...destinationStorage,
+    processRole: "maintenance" as const,
+  };
+  const maintenanceProfile = await resolveProductionPostgresProcessProfile(maintenanceStorage, env);
+  const destinationDialect = await openPostgresOperationalControlPlaneDialect({
+    storage: destinationDeployment,
+    purpose: "maintenance",
+    profile: maintenanceProfile,
+    runtimeRole: destinationStorage.connection.roles.runtime.role,
+    environment: migrationEnvironment(maintenanceStorage, true),
+    assetRoot: productionMigrationAssetRoot(),
+  });
+  let closed = false;
+  try {
+    const identity = Object.freeze({
+      logicalHostId: sourceDeployment.logicalHostId,
+      storeId: sourceDeployment.storeId,
+      operationNamespace: sourceDeployment.operationNamespace,
+    });
+    const sourceStore = createControlPlaneRepository({ identity, dialect: sourceDialect });
+    const destinationStore = createControlPlaneRepository({
+      identity,
+      dialect: destinationDialect,
+    });
+    await Promise.all([sourceStore.initialize(), destinationStore.initialize()]);
+    const sourceKeyProvider = await loadFileV1KeyProvider({
+      manifestPath: join(dirname(sourceDeployment.keyProviderManifest), "transfer-source.json"),
+      expectedLogicalHostId: identity.logicalHostId,
+      expectedStoreId: identity.storeId,
+      expectedProfile: "transfer-source",
+      filesystem: secureFilesystem.filesystem,
+    });
+    const destinationKeyProvider = await loadFileV1KeyProvider({
+      manifestPath: join(
+        dirname(destinationDeployment.keyProviderManifest),
+        "transfer-destination.json",
+      ),
+      expectedLogicalHostId: identity.logicalHostId,
+      expectedStoreId: identity.storeId,
+      expectedProfile: "transfer-destination",
+      filesystem: secureFilesystem.filesystem,
+    });
+    const port = createProductionSqliteToPostgresTransferPort({
+      identity,
+      source: sourceDialect,
+      destination: destinationDialect,
+      sourceStore,
+      destinationStore,
+      sourceDescriptorDigest: storageBootstrapFingerprintCommitment(sourceDeployment),
+      destinationDescriptorDigest: storageBootstrapFingerprintCommitment(destinationDeployment),
+      sourceKeyProviderIdentity: sourceKeyProvider.manifest.compatibilityCommitment,
+      destinationKeyProviderIdentity: destinationKeyProvider.manifest.compatibilityCommitment,
+      stateRoot: destinationDeployment.stateRoot,
+    });
+    const coordinator = createSqliteToPostgresTransferCoordinator({ port });
+    const operations = createOfflineSqlTransferOperations({
+      authorizeLocalGlobalAdministration: () => true,
+      resolveCoordinator: () => coordinator,
+    });
+    const client = createCurrentHostOfflineTransferClient({
+      authorizeLocalHostAdministrator: () => undefined,
+      resolveTransferOperations: () => operations,
+    });
+    return Object.freeze({
+      ...client,
+      async close() {
+        if (closed) return;
+        closed = true;
+        await Promise.allSettled([sourceDialect.close(), destinationDialect.close()]);
+      },
+    });
+  } catch (error) {
+    await Promise.allSettled([sourceDialect.close(), destinationDialect.close()]);
+    throw error;
+  }
+}
 
 export type ProductionControlPlaneOfflineMigrationOptions = Readonly<
   Pick<
@@ -752,8 +1688,11 @@ export async function runProductionControlPlaneOfflineMigration(
         } as const)
       : configuredStorage;
   const adapterOptions: ProductionStorageAdapterOptions | undefined = undefined;
+  const secureFilesystem = await createProductionSecureFilesystemOptions();
   const deployment = await resolveStorageDeployment(offlineStorage, {
     defaultStateRoot: defaultStorageStateDir(env),
+    expectedOwner: secureFilesystem.expectedOwner,
+    filesystem: secureFilesystem.filesystem,
     resolveSecret: (reference) => resolveProductionSecret(reference, env),
     verifyPostgres: createProductionPostgresVerifier(adapterOptions),
     verifyS3Canary: createProductionS3CanaryVerifier(adapterOptions),
@@ -785,6 +1724,10 @@ export async function runProductionControlPlaneOfflineMigration(
           configPath,
           authDir: options.authDir,
           env,
+          windowsLegacyExclusionOwnerSid:
+            secureFilesystem.expectedOwner.kind === "windows"
+              ? secureFilesystem.expectedOwner.sid
+              : undefined,
         }),
     });
     if (maintenance.role !== "maintenance") {
@@ -793,12 +1736,18 @@ export async function runProductionControlPlaneOfflineMigration(
     return maintenance.initialization;
   }
 
+  const environment = migrationEnvironment(offlineStorage, false);
   const dialect = await openSqliteControlPlaneDialect({
     storage: deployment,
-    environment: migrationEnvironment(offlineStorage, false),
+    environment,
     assetRoot: productionMigrationAssetRoot(),
   });
   try {
+    environment.activationEvidence = await loadMigrationActivationEvidence(
+      dialect,
+      deployment,
+      "maintenance",
+    );
     await dialect.migrate();
     const identity = Object.freeze({
       logicalHostId: deployment.logicalHostId,
@@ -819,6 +1768,10 @@ export async function runProductionControlPlaneOfflineMigration(
       configPath,
       authDir: options.authDir,
       env,
+      windowsLegacyExclusionOwnerSid:
+        secureFilesystem.expectedOwner.kind === "windows"
+          ? secureFilesystem.expectedOwner.sid
+          : undefined,
     });
   } finally {
     await dialect.close();
@@ -854,12 +1807,13 @@ export async function runProductionPostgresOperationalStartup(
       "Postgres migration requires every old ready-node lease and writer fence to be drained.",
     );
   }
+  const environment = migrationEnvironment(storage, oldNodesDrained);
   const dialect = await (options.openDialect ?? openPostgresOperationalControlPlaneDialect)({
     storage: options.deployment,
     purpose: storage.processRole,
     profile,
     runtimeRole: storage.connection.roles.runtime.role,
-    environment: migrationEnvironment(storage, oldNodesDrained),
+    environment,
     assetRoot: productionMigrationAssetRoot(),
   });
   try {
@@ -874,6 +1828,11 @@ export async function runProductionPostgresOperationalStartup(
             "An old Postgres node re-entered before the durable migration drain was established.",
           );
         }
+        environment.activationEvidence = await loadMigrationActivationEvidence(
+          dialect,
+          options.deployment,
+          "migrator",
+        );
         const migrations = await dialect.migrate();
         outcome = "finalized";
         await dialect.releaseMigrationDrain(gateId, outcome);
@@ -937,13 +1896,20 @@ async function runProductionOfflineLegacyInitialization(
     configPath: string;
     authDir?: string | undefined;
     env: NodeJS.ProcessEnv;
+    windowsLegacyExclusionOwnerSid?: string | undefined;
   }>,
 ): Promise<LegacyControlPlaneInitializationResult> {
   const journal = await input.migration.inspectInitializationJournal();
-  if (journal?.kind === "legacy" && journal.state === "finalized") {
-    return runLegacyControlPlaneInitialization(
-      finalizedLegacyAdoptionOptions(input, input.backend, "offline"),
-    );
+  if (journal?.kind === "legacy") {
+    if (journal.migrationId !== "legacy-v1" || journal.state === "inactive") {
+      throw offlineLegacyMigrationRequired();
+    }
+    if (journal.state === "finalized") {
+      return runLegacyControlPlaneInitialization(
+        finalizedLegacyAdoptionOptions(input, input.backend, "offline"),
+      );
+    }
+    return resumeActiveProductionLegacyInitialization(input, input.backend);
   }
   if (journal?.kind === "fresh") {
     if (journal.migrationId !== "fresh-v1") {
@@ -1027,16 +1993,19 @@ async function runProductionSqliteInitialization(
     configPath: string;
     authDir?: string | undefined;
     env: NodeJS.ProcessEnv;
+    windowsLegacyExclusionOwnerSid?: string | undefined;
   }>,
 ): Promise<LegacyControlPlaneInitializationResult> {
   const journal = await input.migration.inspectInitializationJournal();
   if (journal?.kind === "legacy") {
-    if (journal.migrationId !== "legacy-v1" || journal.state !== "finalized") {
-      throw offlineLegacyMigrationRequired();
+    if (journal.migrationId !== "legacy-v1") throw offlineLegacyMigrationRequired();
+    if (journal.state === "finalized") {
+      return runLegacyControlPlaneInitialization(
+        finalizedLegacyAdoptionOptions(input, "sqlite", "automatic"),
+      );
     }
-    return runLegacyControlPlaneInitialization(
-      finalizedLegacyAdoptionOptions(input, "sqlite", "automatic"),
-    );
+    if (journal.state !== "active") throw offlineLegacyMigrationRequired();
+    return resumeActiveProductionLegacyInitialization(input, "sqlite");
   }
   if (journal && (journal.kind !== "fresh" || journal.migrationId !== "fresh-v1")) {
     throw new CapletsError(
@@ -1060,6 +2029,66 @@ async function runProductionSqliteInitialization(
       },
     });
   }
+  return resumeProductionSqliteLegacyInitialization(input);
+}
+
+async function resumeActiveProductionLegacyInitialization(
+  input: Readonly<{
+    migration: ControlPlaneMigrationPersistence;
+    stateRoot: string;
+    configPath: string;
+    authDir?: string | undefined;
+    env: NodeJS.ProcessEnv;
+    windowsLegacyExclusionOwnerSid?: string | undefined;
+  }>,
+  backend: "sqlite" | "postgres",
+): Promise<LegacyControlPlaneInitializationResult> {
+  const authDir = resolve(input.authDir ?? defaultAuthDir(input.env));
+  const source: LegacyControlPlaneInitializationOptions["source"] = {
+    sourceBoundaryPath: dirname(authDir),
+    mutablePaths: [],
+    globalCapletsRoot: "global-caplets",
+    globalLockfilePath: "caplets.lock.json",
+    reviewedSources: [],
+  };
+  const unavailable = async (): Promise<never> => {
+    throw offlineLegacyMigrationRequired();
+  };
+  return runLegacyControlPlaneInitialization({
+    backend,
+    mode: "offline",
+    migrationId: "legacy-v1",
+    source,
+    destination: input.migration.legacyDestination,
+    election: input.migration.election,
+    mutex: {
+      acquire: () => acquireLegacyMigrationMutex(join(input.stateRoot, "legacy-migration.lock")),
+    },
+    acquireExclusion: unavailable,
+    resumePostActivation: (metadata) =>
+      resumeProductionLegacyPostActivation(
+        source,
+        "offline",
+        metadata,
+        input.windowsLegacyExclusionOwnerSid,
+      ),
+    protectedRecovery: { protect: unavailable },
+    credentialProtection: { protectAndVerify: unavailable },
+  });
+}
+
+async function resumeProductionSqliteLegacyInitialization(
+  input: Readonly<{
+    migration: ControlPlaneMigrationPersistence;
+    identity: ControlPlaneStoreIdentity;
+    stateRoot: string;
+    keyProviderManifest: string;
+    configPath: string;
+    authDir?: string | undefined;
+    env: NodeJS.ProcessEnv;
+    windowsLegacyExclusionOwnerSid?: string | undefined;
+  }>,
+): Promise<LegacyControlPlaneInitializationResult> {
   const source = discoverAutomaticLegacySource(input.configPath, input.authDir, input.env);
   if (!source) throw offlineLegacyMigrationRequired();
 
@@ -1373,12 +2402,55 @@ function withOfflinePlatformProof(
   return options;
 }
 
+async function resumeProductionLegacyPostActivation(
+  source: LegacyControlPlaneInitializationOptions["source"],
+  mode: "automatic" | "offline",
+  metadata: Parameters<LegacyControlPlaneInitializationOptions["resumePostActivation"]>[0],
+  windowsOwnerSid?: string | undefined,
+): Promise<void> {
+  const resumeOptions = {
+    sourceBoundaryPath: source.sourceBoundaryPath,
+    mutablePaths: source.mutablePaths,
+    mode,
+  };
+  let proofed: Parameters<typeof resumeLegacyMigrationExclusion>[0];
+  const useWindows = process.platform === "win32" || windowsOwnerSid !== undefined;
+  if (useWindows) {
+    if (!windowsOwnerSid) throw offlineLegacyMigrationRequired();
+    proofed = {
+      ...resumeOptions,
+      platform: "win32",
+      platformOptions: {
+        windows: {
+          expectedOwnerSid: windowsOwnerSid,
+          expectedServices: [],
+          proof:
+            mode === "automatic"
+              ? { kind: "automatic" }
+              : { kind: "offline", allReplicasStopped: true },
+        },
+      },
+    };
+  } else {
+    proofed =
+      mode === "automatic"
+        ? withAutomaticPlatformProof(resumeOptions)
+        : withOfflinePlatformProof(resumeOptions);
+  }
+  const resumed = useWindows
+    ? await resumeWindowsLegacyMigrationExclusion(proofed, metadata.exclusionCleanupId)
+    : await resumeLegacyMigrationExclusion(proofed, metadata.exclusionCleanupId);
+  await resumed.completeActivation({ protectedRecoveryDurable: true });
+  await resumed.release();
+}
+
 function createProductionLegacyAdapters(
   input: Readonly<{
     migration: ControlPlaneMigrationPersistence;
     identity: ControlPlaneStoreIdentity;
     stateRoot: string;
     env: NodeJS.ProcessEnv;
+    windowsLegacyExclusionOwnerSid?: string | undefined;
   }>,
   source: LegacyControlPlaneInitializationOptions["source"],
   migrator: FileV1KeyProvider,
@@ -1391,19 +2463,12 @@ function createProductionLegacyAdapters(
   let sealedSource: LegacyMigrationExclusionLease["sealedSource"] | undefined;
   return {
     async resumePostActivation(metadata) {
-      const resumeOptions = {
-        sourceBoundaryPath: source.sourceBoundaryPath,
-        mutablePaths: source.mutablePaths,
+      await resumeProductionLegacyPostActivation(
+        source,
         mode,
-      };
-      const resumed = await resumeLegacyMigrationExclusion(
-        mode === "automatic"
-          ? withAutomaticPlatformProof(resumeOptions)
-          : withOfflinePlatformProof(resumeOptions),
-        metadata.exclusionCleanupId,
+        metadata,
+        input.windowsLegacyExclusionOwnerSid,
       );
-      await resumed.completeActivation({ protectedRecoveryDurable: true });
-      await resumed.release();
     },
     protectedRecovery: {
       async protect(recoveryInput) {
@@ -1437,7 +2502,8 @@ async function protectLegacyRecoveryBundle(
   source: VerifiedLegacyMigrationSource,
   sealedSource: LegacyMigrationExclusionLease["sealedSource"],
 ): Promise<Readonly<{ durable: true; bundleId: string }>> {
-  const backupId = `legacy-${migrationId}-${source.manifestSha256.slice(0, 32)}`;
+  const baseBackupId = `legacy-${migrationId}-${source.manifestSha256.slice(0, 32)}`;
+  let backupId = baseBackupId;
   const recoveryKey = backupWriter.manifest.compatibilityKeys.find(
     (entry) => entry.purpose === "backup-recovery",
   );
@@ -1477,15 +2543,34 @@ async function protectLegacyRecoveryBundle(
     entityManifest,
     recoveryKeyReference,
   };
+  let existing: RecoveryBackupIntent | undefined;
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    existing = await input.migration.recoveryBackupLifecycle.transaction((transaction) =>
+      transaction.readBackupIntent(backupId),
+    );
+    if (!existing || existing.phase === "finalized") break;
+    await rm(join(input.stateRoot, "artifacts", "legacy-recovery", backupId), {
+      recursive: true,
+      force: true,
+    });
+    const retryIdentity = createHash("sha256")
+      .update(stableJsonStringify(existing))
+      .digest("hex")
+      .slice(0, 16);
+    backupId = `${baseBackupId}-retry-${retryIdentity}`;
+  }
+  if (existing && existing.phase !== "finalized") throw offlineLegacyMigrationRequired();
   const recoveryRoot = join(input.stateRoot, "artifacts", "legacy-recovery", backupId);
-  await mkdir(recoveryRoot, { recursive: true, mode: 0o700 });
   const envelopePath = join(recoveryRoot, "envelope.frames");
   const wrappedKeyPath = join(recoveryRoot, "wrapped-key.bin");
   const envelopeReference = `file-v1:${backupId}:envelope`;
   const wrappedKeyReference = `file-v1:${backupId}:wrapped-key`;
-  const existing = await input.migration.recoveryBackupLifecycle.transaction((transaction) =>
-    transaction.readBackupIntent(backupId),
-  );
+  if (!existing) {
+    // A crash can durably create one or both files before the lifecycle intent is committed.
+    // With the migration mutex/election held, absence of an intent proves these deterministic
+    // bytes are not a committed recovery bundle, so discard them before the resumable retry.
+    await rm(recoveryRoot, { recursive: true, force: true });
+  }
   if (existing?.phase === "finalized") {
     if (
       !existing.headerDigest ||
@@ -1510,7 +2595,7 @@ async function protectLegacyRecoveryBundle(
     });
     return { durable: true, bundleId: backupId };
   }
-  if (existing) throw offlineLegacyMigrationRequired();
+  await mkdir(recoveryRoot, { recursive: true, mode: 0o700 });
 
   let envelopeCreated = false;
   const envelopeSink: RecoveryEnvelopeSink = {
@@ -1924,7 +3009,7 @@ async function openProductionDialect(
   storage: ServeStorageConfig | undefined,
   environment: MigrationEnvironment,
   env: NodeJS.ProcessEnv,
-): Promise<ControlPlaneTransactionalDialect & { migrate(): unknown; close(): Promise<void> }> {
+): Promise<SqliteControlPlaneDialect | PostgresControlPlaneDialect> {
   if (deployment.backend === "sqlite") {
     return openSqliteControlPlaneDialect({
       storage: deployment,
@@ -2002,6 +3087,159 @@ function productionMigrationAssetRoot(): URL {
   return existsSync(packaged) ? packaged : new URL("../../drizzle/", import.meta.url);
 }
 
+type MigrationEvidenceDialect = SqliteControlPlaneDialect | PostgresControlPlaneDialect;
+
+type MigrationHistoryEvidenceRow = Readonly<{
+  destinationSchemaVersion: number | bigint;
+  appliedAt: string;
+}>;
+
+type MigrationBackupEvidenceRow = Readonly<{
+  backupId: string;
+  manifestHash: string;
+  sourceIdentity: string;
+  state: string;
+  finalizedAt: string;
+}>;
+
+type MigrationKeyEvidenceRow = Readonly<{
+  keyId: string;
+  purpose: string;
+  keyVersion: number | bigint;
+  state: string;
+}>;
+
+async function loadMigrationActivationEvidence(
+  dialect: MigrationEvidenceDialect,
+  deployment: ResolvedStorageDeployment,
+  profile: FileV1Profile,
+): Promise<MigrationActivationEvidence | undefined> {
+  let history: readonly MigrationHistoryEvidenceRow[];
+  if (dialect.backend === "sqlite") {
+    const [historyTable] = dialect.migrationQuery<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' " +
+        "AND name = '__caplets_migration_history_v1' LIMIT 1",
+    );
+    history = historyTable
+      ? dialect.migrationQuery<MigrationHistoryEvidenceRow>(
+          'SELECT destination_schema_version AS "destinationSchemaVersion", ' +
+            'applied_at AS "appliedAt" FROM "__caplets_migration_history_v1" ' +
+            "ORDER BY applied_at, migration_id",
+        )
+      : [];
+  } else {
+    history = await dialect.migrationQuery<MigrationHistoryEvidenceRow>(
+      'SELECT destination_schema_version AS "destinationSchemaVersion", ' +
+        'applied_at AS "appliedAt" FROM "caplets_control"."__caplets_migration_history_v1" ' +
+        "ORDER BY applied_at, migration_id",
+    );
+  }
+  if (history.length === 0) {
+    const tables =
+      dialect.backend === "sqlite"
+        ? dialect.migrationQuery<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'cp_%' LIMIT 1",
+          )
+        : await dialect.migrationQuery<{ name: string }>(
+            "SELECT table_name AS name FROM information_schema.tables " +
+              "WHERE table_schema = 'caplets_control' AND table_name LIKE 'cp_%' LIMIT 1",
+          );
+    if (tables.length !== 0) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Migration history is absent from a non-empty control-plane schema.",
+      );
+    }
+    return { kind: "empty-bootstrap" };
+  }
+  const current = history.at(-1);
+  if (!current) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Migration history is unavailable.");
+  }
+  const sourceSchemaVersion = Number(current.destinationSchemaVersion);
+  if (!Number.isSafeInteger(sourceSchemaVersion) || sourceSchemaVersion < 0) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Migration history schema evidence is invalid.");
+  }
+  const identityParameters = [deployment.logicalHostId, deployment.storeId] as const;
+  const backups =
+    dialect.backend === "sqlite"
+      ? dialect.migrationQuery<MigrationBackupEvidenceRow>(
+          'SELECT backup_id AS "backupId", manifest_hash AS "manifestHash", ' +
+            'source_identity AS "sourceIdentity", state, updated_at AS "finalizedAt" ' +
+            "FROM cp_backup WHERE logical_host_id = ? AND store_id = ? AND state = 'finalized' " +
+            "ORDER BY updated_at DESC",
+          identityParameters,
+        )
+      : await dialect.migrationQuery<MigrationBackupEvidenceRow>(
+          'SELECT backup_id AS "backupId", manifest_hash AS "manifestHash", ' +
+            'source_identity AS "sourceIdentity", state, updated_at AS "finalizedAt" ' +
+            'FROM "caplets_control"."cp_backup" WHERE logical_host_id = $1 AND store_id = $2 ' +
+            "AND state = 'finalized' ORDER BY updated_at DESC",
+          identityParameters,
+        );
+  const backup = backups.find(
+    (candidate) =>
+      candidate.sourceIdentity === `${deployment.logicalHostId}:${deployment.storeId}` &&
+      /^[a-f0-9]{64}$/u.test(candidate.manifestHash) &&
+      Number.isFinite(Date.parse(candidate.finalizedAt)) &&
+      Date.parse(candidate.finalizedAt) >= Date.parse(current.appliedAt),
+  );
+  if (!backup) return undefined;
+  const keys =
+    dialect.backend === "sqlite"
+      ? dialect.migrationQuery<MigrationKeyEvidenceRow>(
+          'SELECT key_id AS "keyId", purpose, key_version AS "keyVersion", state ' +
+            "FROM cp_key_inventory WHERE logical_host_id = ? AND store_id = ? " +
+            "AND state != 'destroyed'",
+          identityParameters,
+        )
+      : await dialect.migrationQuery<MigrationKeyEvidenceRow>(
+          'SELECT key_id AS "keyId", purpose, key_version AS "keyVersion", state ' +
+            'FROM "caplets_control"."cp_key_inventory" WHERE logical_host_id = $1 AND store_id = $2 ' +
+            "AND state != 'destroyed'",
+          identityParameters,
+        );
+  const secureFilesystem = await createProductionSecureFilesystemOptions();
+  const provider = await loadFileV1KeyProvider({
+    manifestPath: join(dirname(deployment.keyProviderManifest), `${profile}.json`),
+    expectedLogicalHostId: deployment.logicalHostId,
+    expectedStoreId: deployment.storeId,
+    expectedProfile: profile,
+    filesystem: secureFilesystem.filesystem,
+  });
+  const byVersion = new Map<number, typeof provider.manifest.compatibilityKeys>();
+  for (const key of provider.manifest.compatibilityKeys) {
+    const entries = byVersion.get(key.keyVersion) ?? [];
+    byVersion.set(key.keyVersion, [...entries, key]);
+  }
+  const retainedKeyVersions = [...byVersion]
+    .filter(([, expected]) =>
+      expected.every((entry) =>
+        keys.some(
+          (row) =>
+            row.keyId === entry.keyId &&
+            row.purpose === entry.purpose &&
+            Number(row.keyVersion) === entry.keyVersion &&
+            row.state !== "destroyed",
+        ),
+      ),
+    )
+    .map(([version]) => version)
+    .sort((left, right) => left - right);
+  return {
+    kind: "store-bound",
+    logicalHostId: deployment.logicalHostId,
+    storeId: deployment.storeId,
+    backup: {
+      backupId: backup.backupId,
+      manifestHash: backup.manifestHash,
+      sourceSchemaVersion,
+      finalizedAt: backup.finalizedAt,
+    },
+    retainedKeyVersions,
+  };
+}
+
 function migrationEnvironment(
   storage: ServeStorageConfig | undefined,
   oldNodesDrained: boolean,
@@ -2013,9 +3251,7 @@ function migrationEnvironment(
     supportedSchemaVersion: 1,
     keyVersion: 1,
     manifestVersion: 1,
-    verifiedSchemaAwareBackup: !postgres || designated,
     oldNodesDrained: !postgres || oldNodesDrained,
-    retainedKeyVersions: [1],
     hostAdministrator: !postgres || designated,
   };
 }

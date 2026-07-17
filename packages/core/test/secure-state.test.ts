@@ -1,7 +1,17 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createDarwinSecureFilesystemAdapter } from "../src/control-plane/native/darwin-secure-filesystem";
 import {
   assertSecureStateDirectory,
   createOrOpenSecureStateRoot,
@@ -9,6 +19,7 @@ import {
   readBoundedSecureFileWithMetadata,
   replaceSecureFileAtomically,
   writeSecureFileExclusive,
+  withSecureMutableRegularFile,
 } from "../src/control-plane/secure-state";
 
 const roots: string[] = [];
@@ -35,6 +46,20 @@ describe("secure state filesystem", () => {
     await expect(writeSecureFileExclusive(path, Buffer.from("replacement"))).rejects.toThrow(
       /already exists/i,
     );
+  });
+
+  it("allows expected content changes while preserving a mutable file identity", async () => {
+    const root = tempRoot();
+    const path = join(root, "live.sqlite");
+    await writeSecureFileExclusive(path, Buffer.from("before"));
+
+    const result = await withSecureMutableRegularFile(path, {}, async () => {
+      appendFileSync(path, "-after");
+      return "verified";
+    });
+
+    expect(result.value).toBe("verified");
+    expect((await readBoundedSecureFile(path, { maxBytes: 32 })).toString()).toBe("before-after");
   });
 
   it("rejects symlinks, insecure modes, non-regular files, and oversized input without leaking paths", async () => {
@@ -113,6 +138,92 @@ describe("secure state filesystem", () => {
         verifyWindowsDacl: () => false,
       }),
     ).rejects.toThrow(/acl/i);
+  });
+
+  it("creates, reopens, and atomically replaces state through the Darwin fd-relative adapter", async () => {
+    const parent = tempRoot();
+    const stateRoot = join(parent, "darwin-state");
+    const filesystem = {
+      platform: "darwin" as const,
+      expectedUid: process.getuid!(),
+      nativeAdapter: createDarwinSecureFilesystemAdapter(),
+    };
+    await expect(createOrOpenSecureStateRoot(stateRoot, filesystem)).resolves.toMatchObject({
+      path: stateRoot,
+      fresh: true,
+    });
+    const path = join(stateRoot, "authority.json");
+    const original = await writeSecureFileExclusive(path, Buffer.from("unbound"), filesystem);
+    await expect(
+      replaceSecureFileAtomically(path, original.revision, Buffer.from("bound"), filesystem),
+    ).resolves.toBe(true);
+    await expect(createOrOpenSecureStateRoot(stateRoot, filesystem)).resolves.toMatchObject({
+      path: stateRoot,
+      fresh: false,
+    });
+    await expect(readBoundedSecureFile(path, filesystem)).resolves.toEqual(Buffer.from("bound"));
+  });
+
+  it("routes Windows create, reopen, no-follow opens, and DACL checks through its native adapter", async () => {
+    const parent = tempRoot();
+    const stateRoot = join(parent, "windows-state");
+    const calls: string[] = [];
+    const expectedServiceSid = "S-1-5-21-1000";
+    const nativeAdapter = {
+      platform: "win32" as const,
+      async withPinnedDirectory<T>(
+        path: string,
+        action: (pinnedPath: string) => Promise<T>,
+      ): Promise<T> {
+        calls.push(`pin:${path}`);
+        return action(path);
+      },
+      openPinnedPath(path: string, flags: number, mode?: number) {
+        calls.push(`open:${path}`);
+        return mode === undefined ? open(path, flags) : open(path, flags, mode);
+      },
+      async createDirectory(path: string) {
+        calls.push(`mkdir:${path}`);
+        try {
+          mkdirSync(path, { mode: 0o700 });
+          return "created" as const;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          return "exists" as const;
+        }
+      },
+      async syncDirectory(path: string) {
+        calls.push(`sync:${path}`);
+      },
+    };
+    const filesystem = {
+      platform: "win32" as const,
+      expectedServiceSid,
+      nativeAdapter,
+      verifyWindowsDacl(path: string, sid?: string) {
+        calls.push(`dacl:${path}:${sid}`);
+        return sid === expectedServiceSid;
+      },
+    };
+    await expect(createOrOpenSecureStateRoot(stateRoot, filesystem)).resolves.toMatchObject({
+      path: stateRoot,
+      fresh: true,
+    });
+    const path = join(stateRoot, "authority.json");
+    await writeSecureFileExclusive(path, Buffer.from("windows-bound"), filesystem);
+    await expect(createOrOpenSecureStateRoot(stateRoot, filesystem)).resolves.toMatchObject({
+      path: stateRoot,
+      fresh: false,
+    });
+    await expect(readBoundedSecureFile(path, filesystem)).resolves.toEqual(
+      Buffer.from("windows-bound"),
+    );
+    expect(calls.some((call) => call.startsWith("mkdir:"))).toBe(true);
+    expect(calls.some((call) => call.startsWith("pin:"))).toBe(true);
+    expect(calls.some((call) => call.startsWith("open:"))).toBe(true);
+    expect(calls.some((call) => call.includes(`dacl:${stateRoot}:${expectedServiceSid}`))).toBe(
+      true,
+    );
   });
 
   it("serializes compare-and-swap replacements so only one conflicting pin wins", async () => {

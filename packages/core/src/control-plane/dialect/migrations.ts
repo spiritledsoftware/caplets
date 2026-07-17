@@ -120,14 +120,32 @@ export type LoadedMigrationRegistry = {
   migrations: readonly LoadedMigration[];
 };
 
+export type MigrationActivationEvidence =
+  | Readonly<{ kind: "empty-bootstrap" }>
+  | Readonly<{
+      kind: "store-bound";
+      logicalHostId: string;
+      storeId: string;
+      backup: Readonly<{
+        backupId: string;
+        manifestHash: string;
+        sourceSchemaVersion: number;
+        finalizedAt: string;
+      }>;
+      retainedKeyVersions: readonly number[];
+    }>;
+
 export type MigrationEnvironment = {
   binaryVersion: string;
   supportedSchemaVersion: number;
   keyVersion: number;
   manifestVersion: number;
-  verifiedSchemaAwareBackup: boolean;
+  /** Legacy fields are accepted for source compatibility but never authorize activation. */
+  verifiedSchemaAwareBackup?: boolean | undefined;
+  retainedKeyVersions?: readonly number[] | undefined;
   oldNodesDrained: boolean;
-  retainedKeyVersions: readonly number[];
+  /** Store-derived evidence. Role/configuration claims are never activation evidence. */
+  activationEvidence?: MigrationActivationEvidence | undefined;
   hostAdministrator: boolean;
   now?: Date | undefined;
 };
@@ -199,20 +217,8 @@ export function assertMigrationEnvironment(
   environment: MigrationEnvironment,
 ): void {
   assertSupportedSchemaVersion(environment);
-  const retainedKeys = new Set(environment.retainedKeyVersions);
   for (const migration of registry.migrations) {
     assertMigrationCompatibility(migration, environment);
-    for (const keyVersion of migration.manifest.activationRequirements.retainedKeyVersions) {
-      if (!retainedKeys.has(keyVersion)) {
-        throw new Error(`Required retained key ${keyVersion} is unavailable`);
-      }
-    }
-    if (
-      migration.manifest.activationRequirements.verifiedSchemaAwareBackup &&
-      !environment.verifiedSchemaAwareBackup
-    ) {
-      throw new Error(`Migration ${migration.manifest.migrationId} requires a verified backup`);
-    }
     if (migration.manifest.activationRequirements.oldNodesDrained && !environment.oldNodesDrained) {
       throw new Error(`Migration ${migration.manifest.migrationId} requires old-node drain`);
     }
@@ -296,6 +302,7 @@ export function planPendingMigrations(
   const current = registry.migrations[applied.length - 1];
   if (current) assertMigrationCompatibility(current, environment);
   assertMigrationEnvironment({ ...registry, migrations: pending }, environment);
+  assertMigrationActivationEvidence(pending, applied, environment.activationEvidence);
   for (const migration of pending) {
     if (!migration.manifest.automatic && !environment.hostAdministrator) {
       throw new Error(
@@ -321,12 +328,85 @@ export function assertRollbackAllowed(
   if (now.getTime() > appliedAtMs + rollback.windowSeconds * 1000) {
     throw new Error(`Rollback window expired for ${migration.manifest.migrationId}`);
   }
-  if (rollback.requiresVerifiedBackup && !environment.verifiedSchemaAwareBackup) {
+  assertRollbackActivationEvidence(migration, environment.activationEvidence);
+}
+
+function assertMigrationActivationEvidence(
+  pending: readonly LoadedMigration[],
+  applied: readonly AppliedMigration[],
+  evidence: MigrationActivationEvidence | undefined,
+): void {
+  const protectedMigrations = pending.filter(
+    ({ manifest }) =>
+      manifest.activationRequirements.verifiedSchemaAwareBackup ||
+      manifest.activationRequirements.retainedKeyVersions.length > 0,
+  );
+  if (protectedMigrations.length === 0) return;
+  if (evidence?.kind === "empty-bootstrap") {
+    if (applied.length !== 0) {
+      throw new Error("Empty bootstrap evidence cannot authorize an existing schema");
+    }
+    return;
+  }
+  if (!evidence || evidence.kind !== "store-bound") {
+    throw new Error(
+      `Migration ${protectedMigrations[0]!.manifest.migrationId} requires store-bound activation evidence`,
+    );
+  }
+  assertStoreBoundEvidence(evidence);
+  const requiredSourceSchema = protectedMigrations[0]!.manifest.sourceSchemaVersion;
+  if (evidence.backup.sourceSchemaVersion !== requiredSourceSchema) {
+    throw new Error(
+      `Migration ${protectedMigrations[0]!.manifest.migrationId} backup targets the wrong schema`,
+    );
+  }
+  const retainedKeys = new Set(evidence.retainedKeyVersions);
+  for (const { manifest } of protectedMigrations) {
+    for (const keyVersion of manifest.activationRequirements.retainedKeyVersions) {
+      if (!retainedKeys.has(keyVersion)) {
+        throw new Error(`Required retained key ${keyVersion} is unavailable`);
+      }
+    }
+  }
+}
+
+function assertRollbackActivationEvidence(
+  migration: LoadedMigration,
+  evidence: MigrationActivationEvidence | undefined,
+): void {
+  const rollback = migration.manifest.rollback;
+  if (!rollback.requiresVerifiedBackup && rollback.requiredRetainedKeyVersions.length === 0) return;
+  if (!evidence || evidence.kind !== "store-bound") {
+    throw new Error(`Rollback for ${migration.manifest.migrationId} requires store-bound evidence`);
+  }
+  assertStoreBoundEvidence(evidence);
+  if (
+    rollback.requiresVerifiedBackup &&
+    evidence.backup.sourceSchemaVersion !== migration.manifest.destinationSchemaVersion
+  ) {
     throw new Error(`Rollback for ${migration.manifest.migrationId} requires a verified backup`);
   }
-  const retainedKeys = new Set(environment.retainedKeyVersions);
+  const retainedKeys = new Set(evidence.retainedKeyVersions);
   for (const keyVersion of rollback.requiredRetainedKeyVersions) {
     if (!retainedKeys.has(keyVersion)) throw new Error(`Rollback key ${keyVersion} is unavailable`);
+  }
+}
+
+function assertStoreBoundEvidence(
+  evidence: Extract<MigrationActivationEvidence, { kind: "store-bound" }>,
+): void {
+  if (
+    !/^[\x21-\x7e]{1,256}$/u.test(evidence.logicalHostId) ||
+    !/^[\x21-\x7e]{1,256}$/u.test(evidence.storeId) ||
+    !/^[\x21-\x7e]{1,256}$/u.test(evidence.backup.backupId) ||
+    !/^[a-f0-9]{64}$/u.test(evidence.backup.manifestHash) ||
+    !Number.isSafeInteger(evidence.backup.sourceSchemaVersion) ||
+    evidence.backup.sourceSchemaVersion < 0 ||
+    !Number.isFinite(Date.parse(evidence.backup.finalizedAt)) ||
+    evidence.retainedKeyVersions.some((version) => !Number.isSafeInteger(version) || version < 0) ||
+    new Set(evidence.retainedKeyVersions).size !== evidence.retainedKeyVersions.length
+  ) {
+    throw new Error("Migration activation evidence is invalid");
   }
 }
 

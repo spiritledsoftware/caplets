@@ -134,4 +134,46 @@ describe("control-plane snapshot benchmark", () => {
     });
     expect(result.runs[0]?.sampleCount).toBe(32);
   });
+
+  it("executes the immutable full profile for three complete passing runs", async () => {
+    const appliedWriteBursts: number[] = [];
+    let reads = 0;
+    const result = await runSnapshotLoadBenchmark({
+      profile: FULL_ENVELOPE_SNAPSHOT_PROFILE,
+      applyWriteBurst: async ({ mutations }) => {
+        appliedWriteBursts.push(mutations);
+        return mutations;
+      },
+      readSql: async () => {
+        reads += 1;
+        return new Uint8Array([91, 93]);
+      },
+      decode: (bytes) => JSON.parse(new TextDecoder().decode(bytes)),
+      allocate: (decoded) => [...(decoded as unknown[])],
+    });
+
+    expect(appliedWriteBursts).toEqual(
+      Array.from(
+        { length: STORAGE_BENCHMARK_ENVELOPE.independentRuns },
+        () =>
+          STORAGE_BENCHMARK_ENVELOPE.managementWritesPerSecond *
+          STORAGE_BENCHMARK_ENVELOPE.writeBurstSeconds,
+      ),
+    );
+    expect(reads).toBe(
+      (STORAGE_BENCHMARK_ENVELOPE.warmupSamples +
+        STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun) *
+        STORAGE_BENCHMARK_ENVELOPE.independentRuns *
+        STORAGE_BENCHMARK_ENVELOPE.maxReadyNodes,
+    );
+    expect(result).toMatchObject({
+      status: "pass",
+      failedRunIndexes: [],
+      runs: [
+        { sampleCount: 1_600, passed: true },
+        { sampleCount: 1_600, passed: true },
+        { sampleCount: 1_600, passed: true },
+      ],
+    });
+  });
 });

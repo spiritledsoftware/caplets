@@ -75,7 +75,7 @@ import {
   setupExecutorFixtureSources,
   setupExecutorMcpSources,
 } from "../lib/pi-eval/executor";
-import { createNativeCapletsService } from "@caplets/core/native";
+import { createActivatedNativeCapletsService } from "@caplets/core/native";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -2378,6 +2378,7 @@ describe("Pi live tool surface eval harness", () => {
     const sourceAgentDir = join(root, "source-agent");
     const fakePiExtension = join(root, "pi-extension.js");
     const previousPath = process.env.PATH;
+    const previousStateHome = process.env.XDG_STATE_HOME;
     try {
       await mkdir(sourceAgentDir, { recursive: true });
       await writeFile(fakePiExtension, "export default function extension() {}\n");
@@ -2388,7 +2389,8 @@ describe("Pi live tool surface eval harness", () => {
         piAgentSourceDir: sourceAgentDir,
       });
       process.env.PATH = config.env.PATH;
-      const service = createNativeCapletsService({
+      process.env.XDG_STATE_HOME = join(root, "state");
+      const service = await createActivatedNativeCapletsService({
         mode: "local",
         configPath: config.configPath,
         watch: false,
@@ -2408,6 +2410,8 @@ describe("Pi live tool surface eval harness", () => {
     } finally {
       process.env.PATH = previousPath;
       await rm(root, { recursive: true, force: true });
+      if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousStateHome;
     }
   });
 

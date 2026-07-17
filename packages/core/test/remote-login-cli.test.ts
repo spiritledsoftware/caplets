@@ -977,7 +977,7 @@ describe("caplets remote CLI", () => {
     expect(out.join("")).toContain("Bad?[31mName?");
   });
 
-  it("lists and approves pending self-hosted logins from activated SQL state", async () => {
+  it("lists pending self-hosted logins but requires a running Current Host to approve", async () => {
     const root = tempDir("caplets-remote-cli-current-host-");
     const env = currentHostEnv(root);
     const pending = await withCurrentHostSecurity(env, (security) =>
@@ -1019,33 +1019,16 @@ describe("caplets remote CLI", () => {
     expect(plainListOut.join("")).not.toContain(pending.operatorCode);
 
     const approveOut: string[] = [];
-    await runCli(["remote", "host", "approve", pending.operatorCode, "--yes", "--json"], {
-      env,
-      writeOut: (value) => approveOut.push(value),
-    });
-
-    expect(JSON.parse(approveOut.join(""))).toMatchObject({
-      flowId: pending.flowId,
-      status: "approved",
-      requestedRole: "access",
-      grantedRole: "access",
-      clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
-    });
     await expect(
-      withCurrentHostSecurity(env, (security) =>
-        security.completePendingLogin({
-          hostUrl: "https://caplets.example.com",
-          flowId: pending.flowId,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
-      ),
-    ).resolves.toMatchObject({
-      clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
-      role: "access",
-    });
+      runCli(["remote", "host", "approve", pending.operatorCode, "--yes", "--json"], {
+        env,
+        writeOut: (value) => approveOut.push(value),
+      }),
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    expect(approveOut).toEqual([]);
   });
 
-  it("approves activated SQL login authority through the running Current Host", async () => {
+  it("fails closed when SQLite host approval is attempted without a running Current Host", async () => {
     const root = tempDir("caplets-remote-cli-current-host-");
     const env = currentHostEnv(root);
     const pending = await withCurrentHostSecurity(env, (security) =>
@@ -1056,28 +1039,25 @@ describe("caplets remote CLI", () => {
     );
     const out: string[] = [];
 
-    await runCli(
-      ["remote", "host", "approve", pending.operatorCode, "--role", "operator", "--yes", "--json"],
-      { env, writeOut: (value) => out.push(value) },
-    );
-
-    expect(JSON.parse(out.join(""))).toMatchObject({
-      flowId: pending.flowId,
-      status: "approved",
-      grantedRole: "operator",
-    });
     await expect(
-      withCurrentHostSecurity(env, (security) =>
-        security.completePendingLogin({
-          hostUrl: "https://caplets.example.com/base",
-          flowId: pending.flowId,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
+      runCli(
+        [
+          "remote",
+          "host",
+          "approve",
+          pending.operatorCode,
+          "--role",
+          "operator",
+          "--yes",
+          "--json",
+        ],
+        { env, writeOut: (value) => out.push(value) },
       ),
-    ).resolves.toMatchObject({ role: "operator" });
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    expect(out).toEqual([]);
   });
 
-  it("allows host approval to override requested login roles", async () => {
+  it("fails closed before applying a role override when the Current Host is stopped", async () => {
     const root = tempDir("caplets-remote-cli-current-host-");
     const env = currentHostEnv(root);
     const pending = await withCurrentHostSecurity(env, (security) =>
@@ -1089,25 +1069,13 @@ describe("caplets remote CLI", () => {
     );
     const approveOut: string[] = [];
 
-    await runCli(
-      ["remote", "host", "approve", pending.operatorCode, "--role", "access", "--yes", "--json"],
-      { env, writeOut: (value) => approveOut.push(value) },
-    );
-
-    expect(JSON.parse(approveOut.join(""))).toMatchObject({
-      flowId: pending.flowId,
-      requestedRole: "operator",
-      grantedRole: "access",
-    });
     await expect(
-      withCurrentHostSecurity(env, (security) =>
-        security.completePendingLogin({
-          hostUrl: "https://caplets.example.com",
-          flowId: pending.flowId,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
+      runCli(
+        ["remote", "host", "approve", pending.operatorCode, "--role", "access", "--yes", "--json"],
+        { env, writeOut: (value) => approveOut.push(value) },
       ),
-    ).resolves.toMatchObject({ role: "access" });
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+    expect(approveOut).toEqual([]);
   });
 
   it("routes Cloud login through Remote Profiles instead of legacy Cloud Auth", async () => {

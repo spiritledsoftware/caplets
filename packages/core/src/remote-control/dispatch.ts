@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import {
   addCliCaplet,
@@ -36,10 +37,13 @@ import type { RemoteAuthFlowStore } from "./auth-flow";
 import {
   parseCurrentHostManagementMutation,
   parseCurrentHostOperationBinding,
+  parseCurrentHostPortableOperation,
   toCurrentHostSafeError,
   type CurrentHostManagementResource,
+  type CurrentHostOperationBinding,
   type CurrentHostOperatorPrincipal,
   type CurrentHostOperations,
+  type CurrentHostPortableOperationOutcome,
 } from "../current-host/operations";
 import type { RemoteCliRequest, RemoteCliResponse } from "./types";
 
@@ -343,6 +347,11 @@ async function dispatchCurrentHostManagement(
 ) {
   const binding = parseCurrentHostOperationBinding(request.arguments.binding);
   switch (request.command) {
+    case "current_host_portable": {
+      const operation = parseRemotePortableOperation(request.arguments.operation, binding);
+      const outcome = await administration.operations.execute(administration.principal, operation);
+      return portableRemoteOutcome(outcome);
+    }
     case "current_host_list":
       return administration.operations.list(administration.principal, {
         binding,
@@ -375,6 +384,34 @@ async function dispatchCurrentHostManagement(
         `Unsupported remote Current Host command ${request.command}`,
       );
   }
+}
+
+function parseRemotePortableOperation(value: unknown, binding: CurrentHostOperationBinding) {
+  assertObject(value, "portable operation");
+  if (value.kind !== "portable_import_session_append") {
+    return parseCurrentHostPortableOperation(value, { binding });
+  }
+  const bytesBase64 = value.bytesBase64;
+  if (
+    typeof bytesBase64 !== "string" ||
+    bytesBase64.length === 0 ||
+    bytesBase64.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(bytesBase64)
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact chunk encoding is invalid.");
+  }
+  const bytes = Buffer.from(bytesBase64, "base64");
+  if (bytes.byteLength > 1024 * 1024 || bytes.toString("base64") !== bytesBase64) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact chunk encoding is invalid.");
+  }
+  const { bytesBase64: _encoded, ...fields } = value;
+  return parseCurrentHostPortableOperation({ ...fields, bytes }, { binding });
+}
+
+function portableRemoteOutcome(outcome: CurrentHostPortableOperationOutcome): unknown {
+  if (outcome.kind !== "portable_artifact_download_range") return outcome;
+  const { bytes, ...safe } = outcome;
+  return { ...safe, bytesBase64: Buffer.from(bytes).toString("base64") };
 }
 
 async function dispatchCurrentHostVault(

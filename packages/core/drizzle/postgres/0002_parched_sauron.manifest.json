@@ -16,7 +16,7 @@
   "compatibility": {
     "binary": {
       "minimum": "0.34.1",
-      "maximumExclusive": "0.35.0"
+      "maximumExclusive": "0.36.0"
     },
     "schema": {
       "minimum": 1,
@@ -48,5 +48,5 @@
     "requiredRetainedKeyVersions": [1],
     "failurePolicy": "fail-closed-single-schema-authority"
   },
-  "manifestSha256": "c550c075e92af36c367da53d0944317a3bc7782298088e50a35199d20788a26d"
+  "manifestSha256": "4f1b913512226e4f319f4f17fb50cbc5c3c4f6236f6ce8c7734817338bccde1a"
 }

@@ -41,6 +41,7 @@ function environment(): MigrationEnvironment {
     verifiedSchemaAwareBackup: true,
     oldNodesDrained: true,
     retainedKeyVersions: [1],
+    activationEvidence: { kind: "empty-bootstrap" },
     hostAdministrator: true,
   };
 }
@@ -131,7 +132,7 @@ describe("Postgres pool and role boundaries", () => {
     expect(runtime.queries).toContain("SHOW search_path");
     expect(migrator.queries).toContain("SHOW search_path");
     expect(maintenance.queries).toContain("SHOW search_path");
-    await expect(dialect.migrate()).resolves.toHaveLength(9);
+    await expect(dialect.migrate()).resolves.toHaveLength(10);
     const maintenanceGrants = migrator.queries.filter(
       (query) => query.startsWith("GRANT ") && query.includes('TO "caplets_maintenance"'),
     );
@@ -174,6 +175,77 @@ describe("Postgres pool and role boundaries", () => {
     ).toBe(true);
     await dialect.close();
     expect([runtime.ends, migrator.ends, maintenance.ends]).toEqual([1, 1, 1]);
+  });
+
+  it("rejects runtime and maintenance database/schema/object owners and CREATE authority", async () => {
+    const registry = await loadMigrationRegistry({ dialect: "postgres", assetRoot });
+    const capabilities = [
+      "owns_database",
+      "owns_schema",
+      "owns_control_plane_object",
+      "can_create_in_database",
+      "can_create_in_schema",
+    ] as const;
+    for (const capability of capabilities) {
+      const authority = {
+        owns_database: capability === "owns_database",
+        owns_schema: capability === "owns_schema",
+        owns_control_plane_object: capability === "owns_control_plane_object",
+        can_create_in_database: capability === "can_create_in_database",
+        can_create_in_schema: capability === "can_create_in_schema",
+      };
+      await expect(
+        attachVerifiedPostgresPools({
+          storage: postgresStorage(),
+          pools: {
+            runtime: new RolePool("caplets_runtime", 0, authority),
+            migrator: new RolePool("caplets_migrator"),
+          },
+          roles: { runtime: "caplets_runtime", migrator: "caplets_migrator" },
+          registry,
+          environment: environment(),
+        }),
+      ).rejects.toThrow(/owner or DDL authority/u);
+      await expect(
+        attachVerifiedPostgresPools({
+          storage: postgresStorage(),
+          pools: {
+            runtime: new RolePool("caplets_runtime"),
+            migrator: new RolePool("caplets_migrator"),
+            maintenance: new RolePool("caplets_maintenance", 0, authority),
+          },
+          roles: {
+            runtime: "caplets_runtime",
+            migrator: "caplets_migrator",
+            maintenance: "caplets_maintenance",
+          },
+          registry,
+          environment: environment(),
+        }),
+      ).rejects.toThrow(/owner or DDL authority/u);
+    }
+  });
+
+  it("keeps database and DDL ownership exclusive to the migrator role", async () => {
+    const registry = await loadMigrationRegistry({ dialect: "postgres", assetRoot });
+    const migrator = new RolePool("caplets_migrator", 0, {
+      owns_database: true,
+      owns_schema: true,
+      owns_control_plane_object: true,
+      can_create_in_database: true,
+      can_create_in_schema: true,
+    });
+    const dialect = await attachVerifiedPostgresPools({
+      storage: postgresStorage(),
+      pools: { runtime: new RolePool("caplets_runtime"), migrator },
+      roles: { runtime: "caplets_runtime", migrator: "caplets_migrator" },
+      registry,
+      environment: environment(),
+    });
+    expect(migrator.queries.some((query) => query.includes("owns_control_plane_object"))).toBe(
+      false,
+    );
+    await dialect.close();
   });
 
   it("persists and exactly releases the Postgres migration drain gate", async () => {
@@ -398,6 +470,30 @@ describe("Postgres pool and role boundaries", () => {
     expect(runtime.transactionClient?.releaseError).toEqual(new Error("Query read timeout"));
     await dialect.close();
   });
+
+  it("marks a lost COMMIT acknowledgement indeterminate and requires operation lookup", async () => {
+    const registry = await loadMigrationRegistry({ dialect: "postgres", assetRoot });
+    const runtime = new CommitAckLossRolePool("caplets_runtime");
+    const dialect = await attachVerifiedPostgresPools({
+      storage: postgresStorage(),
+      pools: { runtime, migrator: new RolePool("caplets_migrator") },
+      roles: { runtime: "caplets_runtime", migrator: "caplets_migrator" },
+      registry,
+      environment: environment(),
+    });
+    await dialect.migrate();
+    runtime.loseNextCommitAcknowledgement();
+
+    await expect(dialect.runtimeTransaction(async () => "written")).rejects.toMatchObject({
+      code: "SERVER_UNAVAILABLE",
+      details: { transactionOutcome: "indeterminate", recovery: "operation-lookup" },
+    });
+    expect(runtime.transactionClient?.releaseError).toMatchObject({
+      code: "SERVER_UNAVAILABLE",
+      details: { transactionOutcome: "indeterminate", recovery: "operation-lookup" },
+    });
+    await dialect.close();
+  });
 });
 
 class EventedClient extends EventEmitter implements PostgresClient {
@@ -423,6 +519,22 @@ class EventedClient extends EventEmitter implements PostgresClient {
   }
 }
 
+type RoleAuthorityFacts = Readonly<{
+  owns_database: boolean;
+  owns_schema: boolean;
+  owns_control_plane_object: boolean;
+  can_create_in_database: boolean;
+  can_create_in_schema: boolean;
+}>;
+
+const NO_ROLE_AUTHORITY: RoleAuthorityFacts = Object.freeze({
+  owns_database: false,
+  owns_schema: false,
+  owns_control_plane_object: false,
+  can_create_in_database: false,
+  can_create_in_schema: false,
+});
+
 class RolePool extends EventEmitter implements PostgresPool {
   readonly queries: string[] = [];
   ends = 0;
@@ -430,6 +542,7 @@ class RolePool extends EventEmitter implements PostgresPool {
   constructor(
     protected readonly role: string,
     private readonly memberships = 0,
+    private readonly authority: RoleAuthorityFacts = NO_ROLE_AUTHORITY,
   ) {
     super();
   }
@@ -475,6 +588,9 @@ class RolePool extends EventEmitter implements PostgresPool {
     }
     if (sql.startsWith("SELECT count(*)::int AS memberships")) {
       return { rows: [{ memberships: this.memberships }], rowCount: 1 };
+    }
+    if (sql.includes("AS owns_database")) {
+      return { rows: [{ ...this.authority }], rowCount: 1 };
     }
     if (sql === "SHOW search_path") {
       return { rows: [{ search_path: '"caplets", pg_catalog' }], rowCount: 1 };
@@ -586,6 +702,28 @@ class TimeoutRolePool extends RolePool {
     const client = new EventedClient(async (sql, parameters) => {
       if (sql === "BEGIN") throw new Error("Query read timeout");
       return this.runQuery(sql, parameters);
+    });
+    this.transactionClient = client;
+    return client;
+  }
+}
+
+class CommitAckLossRolePool extends RolePool {
+  transactionClient: EventedClient | undefined;
+  private loseCommitAcknowledgement = false;
+
+  loseNextCommitAcknowledgement(): void {
+    this.loseCommitAcknowledgement = true;
+  }
+
+  override async connect(): Promise<PostgresClient> {
+    const client = new EventedClient(async (sql, parameters) => {
+      const result = await this.runQuery(sql, parameters);
+      if (sql === "COMMIT" && this.loseCommitAcknowledgement) {
+        this.loseCommitAcknowledgement = false;
+        throw Object.assign(new Error("connection lost after COMMIT"), { code: "ECONNRESET" });
+      }
+      return result;
     });
     this.transactionClient = client;
     return client;

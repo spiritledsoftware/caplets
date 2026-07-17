@@ -17,6 +17,7 @@ import { scanLinuxRelocatedHandles } from "./exclusion/linux";
 import { scanMacosRelocatedHandles } from "./exclusion/macos";
 import {
   openWindowsExclusionHelper,
+  resumeWindowsExclusionHelper,
   type WindowsArtifactLocation,
   type WindowsHelperLease,
 } from "./exclusion/windows";
@@ -285,6 +286,35 @@ export async function resumeLegacyMigrationExclusion(
     options,
   });
   return createPosixLease(acquisition, platform);
+}
+
+export async function resumeWindowsLegacyMigrationExclusion(
+  options: AcquireLegacyMigrationExclusionOptions,
+  cleanupId: string,
+): Promise<LegacyMigrationExclusion> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    refuse("The Windows exclusion resume path is unavailable on this platform.");
+  }
+  const windows = options.platformOptions?.windows;
+  if (!windows) refuse("Windows exclusion helper configuration is required.");
+  return createWindowsLease(await resumeWindowsExclusionHelper({ options, windows, cleanupId }));
+}
+
+export async function resumeWindowsLegacyMigrationExclusionWithArtifactForTests(
+  options: AcquireLegacyMigrationExclusionOptions,
+  cleanupId: string,
+  artifacts: WindowsArtifactLocation,
+): Promise<LegacyMigrationExclusion> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    refuse("The Windows exclusion resume fixture is unavailable on this platform.");
+  }
+  const windows = options.platformOptions?.windows;
+  if (!windows) refuse("Windows exclusion helper configuration is required.");
+  return createWindowsLease(
+    await resumeWindowsExclusionHelper({ options, windows, cleanupId, artifacts }),
+  );
 }
 export async function acquireLegacyMigrationExclusionWithWindowsArtifactForTests(
   options: AcquireLegacyMigrationExclusionOptions,

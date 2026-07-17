@@ -1,4 +1,6 @@
 import { stableJsonStringify } from "../../stable-json";
+const SAFE_SQL_IDENTIFIER = /^[a-z][a-z0-9_]{0,62}$/u;
+const SAFE_CAPLETS_INTERNAL_IDENTIFIER = /^__caplets_[a-z0-9_]{1,52}$/u;
 
 export type CanonicalSqlJson =
   | null
@@ -67,7 +69,7 @@ export function decodeCanonicalVersion(value: number | bigint): number {
 }
 
 export function assertSafeSqlIdentifier(value: string, label = "SQL identifier"): string {
-  const safe = /^[a-z][a-z0-9_]{0,62}$/u.test(value) || /^__caplets_[a-z0-9_]{1,52}$/u.test(value);
+  const safe = SAFE_SQL_IDENTIFIER.test(value) || SAFE_CAPLETS_INTERNAL_IDENTIFIER.test(value);
   if (!safe || value.startsWith("pg_")) {
     throw new Error(`${label} is unsafe`);
   }

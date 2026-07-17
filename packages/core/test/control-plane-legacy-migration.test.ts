@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hashInstalledArtifact } from "../src/cli/install";
 import { writeCapletsLockfile, type CapletsLockfile } from "../src/cli/lockfile";
 import {
@@ -426,6 +426,41 @@ describe("legacy control-plane initialization state machine", () => {
     }
   });
 
+  it("reconciles a partial protected backup before retrying migration", async () => {
+    const fixture = legacyFixture();
+    const harness = initializationHarness(fixture.root, "sqlite");
+    let attempts = 0;
+    let partialBackupPresent = false;
+    harness.options.protectedRecovery = {
+      protect: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          partialBackupPresent = true;
+          throw new Error("interrupted protected backup");
+        }
+        if (!partialBackupPresent) throw new Error("partial backup evidence was lost");
+        partialBackupPresent = false;
+        return { durable: true, bundleId: "bundle-after-reconciliation" };
+      },
+    };
+    try {
+      await expect(runLegacyControlPlaneInitialization(harness.options)).rejects.toThrow(
+        "interrupted protected backup",
+      );
+      expect(harness.destination.state).toBe("empty");
+      expect(harness.destination.activations).toBe(0);
+
+      await expect(runLegacyControlPlaneInitialization(harness.options)).resolves.toMatchObject({
+        status: "migrated",
+      });
+      expect(attempts).toBe(2);
+      expect(partialBackupPresent).toBe(false);
+      expect(harness.destination.activations).toBe(1);
+    } finally {
+      fixture.remove();
+    }
+  });
+
   it("rejects active or finalized state without bound recovery metadata", async () => {
     for (const state of ["active", "finalized"] as const) {
       const fixture = legacyFixture();
@@ -547,6 +582,44 @@ describe("legacy control-plane initialization state machine", () => {
       if (!(protectedValue instanceof Uint8Array)) throw new Error("credential is not bytes");
       expect(Buffer.from(protectedValue).toString("utf8")).toBe("u6-protected");
     } finally {
+      fixture.remove();
+    }
+  });
+
+  it("renews the Postgres election while protected recovery work is in flight", async () => {
+    vi.useFakeTimers();
+    const fixture = legacyFixture();
+    const harness = initializationHarness(fixture.root, "postgres");
+    let renewals = 0;
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    harness.options.election = {
+      tryElect: async () => ({
+        fencingToken: 41,
+        renew: async () => {
+          renewals += 1;
+          return true;
+        },
+        release: async () => undefined,
+      }),
+    };
+    harness.options.protectedRecovery = {
+      protect: async () => {
+        started.resolve();
+        await finish.promise;
+        return { durable: true, bundleId: "bundle-1" };
+      },
+    };
+    try {
+      const migration = runLegacyControlPlaneInitialization(harness.options);
+      await started.promise;
+      const beforeHeartbeat = renewals;
+      await vi.advanceTimersByTimeAsync(5_001);
+      expect(renewals).toBeGreaterThan(beforeHeartbeat);
+      finish.resolve();
+      await expect(migration).resolves.toMatchObject({ status: "migrated" });
+    } finally {
+      vi.useRealTimers();
       fixture.remove();
     }
   });

@@ -145,6 +145,7 @@
     "db:generate:postgres": "drizzle-kit generate --config drizzle.postgres.config.ts",
     "db:generate": "pnpm run db:generate:sqlite && pnpm run db:generate:postgres",
     "db:check": "drizzle-kit check --config drizzle.sqlite.config.ts && drizzle-kit check --config drizzle.postgres.config.ts && node ./scripts/copy-control-plane-migrations.mjs --check-source",
+    "storage:schema:check": "pnpm run db:check && node ../../scripts/storage-schema-check.mjs",
     "test": "vitest run",
     "windows-helper:build": "node ./scripts/build-windows-exclusion-helper.mjs --build",
     "windows-helper:verify-publish": "node ./scripts/build-windows-exclusion-helper.mjs --verify-publish"

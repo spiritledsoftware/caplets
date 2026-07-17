@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
@@ -14,6 +15,7 @@ import { WebSocketServer } from "ws";
 import { fingerprintProjectRoot } from "../cloud/project-root";
 import {
   defaultCapletsLockfilePath,
+  defaultStorageStateDir,
   resolveCapletsRoot,
   resolveProjectCapletsRoot,
   vaultStoreForAuthDir,
@@ -27,25 +29,32 @@ import {
 } from "../engine";
 import { CapletsError, toSafeError, type CapletsErrorCode } from "../errors";
 import { assertRedactedControlPlaneHealth } from "../control-plane/health";
-import type { ControlPlaneDetailedDiagnostics } from "../control-plane/types";
+import type {
+  ControlPlaneDetailedDiagnostics,
+  ControlPlaneHealthSummary,
+} from "../control-plane/types";
 import type { ControlPlaneRuntimeSnapshotLoader } from "../control-plane/snapshot";
 import type { ControlPlaneLiveOperationClass } from "../control-plane/service";
 import {
   runWithControlPlaneSecurityAdmission,
   type ControlPlaneSecurityRepository,
 } from "../control-plane/security/repository";
+import { ARTIFACT_UPLOAD_CHUNK_BYTES } from "../control-plane/artifacts/provider";
 import {
   createCurrentHostOperations,
   parseCurrentHostManagementMutation,
   parseCurrentHostOperationBinding,
+  parseCurrentHostPortableOperation,
   toCurrentHostSafeError,
   trustedDevelopmentOperatorPrincipal,
   withCurrentHostFinalAuthorization,
   type CurrentHostManagementDependencies,
   type CurrentHostManagementResource,
   type CurrentHostOperationBinding,
+  type CurrentHostPortableOperations,
   type CurrentHostOperatorPrincipal,
 } from "../current-host/operations";
+import { parsePortableArtifactReference, type PortableArtifactReference } from "../media/artifacts";
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
 import { DashboardActivityLog, type DashboardActivityAction } from "../dashboard/activity-log";
 import { dashboardShell, dashboardStaticResponse } from "../dashboard/routes";
@@ -88,6 +97,10 @@ import {
 import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
+import {
+  startHostLocalCredentialAuthority,
+  type HostLocalCredentialAuthority,
+} from "./host-local-credential-authority";
 
 type HttpServeIo = {
   writeErr?: (value: string) => void;
@@ -102,6 +115,7 @@ type HttpServeIo = {
   dashboardDistDir?: string;
   projectBindingWorkspaceStore?: ProjectBindingWorkspaceStore;
   currentHostManagement?: CurrentHostManagementDependencies | undefined;
+  currentHostPortable?: CurrentHostPortableOperations | undefined;
   controlPlaneSecurity?: ControlPlaneSecurityRepository | undefined;
 };
 
@@ -247,8 +261,82 @@ export function createHttpServeApp(
     remotePendingLoginRepository: controlPlaneSecurity,
     vaultRepository: controlPlaneSecurity,
     management: io.currentHostManagement,
+    portable: io.currentHostPortable,
     version: packageJsonVersion,
   });
+  const portableArtifactResponse = (
+    principal: CurrentHostOperatorPrincipal,
+    management: CurrentHostManagementDependencies,
+    target: "global" | "remote",
+    reference: PortableArtifactReference,
+    rangeHeader: string | undefined,
+  ): Response => {
+    const range = portableByteRange(rangeHeader, reference.byteLength);
+    let nextOffset = range.start;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (nextOffset >= range.endExclusive) {
+          controller.close();
+          return;
+        }
+        const start = nextOffset;
+        const endExclusive = Math.min(start + ARTIFACT_UPLOAD_CHUNK_BYTES, range.endExclusive);
+        try {
+          const binding = portableHttpBinding(
+            principal,
+            management,
+            target,
+            `download:${reference.artifactId}:${start}:${endExclusive}`,
+            reference.operationId,
+            "external-effect",
+          );
+          const outcome = await currentHostOperations.execute(
+            principal,
+            parseCurrentHostPortableOperation(
+              {
+                kind: "portable_artifact_download_range",
+                artifactReference: reference,
+                start,
+                endExclusive,
+              },
+              { binding },
+            ),
+          );
+          if (
+            outcome.kind !== "portable_artifact_download_range" ||
+            outcome.start !== start ||
+            outcome.endExclusive !== endExclusive ||
+            outcome.totalLength !== reference.byteLength ||
+            outcome.bytes.byteLength !== endExclusive - start
+          ) {
+            throw new CapletsError(
+              "SERVER_UNAVAILABLE",
+              "Portable artifact download returned an invalid range.",
+            );
+          }
+          nextOffset = endExclusive;
+          controller.enqueue(outcome.bytes);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+    });
+    const partial = rangeHeader !== undefined;
+    return new Response(stream, {
+      status: partial ? 206 : 200,
+      headers: {
+        "accept-ranges": "bytes",
+        "content-length": String(range.endExclusive - range.start),
+        "content-type": reference.mimeType,
+        etag: `"${reference.sha256}"`,
+        ...(partial
+          ? {
+              "content-range": `bytes ${range.start}-${range.endExclusive - 1}/${reference.byteLength}`,
+            }
+          : {}),
+      },
+    });
+  };
   const authenticatedRemoteClients = new WeakMap<Request, ValidatedRemoteClient>();
   const completedSelfRevocations = new WeakSet<Request>();
   const retainAuthenticatedRemoteClient = (request: Request, client: ValidatedRemoteClient) => {
@@ -384,6 +472,9 @@ export function createHttpServeApp(
       const health = await engine.controlPlaneHealth();
       if (!health) return c.json({ status: "ok" });
       const redacted = assertRedactedControlPlaneHealth(health);
+      if (new URL(c.req.url).searchParams.get("portable") === "1") {
+        return c.json(portableStatusHealth(redacted));
+      }
       return c.json(redacted, redacted.readiness === "ready" ? 200 : 503);
     } catch {
       return c.json({ status: "unavailable" }, 503);
@@ -523,7 +614,11 @@ export function createHttpServeApp(
         return c.json({ error: "storage_unavailable", guidanceCode: "storage-unavailable" }, 503);
       }
       const redacted = assertRedactedControlPlaneHealth(health);
-      return c.json(redacted);
+      return c.json(
+        new URL(c.req.url).searchParams.get("portable") === "1"
+          ? portableStatusHealth(redacted)
+          : redacted,
+      );
     } catch {
       return c.json({ error: "storage_unavailable", guidanceCode: "storage-unavailable" }, 503);
     }
@@ -680,6 +775,112 @@ export function createHttpServeApp(
       }
       return currentHostManagementResponse(
         await currentHostOperations.lookupOperation(principal, binding),
+      );
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardPortable, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement || !io.currentHostPortable) {
+      return c.json({ error: "portability_unavailable" }, 404);
+    }
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Portable Current Host operation");
+      const operation = parsed.operation;
+      if (!isRecord(operation) || typeof operation.kind !== "string") {
+        throw new CapletsError("REQUEST_INVALID", "Portable operation must be an object.");
+      }
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = portableHttpBinding(
+        principal,
+        io.currentHostManagement,
+        "global",
+        JSON.stringify(operation),
+        optionalStringField(parsed, "operationId"),
+        operation.kind === "portable_status" ? "logical-state" : "external-effect",
+      );
+      return currentHostManagementResponse(
+        await currentHostOperations.execute(
+          principal,
+          parseCurrentHostPortableOperation(operation, { binding }),
+        ),
+      );
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.put(paths.dashboardPortableArtifacts, async (c) => {
+    const session = await dashboardSessionForRequest(c, {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement || !io.currentHostPortable) {
+      return c.json({ error: "portability_unavailable" }, 404);
+    }
+    try {
+      const bytes = await boundedPortableChunk(c.req.raw);
+      const sessionId = requiredPortableHeader(c.req.raw, "x-caplets-session-id");
+      const operationId = requiredPortableHeader(c.req.raw, "x-caplets-operation-id");
+      const offset = portableNonNegativeInteger(
+        requiredPortableHeader(c.req.raw, "x-caplets-offset"),
+        "offset",
+      );
+      const chunkSha256 = portableSha256(
+        requiredPortableHeader(c.req.raw, "x-caplets-sha256"),
+        "chunk SHA-256",
+      );
+      const principal = dashboardPrincipalForSession(c, session.session);
+      const binding = portableHttpBinding(
+        principal,
+        io.currentHostManagement,
+        "global",
+        `append:${sessionId}:${offset}:${chunkSha256}`,
+        operationId,
+        "external-effect",
+      );
+      const outcome = await currentHostOperations.execute(
+        principal,
+        parseCurrentHostPortableOperation(
+          {
+            kind: "portable_import_session_append",
+            sessionId,
+            offset,
+            chunkSha256,
+            bytes,
+          },
+          { binding },
+        ),
+      );
+      return currentHostManagementResponse(outcome);
+    } catch (error) {
+      return currentHostErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardPortableArtifacts, async (c) => {
+    const session = await dashboardSessionForRequest(c);
+    if (!session.ok) return session.response;
+    if (!io.currentHostManagement || !io.currentHostPortable) {
+      return c.json({ error: "portability_unavailable" }, 404);
+    }
+    try {
+      const reference = parsePortableArtifactReference(
+        requiredQueryParam(new URL(c.req.url).searchParams, "ref"),
+      );
+      return portableArtifactResponse(
+        dashboardPrincipalForSession(c, session.session),
+        io.currentHostManagement,
+        "global",
+        reference,
+        c.req.header("range"),
       );
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -1634,6 +1835,81 @@ export function createHttpServeApp(
     }
   }
 
+  app.put(
+    paths.controlPortableArtifacts,
+    currentHostDevelopmentGuard(options),
+    operatorRouteAuth,
+    async (c) => {
+      if (!io.currentHostManagement || !io.currentHostPortable) {
+        return c.json({ error: "portability_unavailable" }, 404);
+      }
+      try {
+        const bytes = await boundedPortableChunk(c.req.raw);
+        const sessionId = requiredPortableHeader(c.req.raw, "x-caplets-session-id");
+        const operationId = requiredPortableHeader(c.req.raw, "x-caplets-operation-id");
+        const offset = portableNonNegativeInteger(
+          requiredPortableHeader(c.req.raw, "x-caplets-offset"),
+          "offset",
+        );
+        const chunkSha256 = portableSha256(
+          requiredPortableHeader(c.req.raw, "x-caplets-sha256"),
+          "chunk SHA-256",
+        );
+        const principal = await controlOperatorPrincipal(c);
+        const binding = portableHttpBinding(
+          principal,
+          io.currentHostManagement,
+          "remote",
+          `append:${sessionId}:${offset}:${chunkSha256}`,
+          operationId,
+          "external-effect",
+        );
+        return currentHostManagementResponse(
+          await currentHostOperations.execute(
+            principal,
+            parseCurrentHostPortableOperation(
+              {
+                kind: "portable_import_session_append",
+                sessionId,
+                offset,
+                chunkSha256,
+                bytes,
+              },
+              { binding },
+            ),
+          ),
+        );
+      } catch (error) {
+        return currentHostErrorResponse(error);
+      }
+    },
+  );
+
+  app.get(
+    paths.controlPortableArtifacts,
+    currentHostDevelopmentGuard(options),
+    operatorRouteAuth,
+    async (c) => {
+      if (!io.currentHostManagement || !io.currentHostPortable) {
+        return c.json({ error: "portability_unavailable" }, 404);
+      }
+      try {
+        const reference = parsePortableArtifactReference(
+          requiredQueryParam(new URL(c.req.url).searchParams, "ref"),
+        );
+        return portableArtifactResponse(
+          await controlOperatorPrincipal(c),
+          io.currentHostManagement,
+          "remote",
+          reference,
+          c.req.header("range"),
+        );
+      } catch (error) {
+        return currentHostErrorResponse(error);
+      }
+    },
+  );
+
   app.post(paths.control, currentHostDevelopmentGuard(options), operatorRouteAuth, async (c) => {
     let request: RemoteCliRequest;
     try {
@@ -1662,6 +1938,119 @@ export function createHttpServeApp(
       principal = await controlOperatorPrincipal(c);
     } catch (error) {
       return remoteCredentialErrorResponse(error);
+    }
+    if (
+      request.command === "current_host_list" ||
+      request.command === "current_host_inspect" ||
+      request.command === "current_host_preview" ||
+      request.command === "current_host_mutate" ||
+      request.command === "current_host_status"
+    ) {
+      if (!io.currentHostManagement) {
+        return c.json({
+          ok: false,
+          error: { code: "SERVER_UNAVAILABLE", message: "Current Host management is unavailable." },
+        });
+      }
+      try {
+        let canonicalRequest: unknown;
+        if (request.command === "current_host_list") {
+          const resource = managementResource(stringField(request.arguments, "resource"));
+          canonicalRequest = { action: "list", resource };
+          request = { ...request, arguments: { ...request.arguments, resource } };
+        } else if (request.command === "current_host_inspect") {
+          const resource = managementResource(stringField(request.arguments, "resource"));
+          const id = stringField(request.arguments, "id");
+          const selector = managementSelector(stringField(request.arguments, "selector"));
+          canonicalRequest = { action: "inspect", resource, id, selector };
+          request = { ...request, arguments: { ...request.arguments, resource, id, selector } };
+        } else if (
+          request.command === "current_host_preview" ||
+          request.command === "current_host_mutate"
+        ) {
+          const mutation = parseCurrentHostManagementMutation(request.arguments.mutation);
+          canonicalRequest = mutation;
+          request = { ...request, arguments: { ...request.arguments, mutation } };
+        } else {
+          canonicalRequest = { action: "status" };
+        }
+        request = {
+          ...request,
+          arguments: {
+            ...request.arguments,
+            binding: remoteManagementHttpBinding(
+              principal,
+              io.currentHostManagement,
+              stringField(request.arguments, "operationId"),
+              stringField(request.arguments, "requestIdentity"),
+              canonicalRequest,
+            ),
+          },
+        };
+      } catch (error) {
+        const safe = toCurrentHostSafeError(error);
+        return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
+      }
+    }
+    if (request.command === "current_host_operation_lookup") {
+      if (!io.currentHostManagement) {
+        return c.json({
+          ok: false,
+          error: { code: "SERVER_UNAVAILABLE", message: "Current Host management is unavailable." },
+        });
+      }
+      try {
+        const binding = parseCurrentHostOperationBinding(request.arguments.binding);
+        const identity = io.currentHostManagement.storage.identity;
+        if (
+          binding.target !== "remote" ||
+          binding.actorId !== principal.clientId ||
+          binding.logicalHostId !== identity.logicalHostId ||
+          binding.storeId !== identity.storeId ||
+          binding.operationNamespace !== identity.operationNamespace
+        ) {
+          throw new CapletsError(
+            "AUTH_FAILED",
+            "Current Host operation lookup target does not match the authenticated Operator.",
+          );
+        }
+      } catch (error) {
+        const safe = toCurrentHostSafeError(error);
+        return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
+      }
+    }
+    if (request.command === "current_host_portable" && request.arguments.binding === undefined) {
+      if (!io.currentHostManagement || !io.currentHostPortable) {
+        return c.json({
+          ok: false,
+          error: { code: "SERVER_UNAVAILABLE", message: "Portability is unavailable." },
+        });
+      }
+      const operation = request.arguments.operation;
+      if (!isRecord(operation) || typeof operation.kind !== "string") {
+        return c.json({
+          ok: false,
+          error: { code: "REQUEST_INVALID", message: "Portable operation must be an object." },
+        });
+      }
+      try {
+        request = {
+          ...request,
+          arguments: {
+            ...request.arguments,
+            binding: portableHttpBinding(
+              principal,
+              io.currentHostManagement,
+              "remote",
+              JSON.stringify(operation),
+              optionalStringField(request.arguments, "operationId"),
+              operation.kind === "portable_status" ? "logical-state" : "external-effect",
+            ),
+          },
+        };
+      } catch (error) {
+        return currentHostErrorResponse(error);
+      }
     }
     const response = await dispatchRemoteCliRequest(request, context, {
       operations: currentHostOperations,
@@ -3087,16 +3476,21 @@ export async function serveInternalHttp(
   return startHttpService(options, remoteEngineOptions, engine, writeErr, loader);
 }
 
-function startHttpService(
+async function startHttpService(
   options: HttpServeOptions,
   remoteEngineOptions: CapletsEngineOptions,
   engine: CapletsEngine,
   writeErr: (value: string) => void,
   loader?: ControlPlaneRuntimeSnapshotLoader,
-): void {
+): Promise<void> {
+  const hostLocalAuthority = await startLiveHostLocalCredentialAuthority(
+    engine,
+    remoteEngineOptions,
+  );
   const app = createHttpServeApp(options, engine, {
     writeErr,
     currentHostManagement: engine.currentHostManagementDependencies(),
+    currentHostPortable: engine.currentHostPortableOperations(),
     controlPlaneSecurity: engine.controlPlaneSecurityRepository(),
     control: {
       ...remoteEngineOptions,
@@ -3106,6 +3500,7 @@ function startHttpService(
       globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
+  bindHostLocalAuthorityLifecycle(app, hostLocalAuthority);
   const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
   const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
@@ -3173,7 +3568,7 @@ export async function serveInternalHttpWithSessionFactory(
   );
 }
 
-function startHttpSessionService(
+async function startHttpSessionService(
   options: HttpServeOptions,
   createSession: HttpMcpSessionFactory,
   writeErr: (value: string) => void,
@@ -3181,10 +3576,15 @@ function startHttpSessionService(
   remoteEngineOptions: CapletsEngineOptions,
   engine: CapletsEngine,
   loader?: ControlPlaneRuntimeSnapshotLoader,
-): void {
+): Promise<void> {
+  const hostLocalAuthority = await startLiveHostLocalCredentialAuthority(
+    engine,
+    remoteEngineOptions,
+  );
   const app = createHttpServeApp(options, engine, {
     writeErr,
     currentHostManagement: engine.currentHostManagementDependencies(),
+    currentHostPortable: engine.currentHostPortableOperations(),
     controlPlaneSecurity: engine.controlPlaneSecurityRepository(),
     exposeAttach: io.exposeAttach ?? false,
     sessionFactory: createSession,
@@ -3200,6 +3600,7 @@ function startHttpSessionService(
       globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
+  bindHostLocalAuthorityLifecycle(app, hostLocalAuthority);
   const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
   const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
@@ -3219,6 +3620,37 @@ function startHttpSessionService(
     },
   );
   installHttpSignalHandlers(server, app, engine, writeErr);
+}
+
+async function startLiveHostLocalCredentialAuthority(
+  engine: CapletsEngine,
+  engineOptions: CapletsEngineOptions,
+): Promise<HostLocalCredentialAuthority | undefined> {
+  const snapshot = engine.currentControlPlaneRuntimeSnapshot();
+  const authority = engine.controlPlaneSecurityRepository();
+  if (snapshot?.backend !== "sqlite" || !authority) return undefined;
+  const stateRoot = resolve(
+    snapshot.config.serve?.storage?.stateRoot ??
+      defaultStorageStateDir(engineOptions.env ?? process.env),
+  );
+  return startHostLocalCredentialAuthority({
+    stateRoot,
+    logicalHostId: snapshot.identity.logicalHostId,
+    storeId: snapshot.identity.storeId,
+    authority,
+  });
+}
+
+function bindHostLocalAuthorityLifecycle(
+  app: CapletsHttpApp,
+  authority: HostLocalCredentialAuthority | undefined,
+): void {
+  if (!authority) return;
+  const closeSessions = app.closeCapletsSessions;
+  app.closeCapletsSessions = async () => {
+    await authority.close();
+    await closeSessions();
+  };
 }
 
 export function sanitizeRemoteEngineOptions(
@@ -3253,6 +3685,7 @@ export function servicePaths(base: string): {
   version: string;
   mcp: string;
   control: string;
+  controlPortableArtifacts: string;
   attachManifest: string;
   attachSessions: string;
   attachEvents: string;
@@ -3277,6 +3710,8 @@ export function servicePaths(base: string): {
   dashboardSummary: string;
   dashboardCaplets: string;
   dashboardStorageHealth: string;
+  dashboardPortable: string;
+  dashboardPortableArtifacts: string;
   dashboardManagement: string;
   dashboardManagementInspect: string;
   dashboardManagementPreview: string;
@@ -3316,6 +3751,7 @@ export function servicePaths(base: string): {
     version,
     mcp: routePath(version, "mcp"),
     control: routePath(version, "admin"),
+    controlPortableArtifacts: routePath(routePath(version, "admin"), "portable/artifacts"),
     attachSessions: routePath(attach, "sessions"),
     attachManifest: routePath(attach, "manifest"),
     attachEvents: routePath(attach, "events"),
@@ -3340,6 +3776,8 @@ export function servicePaths(base: string): {
     dashboardSummary: routePath(dashboardApi, "summary"),
     dashboardCaplets: routePath(dashboardApi, "caplets"),
     dashboardStorageHealth: routePath(dashboardApi, "storage-health"),
+    dashboardPortable: routePath(dashboardApi, "portable"),
+    dashboardPortableArtifacts: routePath(dashboardApi, "portable/artifacts"),
     dashboardManagement: routePath(dashboardApi, "management"),
     dashboardManagementInspect: routePath(dashboardApi, "management/inspect"),
     dashboardManagementPreview: routePath(dashboardApi, "management/preview"),
@@ -3422,6 +3860,56 @@ function dashboardManagementBinding(
     actorId: principal.clientId,
     requestIdentity: canonicalRequestIdentity,
     operationClass: "logical-state",
+  };
+}
+
+function remoteManagementHttpBinding(
+  principal: CurrentHostOperatorPrincipal,
+  management: CurrentHostManagementDependencies,
+  operationId: string,
+  requestIdentity: string,
+  canonicalRequest: unknown,
+): CurrentHostOperationBinding {
+  if (!/^[A-Za-z0-9_-]{1,160}$/u.test(operationId)) {
+    throw new CapletsError("REQUEST_INVALID", "operationId is invalid.");
+  }
+  const expectedRequestIdentity = createHash("sha256")
+    .update(JSON.stringify(canonicalRequest))
+    .digest("hex");
+  if (requestIdentity !== expectedRequestIdentity) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "requestIdentity does not match the canonical Current Host command.",
+    );
+  }
+  return {
+    operationId,
+    target: "remote",
+    ...management.storage.identity,
+    actorId: principal.clientId,
+    requestIdentity: expectedRequestIdentity,
+    operationClass: "logical-state",
+  };
+}
+
+function portableHttpBinding(
+  principal: CurrentHostOperatorPrincipal,
+  management: CurrentHostManagementDependencies,
+  target: "global" | "remote",
+  requestIdentity: string,
+  operationId = `operation_${randomUUID()}`,
+  operationClass: CurrentHostOperationBinding["operationClass"] = "external-effect",
+): CurrentHostOperationBinding {
+  if (!/^[A-Za-z0-9_-]{1,160}$/u.test(operationId)) {
+    throw new CapletsError("REQUEST_INVALID", "operationId is invalid.");
+  }
+  return {
+    operationId,
+    target,
+    ...management.storage.identity,
+    actorId: principal.clientId,
+    requestIdentity: createHash("sha256").update(requestIdentity).digest("hex"),
+    operationClass,
   };
 }
 
@@ -3676,6 +4164,66 @@ function optionalStringField(input: Record<string, unknown>, key: string): strin
   return value.trim();
 }
 
+function requiredPortableHeader(request: Request, name: string): string {
+  const value = request.headers.get(name);
+  if (!value) throw new CapletsError("REQUEST_INVALID", `${name} is required.`);
+  return value;
+}
+
+function portableNonNegativeInteger(value: string, label: string): number {
+  if (!/^(?:0|[1-9]\d*)$/u.test(value)) {
+    throw new CapletsError("REQUEST_INVALID", `Portable artifact ${label} is invalid.`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", `Portable artifact ${label} is invalid.`);
+  }
+  return parsed;
+}
+
+function portableSha256(value: string, label: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) {
+    throw new CapletsError("REQUEST_INVALID", `Portable artifact ${label} is invalid.`);
+  }
+  return value;
+}
+
+async function boundedPortableChunk(request: Request): Promise<Uint8Array> {
+  const declaredLength = request.headers.get("content-length");
+  if (
+    declaredLength &&
+    portableNonNegativeInteger(declaredLength, "Content-Length") > ARTIFACT_UPLOAD_CHUNK_BYTES
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact chunk exceeds 1 MiB.");
+  }
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.byteLength === 0 || bytes.byteLength > ARTIFACT_UPLOAD_CHUNK_BYTES) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact chunk must be 1 byte to 1 MiB.");
+  }
+  return bytes;
+}
+
+function portableByteRange(
+  header: string | undefined,
+  totalLength: number,
+): Readonly<{ start: number; endExclusive: number }> {
+  if (!Number.isSafeInteger(totalLength) || totalLength <= 0) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact length is invalid.");
+  }
+  if (!header) return { start: 0, endExclusive: totalLength };
+  const match = /^bytes=(0|[1-9]\d*)-(0|[1-9]\d*)?$/u.exec(header);
+  if (!match) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact Range is invalid.");
+  }
+  const start = portableNonNegativeInteger(match[1]!, "range start");
+  const inclusiveEnd =
+    match[2] === undefined ? totalLength - 1 : portableNonNegativeInteger(match[2], "range end");
+  if (start >= totalLength || inclusiveEnd < start || inclusiveEnd >= totalLength) {
+    throw new CapletsError("REQUEST_INVALID", "Portable artifact Range is invalid.");
+  }
+  return { start, endExclusive: inclusiveEnd + 1 };
+}
+
 async function parseProjectBindingSocketClientMessage(
   data: unknown,
 ): Promise<ProjectBindingSocketClientMessage | undefined> {
@@ -3735,6 +4283,25 @@ function remoteCredentialErrorResponse(error: unknown): Response {
       ? toSafeError(error, error.code)
       : toSafeError(error, "AUTH_FAILED");
   return Response.json({ ok: false, error: safe }, { status: httpStatusForSafeError(safe.code) });
+}
+
+function portableStatusHealth(health: ControlPlaneHealthSummary): Readonly<{
+  kind: "portable_status";
+  status: "live" | "stale-read-only" | "not-ready";
+  health: ControlPlaneHealthSummary;
+  guidanceCode: string;
+}> {
+  return {
+    kind: "portable_status",
+    status:
+      health.readiness === "ready"
+        ? "live"
+        : health.readiness === "stale-read-only"
+          ? "stale-read-only"
+          : "not-ready",
+    health,
+    guidanceCode: health.guidanceCode,
+  };
 }
 
 function currentHostManagementResponse(outcome: unknown): Response {

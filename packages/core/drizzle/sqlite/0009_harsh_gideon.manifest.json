@@ -1,0 +1,48 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0009_harsh_gideon",
+  "order": 9,
+  "dialect": "sqlite",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0009_harsh_gideon.sql",
+    "sha256": "b7e8ad2152e7a3e4843aab8819caa2d4302fe750db6ae1d45e2b0470c394b76a"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.36.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 3
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "restore",
+    "windowSeconds": 604800,
+    "requiresVerifiedBackup": true,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "86720dbda74c842f60cfae53dd9ae868600cdeda17ad037c487a374e9c1d3670"
+}

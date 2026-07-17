@@ -15,6 +15,8 @@ import type {
   CurrentHostOperationLookupOutcome,
   CurrentHostOperationOutcome,
   CurrentHostOperatorPrincipal,
+  CurrentHostPortableOperation,
+  CurrentHostPortableOperationOutcome,
   CurrentHostOperations,
   CurrentHostOperationsDependencies,
 } from "./operations";
@@ -306,6 +308,12 @@ async function clientRoleOutcome(
   }
 }
 
+type CurrentHostPortableOperationInput = CurrentHostPortableOperation extends infer TOperation
+  ? TOperation extends CurrentHostPortableOperation
+    ? Omit<TOperation, "binding">
+    : never
+  : never;
+
 export interface CurrentHostManagementClient {
   readonly target: "global" | "remote";
   readonly identity: Readonly<{
@@ -334,6 +342,10 @@ export interface CurrentHostManagementClient {
     mutation: CurrentHostManagementMutation,
     binding?: CurrentHostOperationBinding | undefined,
   ): Promise<CurrentHostManagementMutationResult>;
+  executePortable(
+    operation: CurrentHostPortableOperationInput,
+    operationId?: string | undefined,
+  ): Promise<CurrentHostPortableOperationOutcome>;
   status(): Promise<CurrentHostManagementStatusResult>;
   lookupOperation(binding: CurrentHostOperationBinding): Promise<CurrentHostOperationLookupOutcome>;
 }
@@ -392,6 +404,29 @@ export function createCurrentHostManagementClient(
       binding: CurrentHostOperationBinding = createBinding(mutation),
     ) {
       return options.operations.mutate(options.principal, { binding, mutation });
+    },
+    executePortable(
+      operation: CurrentHostPortableOperationInput,
+      operationId?: string | undefined,
+    ) {
+      const requestIdentity =
+        operation.kind === "portable_import_session_append"
+          ? {
+              ...operation,
+              bytes: undefined,
+              byteLength: operation.bytes.byteLength,
+            }
+          : operation;
+      const binding = createBinding(requestIdentity, {
+        operationId,
+        operationClass:
+          operation.kind === "portable_status" ||
+          operation.kind === "portable_import_session_status" ||
+          operation.kind === "portable_import_preview"
+            ? "logical-state"
+            : "external-effect",
+      });
+      return options.operations.execute(options.principal, { ...operation, binding });
     },
     status() {
       return options.operations.status(options.principal, createBinding({ action: "status" }));

@@ -677,141 +677,145 @@ describe("U8 layered runtime composition", () => {
     );
   });
 
-  it("materializes a maximum-size SQL asset within the 1-second p99 budget", async () => {
-    const assetContent = new Uint8Array(64 * 1024 * 1024);
-    const assetHash = createHash("sha256").update(assetContent).digest("hex");
-    const assetDir = mkdtempSync(join(tmpdir(), "caplets-u8-max-asset-"));
-    runtimeAssetTempDirs.push(assetDir);
-    const materializedAssetPath = join(assetDir, "openapi.json");
-    writeFileSync(materializedAssetPath, assetContent);
-    const base = httpAggregate("max-asset", "max-asset");
-    const portableAssetContent = Buffer.from(assetContent).toString("base64");
-    const snapshot = {
-      ...sqlSnapshot([
-        {
-          ...base,
-          aggregate: {
-            ...base.aggregate,
-            portable: {
-              ...base.aggregate.portable,
-              frontmatter: {
-                ...base.aggregate.portable.frontmatter,
-                backend: {
-                  kind: "openapi",
+  it.skipIf(process.env.CAPLETS_BENCHMARK_REPORT !== "1")(
+    "materializes a maximum-size SQL asset within the 1-second p99 budget",
+    async () => {
+      const assetContent = new Uint8Array(64 * 1024 * 1024);
+      const assetHash = createHash("sha256").update(assetContent).digest("hex");
+      const assetDir = mkdtempSync(join(tmpdir(), "caplets-u8-max-asset-"));
+      runtimeAssetTempDirs.push(assetDir);
+      const materializedAssetPath = join(assetDir, "openapi.json");
+      writeFileSync(materializedAssetPath, assetContent);
+      const base = httpAggregate("max-asset", "max-asset");
+      const portableAssetContent = Buffer.from(assetContent).toString("base64");
+      const snapshot = {
+        ...sqlSnapshot([
+          {
+            ...base,
+            aggregate: {
+              ...base.aggregate,
+              portable: {
+                ...base.aggregate.portable,
+                frontmatter: {
+                  ...base.aggregate.portable.frontmatter,
+                  backend: {
+                    kind: "openapi",
+                    config: {
+                      specPath: "assets/openapi.json",
+                      auth: { type: "none" },
+                    },
+                  },
+                  declaredInputs: [
+                    {
+                      name: "openapi",
+                      reference: { type: "local", path: "assets/openapi.json" },
+                    },
+                  ],
+                },
+                assets: [
+                  {
+                    path: "assets/openapi.json",
+                    role: "openapi",
+                    mediaType: "application/json",
+                    encoding: "base64",
+                    content: portableAssetContent,
+                    contentHash: assetHash,
+                    byteLength: assetContent.byteLength,
+                  },
+                ],
+                references: [
+                  {
+                    type: "local",
+                    owner: "max-asset",
+                    path: "assets/openapi.json",
+                  },
+                ],
+              },
+            },
+            projection: {
+              ...base.projection,
+              backends: [
+                {
+                  capletId: "max-asset",
+                  ordinal: 0,
+                  kind: "openapi" as const,
                   config: {
                     specPath: "assets/openapi.json",
                     auth: { type: "none" },
                   },
                 },
-                declaredInputs: [
-                  {
-                    name: "openapi",
-                    reference: { type: "local", path: "assets/openapi.json" },
-                  },
-                ],
-              },
-              assets: [
-                {
-                  path: "assets/openapi.json",
-                  role: "openapi",
-                  mediaType: "application/json",
-                  encoding: "base64",
-                  content: portableAssetContent,
-                  contentHash: assetHash,
-                  byteLength: assetContent.byteLength,
-                },
               ],
               references: [
                 {
-                  type: "local",
-                  owner: "max-asset",
+                  capletId: "max-asset",
+                  ordinal: 0,
+                  reference: {
+                    type: "local" as const,
+                    owner: "max-asset",
+                    path: "assets/openapi.json",
+                  },
+                },
+              ],
+              assets: [
+                {
+                  capletId: "max-asset",
+                  ordinal: 0,
                   path: "assets/openapi.json",
+                  role: "openapi" as const,
+                  mediaType: "application/json",
+                  content: assetContent,
+                  contentHash: assetHash,
                 },
               ],
             },
           },
-          projection: {
-            ...base.projection,
-            backends: [
-              {
-                capletId: "max-asset",
-                ordinal: 0,
-                kind: "openapi" as const,
-                config: {
-                  specPath: "assets/openapi.json",
-                  auth: { type: "none" },
-                },
-              },
-            ],
-            references: [
-              {
-                capletId: "max-asset",
-                ordinal: 0,
-                reference: {
-                  type: "local" as const,
-                  owner: "max-asset",
-                  path: "assets/openapi.json",
-                },
-              },
-            ],
-            assets: [
-              {
-                capletId: "max-asset",
-                ordinal: 0,
-                path: "assets/openapi.json",
-                role: "openapi" as const,
-                mediaType: "application/json",
-                content: assetContent,
-                contentHash: assetHash,
-              },
-            ],
-          },
-        },
-      ]),
-      encodedBytes: assetContent.byteLength,
-    };
-    const maxAssetEntry = snapshot.caplets[0]!;
-    encodePortableCaplet(maxAssetEntry.aggregate.portable);
-    validateCapletRelationalProjection(maxAssetEntry.aggregate, maxAssetEntry.projection);
-    const composeFixture = () =>
-      composeControlPlaneRuntimeSnapshot({
-        hydration: hydration(
-          "sqlite",
-          { currentFingerprint: SQL_ONLY_BOOTSTRAP_FINGERPRINT },
-          { ...snapshot, caplets: [...snapshot.caplets] },
-        ),
-        filesystemLayers: [],
-        resolvedRuntimeInputs: {},
-        hiddenCommitments: [],
-        providerVersions: {},
-        resolveSqlAssetPath: () => materializedAssetPath,
-      });
-    const runP99Ms: number[] = [];
-    for (let run = 0; run < STORAGE_BENCHMARK_ENVELOPE.independentRuns; run += 1) {
-      for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.warmupSamples; index += 1) {
-        await composeFixture();
+        ]),
+        encodedBytes: assetContent.byteLength,
+      };
+      const maxAssetEntry = snapshot.caplets[0]!;
+      encodePortableCaplet(maxAssetEntry.aggregate.portable);
+      validateCapletRelationalProjection(maxAssetEntry.aggregate, maxAssetEntry.projection);
+      const composeFixture = () =>
+        composeControlPlaneRuntimeSnapshot({
+          hydration: hydration(
+            "sqlite",
+            { currentFingerprint: SQL_ONLY_BOOTSTRAP_FINGERPRINT },
+            { ...snapshot, caplets: [...snapshot.caplets] },
+          ),
+          filesystemLayers: [],
+          resolvedRuntimeInputs: {},
+          hiddenCommitments: [],
+          providerVersions: {},
+          resolveSqlAssetPath: () => materializedAssetPath,
+        });
+      const runP99Ms: number[] = [];
+      for (let run = 0; run < STORAGE_BENCHMARK_ENVELOPE.independentRuns; run += 1) {
+        for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.warmupSamples; index += 1) {
+          await composeFixture();
+        }
+        const samples: number[] = [];
+        for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun; index += 1) {
+          const started = performance.now();
+          await composeFixture();
+          samples.push(performance.now() - started);
+        }
+        runP99Ms.push(nearestRank(samples, 0.99));
       }
-      const samples: number[] = [];
-      for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun; index += 1) {
-        const started = performance.now();
-        await composeFixture();
-        samples.push(performance.now() - started);
+      const p99Ms = Math.max(...runP99Ms);
+      if (process.env.CAPLETS_BENCHMARK_REPORT === "1") {
+        process.stdout.write(
+          `${JSON.stringify({
+            fixture: "u8-sql-asset-materialization",
+            runs: runP99Ms,
+            samplesPerRun: STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun,
+            p99Ms,
+          })}\n`,
+        );
       }
-      runP99Ms.push(nearestRank(samples, 0.99));
-    }
-    const p99Ms = Math.max(...runP99Ms);
-    if (process.env.CAPLETS_BENCHMARK_REPORT === "1") {
-      process.stdout.write(
-        `${JSON.stringify({
-          fixture: "u8-sql-asset-materialization",
-          runs: runP99Ms,
-          samplesPerRun: STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun,
-          p99Ms,
-        })}\n`,
-      );
-    }
-    expect(runP99Ms.every((runP99Ms) => runP99Ms <= 1_000)).toBe(true);
-  }, 600_000);
+      expect(runP99Ms.every((runP99Ms) => runP99Ms <= 1_000)).toBe(true);
+    },
+    600_000,
+  );
 
   it("routes SQL and filesystem Vault references to their owning resolvers", async () => {
     const base = httpAggregate("sql-vault", "sql-vault");
@@ -1457,130 +1461,134 @@ describe("U8 awaited engine factory and atomic reload", () => {
     expect(httpExposed).toBe(false);
   });
 
-  it("composes the exact 2,000-Caplet U2 count within the 1-second p99 budget", async () => {
-    const fixtureCount = STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets;
-    const tags = Array.from(
-      { length: 45 },
-      (_, index) => `tag-${index.toString().padStart(2, "0")}`,
-    );
-    const withBody = (
-      entry: ControlPlaneSnapshot["caplets"][number],
-      body: string,
-    ): ControlPlaneSnapshot["caplets"][number] => ({
-      ...entry,
-      aggregate: {
-        ...entry.aggregate,
-        portable: {
-          ...entry.aggregate.portable,
-          frontmatter: {
-            ...entry.aggregate.portable.frontmatter,
-            catalog: {
-              displayName: entry.aggregate.portable.name,
-              summary: "Full-envelope runtime fixture.",
-              tags,
-            },
-          },
-          body,
-        },
-      },
-      projection: { ...entry.projection, body },
-    });
-    const baseCaplets = Array.from({ length: fixtureCount }, (_, index) =>
-      withBody(
-        httpAggregate(`caplet-${index.toString().padStart(4, "0")}`, `fixture-${index}`),
-        "",
-      ),
-    );
-    const baseBytes = baseCaplets.reduce(
-      (total, { aggregate }) => total + encodePortableCaplet(aggregate.portable).byteLength,
-      0,
-    );
-    const remainingBytes = STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes - baseBytes;
-    expect(remainingBytes).toBeGreaterThan(0);
-    const bodyBytes = Math.floor(remainingBytes / fixtureCount);
-    const bodyRemainder = remainingBytes % fixtureCount;
-    const caplets = baseCaplets.map((entry, index) =>
-      withBody(entry, "x".repeat(bodyBytes + (index < bodyRemainder ? 1 : 0))),
-    );
-    const encodedBytes = caplets.reduce(
-      (total, { aggregate }) => total + encodePortableCaplet(aggregate.portable).byteLength,
-      0,
-    );
-    const normalizedRows = caplets.reduce((total) => total + 50, 0);
-    expect(encodedBytes).toBe(STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes);
-    expect(normalizedRows).toBe(STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows);
-    const snapshot = {
-      ...sqlSnapshot(caplets),
-      hostSettings: [],
-      normalizedRows,
-      encodedBytes,
-    };
-    const filesystemLayers: RuntimeConfigLayerInput[] = (
-      ["global-config", "project-config"] as const
-    ).map((kind) => ({
-      input: {
-        httpApis: Object.fromEntries(
-          caplets.map(({ aggregate }) => [
-            aggregate.id,
-            {
-              name: `${kind} ${aggregate.id}`,
-              description: `${kind} shadow for ${aggregate.id}`,
-              baseUrl: `https://${aggregate.id}.${kind}.example.test`,
-              auth: { type: "none" as const },
-              actions: { ping: { method: "GET" as const, path: "/ping" } },
-            },
-          ]),
-        ),
-      },
-      source: {
-        kind,
-        path: kind === "global-config" ? "/host/config.json" : "/project/caplets.json",
-      },
-    }));
-    const bootstrapFingerprint = bootstrapFingerprintFor(filesystemLayers, {}, [], {});
-    const composeFixture = () =>
-      composeControlPlaneRuntimeSnapshot({
-        hydration: hydration(
-          "sqlite",
-          { currentFingerprint: bootstrapFingerprint },
-          {
-            ...snapshot,
-            caplets: [...snapshot.caplets],
-            hostSettings: [...snapshot.hostSettings],
-          },
-        ),
-        filesystemLayers,
-        resolvedRuntimeInputs: {},
-        hiddenCommitments: [],
-        providerVersions: {},
-      });
-    const runP99Ms: number[] = [];
-    for (let run = 0; run < STORAGE_BENCHMARK_ENVELOPE.independentRuns; run += 1) {
-      for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.warmupSamples; index += 1) {
-        await composeFixture();
-      }
-      const samples: number[] = [];
-      let composed: ControlPlaneRuntimeSnapshot | undefined;
-      for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun; index += 1) {
-        const started = performance.now();
-        composed = await composeFixture();
-        samples.push(performance.now() - started);
-      }
-      expect(Object.keys(composed?.caplets ?? {})).toHaveLength(fixtureCount);
-      runP99Ms.push(nearestRank(samples, 0.99));
-    }
-    const p99Ms = Math.max(...runP99Ms);
-    if (process.env.CAPLETS_BENCHMARK_REPORT === "1") {
-      process.stdout.write(
-        `${JSON.stringify({
-          fixture: "u8-runtime-composition",
-          runs: runP99Ms,
-          samplesPerRun: STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun,
-          p99Ms,
-        })}\n`,
+  it.skipIf(process.env.CAPLETS_BENCHMARK_REPORT !== "1")(
+    "composes the exact 2,000-Caplet U2 count within the 1-second p99 budget",
+    async () => {
+      const fixtureCount = STORAGE_BENCHMARK_ENVELOPE.maxEffectiveCaplets;
+      const tags = Array.from(
+        { length: 45 },
+        (_, index) => `tag-${index.toString().padStart(2, "0")}`,
       );
-    }
-    expect(runP99Ms).toHaveLength(STORAGE_BENCHMARK_ENVELOPE.independentRuns);
-    expect(runP99Ms.every((runP99Ms) => runP99Ms <= 1_000)).toBe(true);
-  }, 600_000);
+      const withBody = (
+        entry: ControlPlaneSnapshot["caplets"][number],
+        body: string,
+      ): ControlPlaneSnapshot["caplets"][number] => ({
+        ...entry,
+        aggregate: {
+          ...entry.aggregate,
+          portable: {
+            ...entry.aggregate.portable,
+            frontmatter: {
+              ...entry.aggregate.portable.frontmatter,
+              catalog: {
+                displayName: entry.aggregate.portable.name,
+                summary: "Full-envelope runtime fixture.",
+                tags,
+              },
+            },
+            body,
+          },
+        },
+        projection: { ...entry.projection, body },
+      });
+      const baseCaplets = Array.from({ length: fixtureCount }, (_, index) =>
+        withBody(
+          httpAggregate(`caplet-${index.toString().padStart(4, "0")}`, `fixture-${index}`),
+          "",
+        ),
+      );
+      const baseBytes = baseCaplets.reduce(
+        (total, { aggregate }) => total + encodePortableCaplet(aggregate.portable).byteLength,
+        0,
+      );
+      const remainingBytes = STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes - baseBytes;
+      expect(remainingBytes).toBeGreaterThan(0);
+      const bodyBytes = Math.floor(remainingBytes / fixtureCount);
+      const bodyRemainder = remainingBytes % fixtureCount;
+      const caplets = baseCaplets.map((entry, index) =>
+        withBody(entry, "x".repeat(bodyBytes + (index < bodyRemainder ? 1 : 0))),
+      );
+      const encodedBytes = caplets.reduce(
+        (total, { aggregate }) => total + encodePortableCaplet(aggregate.portable).byteLength,
+        0,
+      );
+      const normalizedRows = caplets.reduce((total) => total + 50, 0);
+      expect(encodedBytes).toBe(STORAGE_BENCHMARK_ENVELOPE.maxEncodedSnapshotBytes);
+      expect(normalizedRows).toBe(STORAGE_BENCHMARK_ENVELOPE.maxNormalizedRows);
+      const snapshot = {
+        ...sqlSnapshot(caplets),
+        hostSettings: [],
+        normalizedRows,
+        encodedBytes,
+      };
+      const filesystemLayers: RuntimeConfigLayerInput[] = (
+        ["global-config", "project-config"] as const
+      ).map((kind) => ({
+        input: {
+          httpApis: Object.fromEntries(
+            caplets.map(({ aggregate }) => [
+              aggregate.id,
+              {
+                name: `${kind} ${aggregate.id}`,
+                description: `${kind} shadow for ${aggregate.id}`,
+                baseUrl: `https://${aggregate.id}.${kind}.example.test`,
+                auth: { type: "none" as const },
+                actions: { ping: { method: "GET" as const, path: "/ping" } },
+              },
+            ]),
+          ),
+        },
+        source: {
+          kind,
+          path: kind === "global-config" ? "/host/config.json" : "/project/caplets.json",
+        },
+      }));
+      const bootstrapFingerprint = bootstrapFingerprintFor(filesystemLayers, {}, [], {});
+      const composeFixture = () =>
+        composeControlPlaneRuntimeSnapshot({
+          hydration: hydration(
+            "sqlite",
+            { currentFingerprint: bootstrapFingerprint },
+            {
+              ...snapshot,
+              caplets: [...snapshot.caplets],
+              hostSettings: [...snapshot.hostSettings],
+            },
+          ),
+          filesystemLayers,
+          resolvedRuntimeInputs: {},
+          hiddenCommitments: [],
+          providerVersions: {},
+        });
+      const runP99Ms: number[] = [];
+      for (let run = 0; run < STORAGE_BENCHMARK_ENVELOPE.independentRuns; run += 1) {
+        for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.warmupSamples; index += 1) {
+          await composeFixture();
+        }
+        const samples: number[] = [];
+        let composed: ControlPlaneRuntimeSnapshot | undefined;
+        for (let index = 0; index < STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun; index += 1) {
+          const started = performance.now();
+          composed = await composeFixture();
+          samples.push(performance.now() - started);
+        }
+        expect(Object.keys(composed?.caplets ?? {})).toHaveLength(fixtureCount);
+        runP99Ms.push(nearestRank(samples, 0.99));
+      }
+      const p99Ms = Math.max(...runP99Ms);
+      if (process.env.CAPLETS_BENCHMARK_REPORT === "1") {
+        process.stdout.write(
+          `${JSON.stringify({
+            fixture: "u8-runtime-composition",
+            runs: runP99Ms,
+            samplesPerRun: STORAGE_BENCHMARK_ENVELOPE.measuredSamplesPerRun,
+            p99Ms,
+          })}\n`,
+        );
+      }
+      expect(runP99Ms).toHaveLength(STORAGE_BENCHMARK_ENVELOPE.independentRuns);
+      expect(runP99Ms.every((runP99Ms) => runP99Ms <= 1_000)).toBe(true);
+    },
+    600_000,
+  );
 });

@@ -7,8 +7,12 @@ import {
   type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import { CapletsError } from "../errors";
+import type { LocalAuthorityOwner } from "../current-host/authority";
 import { artifactProviderCanaryKey } from "./artifacts/provider";
 import { S3ArtifactProvider, type S3CommandClient } from "./artifacts/s3";
+import { createDarwinSecureFilesystemAdapter } from "./native/darwin-secure-filesystem";
+import { createWindowsSecureFilesystemAdapter } from "./native/windows-secure-filesystem";
+import type { SecureFilesystemOptions } from "./secure-state";
 import {
   normalizedPostgresConnectionReference,
   type PostgresVerificationRequest,
@@ -38,6 +42,40 @@ export type ProductionStorageAdapterOptions = Readonly<{
   postgresPool?: ProductionPostgresPoolConstructor | undefined;
   s3Client?: ((configuration: S3ClientConfig) => S3CommandClient) | undefined;
 }>;
+
+export type ProductionSecureFilesystemOptions = Readonly<{
+  expectedOwner: LocalAuthorityOwner;
+  filesystem: SecureFilesystemOptions;
+}>;
+
+export async function createProductionSecureFilesystemOptions(): Promise<ProductionSecureFilesystemOptions> {
+  if (process.platform === "win32") {
+    const windows = await createWindowsSecureFilesystemAdapter();
+    return {
+      expectedOwner: { kind: "windows", sid: windows.expectedServiceSid },
+      filesystem: {
+        platform: "win32",
+        expectedServiceSid: windows.expectedServiceSid,
+        nativeAdapter: windows.nativeAdapter,
+        verifyWindowsDacl: windows.verifyWindowsDacl,
+      },
+    };
+  }
+  const uid = process.getuid?.();
+  if (uid === undefined || (process.platform !== "linux" && process.platform !== "darwin")) {
+    throw new CapletsError("AUTH_FAILED", "Secure filesystem platform authority is unavailable.");
+  }
+  return {
+    expectedOwner: { kind: "posix", uid },
+    filesystem: {
+      platform: process.platform,
+      expectedUid: uid,
+      ...(process.platform === "darwin"
+        ? { nativeAdapter: createDarwinSecureFilesystemAdapter() }
+        : {}),
+    },
+  };
+}
 
 export function createProductionPostgresVerifier(
   options: ProductionStorageAdapterOptions = {},
@@ -87,6 +125,75 @@ export function createProductionPostgresVerifier(
         ),
         "Postgres role identity",
       );
+      const authority = singleRow(
+        await withAdapterDeadline(
+          client.query(
+            `WITH active_role AS (
+               SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user
+             ), caplets_namespace AS (
+               SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'caplets'
+             )
+             SELECT
+               EXISTS (
+                 SELECT 1 FROM pg_catalog.pg_database database, active_role
+                 WHERE database.datname = current_database() AND database.datdba = active_role.oid
+               ) AS "ownsDatabase",
+               EXISTS (
+                 SELECT 1 FROM pg_catalog.pg_namespace namespace, active_role
+                 WHERE namespace.nspname = 'caplets' AND namespace.nspowner = active_role.oid
+               ) AS "ownsSchema",
+               (
+                 EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.pg_class relation, caplets_namespace, active_role
+                   WHERE relation.relnamespace = caplets_namespace.oid
+                     AND relation.relowner = active_role.oid
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.pg_proc function, caplets_namespace, active_role
+                   WHERE function.pronamespace = caplets_namespace.oid
+                     AND function.proowner = active_role.oid
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.pg_type type, caplets_namespace, active_role
+                   WHERE type.typnamespace = caplets_namespace.oid
+                     AND type.typowner = active_role.oid
+                 )
+               ) AS "ownsControlPlaneObject",
+               COALESCE(
+                 pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE'),
+                 false
+               ) AS "canCreateInDatabase",
+               COALESCE(
+                 pg_catalog.has_schema_privilege(
+                   current_user,
+                   pg_catalog.to_regnamespace('caplets'),
+                   'CREATE'
+                 ),
+                 false
+               ) AS "canCreateInSchema"`,
+          ),
+          deadlineMs,
+        ),
+        "Postgres role authority",
+      );
+      if (
+        request.roleKind !== "migrator" &&
+        [
+          "ownsDatabase",
+          "ownsSchema",
+          "ownsControlPlaneObject",
+          "canCreateInDatabase",
+          "canCreateInSchema",
+        ].some((capability) => booleanValue(authority[capability], capability))
+      ) {
+        throw new CapletsError(
+          "AUTH_FAILED",
+          "Postgres runtime or maintenance role retains owner or DDL authority.",
+        );
+      }
       const inherited = await withAdapterDeadline(
         client.query(
           `SELECT inherited.rolname AS role
@@ -164,31 +271,28 @@ export function createProductionPostgresVerifier(
   };
 }
 
+export function createProductionS3ArtifactProvider(
+  request: S3CanaryVerificationRequest,
+  options: ProductionStorageAdapterOptions = {},
+): Readonly<{ provider: S3ArtifactProvider; close(): void }> {
+  const deadlineMs = validatedDeadline(options.deadlineMs);
+  const { client, close } = createProductionS3Client(request, options, deadlineMs);
+  return {
+    provider: new S3ArtifactProvider(client, {
+      bucket: request.bucket,
+      prefix: request.prefix,
+      identity: request.identity,
+    }),
+    close,
+  };
+}
+
 export function createProductionS3CanaryVerifier(
   options: ProductionStorageAdapterOptions = {},
 ): (request: S3CanaryVerificationRequest) => Promise<S3CanaryVerificationResult> {
   const deadlineMs = validatedDeadline(options.deadlineMs);
   return async (request) => {
-    const configuration: S3ClientConfig = {
-      endpoint: request.endpoint,
-      region: request.region,
-      forcePathStyle: true,
-      credentials: {
-        accessKeyId: request.accessKeyId,
-        secretAccessKey: request.secretAccessKey,
-      },
-    };
-    const rawClient = options.s3Client?.(configuration) ?? new S3Client(configuration);
-    const client: S3CommandClient = {
-      send(command) {
-        if (rawClient instanceof S3Client) {
-          return rawClient.send(command as never, {
-            abortSignal: AbortSignal.timeout(deadlineMs),
-          });
-        }
-        return withAdapterDeadline(rawClient.send(command), deadlineMs);
-      },
-    };
+    const { client, close } = createProductionS3Client(request, options, deadlineMs);
     try {
       await client.send(new HeadBucketCommand({ Bucket: request.bucket }));
       const canaryKey = artifactProviderCanaryKey(request.identity);
@@ -205,8 +309,41 @@ export function createProductionS3CanaryVerifier(
     } catch {
       throw new CapletsError("AUTH_FAILED", "S3 artifact compatibility verification failed.");
     } finally {
-      if (rawClient instanceof S3Client) rawClient.destroy();
+      close();
     }
+  };
+}
+
+function createProductionS3Client(
+  request: S3CanaryVerificationRequest,
+  options: ProductionStorageAdapterOptions,
+  deadlineMs: number,
+): Readonly<{ client: S3CommandClient; close(): void }> {
+  const configuration: S3ClientConfig = {
+    endpoint: request.endpoint,
+    region: request.region,
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: request.accessKeyId,
+      secretAccessKey: request.secretAccessKey,
+    },
+  };
+  const rawClient = options.s3Client?.(configuration) ?? new S3Client(configuration);
+  const client: S3CommandClient = {
+    send(command) {
+      if (rawClient instanceof S3Client) {
+        return rawClient.send(command as never, {
+          abortSignal: AbortSignal.timeout(deadlineMs),
+        });
+      }
+      return withAdapterDeadline(rawClient.send(command), deadlineMs);
+    },
+  };
+  return {
+    client,
+    close() {
+      if (rawClient instanceof S3Client) rawClient.destroy();
+    },
   };
 }
 

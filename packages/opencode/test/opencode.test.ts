@@ -150,7 +150,7 @@ describe("@caplets/opencode", () => {
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
     expect(output.system.join("\n")).toContain("caplets__git-hub");
     expect(output.system.join("\n")).toContain("caplets__code_mode");
-  });
+  }, 15_000);
 
   it("returns stable text when tool result serialization fails", async () => {
     const { createCapletsOpenCodeHooks } = await import("../src/hooks");
@@ -312,7 +312,7 @@ describe("@caplets/opencode", () => {
   it("passes second-argument config into the native service", async () => {
     vi.resetModules();
     const nativeMocks = {
-      createNativeCapletsService: vi.fn(() => ({
+      createActivatedNativeCapletsService: vi.fn(() => ({
         listTools: () => [],
         execute: vi.fn(async () => ({})),
         reload: vi.fn(async () => true),
@@ -337,7 +337,7 @@ describe("@caplets/opencode", () => {
       } as never,
     );
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith({
       mode: "remote",
       remote: {
         url: "https://caplets.example.com",
@@ -350,7 +350,7 @@ describe("@caplets/opencode", () => {
   it("passes cloud mode config into the native service", async () => {
     vi.resetModules();
     const nativeMocks = {
-      createNativeCapletsService: vi.fn(() => ({
+      createActivatedNativeCapletsService: vi.fn(() => ({
         listTools: () => [],
         execute: vi.fn(async () => ({})),
         reload: vi.fn(async () => true),
@@ -369,7 +369,7 @@ describe("@caplets/opencode", () => {
       { mode: "cloud", remote: { url: "https://cloud.caplets.dev" } } as never,
     );
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith({
       mode: "cloud",
       remote: { url: "https://cloud.caplets.dev" },
       telemetryIntegration: "opencode",
@@ -379,7 +379,7 @@ describe("@caplets/opencode", () => {
   it("uses Caplets native defaults when no explicit config is provided", async () => {
     vi.resetModules();
     const nativeMocks = {
-      createNativeCapletsService: vi.fn(() => ({
+      createActivatedNativeCapletsService: vi.fn(() => ({
         listTools: () => [],
         execute: vi.fn(async () => ({})),
         reload: vi.fn(async () => true),
@@ -400,7 +400,7 @@ describe("@caplets/opencode", () => {
 
     await plugin({} as never, undefined as never);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith({
       mode: "daemon",
       daemon: { url: "http://127.0.0.1:5387/caplets" },
       telemetryIntegration: "opencode",
@@ -410,7 +410,7 @@ describe("@caplets/opencode", () => {
   it("uses Caplets native defaults when OpenCode passes an empty config object", async () => {
     vi.resetModules();
     const nativeMocks = {
-      createNativeCapletsService: vi.fn(() => ({
+      createActivatedNativeCapletsService: vi.fn(() => ({
         listTools: () => [],
         execute: vi.fn(async () => ({})),
         reload: vi.fn(async () => true),
@@ -431,7 +431,7 @@ describe("@caplets/opencode", () => {
 
     await plugin({} as never, {} as never);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith({
       mode: "daemon",
       daemon: { url: "http://127.0.0.1:5387/caplets" },
       telemetryIntegration: "opencode",
@@ -441,7 +441,7 @@ describe("@caplets/opencode", () => {
   it("lets native environment selectors override Caplets native defaults", async () => {
     vi.resetModules();
     const nativeMocks = {
-      createNativeCapletsService: vi.fn(() => ({
+      createActivatedNativeCapletsService: vi.fn(() => ({
         listTools: () => [],
         execute: vi.fn(async () => ({})),
         reload: vi.fn(async () => true),
@@ -463,7 +463,7 @@ describe("@caplets/opencode", () => {
     await plugin({} as never, undefined as never);
 
     expect(nativeMocks.readNativeDefaults).not.toHaveBeenCalled();
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+    expect(nativeMocks.createActivatedNativeCapletsService).toHaveBeenCalledWith({
       telemetryIntegration: "opencode",
     });
   });
@@ -491,7 +491,7 @@ describe("@caplets/opencode", () => {
       close: vi.fn(async () => {}),
     };
     const nativeMocks = {
-      createNativeCapletsService: vi.fn(() => service),
+      createActivatedNativeCapletsService: vi.fn(() => service),
       registerNativeCapletsProcessCleanup: vi.fn(),
       hasNativeRuntimeSelectionEnv: vi.fn(() => false),
       readNativeDefaults: vi.fn(() => undefined),

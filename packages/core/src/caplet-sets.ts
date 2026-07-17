@@ -225,7 +225,7 @@ export class CapletSetManager {
     const isFresh =
       existing &&
       existing.cacheKey === cacheKey &&
-      existing.configFingerprint === JSON.stringify(config) &&
+      existing.configFingerprint === configFingerprint &&
       config.toolCacheTtlMs > 0 &&
       now - existing.loadedAt <= config.toolCacheTtlMs;
     if (existing && !force && isFresh) {

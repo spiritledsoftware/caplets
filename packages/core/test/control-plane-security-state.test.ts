@@ -171,6 +171,23 @@ async function seedAuthorizationRows(dialect: ControlPlaneTransactionalDialect):
   });
 }
 
+async function durableSecurityCiphertexts(
+  dialect: ControlPlaneTransactionalDialect,
+): Promise<Buffer[]> {
+  return dialect.snapshotTransaction(async (transaction) => {
+    const pending = await transaction.select<{ verifier: Buffer }>("pendingApprovals", {
+      equals: { logicalHostId: identity.logicalHostId },
+    });
+    const credentials = await transaction.select<{ verifierOrCiphertext: Buffer }>("credentials", {
+      equals: { logicalHostId: identity.logicalHostId },
+    });
+    return [
+      ...pending.map((row) => Buffer.from(row.verifier)),
+      ...credentials.map((row) => Buffer.from(row.verifierOrCiphertext)),
+    ];
+  });
+}
+
 async function seedCaplet(dialect: ControlPlaneTransactionalDialect): Promise<void> {
   await dialect.runtimeTransaction(async (transaction) => {
     const now = await transaction.databaseTime();
@@ -654,6 +671,24 @@ describe("SQL control-plane security state", () => {
       pendingCompletionSecret: pending.pendingCompletionSecret,
     });
     await expect(
+      repository.completePendingLogin({
+        hostUrl: "http://127.0.0.1:4322",
+        requiredRole: "operator",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    ).resolves.toEqual(credentials);
+    expect(await repository.listClients()).toHaveLength(1);
+    for (const durable of await durableSecurityCiphertexts(reopened)) {
+      for (const secret of [
+        pending.pendingCompletionSecret,
+        credentials.accessToken,
+        credentials.refreshToken,
+      ]) {
+        expect(durable.includes(Buffer.from(secret))).toBe(false);
+      }
+    }
+    await expect(
       repository.validateAccessToken({
         hostUrl: credentials.hostUrl,
         accessToken: credentials.accessToken,
@@ -677,7 +712,79 @@ describe("SQL control-plane security state", () => {
     expect(await repository.listPendingLogins()).toEqual([
       expect.objectContaining({ flowId: pending.flowId, status: "exchanged" }),
     ]);
+    await reopened.runtimeTransaction(async (transaction) => {
+      await transaction.update(
+        "pendingApprovals",
+        { consumedAt: "2000-01-01T00:00:00.000Z", updatedAt: "2000-01-01T00:00:00.000Z" },
+        {
+          equals: {
+            logicalHostId: identity.logicalHostId,
+            storeId: identity.storeId,
+            approvalId: pending.flowId,
+          },
+        },
+      );
+    });
+    const replacement = await refreshedRepository.createPendingLogin({
+      hostUrl: "http://127.0.0.1:4322",
+      requestedRole: "access",
+    });
+    expect(replacement.flowId).not.toBe(pending.flowId);
+    await reopened.snapshotTransaction(async (transaction) => {
+      const retained = await transaction.select<{ approvalId: string; state: string }>(
+        "pendingApprovals",
+        { equals: { logicalHostId: identity.logicalHostId, storeId: identity.storeId } },
+      );
+      expect(retained.map((row) => row.approvalId)).not.toContain(pending.flowId);
+    });
   });
+
+  it.skipIf(!postgresAdminUrl)(
+    "replays identical Postgres pending-login completion after acknowledgement loss without durable plaintext",
+    async () => {
+      const test = await postgresSecurityFixture();
+      await seedAuthorizationRows(test.dialect);
+      const repository = createControlPlaneSecurityRepository({
+        identity,
+        dialect: test.dialect,
+        keyProvider: test.keyProvider,
+        mutationAuthority,
+      });
+      const pending = await repository.createPendingLogin({
+        hostUrl: "https://postgres-login.example.test/caplets",
+        requestedRole: "operator",
+        clientLabel: "Postgres lost acknowledgement",
+      });
+      await repository.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        grantedRole: "operator",
+      });
+      const first = await repository.completePendingLogin({
+        hostUrl: "https://postgres-login.example.test/caplets",
+        requiredRole: "operator",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      });
+      await expect(
+        repository.completePendingLogin({
+          hostUrl: "https://postgres-login.example.test/caplets",
+          requiredRole: "operator",
+          flowId: pending.flowId,
+          pendingCompletionSecret: pending.pendingCompletionSecret,
+        }),
+      ).resolves.toEqual(first);
+      expect(await repository.listClients()).toHaveLength(1);
+      for (const durable of await durableSecurityCiphertexts(test.dialect)) {
+        for (const secret of [
+          pending.pendingCompletionSecret,
+          first.accessToken,
+          first.refreshToken,
+        ]) {
+          expect(durable.includes(Buffer.from(secret))).toBe(false);
+        }
+      }
+    },
+  );
 
   it("rejects the exact revoked caller fence without borrowing a higher active fence", async () => {
     const test = await fixture();

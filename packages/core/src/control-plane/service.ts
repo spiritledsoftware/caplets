@@ -774,14 +774,10 @@ export async function createActivatedControlPlane(
     if (healthInFlight) return healthInFlight;
     const operation = options.store.health();
     healthInFlight = operation;
-    void operation.then(
-      () => {
-        if (healthInFlight === operation) healthInFlight = undefined;
-      },
-      () => {
-        if (healthInFlight === operation) healthInFlight = undefined;
-      },
-    );
+    const clearHealth = (): void => {
+      if (healthInFlight === operation) healthInFlight = undefined;
+    };
+    void operation.then(clearHealth, clearHealth);
     return operation;
   };
   let queuedRefresh:
@@ -980,20 +976,13 @@ export async function createActivatedControlPlane(
   ): Promise<ControlPlaneRuntimeSnapshot> => {
     const running = performRefresh(deadlineAt);
     activeRefresh = running;
-    void running.then(
-      () => {
-        if (activeRefresh === running) activeRefresh = undefined;
-        const queued = queuedRefresh;
-        queuedRefresh = undefined;
-        if (queued) launchRefresh(queued.deadlineAt).then(queued.resolve, queued.reject);
-      },
-      () => {
-        if (activeRefresh === running) activeRefresh = undefined;
-        const queued = queuedRefresh;
-        queuedRefresh = undefined;
-        if (queued) launchRefresh(queued.deadlineAt).then(queued.resolve, queued.reject);
-      },
-    );
+    const launchQueuedRefresh = (): void => {
+      if (activeRefresh === running) activeRefresh = undefined;
+      const queued = queuedRefresh;
+      queuedRefresh = undefined;
+      if (queued) void launchRefresh(queued.deadlineAt).then(queued.resolve, queued.reject);
+    };
+    void running.then(launchQueuedRefresh, launchQueuedRefresh);
     return running;
   };
 
@@ -1093,18 +1082,12 @@ export async function createActivatedControlPlane(
             });
             liveRevalidationInFlight = operation;
             acknowledgement = operation;
-            void operation.then(
-              () => {
-                if (liveRevalidationInFlight === operation) {
-                  liveRevalidationInFlight = undefined;
-                }
-              },
-              () => {
-                if (liveRevalidationInFlight === operation) {
-                  liveRevalidationInFlight = undefined;
-                }
-              },
-            );
+            const clearLiveRevalidation = (): void => {
+              if (liveRevalidationInFlight === operation) {
+                liveRevalidationInFlight = undefined;
+              }
+            };
+            void operation.then(clearLiveRevalidation, clearLiveRevalidation);
           }
           const result = await acknowledgement;
           if (result.status === "applied") {

@@ -22,6 +22,24 @@ Supported backend families are:
 
 Project sources override user/global sources. Source-aware inspection reports where each Caplet came from and warns when one Caplet shadows another.
 
+### SQL Control Plane And Storage Authority
+
+The Current Host control plane is SQL-backed. `packages/core/src/control-plane/` owns the canonical models, paired SQLite/Postgres schemas and migrations, transactional repository, security state, legacy migration, protected recovery, and runtime snapshot composition.
+
+Storage selection is static deployment configuration at user/global `serve.storage`; project configuration cannot select storage or other `serve` settings. When no storage block is present, Caplets creates an owner-private SQLite store under the platform state directory. SQLite is the zero-service, single-node default and keeps managed artifacts beside the database.
+
+Postgres represents one logical Current Host across a replica cluster. Each node verifies the same logical-host/store identity, operation namespace, bootstrap compatibility, external `file-v1` key commitments, and shared S3-compatible provider canary before readiness. Online, migrator, and maintenance database roles and their connection strings are distinct. A serving process receives only the online runtime credential; one-shot migration and maintenance processes select exactly one operational credential after the old writer cohort is drained.
+
+The owner-private filesystem bootstrap root remains part of authority for both backends. Its descriptor and storage binding pin the local service owner to backend, logical host, store, operation namespace, database identity, artifact provider, and key commitments. Bootstrap is permitted only in a provably fresh empty root; missing, partial, mismatched, or transferred authority fails closed. Operators must persist the complete root rather than reconstructing it from database credentials.
+
+Runtime composition applies layers in this order: SQL, host filesystem, then project filesystem. Later filesystem layers win per field. A filesystem-owned effective Caplet or host setting cannot be mutated through Current Host administration; an explicitly selected dormant underlying SQL record remains administrable without changing the effective runtime while shadowed.
+
+`packages/core/src/control-plane/snapshot.ts` publishes only a fully hydrated snapshot whose schema, storage, keys, canary, manifest, bootstrap fingerprint, and authority generations are compatible. SQLite adopts its initial bootstrap fingerprint atomically. Postgres nodes register compatibility and writer leases, converge through the shared store, and become not-ready when convergence is overdue.
+
+The unauthenticated health surface is deliberately redacted to backend, readiness/connectivity, migration, authority/effective generation, bootstrap compatibility, stale age, convergence, and guidance code. Warm storage loss permits only visibly stale catalog/runtime-metadata reads from the last accepted snapshot; auth, administration, Project Binding, Attach, Vault, import/export, and mutation require live authority. Detailed store, fingerprint, key, and node diagnostics require a live-authorized Operator session.
+
+Protected backup, normal restore, catastrophic SQL-loss recovery, key rotation, and rolling bootstrap activation are trusted local maintenance capabilities. They are not projected through MCP, Attach, native tools, the dashboard, or generic remote administration. Normal restore preserves store identity and operation namespace while advancing authority and security generations. Catastrophic recovery requires authenticated external checkpoints and complete backup/key inventory, then creates a new store, operation namespace, and security epoch.
+
 ### Engine
 
 `packages/core/src/engine.ts` owns the active config, backend managers, config reload behavior, and execution dispatch. Reload keeps the last known-good config if parsing or validation fails.
@@ -110,9 +128,13 @@ The intended agent pattern is one compact script:
 
 `caplets__code_mode` is the native Code Mode entrypoint. `caplets__<id>` tools exist for progressive exposure. Direct native exposure registers operation-level tools named `caplets__<id>__<operation>`.
 
+Native integrations render only the agent-facing exposure projection. They do not receive Current Host administration, portable import/export, storage maintenance, backup/restore, or key-management operations.
+
 ### Remote Control
 
 Remote control under `packages/core/src/remote-control/` lets CLI and native integrations operate against a self-hosted or Cloud Caplets service. Remote mode uses server-owned config, auth, and execution, with local/project overlays where supported.
+
+Remote administration is selected explicitly and requires an Operator Client. Access Clients and native integrations remain non-administrative even when they share the remote execution client. Local `--global` mutations target the trusted process's own Current Host/global scope; they do not inherit the selected remote target, and `--remote` is required to cross that boundary.
 
 ### Project Binding
 

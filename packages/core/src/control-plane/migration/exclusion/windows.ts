@@ -90,6 +90,30 @@ export async function openWindowsExclusionHelper(input: {
   windows: WindowsExclusionOptions;
   artifacts?: WindowsArtifactLocation;
 }): Promise<WindowsHelperLease> {
+  return openWindowsHelperLease("acquire", input);
+}
+
+export async function resumeWindowsExclusionHelper(input: {
+  options: AcquireLegacyMigrationExclusionOptions;
+  windows: WindowsExclusionOptions;
+  cleanupId: string;
+  artifacts?: WindowsArtifactLocation;
+}): Promise<WindowsHelperLease> {
+  if (!/^u7-cleanup-[a-f0-9]{48}$/u.test(input.cleanupId)) {
+    refuse("Windows exclusion cleanup identity is invalid.");
+  }
+  return openWindowsHelperLease("resume", input);
+}
+
+async function openWindowsHelperLease(
+  action: "acquire" | "resume",
+  input: {
+    options: AcquireLegacyMigrationExclusionOptions;
+    windows: WindowsExclusionOptions;
+    cleanupId?: string | undefined;
+    artifacts?: WindowsArtifactLocation;
+  },
+): Promise<WindowsHelperLease> {
   if (input.windows.proof.kind !== input.options.mode) {
     refuse("Windows exclusion proof does not match the requested migration mode.");
   }
@@ -98,7 +122,7 @@ export async function openWindowsExclusionHelper(input: {
     : await verifyWindowsExclusionHelper();
   const helper = new WindowsHelperClient(verified.helperPath);
   try {
-    const result = await helper.request("acquire", {
+    const result = await helper.request(action, {
       sourceBoundaryPath: input.options.sourceBoundaryPath,
       mutablePaths: input.options.mutablePaths,
       mode: input.options.mode,
@@ -106,8 +130,12 @@ export async function openWindowsExclusionHelper(input: {
       expectedServices: input.windows.expectedServices,
       allReplicasStopped:
         input.windows.proof.kind === "offline" && input.windows.proof.allReplicasStopped === true,
+      ...(input.cleanupId ? { cleanupId: input.cleanupId } : {}),
     });
     const acquired = parseAcquireResult(result);
+    if (input.cleanupId && acquired.cleanupId !== input.cleanupId) {
+      refuse("Windows exclusion helper resumed a different cleanup identity.");
+    }
     return {
       cleanupId: acquired.cleanupId,
       sealedSourcePath: acquired.sealedSourcePath,
@@ -124,6 +152,7 @@ export async function openWindowsExclusionHelper(input: {
           "service-owner:sid-verified",
           "share-deny:held",
           "declared-services:stopped",
+          ...(action === "resume" ? ["durable-exclusion:resumed"] : []),
           ...(input.options.mode === "offline" ? ["offline-replicas:stopped"] : []),
         ],
         scannedProcesses: acquired.scannedProcesses,
@@ -162,7 +191,8 @@ export type WindowsHelperLease = {
   close(): Promise<void>;
 };
 
-class WindowsHelperClient {
+/** @internal Signed-helper protocol client shared by Windows security adapters. */
+export class WindowsHelperClient {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #pending = new Map<
     string,

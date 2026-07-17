@@ -1233,6 +1233,7 @@ export async function runFreshControlPlaneInitialization(
   if (options.backend === "postgres" && !electionLease) {
     return { status: "not-ready", backend: "postgres", reason: "migration-election" };
   }
+  const electionRenewal = keepInitializationElectionAlive(electionLease);
   let mutex: Readonly<{ release(): Promise<void> }> | undefined;
   let primaryFailure = false;
   const migrationId = "fresh-v1";
@@ -1359,6 +1360,7 @@ export async function runFreshControlPlaneInitialization(
     }
     throw error;
   } finally {
+    await electionRenewal.stop();
     await releaseInitializationResources(
       [mutex, electionLease].filter(isReleasable),
       primaryFailure,
@@ -1376,6 +1378,7 @@ export async function runLegacyControlPlaneInitialization(
   if (options.backend === "postgres" && !electionLease) {
     return { status: "not-ready", backend: "postgres", reason: "migration-election" };
   }
+  const electionRenewal = keepInitializationElectionAlive(electionLease);
 
   let mutex: Readonly<{ release(): Promise<void> }> | undefined;
   let exclusion: LegacyMigrationExclusionLease | undefined;
@@ -1576,6 +1579,7 @@ export async function runLegacyControlPlaneInitialization(
     }
     throw error;
   } finally {
+    await electionRenewal.stop();
     await releaseInitializationResources(
       [exclusion, mutex, electionLease].filter(isReleasable),
       primaryFailure,
@@ -1596,11 +1600,40 @@ async function acquireInitializationElection(
   return lease;
 }
 
+type LegacyMigrationElectionRenewal = Readonly<{ stop(): Promise<void> }>;
+const expiredElectionLeases = new WeakSet<LegacyMigrationElectionLease>();
+
+function keepInitializationElectionAlive(
+  lease: LegacyMigrationElectionLease | undefined,
+): LegacyMigrationElectionRenewal {
+  if (!lease) return { stop: async () => undefined };
+  let stopped = false;
+  let renewal = Promise.resolve();
+  const timer = setInterval(() => {
+    renewal = renewal.then(async () => {
+      if (stopped) return;
+      try {
+        if (!(await lease.renew())) expiredElectionLeases.add(lease);
+      } catch {
+        expiredElectionLeases.add(lease);
+      }
+    });
+  }, 5_000);
+  timer.unref();
+  return {
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await renewal;
+    },
+  };
+}
+
 async function destinationOperation(
   migrationId: string,
   lease: LegacyMigrationElectionLease | undefined,
 ): Promise<LegacyDestinationOperation> {
-  if (lease && !(await lease.renew())) {
+  if (lease && (expiredElectionLeases.has(lease) || !(await lease.renew()))) {
     throw new CapletsError(
       "REQUEST_INVALID",
       "Postgres migration election lease expired before destination operation",

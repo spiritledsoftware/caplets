@@ -36,6 +36,7 @@
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
     "storage:package:check": "node scripts/storage-package-check.mjs",
+    "storage:schema:check": "pnpm --filter @caplets/core storage:schema:check",
     "storage:platform:check": "node scripts/storage-platform-check.mjs",
     "storage:stack:check": "node scripts/storage-stack-check.mjs",
     "storage:windows-helper:artifact-check": "node packages/core/scripts/build-windows-exclusion-helper.mjs --verify-artifact",
@@ -46,7 +47,7 @@
     "telemetry:check-web-env": "tsx ./scripts/check-web-observability-env.ts",
     "telemetry:prepare-release-env": "tsx ./scripts/check-telemetry-release-env.ts --write-bundled-intake",
     "typecheck": "tsgo --noEmit && turbo typecheck",
-    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
+    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm storage:schema:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
     "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {

@@ -1,0 +1,48 @@
+{
+  "formatVersion": 1,
+  "migrationId": "0009_robust_scalphunter",
+  "order": 9,
+  "dialect": "postgres",
+  "sourceSchemaVersion": 3,
+  "destinationSchemaVersion": 3,
+  "phase": "expand",
+  "classification": "compatible-expand",
+  "executionPolicy": "automatic-compatible",
+  "automatic": true,
+  "sql": {
+    "file": "0009_robust_scalphunter.sql",
+    "sha256": "30e4514fc7e3ae65e6e1411eb0f7d68bb9d47932bbb78b30c14f8deedb4fe1f5"
+  },
+  "compatibility": {
+    "binary": {
+      "minimum": "0.34.1",
+      "maximumExclusive": "0.36.0"
+    },
+    "schema": {
+      "minimum": 1,
+      "maximum": 3
+    },
+    "key": {
+      "minimum": 1,
+      "maximum": 1
+    },
+    "manifest": {
+      "minimum": 1,
+      "maximum": 1
+    }
+  },
+  "activationRequirements": {
+    "verifiedSchemaAwareBackup": false,
+    "oldNodesDrained": false,
+    "retainedKeyVersions": [1],
+    "declaredSchemaAuthority": "migration-registry"
+  },
+  "rollback": {
+    "mode": "restore",
+    "windowSeconds": 604800,
+    "requiresVerifiedBackup": true,
+    "requiredRetainedKeyVersions": [1],
+    "failurePolicy": "fail-closed-single-schema-authority"
+  },
+  "manifestSha256": "4a38e8e74ab4a9223b343f6edf5ea628671f29c1a42a791eac7707c8f8ce6881"
+}

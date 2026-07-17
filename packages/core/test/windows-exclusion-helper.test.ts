@@ -5,8 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquireLegacyMigrationExclusionWithWindowsArtifactForTests } from "../src/control-plane/migration/exclusion";
 import {
+  acquireLegacyMigrationExclusionWithWindowsArtifactForTests,
+  resumeWindowsLegacyMigrationExclusionWithArtifactForTests,
+} from "../src/control-plane/migration/exclusion";
+import {
+  openWindowsExclusionHelper,
   packagedWindowsExclusionHelperManifestPath,
   verifyWindowsExclusionHelperFixture,
 } from "../src/control-plane/migration/exclusion/windows";
@@ -75,6 +79,18 @@ describe("packaged Windows exclusion helper trust", () => {
     );
     expect(source).toContain('new ExclusionJournal(1, "activation-cleanup"');
     expect(source).toContain("ReconcileJournal(source, journalPath)");
+    expect(source).toContain(
+      '"resume" when lease is null && securePath is null => (lease = Lease.Resume(payload)).Describe()',
+    );
+    expect(source).toContain('new ExclusionJournal(1, "exclusion-durable"');
+    expect(source).toContain('journal.Phase != "exclusion-durable"');
+    expect(source).toContain("lease?.Dispose();");
+    expect(source).not.toContain("try { lease.Rollback(); }");
+    expect(source).toContain('"create-directory" when lease is null && securePath is null');
+    expect(source).toContain('"hold-path" when lease is null && securePath is null');
+    expect(source).toContain("security.AreAccessRulesProtected");
+    expect(source).toContain("FileFlagOpenReparsePoint");
+    expect(source).toContain("HeldPathChain.OpenDeleteDenied");
   });
 
   it("rejects absent and checksum-tampered helpers before signature inspection", async () => {
@@ -178,6 +194,15 @@ describe("packaged Windows exclusion helper trust", () => {
     rmSync(absent.helperPath);
     expect(runBuildGuard(absent, "--verify-fixture").status).not.toBe(0);
 
+    const absentManifest = createPublishFixture("Valid", "CN=Caplets Exclusion Test Publisher");
+    rmSync(absentManifest.manifestPath);
+    expect(runBuildGuard(absentManifest, "--verify-fixture").status).not.toBe(0);
+    expect(
+      runBuildGuard(absentManifest, "--copy-packaged", [], {
+        CAPLETS_REQUIRE_WINDOWS_EXCLUSION_HELPER: "1",
+      }).status,
+    ).not.toBe(0);
+
     const unsigned = createPublishFixture("NotSigned", "CN=Caplets Exclusion Test Publisher");
     expect(runBuildGuard(unsigned, "--verify-fixture").status).not.toBe(0);
 
@@ -236,6 +261,73 @@ describe("packaged Windows exclusion helper trust", () => {
       await lease.rollbackBeforeActivation();
       await lease.release();
       expect(readFileSync(join(boundary, "caplets", "demo.md"), "utf8")).toBe("# Demo\n");
+    }, 30_000);
+
+    it("resumes durable exclusion after helper loss and completes cleanup idempotently", async () => {
+      const artifactRoot = process.env.CAPLETS_WINDOWS_HELPER_ARTIFACT_ROOT!;
+      const root = mkdtempSync(join(tmpdir(), "caplets-windows-resume-"));
+      roots.push(root);
+      const boundary = join(root, "legacy");
+      mkdirSync(join(boundary, "caplets"), { recursive: true });
+      writeFileSync(join(boundary, "state.json"), '{"authority":1}\n');
+      writeFileSync(join(boundary, "caplets", "demo.md"), "# Demo\n");
+      const sid = currentWindowsSid();
+      hardenWindowsAcl(root, sid);
+      const options = {
+        sourceBoundaryPath: boundary,
+        mutablePaths: [
+          { relativePath: "caplets", kind: "directory" as const },
+          { relativePath: "state.json", kind: "file" as const },
+        ],
+        mode: "offline" as const,
+        platform: "win32" as const,
+        platformOptions: {
+          windows: {
+            proof: { kind: "offline" as const, allReplicasStopped: true as const },
+            expectedOwnerSid: sid,
+            expectedServices: [],
+          },
+        },
+      };
+      const artifacts = { manifestPath: join(artifactRoot, "manifest.json") };
+      const helper = await openWindowsExclusionHelper({
+        options,
+        windows: options.platformOptions.windows,
+        artifacts,
+      });
+      const cleanupId = helper.cleanupId;
+      const sealedPath = helper.sealedSourcePath;
+      await helper.close();
+      expect(existsSync(sealedPath)).toBe(true);
+      expect(() => readFileSync(join(boundary, "state.json"), "utf8")).toThrow();
+
+      await expect(
+        resumeWindowsLegacyMigrationExclusionWithArtifactForTests(
+          options,
+          `${cleanupId.slice(0, -1)}0`,
+          artifacts,
+        ),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+      expect(existsSync(sealedPath)).toBe(true);
+
+      const resumed = await resumeWindowsLegacyMigrationExclusionWithArtifactForTests(
+        options,
+        cleanupId,
+        artifacts,
+      );
+      await resumed.verifyFinalScanAndRehash();
+      await resumed.completeActivation({ protectedRecoveryDurable: true });
+      await resumed.release();
+      expect(existsSync(sealedPath)).toBe(false);
+
+      const repeated = await resumeWindowsLegacyMigrationExclusionWithArtifactForTests(
+        options,
+        cleanupId,
+        artifacts,
+      );
+      await repeated.completeActivation({ protectedRecoveryDurable: true });
+      await repeated.release();
+      expect(existsSync(sealedPath)).toBe(false);
     }, 30_000);
   });
 });
@@ -300,6 +392,7 @@ function runBuildGuard(
   fixture: PublishFixture,
   action: "--verify-fixture" | "--verify-publish" | "--copy-packaged",
   additionalArgs: string[] = [],
+  environment: NodeJS.ProcessEnv = {},
 ) {
   const script = join(
     dirname(import.meta.filename),
@@ -319,7 +412,7 @@ function runBuildGuard(
       ...(action === "--verify-fixture" ? ["--signature-evidence", fixture.signatureEvidence] : []),
       ...additionalArgs,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: { ...process.env, ...environment } },
   );
 }
 

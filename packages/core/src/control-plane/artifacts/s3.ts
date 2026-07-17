@@ -12,12 +12,12 @@ import {
   artifactProviderObjectKey,
   sha256Hex,
   validateArtifactRange,
+  MAX_ARTIFACT_PART_BYTES,
   type ArtifactObjectHead,
   type ArtifactProvider,
   type ArtifactProviderIdentity,
   type ArtifactPutResult,
 } from "./provider";
-const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 const MAX_RANGE_BYTES = 16 * 1024 * 1024;
 const MAX_CANARY_BYTES = 1024;
 
@@ -82,8 +82,8 @@ export class S3ArtifactProvider implements ArtifactProvider {
 
   async putImmutable(key: string, bytes: Uint8Array): Promise<ArtifactPutResult> {
     this.#assertVerified();
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_ARTIFACT_BYTES) {
-      throw new CapletsError("REQUEST_INVALID", "S3 immutable artifact size is invalid.");
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_ARTIFACT_PART_BYTES) {
+      throw new CapletsError("REQUEST_INVALID", "S3 immutable artifact part size is invalid.");
     }
     const objectKey = this.#qualifiedKey(artifactProviderObjectKey(this.identity, key));
     const digest = sha256Hex(bytes);

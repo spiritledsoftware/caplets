@@ -12,6 +12,7 @@ export const cliCommands = {
   cloud: "cloud",
   init: "init",
   setup: "setup",
+  storage: "storage",
   doctor: "doctor",
   list: "list",
   install: "install",
@@ -46,6 +47,7 @@ export const topLevelCommandNames = [
   cliCommands.cloud,
   cliCommands.init,
   cliCommands.setup,
+  cliCommands.storage,
   cliCommands.doctor,
   cliCommands.list,
   cliCommands.install,
@@ -82,6 +84,7 @@ export const cliSubcommands = {
   [cliCommands.config]: ["path", "paths"],
   [cliCommands.daemon]: ["install", "uninstall", "start", "restart", "stop", "status", "logs"],
   [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
+  [cliCommands.storage]: ["migrate", "transfer", "portable", "management"],
   [cliCommands.telemetry]: ["status", "enable", "disable", "delete-id", "rotate-id", "debug"],
   [cliCommands.vault]: ["set", "get", "list", "delete", "access"],
 } as const satisfies Record<string, readonly string[]>;
@@ -89,6 +92,11 @@ export const cliSubcommands = {
 export const cliNestedSubcommands = {
   [cliCommands.remote]: {
     host: ["pair", "clients", "revoke"],
+  },
+  [cliCommands.storage]: {
+    transfer: ["start", "cutover", "rollback", "finalize"],
+    portable: ["status", "operation", "import", "export"],
+    management: ["list", "inspect", "preview", "mutate", "status", "lookup"],
   },
   [cliCommands.vault]: {
     access: ["grant", "list", "revoke"],

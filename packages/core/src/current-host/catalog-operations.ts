@@ -1,19 +1,32 @@
-import { defaultCapletsLockfilePath, resolveCapletsRoot } from "../config";
+import { createHash } from "node:crypto";
+import { copyFileSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, relative, sep } from "node:path";
+import { defaultCapletsLockfilePath } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import {
   indexInstalledCapletsFromLockfile,
   installCaplets,
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
-} from "./../cli/install";
+  type InstallableCaplet,
+} from "../cli/install";
+import { readCapletsLockfile, writeCapletsLockfile, type CapletsLockEntry } from "../cli/lockfile";
+import {
+  encodePortableCaplet,
+  portableCapletFromCapletDocument,
+  type PortableCapletBundleFile,
+} from "../control-plane/caplets/portable-codec";
+import type { PortableCaplet } from "../control-plane/caplets/model";
+import type { ControlPlaneProvenance } from "../control-plane/types";
 import { CapletsError } from "../errors";
 import {
   currentHostCatalogDetail,
   currentHostCatalogIndex,
   currentHostCatalogInstallSource,
   currentHostCatalogSearch,
-  currentHostCatalogUpdateReadiness,
   currentHostInstalledCaplets,
+  type CurrentHostInstalledCatalogCaplet,
   type CurrentHostSetupAction,
 } from "./catalog";
 import {
@@ -40,6 +53,41 @@ type CatalogUpdatesOutcome = Extract<CurrentHostOperationOutcome, { kind: "catal
 type CatalogInstallOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_install" }>;
 type CatalogUpdateOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_update" }>;
 
+export type GlobalCatalogArtifact = Readonly<{
+  installed: CurrentHostInstalledCatalogCaplet;
+  lockEntry: CapletsLockEntry;
+  portable: PortableCaplet;
+  provenance: ControlPlaneProvenance;
+  setupActions: readonly CurrentHostSetupAction[];
+}>;
+
+export type PersistGlobalCatalogChangeInput = Readonly<{
+  action: "install" | "update";
+  principal: CurrentHostOperatorPrincipal;
+  source: Readonly<{
+    repository?: string | undefined;
+    catalogSource?: string | undefined;
+    entryKey?: string | undefined;
+  }>;
+  capletIds?: readonly string[] | undefined;
+  force: boolean;
+  allowRiskIncrease?: boolean | undefined;
+  artifacts: readonly GlobalCatalogArtifact[];
+}>;
+
+export type PersistGlobalCatalogChange = (
+  input: PersistGlobalCatalogChangeInput,
+) => Promise<Readonly<{ installed: CurrentHostInstalledCatalogCaplet[] }>>;
+
+export type LoadGlobalCatalogProvenance = (
+  capletIds: readonly string[] | undefined,
+) => Promise<readonly CapletsLockEntry[]>;
+
+export type GlobalCatalogPersistenceDependencies = Readonly<{
+  loadGlobalCatalogProvenance: LoadGlobalCatalogProvenance;
+  persistGlobalCatalogChange: PersistGlobalCatalogChange;
+}>;
+
 /** Current Host catalog administration implementation, kept behind the facade. */
 export function createCurrentHostCatalogOperations(
   dependencies: CurrentHostOperationsDependencies,
@@ -63,12 +111,18 @@ export function createCurrentHostCatalogOperations(
       kind: "catalog_detail",
       ...(await currentHostCatalogDetail(operation)),
     }),
-    updates: (_operation: CatalogUpdatesOperation): CatalogUpdatesOutcome => ({
-      kind: "catalog_updates",
-      ...currentHostCatalogUpdateReadiness({
-        context: { globalLockfilePath: dependencies.control?.globalLockfilePath },
-      }),
-    }),
+    updates: async (_operation: CatalogUpdatesOperation): Promise<CatalogUpdatesOutcome> => {
+      const persistence = requireGlobalCatalogPersistence(dependencies);
+      const entries = await persistence.loadGlobalCatalogProvenance(undefined);
+      return {
+        kind: "catalog_updates",
+        updates: entries.map((entry) => ({
+          id: entry.id,
+          status: "locked" as const,
+          risk: entry.risk,
+        })),
+      };
+    },
     install: (
       principal: CurrentHostOperatorPrincipal,
       operation: CatalogInstallOperation,
@@ -93,10 +147,9 @@ async function catalogInstallOutcome(
       "Catalog install accepts either a source or repository, not both.",
     );
   }
+  let repo = operation.repo;
   try {
-    const control = requireControlContext(dependencies.control, "Catalog actions");
-    const target = globalCatalogTarget(control);
-    let repo = operation.repo;
+    const persistence = requireGlobalCatalogPersistence(dependencies);
     if (operation.source !== undefined) {
       if (!operation.entryKey) {
         throw new CapletsError("REQUEST_INVALID", "Catalog install requires a stable entryKey.");
@@ -122,26 +175,44 @@ async function catalogInstallOutcome(
       capletIds = [detail.entry.id];
       repo = currentHostCatalogInstallSource(operation.source, detail.entry.resolvedRevision);
     }
-    const installOptions = {
-      ...target,
-      ...(capletIds === undefined ? {} : { capletIds }),
-      ...(operation.force === undefined ? {} : { force: operation.force }),
-    };
-    const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
-    if (finalAuthorization instanceof Promise) await finalAuthorization;
-    const installed = repo
-      ? installCaplets(repo, installOptions).installed
-      : restoreCapletsFromLockfile(installOptions).installed;
-    await attachCatalogIndexing(installed, operation.disableCatalogIndexing ?? false);
-    for (const entry of installed) {
-      await dependencies.activityLog.append({
-        actorClientId: principal.clientId,
-        action: "catalog_installed",
-        target: { type: "catalog", id: entry.id },
-        metadata: { status: entry.status ?? null, kind: entry.kind },
+    const staged = await stageCatalogInstall(
+      dependencies.control,
+      persistence,
+      repo,
+      capletIds,
+      operation.force ?? false,
+      setupActions,
+      principal.clientId,
+    );
+    try {
+      const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
+      if (finalAuthorization instanceof Promise) await finalAuthorization;
+      const persisted = await persistence.persistGlobalCatalogChange({
+        action: "install",
+        principal,
+        source: {
+          ...(repo === undefined ? {} : { repository: repo }),
+          ...(operation.source === undefined ? {} : { catalogSource: operation.source }),
+          ...(operation.entryKey === undefined ? {} : { entryKey: operation.entryKey }),
+        },
+        ...(capletIds === undefined ? {} : { capletIds }),
+        force: operation.force ?? false,
+        artifacts: staged.artifacts,
       });
+      await attachCatalogIndexing(staged.installed, operation.disableCatalogIndexing ?? false);
+      const installed = attachPersistedCatalogIndexing(persisted.installed, staged.installed);
+      for (const entry of installed) {
+        await dependencies.activityLog.append({
+          actorClientId: principal.clientId,
+          action: "catalog_installed",
+          target: { type: "catalog", id: entry.id },
+          metadata: { status: entry.status ?? null, kind: entry.kind },
+        });
+      }
+      return { kind: "catalog_install", installed, setupActions };
+    } finally {
+      staged.cleanup();
     }
-    return { kind: "catalog_install", installed, setupActions };
   } catch (error) {
     await appendCatalogFailureActivities(dependencies, principal, "catalog_installed", capletIds);
     throw error;
@@ -155,30 +226,46 @@ async function catalogUpdateOutcome(
 ): Promise<CatalogUpdateOutcome> {
   const capletIds = optionalCapletIds(operation.capletIds);
   try {
-    const control = requireControlContext(dependencies.control, "Catalog actions");
-    const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
-    if (finalAuthorization instanceof Promise) await finalAuthorization;
-    const installed = updateCapletsFromLockfile({
-      ...globalCatalogTarget(control),
-      ...(capletIds === undefined ? {} : { capletIds }),
-      ...(operation.force === undefined ? {} : { force: operation.force }),
-      ...(operation.allowRiskIncrease === undefined
-        ? {}
-        : { allowRiskIncrease: operation.allowRiskIncrease }),
-    }).installed;
-    await attachCatalogIndexing(installed, operation.disableCatalogIndexing ?? false);
-    for (const entry of installed) {
-      await dependencies.activityLog.append({
-        actorClientId: principal.clientId,
-        action: "catalog_updated",
-        target: { type: "catalog", id: entry.id },
-        metadata: {
-          status: entry.status ?? null,
-          riskAcknowledged: operation.allowRiskIncrease ?? false,
-        },
+    const persistence = requireGlobalCatalogPersistence(dependencies);
+    const lockEntries = await persistence.loadGlobalCatalogProvenance(capletIds);
+    const staged = stageCatalogUpdate(
+      lockEntries,
+      capletIds,
+      operation.force ?? false,
+      operation.allowRiskIncrease,
+      principal.clientId,
+    );
+    try {
+      const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
+      if (finalAuthorization instanceof Promise) await finalAuthorization;
+      const persisted = await persistence.persistGlobalCatalogChange({
+        action: "update",
+        principal,
+        source: {},
+        ...(capletIds === undefined ? {} : { capletIds }),
+        force: operation.force ?? false,
+        ...(operation.allowRiskIncrease === undefined
+          ? {}
+          : { allowRiskIncrease: operation.allowRiskIncrease }),
+        artifacts: staged.artifacts,
       });
+      await attachCatalogIndexing(staged.installed, operation.disableCatalogIndexing ?? false);
+      const installed = attachPersistedCatalogIndexing(persisted.installed, staged.installed);
+      for (const entry of installed) {
+        await dependencies.activityLog.append({
+          actorClientId: principal.clientId,
+          action: "catalog_updated",
+          target: { type: "catalog", id: entry.id },
+          metadata: {
+            status: entry.status ?? null,
+            riskAcknowledged: operation.allowRiskIncrease ?? false,
+          },
+        });
+      }
+      return { kind: "catalog_update", installed, setupActions: [] };
+    } finally {
+      staged.cleanup();
     }
-    return { kind: "catalog_update", installed, setupActions: [] };
   } catch (error) {
     await appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
     throw error;
@@ -196,14 +283,232 @@ async function appendCatalogFailureActivities(
   }
 }
 
-function globalCatalogTarget(control: CurrentHostControlContext): {
-  destinationRoot: string;
-  lockfilePath: string;
-} {
-  return {
-    destinationRoot: control.globalCapletsRoot ?? resolveCapletsRoot(control.configPath),
-    lockfilePath: control.globalLockfilePath ?? defaultCapletsLockfilePath(),
+type StagedGlobalCatalog = Readonly<{
+  installed: InstallableCaplet[];
+  artifacts: GlobalCatalogArtifact[];
+  cleanup(): void;
+}>;
+
+async function stageCatalogInstall(
+  control: CurrentHostControlContext | undefined,
+  persistence: GlobalCatalogPersistenceDependencies,
+  repo: string | undefined,
+  capletIds: string[] | undefined,
+  force: boolean,
+  setupActions: readonly CurrentHostSetupAction[],
+  actorId: string,
+): Promise<StagedGlobalCatalog> {
+  const root = mkdtempSync(join(tmpdir(), "caplets-catalog-"));
+  const target = {
+    destinationRoot: join(root, "caplets"),
+    lockfilePath: join(root, "caplets.lock.json"),
   };
+  try {
+    if (repo === undefined) {
+      const persisted = await persistence.loadGlobalCatalogProvenance(capletIds);
+      if (persisted.length > 0) {
+        writeCapletsLockfile(target.lockfilePath, { version: 1, entries: [...persisted] });
+      } else {
+        copyFileSync(
+          requireControlContext(control, "Catalog restore").globalLockfilePath ??
+            defaultCapletsLockfilePath(),
+          target.lockfilePath,
+        );
+      }
+    }
+    const installed = repo
+      ? installCaplets(repo, {
+          ...target,
+          ...(capletIds === undefined ? {} : { capletIds }),
+          force,
+        }).installed
+      : restoreCapletsFromLockfile({
+          ...target,
+          ...(capletIds === undefined ? {} : { capletIds }),
+          force,
+        }).installed;
+    return stagedGlobalCatalog(root, target.lockfilePath, installed, setupActions, actorId);
+  } catch (error) {
+    cleanupStagingRoot(root);
+    throw error;
+  }
+}
+
+function stageCatalogUpdate(
+  lockEntries: readonly CapletsLockEntry[],
+  capletIds: string[] | undefined,
+  force: boolean,
+  allowRiskIncrease: boolean | undefined,
+  actorId: string,
+): StagedGlobalCatalog {
+  if (lockEntries.length === 0) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      "No SQL-owned catalog Caplets were found to update.",
+    );
+  }
+  const root = mkdtempSync(join(tmpdir(), "caplets-catalog-"));
+  const target = {
+    destinationRoot: join(root, "caplets"),
+    lockfilePath: join(root, "caplets.lock.json"),
+  };
+  try {
+    writeCapletsLockfile(target.lockfilePath, { version: 1, entries: [...lockEntries] });
+    const installed = updateCapletsFromLockfile({
+      ...target,
+      ...(capletIds === undefined ? {} : { capletIds }),
+      force,
+      ...(allowRiskIncrease === undefined ? {} : { allowRiskIncrease }),
+    }).installed;
+    return stagedGlobalCatalog(root, target.lockfilePath, installed, [], actorId);
+  } catch (error) {
+    cleanupStagingRoot(root);
+    throw error;
+  }
+}
+
+function stagedGlobalCatalog(
+  root: string,
+  lockfilePath: string,
+  installed: InstallableCaplet[],
+  setupActions: readonly CurrentHostSetupAction[],
+  actorId: string,
+): StagedGlobalCatalog {
+  const lockEntries = new Map(
+    readCapletsLockfile(lockfilePath).entries.map((entry) => [entry.id, entry]),
+  );
+  const artifacts = installed.map((entry): GlobalCatalogArtifact => {
+    const lockEntry = lockEntries.get(entry.id);
+    if (!lockEntry) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Staged catalog metadata is missing Caplet ${entry.id}.`,
+      );
+    }
+    const portable = portableArtifact(entry);
+    const encoded = encodePortableCaplet(portable);
+    const contentHash =
+      normalizedHash(lockEntry.installedHash) ?? createHash("sha256").update(encoded).digest("hex");
+    const runtimeFingerprint = lockEntry.runtimeFingerprint
+      ? normalizedHash(lockEntry.runtimeFingerprint.artifactFingerprint)
+      : undefined;
+    return {
+      installed: {
+        id: entry.id,
+        source: entry.source,
+        destination: lockEntry.destination,
+        kind: entry.kind,
+        ...(entry.hash === undefined ? {} : { hash: entry.hash }),
+        ...(entry.status === undefined ? {} : { status: entry.status }),
+      },
+      lockEntry,
+      portable,
+      provenance: {
+        id: `catalog:${entry.id}:${contentHash}`,
+        sourceKind: lockEntry.source.type,
+        source: { ...lockEntry.source },
+        contentHash,
+        ...(runtimeFingerprint === undefined ? {} : { runtimeFingerprint }),
+        ownerId: actorId,
+        installedAt: lockEntry.installedAt,
+        ...(lockEntry.source.type === "git" && lockEntry.source.resolvedRevision
+          ? { resolvedRevision: lockEntry.source.resolvedRevision }
+          : {}),
+        riskSummary: { ...lockEntry.risk },
+      },
+      setupActions,
+    };
+  });
+  return {
+    installed,
+    artifacts,
+    cleanup: () => cleanupStagingRoot(root),
+  };
+}
+
+function cleanupStagingRoot(root: string): void {
+  try {
+    rmSync(root, { recursive: true, force: true });
+  } catch {
+    // SQL commit state is authoritative; cleanup failure must not relabel it as uncommitted.
+  }
+}
+
+function portableArtifact(entry: InstallableCaplet): PortableCaplet {
+  const entryPath =
+    entry.kind === "directory" ? join(entry.destination, "CAPLET.md") : entry.destination;
+  const entryStats = lstatSync(entryPath);
+  if (!entryStats.isFile()) {
+    throw new CapletsError("CONFIG_INVALID", `Staged Caplet ${entry.id} is not a regular file.`);
+  }
+  return portableCapletFromCapletDocument({
+    id: entry.id,
+    path: entry.kind === "directory" ? "CAPLET.md" : basename(entry.destination),
+    text: readFileSync(entryPath, "utf8"),
+    files: entry.kind === "directory" ? portableAssetFiles(entry.destination, entryPath) : [],
+  });
+}
+
+function portableAssetFiles(root: string, entryPath: string): PortableCapletBundleFile[] {
+  const files: PortableCapletBundleFile[] = [];
+  const visit = (directory: string): void => {
+    for (const child of readdirSync(directory, { withFileTypes: true }).toSorted((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      const path = join(directory, child.name);
+      if (path === entryPath) continue;
+      if (child.isDirectory()) {
+        visit(path);
+        continue;
+      }
+      if (!child.isFile()) {
+        throw new CapletsError("CONFIG_INVALID", "Staged Caplet contains a non-portable file.");
+      }
+      files.push({
+        path: relative(root, path).split(sep).join("/"),
+        role: "asset",
+        mediaType: "application/octet-stream",
+        content: readFileSync(path),
+        sourceKind: "file",
+      });
+    }
+  };
+  visit(root);
+  return files;
+}
+
+function normalizedHash(value: string): string | undefined {
+  const match = /^(?:sha256:)?([a-f0-9]{64})$/u.exec(value);
+  return match?.[1];
+}
+
+function attachPersistedCatalogIndexing(
+  persisted: CurrentHostInstalledCatalogCaplet[],
+  staged: InstallableCaplet[],
+): CurrentHostInstalledCatalogCaplet[] {
+  const indexing = new Map(staged.map((entry) => [entry.id, entry.catalogIndexing]));
+  return persisted.map((entry) => ({
+    ...entry,
+    ...(indexing.get(entry.id) === undefined ? {} : { catalogIndexing: indexing.get(entry.id) }),
+  }));
+}
+
+function requireGlobalCatalogPersistence(
+  dependencies: Pick<
+    CurrentHostOperationsDependencies,
+    "loadGlobalCatalogProvenance" | "persistGlobalCatalogChange"
+  >,
+): GlobalCatalogPersistenceDependencies {
+  if (dependencies.loadGlobalCatalogProvenance && dependencies.persistGlobalCatalogChange) {
+    return {
+      loadGlobalCatalogProvenance: dependencies.loadGlobalCatalogProvenance,
+      persistGlobalCatalogChange: dependencies.persistGlobalCatalogChange,
+    };
+  }
+  throw new CapletsError(
+    "SERVER_UNAVAILABLE",
+    "SQL catalog persistence is unavailable for Current Host administration.",
+  );
 }
 
 async function attachCatalogIndexing(

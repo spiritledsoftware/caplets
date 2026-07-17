@@ -76,13 +76,24 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Check paired migration artifacts
+        run: pnpm storage:schema:check
 
-      - name: Run paired control-plane schema and role gate
-        run: >-
-          pnpm --filter @caplets/core exec vitest run
-          test/control-plane-schema.test.ts
-          test/control-plane-dialects.test.ts
-          test/control-plane-migrations.test.ts
+      - name: Run paired control-plane schema and role gates
+        run: |
+          pnpm --filter @caplets/core exec vitest run test/control-plane-schema.test.ts
+          pnpm --filter @caplets/core exec vitest run test/control-plane-dialects.test.ts
+          pnpm --filter @caplets/core exec vitest run test/control-plane-migrations.test.ts
+        env:
+          CAPLETS_TEST_POSTGRES_URL: postgres://caplets:caplets-test@127.0.0.1:5432/caplets
+
+      - name: Run real Postgres behavioral contracts sequentially
+        run: |
+          pnpm --filter @caplets/core exec vitest run test/control-plane-caplets.test.ts
+          pnpm --filter @caplets/core exec vitest run test/control-plane-migration-persistence.test.ts
+          pnpm --filter @caplets/core exec vitest run test/control-plane-security-state.test.ts
+          pnpm --filter @caplets/core exec vitest run test/control-plane-transfer.test.ts
+          pnpm --filter @caplets/core exec vitest run test/postgres-convergence.test.ts
         env:
           CAPLETS_TEST_POSTGRES_URL: postgres://caplets:caplets-test@127.0.0.1:5432/caplets
 
@@ -102,6 +113,17 @@ jobs:
             sleep 1
           done
           exit 1
+      - name: Run production S3 verifier contract
+        run: >-
+          pnpm --filter @caplets/core exec vitest run
+          test/storage-production-adapters.test.ts
+        env:
+          CAPLETS_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          CAPLETS_TEST_S3_BUCKET: caplets-production-verifier
+          CAPLETS_TEST_S3_PREFIX: control-plane
+          CAPLETS_TEST_S3_ACCESS_KEY_ID: caplets-test
+          CAPLETS_TEST_S3_SECRET_ACCESS_KEY: caplets-test-secret
+          CAPLETS_TEST_S3_CREATE_BUCKET: "1"
 
       - name: Run storage stack exit gate
         run: pnpm storage:stack:check
@@ -111,6 +133,7 @@ jobs:
           CAPLETS_TEST_POSTGRES_URL: postgres://caplets:caplets-test@127.0.0.1:5432/caplets
           CAPLETS_TEST_S3_ENDPOINT: http://127.0.0.1:9000
           CAPLETS_TEST_S3_BUCKET: caplets-stack
+          CAPLETS_TEST_S3_PREFIX: control-plane
           CAPLETS_TEST_S3_ACCESS_KEY_ID: caplets-test
           CAPLETS_TEST_S3_SECRET_ACCESS_KEY: caplets-test-secret
           CAPLETS_TEST_S3_CREATE_BUCKET: "1"
@@ -122,6 +145,60 @@ jobs:
           name: storage-stack-node-${{ matrix.node-version }}
           path: storage-results/*.json
           if-no-files-found: error
+
+  storage-full-envelope-benchmark:
+    name: Storage full-envelope Postgres benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16.9-bookworm
+        env:
+          POSTGRES_DB: caplets
+          POSTGRES_USER: caplets
+          POSTGRES_PASSWORD: caplets-test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U caplets -d caplets"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run SQLite runtime materialization benchmarks
+        run: >-
+          pnpm --filter @caplets/core exec vitest run
+          test/control-plane-runtime.test.ts
+          -t "materializes a maximum-size SQL asset|composes the exact 2,000-Caplet U2 count"
+        env:
+          CAPLETS_BENCHMARK_REPORT: "1"
+          NODE_OPTIONS: --max-old-space-size=12288
+
+      - name: Run full-envelope real Postgres qualification
+        run: >-
+          pnpm --filter @caplets/core exec vitest run
+          test/control-plane-caplets.test.ts
+          -t "qualifies generation-indexed snapshot materialization at the full Postgres envelope"
+        env:
+          CAPLETS_TEST_POSTGRES_URL: postgres://caplets:caplets-test@127.0.0.1:5432/caplets
+          CAPLETS_FULL_ENVELOPE_BENCHMARK: "1"
+          CAPLETS_BENCHMARK_REPORT: "1"
+          NODE_OPTIONS: --max-old-space-size=12288
 
   storage-exclusion-linux:
     name: Storage exclusion (Linux)
@@ -382,7 +459,7 @@ jobs:
           --env CAPLETS_STORAGE_TUPLE_ID=${{ matrix.id }}
           --env CAPLETS_STORAGE_RESULT_DIR=storage-results
           ${{ matrix.image }}
-          sh -lc "corepack enable && corepack prepare pnpm@11.9.0 --activate && pnpm install --frozen-lockfile && pnpm storage:package:check"
+          sh -lc "corepack enable && corepack prepare pnpm@11.7.0 --activate && pnpm install --frozen-lockfile && pnpm storage:package:check"
 
       - name: Upload storage package result
         if: always()

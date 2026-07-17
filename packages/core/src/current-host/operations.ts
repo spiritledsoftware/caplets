@@ -28,6 +28,27 @@ import type {
   CanonicalCapletRelationalProjection,
   CapletActivationState,
 } from "../control-plane/caplets/model";
+import type { PortableCapletExportService } from "../control-plane/caplets/export";
+import type { PortableCapletImportService } from "../control-plane/caplets/import";
+import type {
+  ArtifactSession,
+  ArtifactSessionManager,
+  ImportProposal,
+  PortableArtifactDescriptor,
+} from "../control-plane/artifacts/sessions";
+import type { LoadGlobalCatalogProvenance, PersistGlobalCatalogChange } from "./catalog-operations";
+import { parsePortableArtifactReference, type PortableArtifactReference } from "../media/artifacts";
+import {
+  LOCAL_GLOBAL_OFFLINE_TRANSFER_TARGET,
+  type OfflineSqlTransferOperations,
+  type OfflineSqlTransferPreview,
+  type OfflineSqlTransferReceipt,
+} from "../control-plane/operations";
+import type {
+  SqlTransferConfirmation,
+  SqlTransferStartRequest,
+} from "../control-plane/migration/transfer";
+import { MAX_SQL_TRANSFER_CHUNK_BYTES } from "../control-plane/migration/manifest";
 import { CapletsError, toSafeError, type SafeErrorSummary } from "../errors";
 import type {
   RemoteCredentialRepository,
@@ -457,6 +478,489 @@ export function validateCurrentHostConfirmation(
   }
   return confirmation;
 }
+export const currentHostOfflineTransferTarget = LOCAL_GLOBAL_OFFLINE_TRANSFER_TARGET;
+
+export type CurrentHostOfflineTransferTarget = typeof currentHostOfflineTransferTarget;
+export type CurrentHostOfflineTransferConfirmation = SqlTransferConfirmation;
+export type CurrentHostOfflineTransferStartRequest = SqlTransferStartRequest;
+export type CurrentHostOfflineTransferPreview = OfflineSqlTransferPreview;
+export type CurrentHostOfflineTransferResult = OfflineSqlTransferReceipt;
+export function parseCurrentHostOfflineTransferStartRequest(
+  value: unknown,
+): CurrentHostOfflineTransferStartRequest {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 7 ||
+    !isPrintableTransferIdentifier(value.transferId) ||
+    !isRecord(value.identity) ||
+    Object.keys(value.identity).length !== 3 ||
+    !isPrintableTransferIdentifier(value.identity.logicalHostId) ||
+    !isPrintableTransferIdentifier(value.identity.storeId) ||
+    !isPrintableTransferIdentifier(value.identity.operationNamespace) ||
+    typeof value.sourceDescriptorDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.sourceDescriptorDigest) ||
+    typeof value.destinationDescriptorDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.destinationDescriptorDigest) ||
+    !isPrintableTransferIdentifier(value.sourceKeyProviderIdentity) ||
+    !isPrintableTransferIdentifier(value.destinationKeyProviderIdentity) ||
+    value.sourceKeyProviderIdentity === value.destinationKeyProviderIdentity ||
+    !Number.isSafeInteger(value.maxChunkBytes) ||
+    (value.maxChunkBytes as number) < 1 ||
+    (value.maxChunkBytes as number) > MAX_SQL_TRANSFER_CHUNK_BYTES
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Offline transfer start request is invalid.");
+  }
+  return value as CurrentHostOfflineTransferStartRequest;
+}
+
+export function parseCurrentHostOfflineTransferConfirmation(
+  value: unknown,
+): CurrentHostOfflineTransferConfirmation {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 7 ||
+    (value.action !== "cutover" && value.action !== "finalize") ||
+    !isPrintableTransferIdentifier(value.transferId) ||
+    !isPrintableTransferIdentifier(value.token) ||
+    typeof value.manifestDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.manifestDigest) ||
+    !Number.isSafeInteger(value.authorityGeneration) ||
+    (value.authorityGeneration as number) < 0 ||
+    typeof value.expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(value.expiresAt)) ||
+    typeof value.consequencesDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.consequencesDigest)
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Offline transfer confirmation is invalid.");
+  }
+  return value as CurrentHostOfflineTransferConfirmation;
+}
+
+function isPrintableTransferIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[\x21-\x7e]{1,256}$/u.test(value);
+}
+
+export interface CurrentHostOfflineTransferClient {
+  readonly target: "global";
+  start(transfer: SqlTransferStartRequest): Promise<CurrentHostOfflineTransferResult>;
+  previewCutover(transferId: string): Promise<CurrentHostOfflineTransferPreview>;
+  cutover(
+    transferId: string,
+    confirmation: CurrentHostOfflineTransferConfirmation,
+  ): Promise<CurrentHostOfflineTransferResult>;
+  rollback(transferId: string): Promise<CurrentHostOfflineTransferResult>;
+  previewFinalize(transferId: string): Promise<CurrentHostOfflineTransferPreview>;
+  finalize(
+    transferId: string,
+    confirmation: CurrentHostOfflineTransferConfirmation,
+  ): Promise<CurrentHostOfflineTransferResult>;
+}
+
+export function createCurrentHostOfflineTransferClient(
+  dependencies: Readonly<{
+    authorizeLocalHostAdministrator: () => void | Promise<void>;
+    resolveTransferOperations: () =>
+      | OfflineSqlTransferOperations
+      | Promise<OfflineSqlTransferOperations>;
+  }>,
+): CurrentHostOfflineTransferClient {
+  const authorizedOperations = async (): Promise<OfflineSqlTransferOperations> => {
+    await dependencies.authorizeLocalHostAdministrator();
+    return await dependencies.resolveTransferOperations();
+  };
+  const checkedTransferId = (transferId: string): string => {
+    if (!/^[\x21-\x7e]{1,256}$/u.test(transferId)) {
+      throw new CapletsError("REQUEST_INVALID", "Offline transfer ID is invalid.");
+    }
+    return transferId;
+  };
+  return {
+    target: "global",
+    async start(transfer) {
+      return (await authorizedOperations()).start({
+        administration: currentHostOfflineTransferTarget,
+        transfer,
+      });
+    },
+    async previewCutover(transferId) {
+      const id = checkedTransferId(transferId);
+      return (await authorizedOperations()).previewCutover({
+        administration: currentHostOfflineTransferTarget,
+        transferId: id,
+      });
+    },
+    async cutover(transferId, confirmation) {
+      const id = checkedTransferId(transferId);
+      return (await authorizedOperations()).cutover({
+        administration: currentHostOfflineTransferTarget,
+        transferId: id,
+        confirmation,
+      });
+    },
+    async rollback(transferId) {
+      const id = checkedTransferId(transferId);
+      return (await authorizedOperations()).rollback({
+        administration: currentHostOfflineTransferTarget,
+        transferId: id,
+      });
+    },
+    async previewFinalize(transferId) {
+      const id = checkedTransferId(transferId);
+      return (await authorizedOperations()).previewFinalize({
+        administration: currentHostOfflineTransferTarget,
+        transferId: id,
+      });
+    },
+    async finalize(transferId, confirmation) {
+      const id = checkedTransferId(transferId);
+      return (await authorizedOperations()).finalize({
+        administration: currentHostOfflineTransferTarget,
+        transferId: id,
+        confirmation,
+      });
+    },
+  };
+}
+
+export type CurrentHostPortableOperation =
+  | Readonly<{ kind: "portable_status"; binding: CurrentHostOperationBinding }>
+  | Readonly<{
+      kind: "portable_import_session_create";
+      binding: CurrentHostOperationBinding;
+      expectedByteLength: number;
+      expectedSha256: string;
+      mimeType: string;
+    }>
+  | Readonly<{
+      kind: "portable_import_session_status";
+      binding: CurrentHostOperationBinding;
+      sessionId: string;
+    }>
+  | Readonly<{
+      kind: "portable_import_session_append";
+      binding: CurrentHostOperationBinding;
+      sessionId: string;
+      offset: number;
+      chunkSha256: string;
+      bytes: Uint8Array;
+    }>
+  | Readonly<{
+      kind: "portable_import_session_finalize";
+      binding: CurrentHostOperationBinding;
+      sessionId: string;
+    }>
+  | Readonly<{
+      kind: "portable_import_preview";
+      binding: CurrentHostOperationBinding;
+      artifactReference: PortableArtifactReference;
+      collisionPolicy: "reject" | "replace";
+      replacementConfirmed: boolean;
+    }>
+  | Readonly<{
+      kind: "portable_import_activate";
+      binding: CurrentHostOperationBinding;
+      proposalId: string;
+      proposalHash: string;
+    }>
+  | Readonly<{
+      kind: "portable_setup_revalidate";
+      binding: CurrentHostOperationBinding;
+      capletId: string;
+      expectedAggregateVersion: number;
+      expectedAuthorityToken: CurrentHostAuthorityToken;
+      expectedSecurityEpoch: number;
+    }>
+  | Readonly<{
+      kind: "portable_export_create";
+      binding: CurrentHostOperationBinding;
+      capletId: string;
+      selector: "effective" | "underlying-sql";
+    }>
+  | Readonly<{
+      kind: "portable_artifact_download_range";
+      binding: CurrentHostOperationBinding;
+      artifactReference: PortableArtifactReference;
+      start: number;
+      endExclusive: number;
+    }>;
+
+export type CurrentHostPortableOperationKind = CurrentHostPortableOperation["kind"];
+
+/** Only the redacted status observation is availability-independent; artifact access is revocable. */
+export function currentHostPortableOperationAuthority(
+  kind: CurrentHostPortableOperationKind,
+): "availability-independent" | "live-authority" {
+  return kind === "portable_status" ? "availability-independent" : "live-authority";
+}
+
+export type ParseCurrentHostPortableOperationOptions = Readonly<{
+  binding?: CurrentHostOperationBinding | undefined;
+}>;
+
+export type CurrentHostPortableRejectedReason =
+  | "filesystem-owned"
+  | "sql-collision"
+  | "invalid-artifact"
+  | "stale"
+  | "changed-bytes"
+  | "revoked-actor"
+  | "consumed"
+  | "expired"
+  | "replacement-unconfirmed"
+  | "collision"
+  | "stale-generation"
+  | "stale-caplet"
+  | "not-found"
+  | "proposal-mismatch"
+  | "wrong-actor"
+  | "wrong-operation"
+  | "setup-incomplete";
+
+export type CurrentHostPortableOperationOutcome =
+  | Readonly<{
+      kind: "portable_status";
+      status: "live" | "stale-read-only" | "not-ready";
+      health: ControlPlaneHealthSummary;
+      guidanceCode: string;
+    }>
+  | Readonly<{
+      kind:
+        | "portable_import_session_create"
+        | "portable_import_session_status"
+        | "portable_import_session_append";
+      status: "created" | "ok" | "accepted";
+      session: ArtifactSession;
+    }>
+  | Readonly<{
+      kind: "portable_import_session_finalize";
+      status: "finalized";
+      session: ArtifactSession;
+      artifact: PortableArtifactDescriptor;
+    }>
+  | Readonly<{ kind: "portable_import_preview"; status: "previewed"; proposal: ImportProposal }>
+  | Readonly<{
+      kind: "portable_import_preview";
+      status: "rejected";
+      reason: CurrentHostPortableRejectedReason;
+    }>
+  | Readonly<{
+      kind: "portable_import_activate";
+      status: "committed";
+      receipt: CurrentHostOperationReceipt;
+      caplet: Readonly<{
+        id: string;
+        activation: CapletActivationState;
+        setupDependencies: ImportProposal["setupDependencies"];
+      }>;
+    }>
+  | Readonly<{
+      kind: "portable_import_activate";
+      status: "rejected";
+      reason: CurrentHostPortableRejectedReason;
+    }>
+  | Readonly<{
+      kind: "portable_setup_revalidate";
+      status: "committed";
+      receipt: CurrentHostOperationReceipt;
+      caplet: Readonly<{ id: string; activation: CapletActivationState }>;
+    }>
+  | Readonly<{
+      kind: "portable_setup_revalidate";
+      status: "rejected";
+      reason: CurrentHostPortableRejectedReason;
+    }>
+  | Readonly<{
+      kind: "portable_export_create";
+      status: "created";
+      artifact: PortableArtifactDescriptor;
+      artifactType: "file" | "bundle";
+    }>
+  | Readonly<{
+      kind: "portable_artifact_download_range";
+      status: "ok";
+      bytes: Uint8Array;
+      start: number;
+      endExclusive: number;
+      totalLength: number;
+    }>;
+
+export function parseCurrentHostPortableOperation(
+  value: unknown,
+  options: ParseCurrentHostPortableOperationOptions = {},
+): CurrentHostPortableOperation {
+  if (!isRecord(value) || typeof value.kind !== "string") {
+    throw new CapletsError("REQUEST_INVALID", "Portable Current Host operation must be an object.");
+  }
+  const kind = value.kind as CurrentHostPortableOperationKind;
+  const binding =
+    options.binding ??
+    parseCurrentHostOperationBinding(
+      Object.hasOwn(value, "binding")
+        ? value.binding
+        : (() => {
+            throw new CapletsError("REQUEST_INVALID", "Portable operation binding is required.");
+          })(),
+    );
+  const exact = (...fields: string[]) => {
+    const allowed = new Set([
+      "kind",
+      ...(Object.hasOwn(value, "binding") ? ["binding"] : []),
+      ...fields,
+    ]);
+    if (Object.keys(value).some((field) => !allowed.has(field))) {
+      throw new CapletsError("REQUEST_INVALID", "Portable operation contains unsupported fields.");
+    }
+  };
+  const text = (field: string): string => {
+    const nested = value[field];
+    if (typeof nested !== "string" || nested.length === 0 || nested.length > 512) {
+      throw new CapletsError("REQUEST_INVALID", `Portable operation ${field} is invalid.`);
+    }
+    return nested;
+  };
+  const integer = (field: string): number => {
+    const nested = value[field];
+    if (typeof nested !== "number" || !Number.isSafeInteger(nested) || nested < 0) {
+      throw new CapletsError("REQUEST_INVALID", `Portable operation ${field} is invalid.`);
+    }
+    return nested;
+  };
+  const digest = (field: string): string => {
+    const nested = text(field);
+    if (!/^[a-f0-9]{64}$/u.test(nested)) {
+      throw new CapletsError("REQUEST_INVALID", `Portable operation ${field} is invalid.`);
+    }
+    return nested;
+  };
+  const artifactReference = (): PortableArtifactReference => {
+    const nested = value.artifactReference;
+    const parsed = parsePortableArtifactReference(
+      typeof nested === "string"
+        ? nested
+        : isRecord(nested) && typeof nested.uri === "string"
+          ? nested.uri
+          : "",
+    );
+    if (isRecord(nested) && !isDeepStrictEqual(nested, parsed)) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Portable artifact reference claims are inconsistent.",
+      );
+    }
+    return parsed;
+  };
+  switch (kind) {
+    case "portable_status":
+      exact();
+      return { kind, binding };
+    case "portable_import_session_create":
+      exact("expectedByteLength", "expectedSha256", "mimeType");
+      return {
+        kind,
+        binding,
+        expectedByteLength: integer("expectedByteLength"),
+        expectedSha256: digest("expectedSha256"),
+        mimeType: text("mimeType"),
+      };
+    case "portable_import_session_status":
+    case "portable_import_session_finalize":
+      exact("sessionId");
+      return { kind, binding, sessionId: text("sessionId") };
+    case "portable_import_session_append": {
+      exact("sessionId", "offset", "chunkSha256", "bytes");
+      const bytes = value.bytes;
+      if (!(bytes instanceof Uint8Array)) {
+        throw new CapletsError("REQUEST_INVALID", "Portable artifact chunk bytes are invalid.");
+      }
+      return {
+        kind,
+        binding,
+        sessionId: text("sessionId"),
+        offset: integer("offset"),
+        chunkSha256: digest("chunkSha256"),
+        bytes,
+      };
+    }
+    case "portable_import_preview": {
+      exact("artifactReference", "collisionPolicy", "replacementConfirmed");
+      const collisionPolicy = value.collisionPolicy;
+      if (
+        (collisionPolicy !== "reject" && collisionPolicy !== "replace") ||
+        typeof value.replacementConfirmed !== "boolean"
+      ) {
+        throw new CapletsError("REQUEST_INVALID", "Portable import collision decision is invalid.");
+      }
+      return {
+        kind,
+        binding,
+        artifactReference: artifactReference(),
+        collisionPolicy,
+        replacementConfirmed: value.replacementConfirmed,
+      };
+    }
+    case "portable_import_activate":
+      exact("proposalId", "proposalHash");
+      return {
+        kind,
+        binding,
+        proposalId: text("proposalId"),
+        proposalHash: digest("proposalHash"),
+      };
+    case "portable_setup_revalidate": {
+      exact(
+        "capletId",
+        "expectedAggregateVersion",
+        "expectedAuthorityToken",
+        "expectedSecurityEpoch",
+      );
+      const token = value.expectedAuthorityToken;
+      if (
+        !isRecord(token) ||
+        Object.keys(token).sort().join(",") !== "authorityGeneration,effectiveGeneration"
+      ) {
+        throw new CapletsError("REQUEST_INVALID", "Portable setup authority token is invalid.");
+      }
+      const authorityGeneration = token.authorityGeneration;
+      const effectiveGeneration = token.effectiveGeneration;
+      if (
+        typeof authorityGeneration !== "number" ||
+        !Number.isSafeInteger(authorityGeneration) ||
+        authorityGeneration < 0 ||
+        typeof effectiveGeneration !== "number" ||
+        !Number.isSafeInteger(effectiveGeneration) ||
+        effectiveGeneration < 0
+      ) {
+        throw new CapletsError("REQUEST_INVALID", "Portable setup authority token is invalid.");
+      }
+      return {
+        kind,
+        binding,
+        capletId: text("capletId"),
+        expectedAggregateVersion: integer("expectedAggregateVersion"),
+        expectedAuthorityToken: { authorityGeneration, effectiveGeneration },
+        expectedSecurityEpoch: integer("expectedSecurityEpoch"),
+      };
+    }
+    case "portable_export_create": {
+      exact("capletId", "selector");
+      if (value.selector !== "effective" && value.selector !== "underlying-sql") {
+        throw new CapletsError("REQUEST_INVALID", "Portable export selector is invalid.");
+      }
+      return { kind, binding, capletId: text("capletId"), selector: value.selector };
+    }
+    case "portable_artifact_download_range":
+      exact("artifactReference", "start", "endExclusive");
+      return {
+        kind,
+        binding,
+        artifactReference: artifactReference(),
+        start: integer("start"),
+        endExclusive: integer("endExclusive"),
+      };
+    default:
+      throw new CapletsError("UNKNOWN_OPERATION", "Unsupported portable Current Host operation.");
+  }
+}
 
 export type CurrentHostOperation =
   | {
@@ -548,7 +1052,8 @@ export type CurrentHostOperation =
   | { kind: "logs"; limit?: number | undefined }
   | { kind: "diagnostics" }
   | { kind: "runtime_event" }
-  | { kind: "project_binding" };
+  | { kind: "project_binding" }
+  | CurrentHostPortableOperation;
 
 export type CurrentHostVaultAccessGrant = {
   storedKey: string;
@@ -700,7 +1205,8 @@ export type CurrentHostOperationOutcome =
         affectedCaplets: [];
         actions: Array<{ id: string; label: string; enabled: false; reason: string }>;
       };
-    };
+    }
+  | CurrentHostPortableOperationOutcome;
 
 /** The outcome family determined by a semantic Current Host operation's discriminant. */
 export type CurrentHostOperationOutcomeFor<TOperation extends CurrentHostOperation> = Extract<
@@ -913,6 +1419,215 @@ export interface CurrentHostOperations {
   ): Promise<CurrentHostOperationLookupOutcome>;
 }
 
+export interface CurrentHostPortableOperations {
+  execute(
+    principal: CurrentHostOperatorPrincipal,
+    operation: CurrentHostPortableOperation,
+  ): Promise<CurrentHostPortableOperationOutcome>;
+  readonly loadGlobalCatalogProvenance?: LoadGlobalCatalogProvenance | undefined;
+  readonly persistGlobalCatalogChange?: PersistGlobalCatalogChange | undefined;
+}
+
+export type CurrentHostPortableOperationsOptions = Readonly<{
+  sessions: ArtifactSessionManager;
+  imports: PortableCapletImportService;
+  exports: PortableCapletExportService;
+  status(): Promise<Extract<CurrentHostPortableOperationOutcome, { kind: "portable_status" }>>;
+  revalidate(
+    input: Readonly<{
+      principal: CurrentHostOperatorPrincipal;
+      operation: Extract<CurrentHostPortableOperation, { kind: "portable_setup_revalidate" }>;
+    }>,
+  ): Promise<Extract<CurrentHostPortableOperationOutcome, { kind: "portable_setup_revalidate" }>>;
+  activate?:
+    | ((
+        input: Readonly<{
+          principal: CurrentHostOperatorPrincipal;
+          operation: Extract<CurrentHostPortableOperation, { kind: "portable_import_activate" }>;
+        }>,
+      ) => Promise<
+        Extract<CurrentHostPortableOperationOutcome, { kind: "portable_import_activate" }>
+      >)
+    | undefined;
+  loadGlobalCatalogProvenance?: LoadGlobalCatalogProvenance | undefined;
+  persistGlobalCatalogChange?: PersistGlobalCatalogChange | undefined;
+}>;
+
+export function createCurrentHostPortableOperations(
+  options: CurrentHostPortableOperationsOptions,
+): CurrentHostPortableOperations {
+  const assertBinding = (
+    principal: CurrentHostOperatorPrincipal,
+    operation: CurrentHostPortableOperation,
+  ) => {
+    if (
+      operation.binding.actorId !== principal.clientId ||
+      operation.binding.logicalHostId !== options.sessions.identity.logicalHostId ||
+      operation.binding.storeId !== options.sessions.identity.storeId ||
+      operation.binding.operationNamespace !== options.sessions.identity.operationNamespace ||
+      operation.binding.target === "project"
+    ) {
+      throw new CapletsError("AUTH_FAILED", "Portable operation binding is invalid.");
+    }
+  };
+  const assertReference = (
+    operation: Extract<
+      CurrentHostPortableOperation,
+      { kind: "portable_import_preview" | "portable_artifact_download_range" }
+    >,
+    direction: "upload" | "download",
+  ) => {
+    const reference = operation.artifactReference;
+    if (
+      reference.logicalHostId !== operation.binding.logicalHostId ||
+      reference.storeId !== operation.binding.storeId ||
+      reference.actorId !== operation.binding.actorId ||
+      reference.operationId !== operation.binding.operationId ||
+      reference.providerIdentityId !== options.sessions.providerIdentity.identityId ||
+      reference.direction !== direction ||
+      Date.parse(reference.expiresAt) <= Date.now()
+    ) {
+      throw new CapletsError("AUTH_FAILED", "Portable artifact reference binding is invalid.");
+    }
+  };
+  return {
+    ...(options.loadGlobalCatalogProvenance
+      ? { loadGlobalCatalogProvenance: options.loadGlobalCatalogProvenance }
+      : {}),
+    ...(options.persistGlobalCatalogChange
+      ? { persistGlobalCatalogChange: options.persistGlobalCatalogChange }
+      : {}),
+    async execute(principal, operation) {
+      assertBinding(principal, operation);
+      if (operation.kind !== "portable_status") {
+        const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
+        if (finalAuthorization instanceof Promise) await finalAuthorization;
+      }
+      switch (operation.kind) {
+        case "portable_status":
+          return options.status();
+        case "portable_import_session_create":
+          return {
+            kind: operation.kind,
+            status: "created",
+            session: await options.sessions.createUploadSession({
+              actorId: principal.clientId,
+              operationId: operation.binding.operationId,
+              expectedByteLength: operation.expectedByteLength,
+              expectedSha256: operation.expectedSha256,
+              mimeType: operation.mimeType,
+            }),
+          };
+        case "portable_import_session_status": {
+          const session = await options.sessions.status(
+            operation.sessionId,
+            principal.clientId,
+            operation.binding.operationId,
+          );
+          if (!session)
+            throw new CapletsError("REQUEST_INVALID", "Portable session was not found.");
+          return { kind: operation.kind, status: "ok", session };
+        }
+        case "portable_import_session_append":
+          return {
+            kind: operation.kind,
+            status: "accepted",
+            session: await options.sessions.append({
+              actorId: principal.clientId,
+              operationId: operation.binding.operationId,
+              sessionId: operation.sessionId,
+              offset: operation.offset,
+              chunkSha256: operation.chunkSha256,
+              bytes: operation.bytes,
+            }),
+          };
+        case "portable_import_session_finalize": {
+          const finalized = await options.sessions.finalize(
+            operation.sessionId,
+            principal.clientId,
+            operation.binding.operationId,
+          );
+          return {
+            kind: operation.kind,
+            status: "finalized",
+            session: finalized.session,
+            artifact: finalized.artifact,
+          };
+        }
+        case "portable_import_preview": {
+          assertReference(operation, "upload");
+          const result = await options.imports.preview({
+            actorId: principal.clientId,
+            binding: operation.binding,
+            artifactReference: operation.artifactReference,
+            collisionPolicy: operation.collisionPolicy,
+            replacementConfirmed: operation.replacementConfirmed,
+          });
+          return result.status === "previewed"
+            ? { kind: operation.kind, status: result.status, proposal: result.proposal }
+            : { kind: operation.kind, status: result.status, reason: result.reason };
+        }
+        case "portable_import_activate": {
+          if (options.activate) return options.activate({ principal, operation });
+          const proposal = await options.sessions.readImportProposal(operation.proposalId);
+          const result = await options.imports.activate({
+            actorId: principal.clientId,
+            binding: operation.binding,
+            proposalId: operation.proposalId,
+            proposalHash: operation.proposalHash,
+          });
+          return result.status === "committed"
+            ? {
+                kind: operation.kind,
+                status: result.status,
+                receipt: result.receipt,
+                caplet: {
+                  id: result.aggregate.id,
+                  activation: result.aggregate.activation,
+                  setupDependencies: proposal?.setupDependencies ?? [],
+                },
+              }
+            : { kind: operation.kind, status: result.status, reason: result.reason };
+        }
+        case "portable_setup_revalidate":
+          return options.revalidate({ principal, operation });
+        case "portable_export_create": {
+          const exported = await options.exports.create({
+            actorId: principal.clientId,
+            binding: operation.binding,
+            capletId: operation.capletId,
+            selector: operation.selector,
+          });
+          return {
+            kind: operation.kind,
+            status: "created",
+            artifact: exported.artifact,
+            artifactType: exported.artifactType,
+          };
+        }
+        case "portable_artifact_download_range": {
+          assertReference(operation, "download");
+          const bytes = await options.sessions.readRange(
+            operation.artifactReference.artifactId,
+            principal.clientId,
+            operation.binding.operationId,
+            operation.start,
+            operation.endExclusive,
+          );
+          return {
+            kind: operation.kind,
+            status: "ok",
+            bytes,
+            start: operation.start,
+            endExclusive: operation.endExclusive,
+            totalLength: operation.artifactReference.byteLength,
+          };
+        }
+      }
+    },
+  };
+}
+
 export type CurrentHostOperationsDependencies = {
   engine: Pick<CapletsEngine, "enabledServers">;
   control?: CurrentHostControlContext | undefined;
@@ -924,13 +1639,29 @@ export type CurrentHostOperationsDependencies = {
   remotePendingLoginRepository?: RemotePendingLoginRepository | undefined;
   vaultRepository?: VaultRepository | undefined;
   management?: CurrentHostManagementDependencies | undefined;
+  portable?: CurrentHostPortableOperations | undefined;
+  loadGlobalCatalogProvenance?: LoadGlobalCatalogProvenance | undefined;
+  persistGlobalCatalogChange?: PersistGlobalCatalogChange | undefined;
   version: string;
 };
 
 export function createCurrentHostOperations(
   dependencies: CurrentHostOperationsDependencies,
 ): CurrentHostOperations {
-  const catalog = createCurrentHostCatalogOperations(dependencies);
+  const portableCatalog = dependencies.portable;
+  const catalog = createCurrentHostCatalogOperations({
+    ...dependencies,
+    ...(dependencies.loadGlobalCatalogProvenance
+      ? { loadGlobalCatalogProvenance: dependencies.loadGlobalCatalogProvenance }
+      : portableCatalog?.loadGlobalCatalogProvenance
+        ? { loadGlobalCatalogProvenance: portableCatalog.loadGlobalCatalogProvenance }
+        : {}),
+    ...(dependencies.persistGlobalCatalogChange
+      ? { persistGlobalCatalogChange: dependencies.persistGlobalCatalogChange }
+      : portableCatalog?.persistGlobalCatalogChange
+        ? { persistGlobalCatalogChange: portableCatalog.persistGlobalCatalogChange }
+        : {}),
+  });
   const clients = createCurrentHostClientOperations(dependencies);
   const vault = createCurrentHostVaultOperations(dependencies);
 
@@ -940,8 +1671,10 @@ export function createCurrentHostOperations(
       operation: TOperation,
     ): Promise<CurrentHostOperationOutcomeFor<TOperation>> {
       assertOperatorPrincipal(principal);
-      const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
-      if (finalAuthorization instanceof Promise) await finalAuthorization;
+      if (operation.kind !== "portable_status" && !operation.kind.startsWith("portable_")) {
+        const finalAuthorization = finalAuthorizeCurrentHostMutation(principal);
+        if (finalAuthorization instanceof Promise) await finalAuthorization;
+      }
       const outcome = await executeCurrentHostOperation(
         dependencies,
         catalog,
@@ -1114,6 +1847,23 @@ async function executeCurrentHostOperation(
           ],
         },
       };
+    case "portable_status":
+    case "portable_import_session_create":
+    case "portable_import_session_status":
+    case "portable_import_session_append":
+    case "portable_import_session_finalize":
+    case "portable_import_preview":
+    case "portable_import_activate":
+    case "portable_setup_revalidate":
+    case "portable_export_create":
+    case "portable_artifact_download_range":
+      if (!dependencies.portable) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Portable Current Host operations are unavailable.",
+        );
+      }
+      return dependencies.portable.execute(principal, operation);
     default:
       return assertNever(operation);
   }
@@ -1185,6 +1935,7 @@ async function executeCurrentHostManagementInspect(
   if ("status" in loaded) return loaded;
   const target = resolveManagementTarget(
     loaded.runtime,
+    loaded.sql,
     request.resource,
     request.id,
     request.selector,
@@ -1381,7 +2132,13 @@ async function prepareCurrentHostManagementMutation(
   if ("status" in loaded) return { kind: "result", result: loaded };
   const resource = managementMutationResource(request.mutation);
   const id = managementMutationId(request.mutation);
-  const target = resolveManagementTarget(loaded.runtime, resource, id, request.mutation.selector);
+  const target = resolveManagementTarget(
+    loaded.runtime,
+    loaded.sql,
+    resource,
+    id,
+    request.mutation.selector,
+  );
   if (!target) {
     return {
       kind: "result",
@@ -1472,12 +2229,44 @@ async function loadAuthorizedManagementRuntime(
 
 function resolveManagementTarget(
   runtime: ControlPlaneRuntimeSnapshot,
+  sql: ControlPlaneSnapshot,
   resource: CurrentHostManagementResource,
   id: string,
   selector: "effective" | "underlying-sql",
 ): Readonly<{ detail: CurrentHostManagementTargetDetail; rejected: boolean }> | undefined {
   const row = resource === "caplet" ? runtime.caplets[id] : runtime.hostSettings[id];
-  if (!row) return undefined;
+  if (!row) {
+    if (selector !== "underlying-sql") return undefined;
+    let effective: boolean;
+    if (resource === "caplet") {
+      const stored = sql.caplets.find(({ aggregate }) => aggregate.id === id);
+      if (!stored) return undefined;
+      effective = stored.aggregate.effective;
+    } else {
+      if (!sql.hostSettings.some(({ key }) => key === id)) return undefined;
+      effective = true;
+    }
+    const source: RuntimeOwnershipLayer["source"] = {
+      kind: "sql",
+      path: "sql://control-plane",
+    };
+    const layer: RuntimeOwnershipLayer = { owner: "sql", source };
+    return {
+      detail: managementTargetDetail(
+        resource,
+        id,
+        selector,
+        {
+          owner: "sql",
+          source,
+          effective,
+          shadowChain: [layer],
+        },
+        false,
+      ),
+      rejected: false,
+    };
+  }
   const resolution =
     resource === "caplet"
       ? resolveControlPlaneCapletMutationTarget(runtime, id, {
@@ -1595,6 +2384,12 @@ function capletMutationDocuments(
 }> {
   const stored = snapshot.caplets.find((row) => row.aggregate.id === mutation.id);
   if (!stored) throw new CapletsError("REQUEST_INVALID", "The SQL Caplet does not exist.");
+  if (mutation.activation === "active" && stored.aggregate.activation === "setup-required") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Setup-required SQL Caplets can only be activated through setup revalidation.",
+    );
+  }
   const aggregateVersion = stored.aggregate.aggregateVersion + 1;
   const wasEffective = target.effectiveChanged && stored.aggregate.activation === "active";
   const willBeEffective = target.effectiveChanged && mutation.activation === "active";

@@ -78,6 +78,7 @@ type ManagedConnection = {
   configFingerprint: string;
   tools?: Tool[] | undefined;
   toolsFetchedAt?: number | undefined;
+  toolsRefresh?: Promise<Tool[]> | undefined;
   resources?: Resource[] | undefined;
   resourcesFetchedAt?: number | undefined;
   resourceTemplates?: McpResourceTemplate[] | undefined;
@@ -89,7 +90,8 @@ type ManagedConnection = {
 };
 
 type PendingConnection = {
-  connection: ManagedConnection;
+  configFingerprint: string;
+  connection?: ManagedConnection | undefined;
   promise: Promise<ManagedConnection>;
 };
 
@@ -116,37 +118,49 @@ export class DownstreamManager {
   }
 
   async close(): Promise<void> {
+    const pending = [...this.connecting.values()];
     const connections = [
       ...this.connections.values(),
-      ...[...this.connecting.values()].map((pending) => pending.connection),
+      ...pending.flatMap(({ connection }) => (connection ? [connection] : [])),
     ];
     for (const connection of connections) {
       connection.closing = true;
     }
-    await Promise.allSettled(connections.map((connection) => connection.transport.close()));
     this.connections.clear();
     this.connecting.clear();
+    await Promise.allSettled([
+      ...connections.map((connection) => connection.transport.close()),
+      ...pending.map(({ promise }) => promise),
+    ]);
   }
 
   async closeServer(serverId: string): Promise<void> {
     const keys = [...new Set([...this.connections.keys(), ...this.connecting.keys()])].filter(
       (key) => key === serverId || key.startsWith(`${serverId}#project:`),
     );
-    const connections = keys.flatMap((key) => [
-      ...(this.connections.get(key) ? [this.connections.get(key)!] : []),
-      ...(this.connecting.get(key)?.connection ? [this.connecting.get(key)!.connection] : []),
-    ]);
+    const pending = keys.flatMap((key) => {
+      const value = this.connecting.get(key);
+      return value ? [value] : [];
+    });
+    const connections = [
+      ...keys.flatMap((key) => {
+        const connection = this.connections.get(key);
+        return connection ? [connection] : [];
+      }),
+      ...pending.flatMap(({ connection }) => (connection ? [connection] : [])),
+    ];
     for (const key of keys) {
       this.connections.delete(key);
       this.connecting.delete(key);
       this.restartState.delete(key);
     }
-    await Promise.allSettled(
-      connections.map((connection) => {
-        connection.closing = true;
-        return connection.transport.close();
-      }),
-    );
+    for (const connection of connections) {
+      connection.closing = true;
+    }
+    await Promise.allSettled([
+      ...connections.map((connection) => connection.transport.close()),
+      ...pending.map(({ promise }) => promise),
+    ]);
   }
 
   async checkServer(server: CapletServerConfig): Promise<{
@@ -541,24 +555,38 @@ export class DownstreamManager {
       return connection.tools ?? [];
     }
 
-    try {
-      const result = await connection.client.listTools(undefined, {
-        timeout: server.startupTimeoutMs,
-      });
-      connection.tools = result.tools ?? [];
-      connection.toolsFetchedAt = Date.now();
-      this.registry.setStatus(server.server, "available");
-      return result.tools ?? [];
-    } catch (error) {
-      const safe = toSafeError(
-        error,
-        isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "DOWNSTREAM_PROTOCOL_ERROR",
-      );
-      this.registry.setStatus(server.server, "unavailable", safe);
-      if (isAuthRemediationError(error)) {
-        throw error;
+    if (connection.toolsRefresh) {
+      return connection.toolsRefresh;
+    }
+
+    const refresh = (async (): Promise<Tool[]> => {
+      try {
+        const result = await connection.client.listTools(undefined, {
+          timeout: server.startupTimeoutMs,
+        });
+        connection.tools = result.tools ?? [];
+        connection.toolsFetchedAt = Date.now();
+        this.registry.setStatus(server.server, "available");
+        return result.tools ?? [];
+      } catch (error) {
+        const safe = toSafeError(
+          error,
+          isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "DOWNSTREAM_PROTOCOL_ERROR",
+        );
+        this.registry.setStatus(server.server, "unavailable", safe);
+        if (isAuthRemediationError(error)) {
+          throw error;
+        }
+        throw new CapletsError(safe.code, `Could not list tools for ${server.server}`, safe);
       }
-      throw new CapletsError(safe.code, `Could not list tools for ${server.server}`, safe);
+    })();
+    connection.toolsRefresh = refresh;
+    try {
+      return await refresh;
+    } finally {
+      if (connection.toolsRefresh === refresh) {
+        connection.toolsRefresh = undefined;
+      }
     }
   }
 
@@ -577,11 +605,13 @@ export class DownstreamManager {
     }
     const pending = this.connecting.get(connectionKey);
     if (pending) {
-      if (pending.connection.configFingerprint !== expectedFingerprint) {
+      if (pending.configFingerprint !== expectedFingerprint) {
         this.connecting.delete(connectionKey);
-        pending.connection.closing = true;
         void pending.promise.catch(() => undefined);
-        await pending.connection.transport.close();
+        if (pending.connection) {
+          pending.connection.closing = true;
+          await pending.connection.transport.close();
+        }
       } else {
         try {
           return await pending.promise;
@@ -607,6 +637,40 @@ export class DownstreamManager {
     }
 
     this.registry.setStatus(server.server, "starting");
+    let resolvePending!: (connection: ManagedConnection) => void;
+    let rejectPending!: (error: unknown) => void;
+    const promise = new Promise<ManagedConnection>((resolve, reject) => {
+      resolvePending = resolve;
+      rejectPending = reject;
+    });
+    const pendingConnection: PendingConnection = {
+      configFingerprint: expectedFingerprint,
+      promise,
+    };
+    this.connecting.set(connectionKey, pendingConnection);
+    void this.startPendingConnection(
+      server,
+      expectedFingerprint,
+      connectionKey,
+      pendingConnection,
+    ).then(resolvePending, rejectPending);
+    try {
+      return await promise;
+    } catch (error) {
+      if (isAuthRemediationError(error)) {
+        this.markConnectionStartUnavailable(server, error);
+        throw error;
+      }
+      throw this.connectionStartError(server, error);
+    }
+  }
+
+  private async startPendingConnection(
+    server: CapletServerConfig,
+    expectedFingerprint: string,
+    connectionKey: string,
+    pending: PendingConnection,
+  ): Promise<ManagedConnection> {
     try {
       const client = new Client({ name: "caplets", version: "1.0.0" }, { capabilities: {} });
       const transport = await this.createTransport(server);
@@ -615,6 +679,12 @@ export class DownstreamManager {
         transport,
         configFingerprint: expectedFingerprint,
       };
+      pending.connection = connection;
+      if (this.connecting.get(connectionKey) !== pending) {
+        connection.closing = true;
+        await transport.close();
+        throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was replaced`);
+      }
       client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
         connection.tools = undefined;
         connection.toolsFetchedAt = undefined;
@@ -634,10 +704,7 @@ export class DownstreamManager {
         if (current === connection) {
           this.connections.delete(connectionKey);
         }
-        if (connection.closing) {
-          return;
-        }
-        if (current !== connection) {
+        if (connection.closing || current !== connection) {
           return;
         }
         this.restartState.set(connectionKey, {
@@ -651,10 +718,7 @@ export class DownstreamManager {
         );
       };
       transport.onerror = (error: Error) => {
-        if (connection.closing) {
-          return;
-        }
-        if (this.connections.get(connectionKey) !== connection) {
+        if (connection.closing || this.connections.get(connectionKey) !== connection) {
           return;
         }
         this.registry.setStatus(
@@ -663,18 +727,12 @@ export class DownstreamManager {
           toSafeError(error, "SERVER_UNAVAILABLE"),
         );
       };
-      const pendingConnection: PendingConnection = {
-        connection,
-        promise: this.startConnection(server, expectedFingerprint, connection),
-      };
-      this.connecting.set(connectionKey, pendingConnection);
-      return await pendingConnection.promise;
+      return await this.startConnection(server, expectedFingerprint, connection);
     } catch (error) {
-      if (isAuthRemediationError(error)) {
-        this.markConnectionStartUnavailable(server, error);
-        throw error;
+      if (this.connecting.get(connectionKey) === pending) {
+        this.connecting.delete(connectionKey);
       }
-      throw this.connectionStartError(server, error);
+      throw error;
     }
   }
 

@@ -1,10 +1,12 @@
 import { Command, CommanderError, Option } from "commander";
 import { Buffer } from "node:buffer";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
+import { isDeepStrictEqual } from "node:util";
 import { version as packageJsonVersion } from "../package.json";
 import {
   addCliCaplet,
@@ -84,6 +86,7 @@ import {
   loadGlobalServeDefaults,
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
+  loadLocalRuntimeConfig,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
@@ -100,7 +103,11 @@ import { attachProjectOnce } from "./project-binding/attach";
 import { ProjectBindingError } from "./project-binding/errors";
 import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
-import type { RemoteCliCommand } from "./remote-control/types";
+import type {
+  RemoteCliArgumentsByCommand,
+  RemoteCliCommand,
+  TypedRemoteCliCommand,
+} from "./remote-control/types";
 import {
   cloudCredentialsFromRemoteProfile,
   createRemoteProfileStore,
@@ -131,8 +138,9 @@ import {
   type DaemonOperationOptions,
 } from "./daemon";
 import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
-import { defaultTelemetryStateDir } from "./config/paths";
-import { appendBasePath } from "./server/options";
+import { defaultStorageStateDir, defaultTelemetryStateDir } from "./config/paths";
+import { approvePendingLoginThroughHostLocalAuthority } from "./serve/host-local-credential-authority";
+import { appendBasePath, healthUrlForBase } from "./server/options";
 import {
   acknowledgeTelemetryAttributionClaim,
   claimTelemetryAttribution,
@@ -159,14 +167,38 @@ import {
 import { maybePrintUpdateNotice } from "./update-check";
 import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
 import type { VaultAccessGrantFilter } from "./vault";
-import { runProductionControlPlaneOfflineMigration } from "./control-plane/production-runtime";
-import type { InternalControlPlaneStorageMigrationService } from "./control-plane/service";
-import type { CurrentHostManagementClient } from "./current-host/client-operations";
 import {
+  createProductionControlPlane,
+  createProductionCurrentHostOfflineTransferClient,
+  runProductionControlPlaneOfflineMigration,
+} from "./control-plane/production-runtime";
+import { createControlPlaneService } from "./control-plane/service";
+import type {
+  ControlPlaneAuthorizationDecision,
+  ControlPlaneAuthorizationRequest,
+} from "./control-plane/authorization";
+import type { InternalControlPlaneStorageMigrationService } from "./control-plane/service";
+import {
+  createCurrentHostManagementClient,
+  type CurrentHostManagementClient,
+} from "./current-host/client-operations";
+import {
+  createCurrentHostOperations,
   parseCurrentHostManagementMutation,
   parseCurrentHostOperationBinding,
+  parseCurrentHostOfflineTransferConfirmation,
+  parseCurrentHostOfflineTransferStartRequest,
+  parseCurrentHostPortableOperation,
+  trustedDevelopmentOperatorPrincipal,
   type CurrentHostManagementResource,
+  type CurrentHostOfflineTransferClient,
+  type CurrentHostOfflineTransferConfirmation,
+  type CurrentHostOfflineTransferResult,
+  type CurrentHostOfflineTransferPreview,
+  type CurrentHostPortableOperation,
+  type CurrentHostPortableOperationOutcome,
 } from "./current-host/operations";
+import { parsePortableArtifactReference } from "./media/artifacts";
 
 export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
@@ -191,6 +223,8 @@ type CliIO = {
   updateCheckCacheDir?: string;
   updateCheckStateDir?: string;
   stderrIsTTY?: boolean;
+  stdinIsTTY?: boolean;
+  stdoutIsTTY?: boolean;
   telemetryDebugSink?: TelemetryDebugSink;
   version?: string;
   setExitCode?: (code: number) => void;
@@ -204,6 +238,7 @@ type CliIO = {
   readStdin?: () => Promise<string>;
   internalStorageMigration?: InternalControlPlaneStorageMigrationService;
   internalCurrentHostManagement?: CurrentHostManagementClient;
+  internalCurrentHostOfflineTransfer?: CurrentHostOfflineTransferClient;
   internalDoctorRuntime?: NonNullable<DoctorOptions["effectiveRuntime"]>;
 };
 
@@ -764,9 +799,19 @@ function hiddenOption(flags: string, description: string): Option {
 async function withRemoteCredentialAuthority<T>(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
   operation: (authority: ControlPlaneSecurityRepository) => T | Promise<T>,
+  sqliteLiveOperation?: ((stateRoot: string) => T | Promise<T>) | undefined,
 ): Promise<T> {
   const configPath = envConfigPath(env);
   const projectConfigPath = envProjectConfigPath(env);
+  const config = loadLocalRuntimeConfig(resolveConfigPath(configPath), projectConfigPath, {
+    vaultResolver: vaultBootstrapResolver,
+  });
+  if ((config.serve?.storage?.kind ?? "sqlite") === "sqlite" && sqliteLiveOperation) {
+    return sqliteLiveOperation(
+      resolve(config.serve?.storage?.stateRoot ?? defaultStorageStateDir(env)),
+    );
+  }
+
   const engine = await createCapletsEngine({
     ...(configPath ? { configPath } : {}),
     projectConfigPath,
@@ -814,6 +859,113 @@ async function withControlPlaneSecurity<T>(
     return await operation(security, engine);
   } finally {
     await engine.close();
+  }
+}
+
+async function withCurrentHostManagement<T>(
+  io: CliIO,
+  operation: (client: CurrentHostManagementClient) => T | Promise<T>,
+): Promise<T> {
+  if (io.internalCurrentHostManagement) {
+    return operation(io.internalCurrentHostManagement);
+  }
+  const env = io.env ?? process.env;
+  const configPath = envConfigPath(env);
+  const projectConfigPath = envProjectConfigPath(env);
+  const production = await createProductionControlPlane({
+    ...(configPath ? { configPath } : {}),
+    ...(projectConfigPath ? { projectConfigPath } : {}),
+    ...(io.authDir ? { authDir: io.authDir } : {}),
+    env,
+  });
+  try {
+    const principal = trustedDevelopmentOperatorPrincipal("http://localhost");
+    const authorizeLocalHost = async (
+      request: ControlPlaneAuthorizationRequest,
+      requireLive: boolean,
+    ): Promise<ControlPlaneAuthorizationDecision> => {
+      if (request.actorId !== principal.clientId) {
+        return { status: "denied", reason: "revoked" };
+      }
+      if (
+        request.logicalHostId !== production.store.identity.logicalHostId ||
+        request.storeId !== production.store.identity.storeId
+      ) {
+        return { status: "denied", reason: "target-mismatch" };
+      }
+      if (request.operationNamespace !== production.store.identity.operationNamespace) {
+        return { status: "denied", reason: "namespace-mismatch" };
+      }
+      try {
+        const writerFence = requireLive
+          ? await production.activated.requireLive("admin")
+          : production.activated.writerFenceForFinalGuard();
+        return {
+          status: "authorized",
+          authorization: {
+            ...production.store.identity,
+            actorId: principal.clientId,
+            role: "operator",
+            securityEpoch: production.activated.current().securityEpoch,
+            writerFence,
+          },
+        };
+      } catch {
+        return { status: "denied", reason: "unavailable" };
+      }
+    };
+    const management = {
+      ...production.management,
+      storage: createControlPlaneService({
+        store: production.store,
+        authorization: {
+          authorize: (request) => authorizeLocalHost(request, true),
+          authorizeInTransaction: (_transaction, request) => authorizeLocalHost(request, false),
+        },
+      }),
+    };
+    const operations = createCurrentHostOperations({
+      engine: { enabledServers: () => [] },
+      activityLog: production.security,
+      remoteCredentialRepository: production.security,
+      remotePendingLoginRepository: production.security,
+      vaultRepository: production.security,
+      management,
+      portable: production.portable,
+      version: packageJsonVersion,
+    });
+    const client = createCurrentHostManagementClient({
+      operations,
+      principal,
+      target: "global",
+      identity: production.store.identity,
+    });
+    return await operation(client);
+  } finally {
+    await production.close();
+  }
+}
+
+async function withCurrentHostOfflineTransfer<T>(
+  io: CliIO,
+  destinationConfigPath: string,
+  operation: (client: CurrentHostOfflineTransferClient) => T | Promise<T>,
+): Promise<T> {
+  if (io.internalCurrentHostOfflineTransfer) {
+    return operation(io.internalCurrentHostOfflineTransfer);
+  }
+  const env = io.env ?? process.env;
+  const configPath = envConfigPath(env);
+  const client = await createProductionCurrentHostOfflineTransferClient({
+    ...(configPath ? { configPath } : {}),
+    destinationConfigPath,
+    ...(io.authDir ? { authDir: io.authDir } : {}),
+    env,
+  });
+  try {
+    return await operation(client);
+  } finally {
+    await client.close();
   }
 }
 
@@ -1553,91 +1705,369 @@ export function createProgram(io: CliIO = {}): Command {
       }
       writeOut("Global legacy storage migration complete.\n");
     });
+  const offlineTransferCommand = storageCommand
+    .command("transfer")
+    .description("Transfer the offline global SQLite control plane to Postgres.");
+  offlineTransferCommand
+    .command("start")
+    .description("Stage and verify an offline SQLite-to-Postgres transfer.")
+    .requiredOption("--global", "target the local global control plane")
+    .requiredOption("--offline", "require the offline transfer path")
+    .requiredOption(
+      "--destination-config <path>",
+      "owner-private Postgres destination configuration",
+    )
+    .requiredOption("--request <json>", "non-secret transfer identity and descriptor request")
+    .action(
+      async (options: {
+        global: true;
+        offline: true;
+        destinationConfig: string;
+        request: string;
+      }) => {
+        const request = parseCurrentHostOfflineTransferStartRequest(
+          parseOfflineTransferJson(options.request),
+        );
+        const result = await withCurrentHostOfflineTransfer(
+          io,
+          options.destinationConfig,
+          (client) => client.start(request),
+        );
+        writeCurrentHostOfflineTransferOutput(writeOut, result);
+      },
+    );
+  offlineTransferCommand
+    .command("cutover")
+    .description("Preview or confirm the one-way destination cutover.")
+    .argument("<transfer-id>", "offline transfer identity")
+    .requiredOption("--global", "target the local global control plane")
+    .requiredOption("--offline", "require the offline transfer path")
+    .requiredOption(
+      "--destination-config <path>",
+      "owner-private Postgres destination configuration",
+    )
+    .option("--preview", "create a fresh no-side-effect confirmation")
+    .option("--confirmation <json>", "fresh confirmation JSON returned by --preview")
+    .action(
+      async (
+        transferId: string,
+        options: {
+          global: true;
+          offline: true;
+          destinationConfig: string;
+          preview?: boolean | undefined;
+          confirmation?: string | undefined;
+        },
+      ) => {
+        assertOfflineTransferConfirmationSelection(options);
+        if (options.preview) {
+          const preview = await withCurrentHostOfflineTransfer(
+            io,
+            options.destinationConfig,
+            (client) => client.previewCutover(transferId),
+          );
+          writeCurrentHostOfflineTransferOutput(writeOut, preview);
+          return;
+        }
+        assertInteractiveOfflineTransferConfirmation(io);
+        const confirmation = parseOfflineTransferConfirmationJson(
+          options.confirmation!,
+          "cutover",
+          transferId,
+        );
+        const result = await withCurrentHostOfflineTransfer(
+          io,
+          options.destinationConfig,
+          (client) => client.cutover(transferId, confirmation),
+        );
+        writeCurrentHostOfflineTransferOutput(writeOut, result);
+      },
+    );
+  offlineTransferCommand
+    .command("rollback")
+    .description("Rollback a transfer before durable destination activation.")
+    .argument("<transfer-id>", "offline transfer identity")
+    .requiredOption("--global", "target the local global control plane")
+    .requiredOption("--offline", "require the offline transfer path")
+    .requiredOption(
+      "--destination-config <path>",
+      "owner-private Postgres destination configuration",
+    )
+    .action(async (transferId: string, options: { destinationConfig: string }) => {
+      const result = await withCurrentHostOfflineTransfer(io, options.destinationConfig, (client) =>
+        client.rollback(transferId),
+      );
+      writeCurrentHostOfflineTransferOutput(writeOut, result);
+    });
+  offlineTransferCommand
+    .command("finalize")
+    .description("Preview or confirm roll-forward-only transfer finalization.")
+    .argument("<transfer-id>", "offline transfer identity")
+    .requiredOption("--global", "target the local global control plane")
+    .requiredOption("--offline", "require the offline transfer path")
+    .requiredOption(
+      "--destination-config <path>",
+      "owner-private Postgres destination configuration",
+    )
+    .option("--preview", "create a fresh no-side-effect confirmation")
+    .option("--confirmation <json>", "fresh confirmation JSON returned by --preview")
+    .action(
+      async (
+        transferId: string,
+        options: {
+          global: true;
+          offline: true;
+          destinationConfig: string;
+          preview?: boolean | undefined;
+          confirmation?: string | undefined;
+        },
+      ) => {
+        assertOfflineTransferConfirmationSelection(options);
+        if (options.preview) {
+          const preview = await withCurrentHostOfflineTransfer(
+            io,
+            options.destinationConfig,
+            (client) => client.previewFinalize(transferId),
+          );
+          writeCurrentHostOfflineTransferOutput(writeOut, preview);
+          return;
+        }
+        assertInteractiveOfflineTransferConfirmation(io);
+        const confirmation = parseOfflineTransferConfirmationJson(
+          options.confirmation!,
+          "finalize",
+          transferId,
+        );
+        const result = await withCurrentHostOfflineTransfer(
+          io,
+          options.destinationConfig,
+          (client) => client.finalize(transferId, confirmation),
+        );
+        writeCurrentHostOfflineTransferOutput(writeOut, result);
+      },
+    );
 
-  const currentHostStorageCommand = storageCommand.command("management", { hidden: true });
+  const portableStorageCommand = storageCommand
+    .command("portable")
+    .description("Import, export, inspect, and activate portable Caplet artifacts.");
+  portableStorageCommand
+    .command("status")
+    .description("Observe portable storage readiness without mutating it.")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
+    .option("--json", "print stable JSON output")
+    .action(async (options: PortableCommandOptions) => {
+      const outcome = await executePortableCliOperation(io, { kind: "portable_status" }, options);
+      writePortableStatus(writeOut, outcome, options.json ?? false);
+    });
+  portableStorageCommand
+    .command("operation")
+    .description(
+      "Execute a typed portable import, activation, revalidation, export, or range operation.",
+    )
+    .argument("<json>", "portable Current Host operation JSON without binding")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
+    .option("--operation-id <id>", "reuse the session or proposal operation identity")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        operationJson: string,
+        options: PortableCommandOptions & { operationId?: string | undefined },
+      ) => {
+        const parsed = parseJsonArgument(operationJson);
+        const outcome = await executePortableCliOperation(io, parsed, options);
+        writePortableOperationOutcome(writeOut, setExitCode, outcome, options.json ?? false);
+      },
+    );
+  portableStorageCommand
+    .command("import")
+    .description("Upload a local portable artifact and return an inert import preview.")
+    .argument("<path>", "client-local portable artifact path")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
+    .option("--collision-policy <policy>", "reject or replace", "reject")
+    .option("--confirm-replacement", "confirm replacement consequences")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        path: string,
+        options: PortableCommandOptions & {
+          collisionPolicy: string;
+          confirmReplacement?: boolean | undefined;
+        },
+      ) => {
+        const outcome = await importPortableArtifactFromPath(io, path, options);
+        writePortableOperationOutcome(writeOut, setExitCode, outcome, options.json ?? false);
+      },
+    );
+  portableStorageCommand
+    .command("export")
+    .description("Export a SQL-owned Caplet to a client-local portable artifact.")
+    .argument("<caplet-id>", "Caplet identity")
+    .argument("<path>", "client-local output path")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
+    .option("--underlying-sql", "export the explicit underlying SQL record")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        capletId: string,
+        path: string,
+        options: PortableCommandOptions & { underlyingSql?: boolean | undefined },
+      ) => {
+        const outcome = await exportPortableArtifactToPath(io, capletId, path, options);
+        writeOut(
+          `${JSON.stringify({
+            kind: "portable_export_download",
+            status: "written",
+            artifact: outcome.artifact,
+            artifactType: outcome.artifactType,
+            path,
+          })}\n`,
+        );
+      },
+    );
+
+  const currentHostStorageCommand = storageCommand
+    .command("management")
+    .description("Inspect and administer the local or authenticated remote SQL Current Host.");
   currentHostStorageCommand
     .command("list")
-    .requiredOption("--global", "target the local global control plane")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
+    .option("--operation-id <id>", "caller-known operation identity")
     .requiredOption("--resource <resource>", "caplet or host-setting")
-    .action(async (options: { global: true; resource: string }) => {
-      const client = requireInternalCurrentHostManagement(io);
-      writeOut(
-        `${JSON.stringify(await client.list(parseCurrentHostManagementResource(options.resource)))}\n`,
-      );
+    .action(async (options: ManagementCommandOptions & { resource: string }) => {
+      const resource = parseCurrentHostManagementResource(options.resource);
+      const target = resolveCurrentHostManagementTarget(options);
+      const outcome =
+        target === "remote"
+          ? await requestTypedRemote(io, "current_host_list", {
+              resource,
+              ...remoteManagementBindingArguments(
+                { action: "list", resource },
+                options.operationId,
+              ),
+            })
+          : await withCurrentHostManagement(io, (client) => client.list(resource));
+      writeCurrentHostManagementOutcome(writeOut, setExitCode, outcome, ["ok"]);
     });
   currentHostStorageCommand
     .command("inspect")
     .argument("<resource>", "caplet or host-setting")
     .argument("<id>", "resource identity")
-    .requiredOption("--global", "target the local global control plane")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
+    .option("--operation-id <id>", "caller-known operation identity")
     .option("--underlying-sql", "inspect the explicit underlying SQL record")
     .action(
       async (
-        resource: string,
+        resourceValue: string,
         id: string,
-        options: { global: true; underlyingSql?: boolean | undefined },
+        options: ManagementCommandOptions & { underlyingSql?: boolean | undefined },
       ) => {
-        const client = requireInternalCurrentHostManagement(io);
-        writeOut(
-          `${JSON.stringify(
-            await client.inspect(
-              parseCurrentHostManagementResource(resource),
-              id,
-              options.underlyingSql ? "underlying-sql" : "effective",
-            ),
-          )}\n`,
-        );
+        const resource = parseCurrentHostManagementResource(resourceValue);
+        const selector = options.underlyingSql ? "underlying-sql" : "effective";
+        const target = resolveCurrentHostManagementTarget(options);
+        const outcome =
+          target === "remote"
+            ? await requestTypedRemote(io, "current_host_inspect", {
+                resource,
+                id,
+                selector,
+                ...remoteManagementBindingArguments(
+                  { action: "inspect", resource, id, selector },
+                  options.operationId,
+                ),
+              })
+            : await withCurrentHostManagement(io, (client) =>
+                client.inspect(resource, id, selector),
+              );
+        writeCurrentHostManagementOutcome(writeOut, setExitCode, outcome, ["ok"]);
       },
     );
   currentHostStorageCommand
     .command("preview")
     .argument("<mutation>", "JSON Current Host management mutation")
-    .requiredOption("--global", "target the local global control plane")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
     .option("--operation-id <id>", "caller-known operation identity")
-    .action(
-      async (mutationJson: string, options: { global: true; operationId?: string | undefined }) => {
-        const client = requireInternalCurrentHostManagement(io);
-        const mutation = parseCurrentHostManagementMutation(parseJsonArgument(mutationJson));
-        const binding = client.createBinding(mutation, { operationId: options.operationId });
-        writeOut(`${JSON.stringify(await client.preview(mutation, binding))}\n`);
-      },
-    );
+    .action(async (mutationJson: string, options: ManagementCommandOptions) => {
+      const mutation = parseCurrentHostManagementMutation(parseJsonArgument(mutationJson));
+      const target = resolveCurrentHostManagementTarget(options);
+      const outcome =
+        target === "remote"
+          ? await requestTypedRemote(io, "current_host_preview", {
+              mutation,
+              ...remoteManagementBindingArguments(mutation, options.operationId),
+            })
+          : await withCurrentHostManagement(io, async (client) => {
+              const binding = client.createBinding(mutation, { operationId: options.operationId });
+              return client.preview(mutation, binding);
+            });
+      writeCurrentHostManagementOutcome(writeOut, setExitCode, outcome, ["preview"]);
+    });
   currentHostStorageCommand
     .command("mutate")
     .argument("<mutation>", "JSON Current Host management mutation")
-    .requiredOption("--global", "target the local global control plane")
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
     .option("--operation-id <id>", "caller-known operation identity")
-    .action(
-      async (mutationJson: string, options: { global: true; operationId?: string | undefined }) => {
-        const client = requireInternalCurrentHostManagement(io);
-        const mutation = parseCurrentHostManagementMutation(parseJsonArgument(mutationJson));
-        const binding = client.createBinding(mutation, { operationId: options.operationId });
-        writeOut(`${JSON.stringify(await client.mutate(mutation, binding))}\n`);
-      },
-    );
+    .action(async (mutationJson: string, options: ManagementCommandOptions) => {
+      const mutation = parseCurrentHostManagementMutation(parseJsonArgument(mutationJson));
+      const target = resolveCurrentHostManagementTarget(options);
+      const outcome =
+        target === "remote"
+          ? await requestTypedRemote(io, "current_host_mutate", {
+              mutation,
+              ...remoteManagementBindingArguments(mutation, options.operationId),
+            })
+          : await withCurrentHostManagement(io, async (client) => {
+              const binding = client.createBinding(mutation, { operationId: options.operationId });
+              return client.mutate(mutation, binding);
+            });
+      writeCurrentHostManagementOutcome(writeOut, setExitCode, outcome, ["committed"]);
+    });
   currentHostStorageCommand
     .command("status")
-    .requiredOption("--global", "target the local global control plane")
-    .action(async () => {
-      writeOut(`${JSON.stringify(await requireInternalCurrentHostManagement(io).status())}\n`);
+    .option("--global", "target the local global control plane")
+    .option("--remote", "target the selected authenticated remote host")
+    .option("--operation-id <id>", "caller-known operation identity")
+    .action(async (options: ManagementCommandOptions) => {
+      const target = resolveCurrentHostManagementTarget(options);
+      const outcome =
+        target === "remote"
+          ? await requestTypedRemote(io, "current_host_status", {
+              ...remoteManagementBindingArguments({ action: "status" }, options.operationId),
+            })
+          : await withCurrentHostManagement(io, (client) => client.status());
+      writeCurrentHostManagementOutcome(writeOut, setExitCode, outcome, ["ok"]);
     });
   currentHostStorageCommand
     .command("lookup")
     .argument("<binding>", "JSON caller-known operation binding")
-    .requiredOption("--global", "target the original local global control plane")
-    .action(async (bindingJson: string) => {
+    .option("--global", "target the original local global control plane")
+    .option("--remote", "target the original authenticated remote host")
+    .action(async (bindingJson: string, options: ManagementCommandOptions) => {
+      const target = resolveCurrentHostManagementTarget(options);
       const binding = parseCurrentHostOperationBinding(parseJsonArgument(bindingJson));
-      if (binding.target !== "global") {
+      if (binding.target !== target) {
         throw new CapletsError(
           "REQUEST_INVALID",
-          "Local Current Host lookup requires the original global target.",
+          `Current Host lookup requires the original ${target} target.`,
         );
       }
-      writeOut(
-        `${JSON.stringify(
-          await requireInternalCurrentHostManagement(io).lookupOperation(binding),
-        )}\n`,
-      );
+      const outcome =
+        target === "remote"
+          ? await requestTypedRemote(io, "current_host_operation_lookup", {
+              binding,
+            })
+          : await withCurrentHostManagement(io, (client) => client.lookupOperation(binding));
+      writeCurrentHostManagementOutcome(writeOut, setExitCode, outcome, [
+        "committed",
+        "not_committed",
+      ]);
     });
 
   program
@@ -2487,11 +2917,20 @@ export function createProgram(io: CliIO = {}): Command {
         if (!options.yes && !options.json) {
           throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
         }
-        const approved = await withRemoteCredentialAuthority(env, (authority) =>
-          authority.approvePendingLogin({
-            operatorCode: code,
-            ...(options.role ? { grantedRole: options.role } : {}),
-          }),
+        const approved = await withRemoteCredentialAuthority(
+          env,
+          (authority) =>
+            authority.approvePendingLogin({
+              operatorCode: code,
+              ...(options.role ? { grantedRole: options.role } : {}),
+            }),
+          (stateRoot) =>
+            approvePendingLoginThroughHostLocalAuthority({
+              stateRoot,
+              operatorCode: code,
+              ...(options.role ? { grantedRole: options.role } : {}),
+              ...(io.fetch ? { fetch: io.fetch } : {}),
+            }),
         );
         if (options.json) {
           writeOut(`${JSON.stringify(approved, null, 2)}\n`);
@@ -4750,6 +5189,43 @@ function requireRemoteClientForTarget(io: CliIO): RemoteControlClient {
   return remote;
 }
 
+function requestTypedRemote<TCommand extends TypedRemoteCliCommand>(
+  io: CliIO,
+  command: TCommand,
+  argumentsValue: RemoteCliArgumentsByCommand[TCommand],
+): Promise<unknown> {
+  return requireRemoteClientForTarget(io).request(command, argumentsValue);
+}
+
+async function remotePortableStatusForCli(io: CliIO): Promise<CurrentHostPortableOperationOutcome> {
+  const env = io.env ?? process.env;
+  const selection = await resolveRemoteSelection(
+    {
+      mode: "remote",
+      ...(io.authDir ? { authDir: io.authDir } : {}),
+      ...(io.fetch ? { fetch: io.fetch } : {}),
+    },
+    env,
+  );
+  if (selection.kind !== "self_hosted_remote") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--remote requires CAPLETS_MODE=remote and a self-hosted CAPLETS_REMOTE_URL",
+    );
+  }
+  const url = healthUrlForBase(selection.remote.baseUrl);
+  url.searchParams.set("portable", "1");
+  const { body: _body, ...requestInit } = selection.remote.requestInit;
+  const response = await (selection.remote.fetch ?? fetch)(url, {
+    ...requestInit,
+    method: "GET",
+  });
+  if (!response.ok) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Remote portable status is unavailable.");
+  }
+  return parseRemotePortableOutcome(await response.json());
+}
+
 function collect(value: string, previous: string[]): string[] {
   previous.push(value);
   return previous;
@@ -5752,12 +6228,860 @@ function writeAddResult(
   writeOut(result.text);
 }
 
-function requireInternalCurrentHostManagement(io: CliIO): CurrentHostManagementClient {
-  if (io.internalCurrentHostManagement) return io.internalCurrentHostManagement;
-  throw new CapletsError(
-    "SERVER_UNAVAILABLE",
-    "SQL Current Host management is unavailable before storage activation.",
+type CurrentHostOfflineTransferConfirmationAction = "cutover" | "finalize";
+
+function assertOfflineTransferConfirmationSelection(options: {
+  preview?: boolean | undefined;
+  confirmation?: string | undefined;
+}): void {
+  if (Boolean(options.preview) === Boolean(options.confirmation)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Choose exactly one of --preview or --confirmation for this irreversible action.",
+    );
+  }
+}
+
+function assertInteractiveOfflineTransferConfirmation(io: CliIO): void {
+  const stdinIsTTY = io.stdinIsTTY ?? process.stdin.isTTY === true;
+  const stdoutIsTTY = io.stdoutIsTTY ?? process.stdout.isTTY === true;
+  if (!stdinIsTTY || !stdoutIsTTY) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Offline transfer cutover and finalization confirmations require an interactive terminal.",
+    );
+  }
+}
+
+function parseOfflineTransferJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new CapletsError("REQUEST_INVALID", "Offline transfer JSON is invalid.");
+  }
+}
+
+function parseOfflineTransferConfirmationJson(
+  value: string,
+  expectedAction: CurrentHostOfflineTransferConfirmationAction,
+  expectedTransferId: string,
+): CurrentHostOfflineTransferConfirmation {
+  const confirmation = parseCurrentHostOfflineTransferConfirmation(parseOfflineTransferJson(value));
+  if (
+    confirmation.action !== expectedAction ||
+    confirmation.transferId !== expectedTransferId ||
+    Date.parse(confirmation.expiresAt) <= Date.now()
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Offline transfer confirmation is stale or mismatched.",
+    );
+  }
+  return confirmation;
+}
+
+function writeCurrentHostOfflineTransferOutput(
+  writeOut: (value: string) => void,
+  value: CurrentHostOfflineTransferPreview | CurrentHostOfflineTransferResult,
+): void {
+  writeOut(`${JSON.stringify(value)}\n`);
+}
+
+type PortableCommandOptions = {
+  global?: boolean | undefined;
+  remote?: boolean | undefined;
+  json?: boolean | undefined;
+  operationId?: string | undefined;
+};
+
+type PortableOperationInput = CurrentHostPortableOperation extends infer TOperation
+  ? TOperation extends CurrentHostPortableOperation
+    ? Omit<TOperation, "binding">
+    : never
+  : never;
+
+const PORTABLE_CHUNK_SIZE_BYTES = 1024 * 1024;
+const PORTABLE_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
+function decodePortableBase64Chunk(
+  value: unknown,
+  code: "REQUEST_INVALID" | "INTERNAL_ERROR",
+  message: string,
+): Buffer {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length % 4 !== 0 ||
+    !PORTABLE_BASE64_PATTERN.test(value)
+  ) {
+    throw new CapletsError(code, message);
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.byteLength > PORTABLE_CHUNK_SIZE_BYTES || bytes.toString("base64") !== value) {
+    throw new CapletsError(code, message);
+  }
+  return bytes;
+}
+
+function parseRemotePortableOutcome(value: unknown): CurrentHostPortableOperationOutcome {
+  try {
+    if (!isPlainObject(value) || !Object.hasOwn(value, "kind") || !Object.hasOwn(value, "status")) {
+      throw new Error("invalid portable outcome");
+    }
+    if (value.kind === "portable_artifact_download_range") {
+      remotePortableObject(value, [
+        "kind",
+        "status",
+        "bytesBase64",
+        "start",
+        "endExclusive",
+        "totalLength",
+      ]);
+      remotePortableEnum(value.status, ["ok"]);
+      const start = remotePortableInteger(value.start);
+      const endExclusive = remotePortableInteger(value.endExclusive);
+      const totalLength = remotePortableInteger(value.totalLength);
+      if (endExclusive <= start || endExclusive > totalLength) throw new Error("invalid range");
+      const bytes = decodePortableBase64Chunk(
+        value.bytesBase64,
+        "INTERNAL_ERROR",
+        "Remote portable range encoding is invalid.",
+      );
+      if (bytes.byteLength !== endExclusive - start) throw new Error("range length mismatch");
+      return {
+        kind: "portable_artifact_download_range",
+        status: "ok",
+        bytes,
+        start,
+        endExclusive,
+        totalLength,
+      };
+    }
+    assertRemotePortableOutcome(value);
+    return value;
+  } catch {
+    throw new CapletsError(
+      "INTERNAL_ERROR",
+      "Remote portable operation returned an invalid outcome.",
+    );
+  }
+}
+
+function assertRemotePortableOutcome(
+  value: unknown,
+): asserts value is Exclude<
+  CurrentHostPortableOperationOutcome,
+  { kind: "portable_artifact_download_range" }
+> {
+  if (!isPlainObject(value) || !Object.hasOwn(value, "kind") || !Object.hasOwn(value, "status")) {
+    throw new Error("invalid portable outcome");
+  }
+  switch (value.kind) {
+    case "portable_status":
+      remotePortableObject(value, ["kind", "status", "health", "guidanceCode"]);
+      remotePortableEnum(value.status, ["live", "stale-read-only", "not-ready"]);
+      remotePortableHealth(value.health);
+      remotePortableText(value.guidanceCode);
+      return;
+    case "portable_import_session_create":
+    case "portable_import_session_status":
+    case "portable_import_session_append": {
+      remotePortableObject(value, ["kind", "status", "session"]);
+      const expectedStatus =
+        value.kind === "portable_import_session_create"
+          ? "created"
+          : value.kind === "portable_import_session_status"
+            ? "ok"
+            : "accepted";
+      remotePortableEnum(value.status, [expectedStatus]);
+      remotePortableSession(value.session);
+      return;
+    }
+    case "portable_import_session_finalize":
+      remotePortableObject(value, ["kind", "status", "session", "artifact"]);
+      remotePortableEnum(value.status, ["finalized"]);
+      remotePortableSession(value.session);
+      remotePortableArtifact(value.artifact);
+      return;
+    case "portable_import_preview":
+      if (value.status === "previewed") {
+        remotePortableObject(value, ["kind", "status", "proposal"]);
+        remotePortableProposal(value.proposal);
+      } else {
+        remotePortableObject(value, ["kind", "status", "reason"]);
+        remotePortableEnum(value.status, ["rejected"]);
+        remotePortableRejectedReason(value.reason);
+      }
+      return;
+    case "portable_import_activate":
+      if (value.status === "committed") {
+        remotePortableObject(value, ["kind", "status", "receipt", "caplet"]);
+        remotePortableReceipt(value.receipt);
+        remotePortableCaplet(value.caplet, true);
+      } else {
+        remotePortableObject(value, ["kind", "status", "reason"]);
+        remotePortableEnum(value.status, ["rejected"]);
+        remotePortableRejectedReason(value.reason);
+      }
+      return;
+    case "portable_setup_revalidate":
+      if (value.status === "committed") {
+        remotePortableObject(value, ["kind", "status", "receipt", "caplet"]);
+        remotePortableReceipt(value.receipt);
+        remotePortableCaplet(value.caplet, false);
+      } else {
+        remotePortableObject(value, ["kind", "status", "reason"]);
+        remotePortableEnum(value.status, ["rejected"]);
+        remotePortableRejectedReason(value.reason);
+      }
+      return;
+    case "portable_export_create":
+      remotePortableObject(value, ["kind", "status", "artifact", "artifactType"]);
+      remotePortableEnum(value.status, ["created"]);
+      remotePortableArtifact(value.artifact);
+      remotePortableEnum(value.artifactType, ["file", "bundle"]);
+      return;
+    default:
+      throw new Error("unknown portable outcome");
+  }
+}
+
+function remotePortableObject(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): asserts value is Record<string, unknown> {
+  if (!isPlainObject(value)) throw new Error("not an object");
+  const allowed = [...required, ...optional];
+  if (
+    required.some((field) => !Object.hasOwn(value, field)) ||
+    Object.keys(value).some((field) => !allowed.includes(field))
+  ) {
+    throw new Error("invalid fields");
+  }
+}
+
+function remotePortableText(value: unknown): asserts value is string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 4096 ||
+    value.includes("\0")
+  ) {
+    throw new Error("invalid text");
+  }
+}
+
+function remotePortableEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+): asserts value is T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new Error("invalid enum");
+  }
+}
+
+function remotePortableInteger(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error("invalid integer");
+  }
+  return value;
+}
+
+function remotePortableDigest(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) {
+    throw new Error("invalid digest");
+  }
+}
+
+function remotePortableTimestamp(value: unknown): asserts value is string {
+  remotePortableText(value);
+  if (!Number.isFinite(Date.parse(value))) throw new Error("invalid timestamp");
+}
+
+function remotePortableReference(value: unknown): void {
+  remotePortableObject(value, [
+    "uri",
+    "artifactId",
+    "logicalHostId",
+    "storeId",
+    "providerIdentityId",
+    "actorId",
+    "operationId",
+    "direction",
+    "byteLength",
+    "sha256",
+    "mimeType",
+    "expiresAt",
+  ]);
+  remotePortableText(value.uri);
+  const parsed = parsePortableArtifactReference(value.uri);
+  if (!isDeepStrictEqual(parsed, value)) throw new Error("inconsistent artifact reference");
+}
+
+function remotePortableArtifact(value: unknown): void {
+  remotePortableObject(value, ["reference", "sha256", "byteLength", "mimeType"]);
+  remotePortableReference(value.reference);
+  remotePortableDigest(value.sha256);
+  remotePortableInteger(value.byteLength);
+  remotePortableText(value.mimeType);
+  if (
+    !isPlainObject(value.reference) ||
+    value.sha256 !== value.reference.sha256 ||
+    value.byteLength !== value.reference.byteLength ||
+    value.mimeType !== value.reference.mimeType
+  ) {
+    throw new Error("inconsistent artifact");
+  }
+}
+
+function remotePortableSession(value: unknown): void {
+  remotePortableObject(
+    value,
+    [
+      "sessionId",
+      "artifactId",
+      "actorId",
+      "operationId",
+      "direction",
+      "state",
+      "nextOffset",
+      "expectedByteLength",
+      "expectedSha256",
+      "mimeType",
+      "providerIdentityId",
+      "expiresAt",
+    ],
+    ["finalizedAt", "revokedAt"],
   );
+  for (const field of [
+    "sessionId",
+    "artifactId",
+    "actorId",
+    "operationId",
+    "mimeType",
+    "providerIdentityId",
+  ]) {
+    remotePortableText(value[field]);
+  }
+  remotePortableEnum(value.direction, ["upload", "download"]);
+  remotePortableEnum(value.state, ["uploading", "finalized", "consumed", "revoked", "expired"]);
+  remotePortableInteger(value.nextOffset);
+  remotePortableInteger(value.expectedByteLength);
+  remotePortableDigest(value.expectedSha256);
+  remotePortableTimestamp(value.expiresAt);
+  if (value.finalizedAt !== undefined) remotePortableTimestamp(value.finalizedAt);
+  if (value.revokedAt !== undefined) remotePortableTimestamp(value.revokedAt);
+}
+
+function remotePortableProposal(value: unknown): void {
+  remotePortableObject(
+    value,
+    [
+      "proposalId",
+      "artifactId",
+      "actorId",
+      "operationId",
+      "capletId",
+      "proposalHash",
+      "expectedAuthorityGeneration",
+      "expectedEffectiveGeneration",
+      "expectedAggregateVersion",
+      "expectedSecurityEpoch",
+      "expectedRuntimeFingerprint",
+      "collisionPolicy",
+      "replacementConfirmed",
+      "consequence",
+      "differences",
+      "setupDependencies",
+      "state",
+      "expiresAt",
+    ],
+    ["consumedAt"],
+  );
+  for (const field of [
+    "proposalId",
+    "artifactId",
+    "actorId",
+    "operationId",
+    "capletId",
+    "expectedRuntimeFingerprint",
+  ]) {
+    remotePortableText(value[field]);
+  }
+  remotePortableDigest(value.proposalHash);
+  for (const field of [
+    "expectedAuthorityGeneration",
+    "expectedEffectiveGeneration",
+    "expectedAggregateVersion",
+    "expectedSecurityEpoch",
+  ]) {
+    remotePortableInteger(value[field]);
+  }
+  remotePortableEnum(value.collisionPolicy, ["reject", "replace"]);
+  if (typeof value.replacementConfirmed !== "boolean") throw new Error("invalid confirmation");
+  remotePortableEnum(value.consequence, [
+    "effective-runtime-changes",
+    "no-effective-change-while-shadowed",
+  ]);
+  if (!Array.isArray(value.differences) || !Array.isArray(value.setupDependencies)) {
+    throw new Error("invalid proposal collections");
+  }
+  for (const difference of value.differences) {
+    remotePortableObject(difference, ["field", "effect"], ["beforeHash", "afterHash"]);
+    remotePortableText(difference.field);
+    remotePortableEnum(difference.effect, ["added", "changed", "removed", "unchanged"]);
+    if (difference.beforeHash !== undefined) remotePortableDigest(difference.beforeHash);
+    if (difference.afterHash !== undefined) remotePortableDigest(difference.afterHash);
+  }
+  for (const dependency of value.setupDependencies) {
+    remotePortableObject(dependency, ["name", "type", "status"]);
+    remotePortableText(dependency.name);
+    remotePortableEnum(dependency.type, ["local", "external", "unresolved-setup"]);
+    remotePortableEnum(dependency.status, ["required", "satisfied"]);
+  }
+  remotePortableEnum(value.state, ["previewed", "consumed", "expired", "rejected"]);
+  remotePortableTimestamp(value.expiresAt);
+  if (value.consumedAt !== undefined) remotePortableTimestamp(value.consumedAt);
+}
+
+function remotePortableBinding(value: unknown): void {
+  const parsed = parseCurrentHostOperationBinding(value);
+  if (!isDeepStrictEqual(parsed, value)) throw new Error("invalid binding");
+}
+
+function remotePortableReceipt(value: unknown): void {
+  remotePortableObject(
+    value,
+    ["status", "binding", "aggregateVersion", "authorityToken", "localApplication", "convergence"],
+    ["management"],
+  );
+  remotePortableEnum(value.status, ["committed"]);
+  remotePortableBinding(value.binding);
+  remotePortableInteger(value.aggregateVersion);
+  remotePortableObject(value.authorityToken, ["authorityGeneration", "effectiveGeneration"]);
+  remotePortableInteger(value.authorityToken.authorityGeneration);
+  remotePortableInteger(value.authorityToken.effectiveGeneration);
+  remotePortableEnum(value.localApplication, ["applied", "pending", "not-applicable"]);
+  remotePortableObject(value.convergence, ["kind"]);
+  switch (value.convergence.kind) {
+    case "single-node":
+      break;
+    case "pending":
+    case "overdue":
+      remotePortableObject(value.convergence, ["kind", "deadline", "requiredNodes"]);
+      remotePortableTimestamp(value.convergence.deadline);
+      remotePortableInteger(value.convergence.requiredNodes);
+      break;
+    case "converged":
+      remotePortableObject(value.convergence, ["kind", "appliedNodes"]);
+      remotePortableInteger(value.convergence.appliedNodes);
+      break;
+    default:
+      throw new Error("invalid convergence");
+  }
+  if (value.management !== undefined) remotePortableManagementTarget(value.management);
+}
+
+function remotePortableManagementTarget(value: unknown): void {
+  remotePortableObject(value, [
+    "resource",
+    "id",
+    "selector",
+    "owner",
+    "source",
+    "effective",
+    "effectiveChanged",
+    "shadowChain",
+    "underlyingSqlAvailable",
+    "consequence",
+  ]);
+  remotePortableEnum(value.resource, ["caplet", "host-setting"]);
+  remotePortableText(value.id);
+  remotePortableEnum(value.selector, ["effective", "underlying-sql"]);
+  remotePortableEnum(value.owner, ["sql", "filesystem"]);
+  if (!isPlainObject(value.source) || typeof value.source.kind !== "string") {
+    throw new Error("invalid source");
+  }
+  for (const field of ["effective", "effectiveChanged", "underlyingSqlAvailable"]) {
+    if (typeof value[field] !== "boolean") throw new Error("invalid management flag");
+  }
+  if (!Array.isArray(value.shadowChain)) throw new Error("invalid shadow chain");
+  for (const layer of value.shadowChain) {
+    remotePortableObject(layer, ["owner", "source"], ["provenance"]);
+    remotePortableEnum(layer.owner, ["sql", "filesystem"]);
+    if (!isPlainObject(layer.source) || typeof layer.source.kind !== "string") {
+      throw new Error("invalid ownership source");
+    }
+    if (layer.provenance !== undefined && !isPlainObject(layer.provenance)) {
+      throw new Error("invalid provenance");
+    }
+  }
+  remotePortableEnum(value.consequence, [
+    "effective-runtime-changes",
+    "no-effective-change-while-shadowed",
+  ]);
+}
+
+function remotePortableHealth(value: unknown): void {
+  remotePortableObject(
+    value,
+    [
+      "backend",
+      "readiness",
+      "connectivity",
+      "migration",
+      "authorityToken",
+      "bootstrapCompatibility",
+      "convergence",
+      "guidanceCode",
+    ],
+    ["staleAgeMs"],
+  );
+  remotePortableEnum(value.backend, ["sqlite", "postgres"]);
+  remotePortableEnum(value.readiness, ["ready", "not-ready", "stale-read-only"]);
+  remotePortableEnum(value.connectivity, ["connected", "unavailable"]);
+  remotePortableEnum(value.migration, ["current", "blocked"]);
+  remotePortableObject(value.authorityToken, ["authorityGeneration", "effectiveGeneration"]);
+  remotePortableInteger(value.authorityToken.authorityGeneration);
+  remotePortableInteger(value.authorityToken.effectiveGeneration);
+  remotePortableEnum(value.bootstrapCompatibility, ["current", "staged", "incompatible"]);
+  remotePortableEnum(value.convergence, ["single-node", "within-budget", "pending", "overdue"]);
+  remotePortableEnum(value.guidanceCode, [
+    "ok",
+    "storage-unavailable",
+    "migration-required",
+    "convergence-pending",
+    "convergence-overdue",
+    "bootstrap-incompatible",
+  ]);
+  if (value.staleAgeMs !== undefined) remotePortableInteger(value.staleAgeMs);
+}
+
+function remotePortableCaplet(value: unknown, includeSetupDependencies: boolean): void {
+  remotePortableObject(
+    value,
+    includeSetupDependencies ? ["id", "activation", "setupDependencies"] : ["id", "activation"],
+  );
+  remotePortableText(value.id);
+  remotePortableEnum(value.activation, [
+    "active",
+    "setup-required",
+    "dormant-shadowed",
+    "disabled",
+  ]);
+  if (includeSetupDependencies) {
+    if (!Array.isArray(value.setupDependencies)) throw new Error("invalid setup dependencies");
+    for (const dependency of value.setupDependencies) {
+      remotePortableObject(dependency, ["name", "type", "status"]);
+      remotePortableText(dependency.name);
+      remotePortableEnum(dependency.type, ["local", "external", "unresolved-setup"]);
+      remotePortableEnum(dependency.status, ["required", "satisfied"]);
+    }
+  }
+}
+
+function remotePortableRejectedReason(value: unknown): void {
+  remotePortableEnum(value, [
+    "filesystem-owned",
+    "sql-collision",
+    "invalid-artifact",
+    "stale",
+    "changed-bytes",
+    "revoked-actor",
+    "consumed",
+    "expired",
+    "replacement-unconfirmed",
+    "collision",
+    "stale-generation",
+    "stale-caplet",
+    "not-found",
+    "proposal-mismatch",
+    "wrong-actor",
+    "wrong-operation",
+    "setup-incomplete",
+  ]);
+}
+
+async function importPortableArtifactFromPath(
+  io: CliIO,
+  path: string,
+  options: PortableCommandOptions & {
+    collisionPolicy: string;
+    confirmReplacement?: boolean | undefined;
+  },
+): Promise<CurrentHostPortableOperationOutcome> {
+  const stat = statSync(path);
+  if (!stat.isFile() || stat.size <= 0 || stat.size > 256 * 1024 * 1024) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Portable artifact must be a file between 1 byte and 256 MiB.",
+    );
+  }
+  if (options.collisionPolicy !== "reject" && options.collisionPolicy !== "replace") {
+    throw new CapletsError("REQUEST_INVALID", "collision policy must be reject or replace.");
+  }
+  const bytes = readFileSync(path);
+  const artifactSha256 = createHash("sha256").update(bytes).digest("hex");
+  const created = await executePortableCliOperation(
+    io,
+    {
+      kind: "portable_import_session_create",
+      expectedByteLength: bytes.byteLength,
+      expectedSha256: artifactSha256,
+      mimeType: "application/vnd.caplets.portable+json",
+    },
+    options,
+  );
+  if (created.kind !== "portable_import_session_create") {
+    throw new CapletsError(
+      "INTERNAL_ERROR",
+      "Portable upload session returned an invalid outcome.",
+    );
+  }
+  const operationOptions = { ...options, operationId: created.session.operationId };
+  for (let offset = 0; offset < bytes.byteLength; offset += PORTABLE_CHUNK_SIZE_BYTES) {
+    const chunk = bytes.subarray(
+      offset,
+      Math.min(bytes.byteLength, offset + PORTABLE_CHUNK_SIZE_BYTES),
+    );
+    const appended = await executePortableCliOperation(
+      io,
+      {
+        kind: "portable_import_session_append",
+        sessionId: created.session.sessionId,
+        offset,
+        chunkSha256: createHash("sha256").update(chunk).digest("hex"),
+        bytesBase64: chunk.toString("base64"),
+      },
+      operationOptions,
+    );
+    if (
+      appended.kind !== "portable_import_session_append" ||
+      appended.session.nextOffset !== offset + chunk.byteLength
+    ) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Portable upload did not accept the next offset.",
+      );
+    }
+  }
+  const finalized = await executePortableCliOperation(
+    io,
+    {
+      kind: "portable_import_session_finalize",
+      sessionId: created.session.sessionId,
+    },
+    operationOptions,
+  );
+  if (finalized.kind !== "portable_import_session_finalize") {
+    throw new CapletsError(
+      "INTERNAL_ERROR",
+      "Portable upload finalize returned an invalid outcome.",
+    );
+  }
+  return executePortableCliOperation(
+    io,
+    {
+      kind: "portable_import_preview",
+      artifactReference: finalized.artifact.reference,
+      collisionPolicy: options.collisionPolicy,
+      replacementConfirmed: options.confirmReplacement ?? false,
+    },
+    operationOptions,
+  );
+}
+
+async function exportPortableArtifactToPath(
+  io: CliIO,
+  capletId: string,
+  path: string,
+  options: PortableCommandOptions & { underlyingSql?: boolean | undefined },
+): Promise<Extract<CurrentHostPortableOperationOutcome, { kind: "portable_export_create" }>> {
+  const exported = await executePortableCliOperation(
+    io,
+    {
+      kind: "portable_export_create",
+      capletId,
+      selector: options.underlyingSql ? "underlying-sql" : "effective",
+    },
+    options,
+  );
+  if (exported.kind !== "portable_export_create") {
+    throw new CapletsError("INTERNAL_ERROR", "Portable export returned an invalid outcome.");
+  }
+  const chunks: Buffer[] = [];
+  const operationOptions = {
+    ...options,
+    operationId: exported.artifact.reference.operationId,
+  };
+  for (let start = 0; start < exported.artifact.byteLength; start += PORTABLE_CHUNK_SIZE_BYTES) {
+    const downloaded = await executePortableCliOperation(
+      io,
+      {
+        kind: "portable_artifact_download_range",
+        artifactReference: exported.artifact.reference,
+        start,
+        endExclusive: Math.min(exported.artifact.byteLength, start + PORTABLE_CHUNK_SIZE_BYTES),
+      },
+      operationOptions,
+    );
+    if (downloaded.kind !== "portable_artifact_download_range") {
+      throw new CapletsError("INTERNAL_ERROR", "Portable download returned an invalid outcome.");
+    }
+    chunks.push(Buffer.from(downloaded.bytes));
+  }
+  const bytes = Buffer.concat(chunks);
+  if (
+    bytes.byteLength !== exported.artifact.byteLength ||
+    createHash("sha256").update(bytes).digest("hex") !== exported.artifact.sha256
+  ) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Portable download hash or length did not match.");
+  }
+  writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+  return exported;
+}
+async function executePortableCliOperation(
+  io: CliIO,
+  value: unknown,
+  options: PortableCommandOptions,
+): Promise<CurrentHostPortableOperationOutcome> {
+  if (options.global === options.remote) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Portable operations require exactly one of --global or --remote.",
+    );
+  }
+  if (!isPlainObject(value) || Object.hasOwn(value, "binding")) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Portable operation JSON must be an object without binding.",
+    );
+  }
+  if (options.remote) {
+    if (value.kind === "portable_status") return remotePortableStatusForCli(io);
+    const outcome = await requestTypedRemote(io, "current_host_portable", {
+      operation: value,
+      ...(options.operationId ? { operationId: options.operationId } : {}),
+    });
+    return parseRemotePortableOutcome(outcome);
+  }
+
+  return withCurrentHostManagement(io, (client) => {
+    const normalized = normalizeLocalPortableOperation(value);
+    const temporaryBinding = client.createBinding(
+      normalized,
+      options.operationId ? { operationId: options.operationId } : {},
+    );
+    const parsed = parseCurrentHostPortableOperation(normalized, { binding: temporaryBinding });
+    const { binding: _binding, ...operation } = parsed;
+    return client.executePortable(operation as PortableOperationInput, options.operationId);
+  });
+}
+
+function normalizeLocalPortableOperation(
+  operation: Record<string, unknown>,
+): Record<string, unknown> {
+  if (operation.kind !== "portable_import_session_append") return operation;
+  const bytes = decodePortableBase64Chunk(
+    operation.bytesBase64,
+    "REQUEST_INVALID",
+    "Portable artifact chunk encoding is invalid.",
+  );
+  const { bytesBase64: _encoded, ...fields } = operation;
+  return { ...fields, bytes };
+}
+
+function writePortableStatus(
+  writeOut: (value: string) => void,
+  outcome: CurrentHostPortableOperationOutcome,
+  json: boolean,
+): void {
+  if (outcome.kind !== "portable_status") {
+    throw new CapletsError("INTERNAL_ERROR", "Portable status returned an invalid outcome.");
+  }
+  if (json) {
+    writeOut(`${JSON.stringify(outcome)}\n`);
+    return;
+  }
+  writeOut(
+    [
+      `Status: ${outcome.status}`,
+      `Backend: ${outcome.health.backend}`,
+      `Readiness: ${outcome.health.readiness}`,
+      `Connectivity: ${outcome.health.connectivity}`,
+      `Migration: ${outcome.health.migration}`,
+      `Convergence: ${outcome.health.convergence}`,
+      `Guidance: ${outcome.guidanceCode}`,
+      "",
+    ].join("\n"),
+  );
+}
+
+function writePortableOperationOutcome(
+  writeOut: (value: string) => void,
+  setExitCode: (code: number) => void,
+  outcome: CurrentHostPortableOperationOutcome,
+  json: boolean,
+): void {
+  const rejected = "status" in outcome && outcome.status === "rejected";
+  if (rejected) setExitCode(1);
+  if (json || !rejected) {
+    writeOut(`${JSON.stringify(outcome)}\n`);
+    return;
+  }
+  const reason = "reason" in outcome ? outcome.reason : "blocked";
+  writeOut(
+    `Portable operation rejected: ${reason}. Run 'caplets storage portable status' for recovery guidance.\n`,
+  );
+}
+
+type ManagementCommandOptions = {
+  global?: boolean | undefined;
+  remote?: boolean | undefined;
+  operationId?: string | undefined;
+};
+
+function resolveCurrentHostManagementTarget(
+  options: ManagementCommandOptions,
+): "global" | "remote" {
+  if (options.global === options.remote) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Current Host management requires exactly one of --global or --remote.",
+    );
+  }
+  return options.remote ? "remote" : "global";
+}
+
+function remoteManagementBindingArguments(
+  request: unknown,
+  requestedOperationId?: string | undefined,
+): { operationId: string; requestIdentity: string } {
+  const operationId = requestedOperationId ?? `operation_${randomUUID()}`;
+  if (!/^[A-Za-z0-9_-]{1,160}$/u.test(operationId)) {
+    throw new CapletsError("REQUEST_INVALID", "Current Host operation ID is invalid.");
+  }
+  return {
+    operationId,
+    requestIdentity: createHash("sha256").update(JSON.stringify(request)).digest("hex"),
+  };
+}
+
+function writeCurrentHostManagementOutcome(
+  writeOut: (value: string) => void,
+  setExitCode: (code: number) => void,
+  outcome: unknown,
+  successfulStatuses: readonly string[],
+): void {
+  if (!isPlainObject(outcome) || typeof outcome.status !== "string") {
+    throw new CapletsError(
+      "INTERNAL_ERROR",
+      "Current Host management returned an invalid outcome.",
+    );
+  }
+  if (!successfulStatuses.includes(outcome.status)) setExitCode(1);
+  writeOut(`${JSON.stringify(outcome)}\n`);
 }
 
 function parseCurrentHostManagementResource(value: string): CurrentHostManagementResource {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -12,7 +13,9 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PostgresStorageConfig } from "../src/config";
 import type { PostgresControlPlaneDialect } from "../src/control-plane/dialect/postgres";
+import { openSqliteControlPlaneDialect } from "../src/control-plane/dialect/sqlite";
 import type { ResolvedPostgresStorage } from "../src/control-plane/storage-config";
+import { resolveStorageDeployment } from "../src/control-plane/storage-config";
 import * as migrationExclusion from "../src/control-plane/migration/exclusion";
 import {
   createProductionControlPlane,
@@ -22,10 +25,21 @@ import {
   runProductionPostgresOperationalStartup,
 } from "../src/control-plane/production-runtime";
 import { RuntimeAssetCache } from "../src/control-plane/runtime-caches";
+import { DashboardActivityLog } from "../src/dashboard/activity-log";
+import {
+  encodePortableCapletArtifact,
+  portableCapletFromCapletDocument,
+} from "../src/control-plane/caplets/portable-codec";
 import { createCapletsEngine } from "../src/engine";
 import { hashInstalledArtifact } from "../src/cli/install";
 import { writeCapletsLockfile } from "../src/cli/lockfile";
+import { stableJsonStringify } from "../src/stable-json";
 import { FileVaultStore } from "../src/vault";
+import {
+  createCurrentHostOperations,
+  trustedDevelopmentOperatorPrincipal,
+  withCurrentHostFinalAuthorization,
+} from "../src/current-host/operations";
 
 const roots: string[] = [];
 
@@ -193,6 +207,9 @@ describe("production SQL runtime activation", () => {
       },
       async releaseMigrationDrain(_gateId: string, outcome: string) {
         expect(outcome).toBe("finalized");
+      },
+      async migrationQuery() {
+        return [];
       },
       async migrate() {
         migrated += 1;
@@ -408,7 +425,7 @@ describe("production SQL runtime activation", () => {
     }
   });
 
-  it("refuses a complete reviewed legacy boundary when privileged exclusion cannot be proven", async () => {
+  it("resumes an active Windows post-activation journal to finalized readiness", async () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-production-legacy-"));
     roots.push(root);
     const stateRoot = join(root, "sql-state");
@@ -641,6 +658,113 @@ describe("production SQL runtime activation", () => {
     } finally {
       await activated.close();
     }
+    const storage = { kind: "sqlite" as const, stateRoot };
+    const deployment = await resolveStorageDeployment(storage);
+    if (deployment.backend !== "sqlite") throw new Error("Expected SQLite test deployment.");
+    const environment = {
+      binaryVersion: "0.34.1",
+      supportedSchemaVersion: 1,
+      keyVersion: 1,
+      manifestVersion: 1,
+      oldNodesDrained: true,
+      hostAdministrator: true,
+    };
+    const journalDialect = await openSqliteControlPlaneDialect({
+      storage: deployment,
+      environment,
+      assetRoot: new URL("../drizzle/", import.meta.url),
+    });
+    await journalDialect.migrate();
+    const [journalRow] = journalDialect.query<{ stateDocument: string }>(
+      'SELECT state_document AS "stateDocument" FROM cp_migration WHERE migration_id = ?',
+      ["legacy-v1"],
+    );
+    if (!journalRow) throw new Error("Finalized legacy journal is absent.");
+    const finalizedDocument = JSON.parse(journalRow.stateDocument) as Record<string, unknown>;
+    const metadata = finalizedDocument.metadata as Record<string, unknown>;
+    const cleanupId = metadata.exclusionCleanupId;
+    if (typeof cleanupId !== "string") throw new Error("Legacy cleanup identity is absent.");
+    const activeDocument = { ...finalizedDocument, step: "activated" };
+    const stateDocument = stableJsonStringify(activeDocument);
+    const checksum = createHash("sha256").update(stateDocument).digest("hex");
+    journalDialect.execute(
+      "UPDATE cp_migration SET phase = ?, checksum = ?, state_document = ? WHERE migration_id = ?",
+      ["activated", checksum, stateDocument, "legacy-v1"],
+    );
+    await journalDialect.close();
+
+    let completed = 0;
+    let released = 0;
+    const resumeWindowsSpy = vi
+      .spyOn(migrationExclusion, "resumeWindowsLegacyMigrationExclusion")
+      .mockResolvedValue({
+        sealedSource: {
+          path: join(legacyRoot, ".sealed"),
+          manifestSha256: "a".repeat(64),
+          cleanupId,
+          identities: [],
+        },
+        tombstonePaths: [],
+        initialEvidence: {},
+        state: "acquired",
+        verifyFinalScanAndRehash: async () => ({
+          manifestSha256: "a".repeat(64),
+          platformEvidence: {},
+        }),
+        rollbackBeforeActivation: async () => undefined,
+        completeActivation: async () => {
+          completed += 1;
+        },
+        release: async () => {
+          released += 1;
+        },
+      } as never);
+    let resumed: Awaited<ReturnType<typeof createProductionControlPlane>> | undefined;
+    try {
+      resumed = await createProductionControlPlane({
+        configPath,
+        projectConfigPath,
+        authDir,
+        storage: { windowsLegacyExclusionOwnerSid: "S-1-5-80-4242" },
+      });
+      expect(resumed.initialSnapshot).toMatchObject({ backend: "sqlite" });
+      expect(completed).toBe(1);
+      expect(released).toBe(1);
+      expect(resumeWindowsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceBoundaryPath: legacyRoot,
+          mode: "offline",
+          platformOptions: {
+            windows: {
+              expectedOwnerSid: "S-1-5-80-4242",
+              expectedServices: [],
+              proof: { kind: "offline", allReplicasStopped: true },
+            },
+          },
+        }),
+        cleanupId,
+      );
+    } finally {
+      await resumed?.close();
+      resumeWindowsSpy.mockRestore();
+    }
+
+    const finalizedDialect = await openSqliteControlPlaneDialect({
+      storage: deployment,
+      environment,
+      assetRoot: new URL("../drizzle/", import.meta.url),
+    });
+    await finalizedDialect.migrate();
+    try {
+      expect(
+        finalizedDialect.query<{ phase: string }>(
+          "SELECT phase FROM cp_migration WHERE migration_id = ?",
+          ["legacy-v1"],
+        ),
+      ).toEqual([{ phase: "finalized" }]);
+    } finally {
+      await finalizedDialect.close();
+    }
   });
 
   it("keeps engine and activated service on one generation when asset publication fails", async () => {
@@ -677,6 +801,23 @@ describe("production SQL runtime activation", () => {
     const initialEngineSnapshot = engine.currentControlPlaneRuntimeSnapshot();
     const management = engine.currentHostManagementDependencies();
     const initialActivatedSnapshot = await management!.loadRuntimeSnapshot();
+    const portable = engine.currentHostPortableOperations();
+    const principal = trustedDevelopmentOperatorPrincipal("http://127.0.0.1:3000");
+    await expect(
+      portable!.execute(principal, {
+        kind: "portable_status",
+        binding: {
+          operationId: "portable-production-status",
+          target: "global",
+          logicalHostId: initialActivatedSnapshot.identity.logicalHostId,
+          storeId: initialActivatedSnapshot.identity.storeId,
+          operationNamespace: initialActivatedSnapshot.identity.operationNamespace,
+          actorId: principal.clientId,
+          requestIdentity: "portable-production-status",
+          operationClass: "logical-state",
+        },
+      }),
+    ).resolves.toMatchObject({ kind: "portable_status", status: "live" });
     const failedCommit = vi
       .spyOn(RuntimeAssetCache.prototype, "commit")
       .mockRejectedValueOnce(new Error("asset cleanup failed"));
@@ -816,6 +957,365 @@ describe("production SQL runtime activation", () => {
       }
     } finally {
       await engine.close();
+    }
+  });
+  it("derives protected migration activation from durable store evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-production-evidence-"));
+    roots.push(root);
+    const stateRoot = join(root, "state");
+    const configPath = join(root, "config.json");
+    const projectConfigPath = join(root, "project.json");
+    const storage = { kind: "sqlite" as const, stateRoot };
+    writeFileSync(configPath, JSON.stringify({ serve: { storage } }), "utf8");
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          fixture: {
+            name: "Fixture",
+            description: "Durable migration evidence fixture.",
+            command: process.execPath,
+            args: ["-e", ""],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const startup = {
+      configPath,
+      projectConfigPath,
+      authDir: join(root, "auth"),
+      env: { XDG_STATE_HOME: join(root, "state-home") },
+    };
+    const initialized = await createProductionControlPlane(startup);
+    await initialized.close();
+
+    const deployment = await resolveStorageDeployment(storage);
+    if (deployment.backend !== "sqlite") throw new Error("Expected SQLite test deployment.");
+    const dialect = await openSqliteControlPlaneDialect({
+      storage: deployment,
+      environment: {
+        binaryVersion: "0.34.1",
+        supportedSchemaVersion: 1,
+        keyVersion: 1,
+        manifestVersion: 1,
+        oldNodesDrained: true,
+        hostAdministrator: true,
+      },
+      assetRoot: new URL("../drizzle/", import.meta.url),
+    });
+    await dialect.migrate();
+    dialect.execute("DELETE FROM __caplets_migration_history_v1 WHERE migration_id = ?", [
+      "0009_harsh_gideon",
+    ]);
+    await dialect.close();
+
+    await expect(createProductionControlPlane(startup)).rejects.toThrow(
+      /requires store-bound activation evidence/u,
+    );
+  });
+
+  it("commits portable and catalog changes through durable fenced SQL mutations", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-production-portable-"));
+    roots.push(root);
+    vi.stubEnv("XDG_STATE_HOME", join(root, "state-home"));
+    const stateRoot = join(root, "state");
+    const configPath = join(root, "config.json");
+    const projectConfigPath = join(root, "project.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        serve: {
+          allowUnauthenticatedHttp: true,
+          storage: { kind: "sqlite", stateRoot },
+        },
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          bootstrap: {
+            name: "Bootstrap",
+            description: "Production portable test bootstrap.",
+            command: process.execPath,
+          },
+        },
+      }),
+      "utf8",
+    );
+    const production = await createProductionControlPlane({
+      configPath,
+      projectConfigPath,
+      authDir: join(root, "auth"),
+      env: { ...process.env, SETUP_TOKEN: "available" },
+    });
+    production.bindSnapshotPublisher(async () => undefined);
+    const principal = trustedDevelopmentOperatorPrincipal("http://127.0.0.1:3000");
+    const portableBase = portableCapletFromCapletDocument({
+      id: "portable-fixture",
+      path: "CAPLET.md",
+      text: [
+        "---",
+        "name: Portable fixture",
+        "description: Durable portable import fixture.",
+        "mcpServer:",
+        "  command: node",
+        "---",
+        "# Portable fixture",
+        "",
+      ].join("\n"),
+      files: [],
+    });
+    const portable = {
+      ...portableBase,
+      references: [
+        ...portableBase.references,
+        {
+          type: "unresolved-setup" as const,
+          owner: "frontmatter.backend.config.token",
+          name: "SETUP_TOKEN",
+        },
+      ],
+    };
+    const encoded = encodePortableCapletArtifact(portable);
+    const bytes = encoded.bytes;
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const binding = {
+      operationId: "portable-production-import",
+      target: "global" as const,
+      logicalHostId: production.store.identity.logicalHostId,
+      storeId: production.store.identity.storeId,
+      operationNamespace: production.store.identity.operationNamespace,
+      actorId: principal.clientId,
+      requestIdentity: "portable-production-import-request",
+      operationClass: "logical-state" as const,
+    };
+    try {
+      const created = await production.portable.execute(principal, {
+        kind: "portable_import_session_create",
+        binding,
+        expectedByteLength: bytes.byteLength,
+        expectedSha256: digest,
+        mimeType: encoded.mimeType.split(";")[0]!,
+      });
+      if (created.kind !== "portable_import_session_create") {
+        throw new Error("Portable session creation returned the wrong outcome.");
+      }
+      await production.portable.execute(principal, {
+        kind: "portable_import_session_append",
+        binding,
+        sessionId: created.session.sessionId,
+        offset: 0,
+        chunkSha256: digest,
+        bytes,
+      });
+      const finalized = await production.portable.execute(principal, {
+        kind: "portable_import_session_finalize",
+        binding,
+        sessionId: created.session.sessionId,
+      });
+      if (finalized.kind !== "portable_import_session_finalize") {
+        throw new Error("Portable finalization returned the wrong outcome.");
+      }
+      const preview = await production.portable.execute(principal, {
+        kind: "portable_import_preview",
+        binding,
+        artifactReference: finalized.artifact.reference,
+        collisionPolicy: "reject",
+        replacementConfirmed: false,
+      });
+      if (preview.kind !== "portable_import_preview" || preview.status !== "previewed") {
+        throw new Error("Portable preview was not created.");
+      }
+      const revoked = withCurrentHostFinalAuthorization(principal, () => {
+        throw new Error("actor revoked before commit");
+      });
+      await expect(
+        production.portable.execute(revoked, {
+          kind: "portable_import_activate",
+          binding,
+          proposalId: preview.proposal.proposalId,
+          proposalHash: preview.proposal.proposalHash,
+        }),
+      ).rejects.toThrow("actor revoked before commit");
+      await expect(production.store.loadSnapshot()).resolves.toMatchObject({ caplets: [] });
+
+      const activations = await Promise.all([
+        production.portable.execute(principal, {
+          kind: "portable_import_activate",
+          binding,
+          proposalId: preview.proposal.proposalId,
+          proposalHash: preview.proposal.proposalHash,
+        }),
+        production.portable.execute(principal, {
+          kind: "portable_import_activate",
+          binding,
+          proposalId: preview.proposal.proposalId,
+          proposalHash: preview.proposal.proposalHash,
+        }),
+      ]);
+      expect(
+        activations
+          .map((outcome) => outcome?.status)
+          .sort((left, right) => String(left).localeCompare(String(right))),
+      ).toEqual(["committed", "rejected"]);
+      expect(
+        activations.some(
+          (outcome) =>
+            outcome?.kind === "portable_import_activate" &&
+            outcome.status === "rejected" &&
+            (outcome.reason === "consumed" || outcome.reason === "stale-generation"),
+        ),
+      ).toBe(true);
+      const activated = activations.find(
+        (outcome) => outcome?.kind === "portable_import_activate" && outcome.status === "committed",
+      );
+      if (activated?.kind !== "portable_import_activate" || activated.status !== "committed") {
+        throw new Error("Portable activation did not commit.");
+      }
+      await expect(production.store.lookupOrReserveNotCommitted(binding)).resolves.toMatchObject({
+        status: "committed",
+        receipt: { aggregateVersion: 1 },
+      });
+
+      const importedSnapshot = await production.store.loadSnapshot();
+      const importedCaplet = importedSnapshot.caplets.find(
+        ({ aggregate }) => aggregate.id === portable.id,
+      );
+      expect({
+        activation: importedCaplet?.aggregate.activation,
+        aggregateVersion: importedCaplet?.aggregate.aggregateVersion,
+        authorityGeneration: importedSnapshot.versions.authorityGeneration,
+        effectiveGeneration: importedSnapshot.versions.effectiveGeneration,
+        securityEpoch: importedSnapshot.versions.securityEpoch,
+      }).toEqual({
+        activation: "setup-required",
+        aggregateVersion: activated.receipt.aggregateVersion,
+        authorityGeneration: activated.receipt.authorityToken.authorityGeneration,
+        effectiveGeneration: activated.receipt.authorityToken.effectiveGeneration,
+        securityEpoch: importedSnapshot.versions.securityEpoch,
+      });
+      await production.activated.refresh();
+      const managementOperations = createCurrentHostOperations({
+        engine: { enabledServers: () => [] },
+        activityLog: new DashboardActivityLog({ dir: join(root, "management-activity") }),
+        version: "test",
+        management: production.management,
+      });
+      const bypassBinding = {
+        ...binding,
+        operationId: "portable-production-activation-bypass",
+        requestIdentity: "portable-production-activation-bypass-request",
+      };
+      const bypassPreview = await managementOperations.preview(principal, {
+        binding: bypassBinding,
+        mutation: {
+          kind: "caplet-set-activation",
+          id: portable.id,
+          activation: "active",
+          selector: "underlying-sql",
+        },
+      });
+      if (bypassPreview.status !== "preview") {
+        throw new Error(`Activation bypass preview failed: ${JSON.stringify(bypassPreview)}`);
+      }
+      await expect(
+        managementOperations.mutate(principal, {
+          binding: bypassBinding,
+          mutation: {
+            kind: "caplet-set-activation",
+            id: portable.id,
+            activation: "active",
+            selector: "underlying-sql",
+            expectedAuthorityToken: bypassPreview.authorityToken,
+          },
+        }),
+      ).rejects.toThrow(/only be activated through setup revalidation/u);
+      const revalidated = await production.portable.execute(principal, {
+        kind: "portable_setup_revalidate",
+        binding: { ...binding, operationId: "portable-production-revalidate" },
+        capletId: portable.id,
+        expectedAggregateVersion: activated.receipt.aggregateVersion,
+        expectedAuthorityToken: activated.receipt.authorityToken,
+        expectedSecurityEpoch: importedSnapshot.versions.securityEpoch,
+      });
+      if (revalidated?.kind !== "portable_setup_revalidate" || revalidated.status !== "committed") {
+        throw new Error(`Setup revalidation rejected: ${JSON.stringify(revalidated)}`);
+      }
+      expect(revalidated).toMatchObject({
+        kind: "portable_setup_revalidate",
+        status: "committed",
+        caplet: { activation: "active" },
+      });
+
+      const catalogPortable = {
+        ...portable,
+        id: "catalog-sql-fixture",
+        name: "Catalog SQL fixture",
+        references: [],
+      };
+      const lockEntry = {
+        id: catalogPortable.id,
+        destination: `${catalogPortable.id}.md`,
+        kind: "file" as const,
+        source: {
+          type: "git" as const,
+          repository: "https://example.test/catalog.git",
+          path: `${catalogPortable.id}.md`,
+          resolvedRevision: "abc123",
+          portability: "portable" as const,
+        },
+        installedHash: "a".repeat(64),
+        installedAt: "2026-07-17T00:00:00.000Z",
+        updatedAt: "2026-07-17T00:00:00.000Z",
+        risk: {
+          backendFamilies: ["http"],
+          safety: "standard" as const,
+          projectBindingRequired: false,
+          mutating: false,
+          destructive: false,
+        },
+      };
+      await expect(
+        production.portable.persistGlobalCatalogChange?.({
+          action: "install",
+          principal,
+          source: { repository: lockEntry.source.repository },
+          force: false,
+          artifacts: [
+            {
+              installed: {
+                id: catalogPortable.id,
+                source: lockEntry.source.repository,
+                destination: lockEntry.destination,
+                kind: "file",
+                status: "installed",
+              },
+              lockEntry,
+              portable: catalogPortable,
+              provenance: {
+                id: "ignored-caller-provenance",
+                sourceKind: "caller",
+                source: {},
+                contentHash: "b".repeat(64),
+              },
+              setupActions: [],
+            },
+          ],
+        }),
+      ).resolves.toMatchObject({ installed: [{ id: catalogPortable.id }] });
+      await expect(
+        production.portable.loadGlobalCatalogProvenance?.([catalogPortable.id]),
+      ).resolves.toEqual([lockEntry]);
+      expect(
+        (await production.store.loadSnapshot()).caplets.find(
+          (entry) => entry.aggregate.id === catalogPortable.id,
+        )?.aggregate.installationProvenanceId,
+      ).not.toBe("ignored-caller-provenance");
+    } finally {
+      await production.close();
     }
   });
 });

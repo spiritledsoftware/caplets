@@ -125,9 +125,10 @@ export function classifyCapletPlacement(input: {
   inspectingExisting?: boolean;
 }): CapletPlacementDecision {
   if (input.filesystemOwned) {
-    return input.inspectingExisting && input.existingSql
-      ? { state: "dormant-shadowed", effective: false }
-      : { state: "filesystem-ownership-rejected", effective: false };
+    if (input.inspectingExisting && input.existingSql) {
+      return { state: "dormant-shadowed", effective: false };
+    }
+    return { state: "filesystem-ownership-rejected", effective: false };
   }
   if (input.existingSql && !input.replacingSql) {
     return { state: "default-sql-id-collision", effective: false };
@@ -135,9 +136,8 @@ export function classifyCapletPlacement(input: {
   if (input.existingSql) {
     return { state: "sql-replacement-approved", effective: input.setupComplete };
   }
-  return input.setupComplete
-    ? { state: "active", effective: true }
-    : { state: "setup-required", effective: false };
+  if (input.setupComplete) return { state: "active", effective: true };
+  return { state: "setup-required", effective: false };
 }
 
 export type CanonicalCapletBackendRow = {

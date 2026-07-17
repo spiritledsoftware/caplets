@@ -10,12 +10,17 @@ import {
 import {
   assertRecoveryKeyRetirementAllowed,
   convertRecoveryWrappedDataKey,
+  convertTransferSecurityRecords,
   recoveryKeyHasRetainedReferences,
   retireRecoveryKeyTransactionally,
   type RecoveryKeyRetirementPort,
   type RecoveryKeyRetirementTransaction,
   type RecoveryKeyLifecycle,
+  type TransferDestinationCipherCapability,
+  type TransferSecurityRecord,
+  type TransferSourceCipherCapability,
 } from "../src/control-plane/migration/key-conversion";
+import { restoreRecoveryBundleWithRecordedAuthority } from "../src/control-plane/migration/restore";
 import {
   recoveryEnvelopeBindingDigest,
   type RecoveryEnvelopeBinding,
@@ -418,5 +423,386 @@ describe("protected recovery key conversion", () => {
       },
     });
     expect(restored).toBe("post-conversion plaintext");
+
+    const recordedRestoredChunks: Buffer[] = [];
+    let recordedRestored = "";
+    const currentStaticAuthority = destination;
+    await restoreRecoveryBundleWithRecordedAuthority({
+      recorded: {
+        transferId: "transfer_01J00000000000000000000000",
+        sourceDescriptorDigest: "d".repeat(64),
+        backupId: bundle.backupId,
+        bindingDigest: bundle.bindingDigest,
+        recoveryKeyReference: sourceReference,
+      },
+      bundle,
+      expectedBinding: binding,
+      source: (async function* () {
+        yield* frames;
+      })(),
+      wrappedKeySource: {
+        readWrappedKey: async () => wrappedDataKey,
+      },
+      plaintextSink: {
+        begin: async () => ({
+          stageChunk: async (chunk) => {
+            recordedRestoredChunks.push(Buffer.from(chunk));
+          },
+          commit: async () => {
+            recordedRestored = Buffer.concat(recordedRestoredChunks).toString("utf8");
+          },
+          abort: async () => {
+            recordedRestoredChunks.length = 0;
+          },
+        }),
+      },
+      authorityResolver: {
+        resolveRecordedSourceAuthority: async (recorded) => {
+          expect(currentStaticAuthority.reference).toEqual(destinationReference);
+          expect(recorded.recoveryKeyReference).toEqual(sourceReference);
+          return source;
+        },
+      },
+    });
+    expect(recordedRestored).toBe("post-conversion plaintext");
+
+    let forbiddenResolverCalls = 0;
+    await expect(
+      restoreRecoveryBundleWithRecordedAuthority({
+        recorded: {
+          transferId: "transfer_01J00000000000000000000000",
+          sourceDescriptorDigest: "d".repeat(64),
+          backupId: bundle.backupId,
+          bindingDigest: bundle.bindingDigest,
+          recoveryKeyReference: { ...sourceReference, profile: "transfer-source" },
+        },
+        bundle,
+        expectedBinding: binding,
+        source: (async function* () {
+          yield* frames;
+        })(),
+        wrappedKeySource: {
+          readWrappedKey: async () => wrappedDataKey,
+        },
+        plaintextSink: {
+          begin: async () => {
+            throw new Error("must not stage");
+          },
+        },
+        authorityResolver: {
+          resolveRecordedSourceAuthority: async () => {
+            forbiddenResolverCalls += 1;
+            return source;
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "restore_auth_fence_failed" });
+    expect(forbiddenResolverCalls).toBe(0);
+  });
+});
+
+describe("offline transfer ciphertext conversion", () => {
+  const transferId = "transfer_01J00000000000000000000000";
+  const expiresAt = "2026-07-18T00:00:00.000Z";
+  const sourceScope = {
+    profile: "transfer-source",
+    transferId,
+    logicalHostId,
+    storeId,
+    keyringIdentity: "source-keyring",
+    expiresAt,
+  } as const;
+  const destinationScope = {
+    profile: "transfer-destination",
+    transferId,
+    logicalHostId,
+    storeId,
+    keyringIdentity: "destination-keyring",
+    expiresAt,
+  } as const;
+
+  function capabilities() {
+    const returnedPlaintexts: Uint8Array[] = [];
+    let decryptCalls = 0;
+    let encryptCalls = 0;
+    let concurrentPlaintexts = 0;
+    let maximumConcurrentPlaintexts = 0;
+    const source: TransferSourceCipherCapability = {
+      scope: sourceScope,
+      decryptRecord: async (record) => {
+        decryptCalls += 1;
+        const plaintext = Buffer.from(record.ciphertext);
+        returnedPlaintexts.push(plaintext);
+        return plaintext;
+      },
+    };
+    const destination: TransferDestinationCipherCapability = {
+      scope: destinationScope,
+      encryptRecord: async (record) => {
+        encryptCalls += 1;
+        concurrentPlaintexts += 1;
+        maximumConcurrentPlaintexts = Math.max(maximumConcurrentPlaintexts, concurrentPlaintexts);
+        try {
+          return {
+            keyVersion: record.purpose === "active-record" ? 17 : 23,
+            nonce: Buffer.alloc(12, record.purpose === "active-record" ? 0x17 : 0x23),
+            ciphertext: Buffer.from(record.plaintext),
+            authenticationTag: Buffer.alloc(16, 0x5a),
+          };
+        } finally {
+          concurrentPlaintexts -= 1;
+        }
+      },
+    };
+    return {
+      source,
+      destination,
+      returnedPlaintexts,
+      stats: () => ({
+        decryptCalls,
+        encryptCalls,
+        maximumConcurrentPlaintexts,
+      }),
+    };
+  }
+
+  function records(): TransferSecurityRecord[] {
+    return [
+      {
+        kind: "encrypted",
+        ordinal: 0,
+        recordId: "oauth-token:primary",
+        purpose: "active-record",
+        keyVersion: 1,
+        nonce: Buffer.alloc(12, 1),
+        ciphertext: Buffer.from("source access secret"),
+        authenticationTag: Buffer.alloc(16, 2),
+        associatedData: Buffer.from("active-aad"),
+      },
+      {
+        kind: "encrypted",
+        ordinal: 1,
+        recordId: "vault-value:API_TOKEN",
+        purpose: "vault-record",
+        keyVersion: 4,
+        nonce: Buffer.alloc(12, 3),
+        ciphertext: Buffer.from("source vault secret"),
+        authenticationTag: Buffer.alloc(16, 4),
+        associatedData: Buffer.from("vault-aad"),
+      },
+      {
+        kind: "high-entropy-verifier",
+        ordinal: 2,
+        recordId: "remote-client:bearer",
+        algorithm: "SHA-256",
+        verifier: Buffer.alloc(32, 0x31),
+      },
+      {
+        kind: "short-code-verifier",
+        ordinal: 3,
+        recordId: "pending-approval:code",
+        algorithm: "HMAC-SHA-256",
+        verifierVersion: 1,
+        keyVersion: 7,
+        verifier: Buffer.alloc(32, 0x41),
+      },
+      {
+        kind: "invalidated-short-code",
+        ordinal: 4,
+        recordId: "pending-approval:already-invalid",
+        invalidatedAt: "2026-07-16T20:00:00.000Z",
+        reason: "consumed",
+      },
+    ];
+  }
+
+  async function* stream(values = records()): AsyncGenerator<TransferSecurityRecord> {
+    yield* values;
+  }
+
+  it("re-encrypts active and Vault ciphertext under unrelated keyrings while preserving safe verifier behavior", async () => {
+    const { source, destination, returnedPlaintexts, stats } = capabilities();
+    const staged: TransferSecurityRecord[] = [];
+    const result = await convertTransferSecurityRecords({
+      scope: { transferId, logicalHostId, storeId },
+      sourceCapability: source,
+      destinationCapability: destination,
+      source: stream(),
+      sink: {
+        stageConvertedRecord: async (record) => {
+          staged.push(record);
+        },
+      },
+      semanticCommitmentKey: Buffer.alloc(32, 0x6b),
+      invalidatedAt: "2026-07-17T00:00:00.000Z",
+      now: () => new Date("2026-07-17T00:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      recordCount: 5,
+      encryptedRecordCount: 2,
+      preservedVerifierCount: 1,
+      invalidatedShortCodeCount: 2,
+    });
+    expect(result.semanticCommitment).toMatch(/^[a-f0-9]{64}$/u);
+    expect(staged[0]).toMatchObject({
+      kind: "encrypted",
+      keyVersion: 17,
+      purpose: "active-record",
+    });
+    expect(staged[1]).toMatchObject({
+      kind: "encrypted",
+      keyVersion: 23,
+      purpose: "vault-record",
+    });
+    expect(staged[2]).toEqual(records()[2]);
+    expect(staged[3]).toEqual({
+      kind: "invalidated-short-code",
+      ordinal: 3,
+      recordId: "pending-approval:code",
+      invalidatedAt: "2026-07-17T00:00:00.000Z",
+      reason: "transfer-keyring-change",
+    });
+    expect(staged[4]).toEqual(records()[4]);
+    expect(stats()).toEqual({
+      decryptCalls: 2,
+      encryptCalls: 2,
+      maximumConcurrentPlaintexts: 1,
+    });
+    expect(returnedPlaintexts.every((value) => value.every((byte) => byte === 0))).toBe(true);
+  });
+
+  it("denies expired, cross-transfer, same-keyring, and non-transfer capabilities before record access", async () => {
+    const cases = [
+      {
+        sourcePatch: { scope: { ...sourceScope, transferId: `${transferId}-other` } },
+      },
+      {
+        destinationPatch: {
+          scope: { ...destinationScope, expiresAt: "2026-07-16T00:00:00.000Z" },
+        },
+      },
+      {
+        sourcePatch: {
+          scope: { ...sourceScope, profile: "migrator" as "transfer-source" },
+        },
+      },
+      {
+        destinationPatch: {
+          scope: { ...destinationScope, keyringIdentity: sourceScope.keyringIdentity },
+        },
+      },
+    ];
+    for (const testCase of cases) {
+      const { source, destination, stats } = capabilities();
+      let sourceRead = false;
+      await expect(
+        convertTransferSecurityRecords({
+          scope: { transferId, logicalHostId, storeId },
+          sourceCapability: Object.assign(source, testCase.sourcePatch),
+          destinationCapability: Object.assign(destination, testCase.destinationPatch),
+          source: (async function* () {
+            sourceRead = true;
+            yield* records();
+          })(),
+          sink: { stageConvertedRecord: async () => undefined },
+          semanticCommitmentKey: Buffer.alloc(32, 0x6b),
+          invalidatedAt: "2026-07-17T00:00:00.000Z",
+          now: () => new Date("2026-07-17T00:00:00.000Z"),
+        }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+      expect(sourceRead).toBe(false);
+      expect(stats()).toMatchObject({ decryptCalls: 0, encryptCalls: 0 });
+    }
+    const { source, destination, stats } = capabilities();
+    let clockReads = 0;
+    let stagedBeforeExpiry = 0;
+    await expect(
+      convertTransferSecurityRecords({
+        scope: { transferId, logicalHostId, storeId },
+        sourceCapability: source,
+        destinationCapability: destination,
+        source: stream(records().slice(0, 2)),
+        sink: {
+          stageConvertedRecord: async () => {
+            stagedBeforeExpiry += 1;
+          },
+        },
+        semanticCommitmentKey: Buffer.alloc(32, 0x6b),
+        invalidatedAt: "2026-07-17T00:00:00.000Z",
+        now: () =>
+          new Date(++clockReads < 3 ? "2026-07-17T00:00:00.000Z" : "2026-07-19T00:00:00.000Z"),
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    expect(stagedBeforeExpiry).toBe(1);
+    expect(stats()).toMatchObject({ decryptCalls: 1, encryptCalls: 1 });
+  });
+
+  it("is bounded, retry-safe for an idempotent staging sink, and never emits plaintext", async () => {
+    const staged = new Map<number, TransferSecurityRecord>();
+    let injected = true;
+    const run = async () => {
+      const { source, destination } = capabilities();
+      return convertTransferSecurityRecords({
+        scope: { transferId, logicalHostId, storeId },
+        sourceCapability: source,
+        destinationCapability: destination,
+        source: stream(),
+        sink: {
+          stageConvertedRecord: async (record) => {
+            if (injected && record.ordinal === 1) {
+              injected = false;
+              throw new Error("sink failed with source vault secret");
+            }
+            staged.set(record.ordinal, record);
+          },
+        },
+        semanticCommitmentKey: Buffer.alloc(32, 0x6b),
+        invalidatedAt: "2026-07-17T00:00:00.000Z",
+        now: () => new Date("2026-07-17T00:00:00.000Z"),
+        plaintextByteLimit: 64,
+      });
+    };
+
+    await expect(run()).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Transfer ciphertext conversion is not permitted.",
+    });
+    const result = await run();
+    expect(staged).toHaveLength(5);
+    expect(
+      JSON.stringify({
+        staged: [...staged.values()],
+        result,
+      }),
+    ).not.toContain("source access secret");
+    expect(
+      JSON.stringify({
+        staged: [...staged.values()],
+        result,
+      }),
+    ).not.toContain("source vault secret");
+
+    const oversized = records()[0]!;
+    if (oversized.kind !== "encrypted") throw new Error("invalid test fixture");
+    const { source, destination } = capabilities();
+    await expect(
+      convertTransferSecurityRecords({
+        scope: { transferId, logicalHostId, storeId },
+        sourceCapability: source,
+        destinationCapability: destination,
+        source: stream([
+          {
+            ...oversized,
+            ciphertext: Buffer.alloc(65),
+          },
+        ]),
+        sink: { stageConvertedRecord: async () => undefined },
+        semanticCommitmentKey: Buffer.alloc(32, 0x6b),
+        invalidatedAt: "2026-07-17T00:00:00.000Z",
+        now: () => new Date("2026-07-17T00:00:00.000Z"),
+        plaintextByteLimit: 64,
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
   });
 });

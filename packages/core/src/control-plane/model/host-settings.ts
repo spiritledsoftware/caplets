@@ -39,6 +39,27 @@ export type CanonicalHostSetting = {
     }>
 );
 
+const ALLOWED_EXPOSURES: Readonly<Record<string, true>> = {
+  direct: true,
+  progressive: true,
+  code_mode: true,
+  direct_and_code_mode: true,
+  progressive_and_code_mode: true,
+};
+const NUMERIC_BOUNDS: Readonly<
+  Record<string, Readonly<{ minimum: number; maximum?: number | undefined }>>
+> = {
+  "options.defaultSearchLimit": { minimum: 1 },
+  "options.maxSearchLimit": { minimum: 1, maximum: 50 },
+  "options.exposureDiscoveryTimeoutMs": { minimum: 1 },
+  "options.exposureDiscoveryConcurrency": { minimum: 1, maximum: 32 },
+  "options.completion.discoveryTimeoutMs": { minimum: 1 },
+  "options.completion.overallTimeoutMs": { minimum: 1 },
+  "options.completion.cacheTtlMs": { minimum: 0 },
+  "options.completion.negativeCacheTtlMs": { minimum: 0 },
+};
+const NAMESPACE_ALIAS_PATTERN = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/u;
+
 export function parseCanonicalHostSetting(value: unknown): CanonicalHostSetting {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Host setting must be an object");
@@ -91,38 +112,19 @@ export function parseCanonicalHostSetting(value: unknown): CanonicalHostSetting 
 
 function parseRuntimeMutableHostSetting(key: unknown, value: unknown): RuntimeMutableHostSetting {
   if (key === "telemetry" && typeof value === "boolean") return { key, value };
-  if (key === "options.exposure" && typeof value === "string") {
-    const allowed: Record<string, true> = {
-      direct: true,
-      progressive: true,
-      code_mode: true,
-      direct_and_code_mode: true,
-      progressive_and_code_mode: true,
+  if (key === "options.exposure" && typeof value === "string" && ALLOWED_EXPOSURES[value]) {
+    return {
+      key,
+      value: value as Extract<RuntimeMutableHostSetting, { key: "options.exposure" }>["value"],
     };
-    if (allowed[value]) {
-      return {
-        key,
-        value: value as Extract<RuntimeMutableHostSetting, { key: "options.exposure" }>["value"],
-      };
-    }
   }
-  const numericBounds: Record<string, { minimum: number; maximum?: number | undefined }> = {
-    "options.defaultSearchLimit": { minimum: 1 },
-    "options.maxSearchLimit": { minimum: 1, maximum: 50 },
-    "options.exposureDiscoveryTimeoutMs": { minimum: 1 },
-    "options.exposureDiscoveryConcurrency": { minimum: 1, maximum: 32 },
-    "options.completion.discoveryTimeoutMs": { minimum: 1 },
-    "options.completion.overallTimeoutMs": { minimum: 1 },
-    "options.completion.cacheTtlMs": { minimum: 0 },
-    "options.completion.negativeCacheTtlMs": { minimum: 0 },
-  };
   if (
     typeof key === "string" &&
-    numericBounds[key] &&
+    NUMERIC_BOUNDS[key] &&
     typeof value === "number" &&
     Number.isInteger(value) &&
-    value >= numericBounds[key].minimum &&
-    (numericBounds[key].maximum === undefined || value <= numericBounds[key].maximum)
+    value >= NUMERIC_BOUNDS[key].minimum &&
+    (NUMERIC_BOUNDS[key].maximum === undefined || value <= NUMERIC_BOUNDS[key].maximum)
   ) {
     return { key: key as Extract<RuntimeMutableHostSetting, { value: number }>["key"], value };
   }
@@ -155,10 +157,9 @@ function parseNamespaceAliases(value: unknown): {
       throw new Error(`Unsupported namespace aliases field ${key}`);
     }
   }
-  const labelPattern = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/u;
   if (
     aliases.local !== undefined &&
-    (typeof aliases.local !== "string" || !labelPattern.test(aliases.local))
+    (typeof aliases.local !== "string" || !NAMESPACE_ALIAS_PATTERN.test(aliases.local))
   ) {
     throw new Error("Namespace aliases local label is invalid");
   }
@@ -178,7 +179,7 @@ function parseNamespaceAliases(value: unknown): {
       !normalizedSelector ||
       normalizedSelector !== selector ||
       typeof alias !== "string" ||
-      !labelPattern.test(alias) ||
+      !NAMESPACE_ALIAS_PATTERN.test(alias) ||
       usedAliases.has(alias)
     ) {
       throw new Error("Namespace aliases upstream entry is invalid");

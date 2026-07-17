@@ -21,6 +21,10 @@ import {
 } from "../src/media";
 import { readHttpLikeResponse } from "../src/http/response";
 import { httpLikeMediaOutputSchema } from "../src/media/results";
+import {
+  createPortableArtifactReference,
+  parsePortableArtifactReference,
+} from "../src/media/artifacts";
 
 describe("media artifacts", () => {
   const dirs: string[] = [];
@@ -102,6 +106,34 @@ describe("media artifacts", () => {
         path: "/tmp/report.pdf",
       }),
     ).toBe(false);
+  });
+
+  it("round-trips canonical portable references and rejects altered claims", () => {
+    const reference = createPortableArtifactReference({
+      artifactId: "artifact_123",
+      logicalHostId: "host_123",
+      storeId: "store_123",
+      providerIdentityId: "provider_123",
+      actorId: "rcli_abcdefghijklmnop",
+      operationId: "operation_123",
+      direction: "upload",
+      byteLength: 1024,
+      sha256: "a".repeat(64),
+      mimeType: "application/vnd.caplets.portable+json",
+      expiresAt: "2026-07-17T12:15:00.000Z",
+    });
+
+    expect(parsePortableArtifactReference(reference.uri)).toEqual(reference);
+    expect(reference.uri).not.toMatch(/(?:path|secret|bucket|prefix)=/u);
+    expect(() =>
+      parsePortableArtifactReference(reference.uri.replace("byteLength=1024", "byteLength=1025")),
+    ).not.toThrow();
+    expect(() =>
+      parsePortableArtifactReference(`${reference.uri}&actorId=rcli_otherotherother1`),
+    ).toThrow("claims are invalid");
+    expect(() =>
+      createPortableArtifactReference({ ...reference, byteLength: 256 * 1024 * 1024 + 1 }),
+    ).toThrow("byteLength is invalid");
   });
 
   it("writes artifact files with stable metadata", async () => {

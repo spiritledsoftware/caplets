@@ -2,11 +2,29 @@ import { isDeepStrictEqual } from "node:util";
 import { stableJsonStringify } from "../../stable-json";
 import type { CurrentHostOperationBinding } from "../../current-host/operations";
 import {
+  decryptRecoveryEnvelope,
   mergeBackupInventorySnapshots,
   type BackupInventoryRecord,
   type RecoveryEnvelopeBinding,
   type RecoveryEnvelopeReadResult,
+  type RecoveryPlaintextStagingPort,
+  type RecoveryUnwrapAuthority,
+  type RecoveryWrappedKeySource,
 } from "./backup";
+import {
+  recoveryEnvelopeBindingDigest,
+  sameRecoveryKeyReference,
+  type RecoveryKeyReference,
+} from "./manifest";
+
+const RECOVERY_UNWRAP_DENIED_PROFILES = [
+  "online",
+  "runtime",
+  "migrator",
+  "maintenance",
+  "transfer-source",
+  "transfer-destination",
+] as const;
 
 export type RestoreIdentity = Readonly<{
   logicalHostId: string;
@@ -133,6 +151,73 @@ export class NormalRestoreError extends Error {
 
   constructor(readonly code: NormalRestoreErrorCode) {
     super(code);
+  }
+}
+
+export type RecordedSourceRecoveryAuthority = Readonly<{
+  transferId: string;
+  sourceDescriptorDigest: string;
+  backupId: string;
+  bindingDigest: string;
+  recoveryKeyReference: RecoveryKeyReference;
+}>;
+
+export interface RecordedSourceRecoveryAuthorityResolver {
+  /**
+   * Resolves the immutable source authority recorded by the transfer ledger, not current static
+   * destination configuration. Transfer/runtime/migrator profiles are never valid unwrap sources.
+   */
+  resolveRecordedSourceAuthority(
+    recorded: RecordedSourceRecoveryAuthority,
+  ): Promise<RecoveryUnwrapAuthority>;
+}
+
+export async function restoreRecoveryBundleWithRecordedAuthority(
+  input: Readonly<{
+    recorded: RecordedSourceRecoveryAuthority;
+    bundle: BackupInventoryRecord;
+    expectedBinding: RecoveryEnvelopeBinding;
+    source: AsyncIterable<Uint8Array>;
+    wrappedKeySource: RecoveryWrappedKeySource;
+    plaintextSink: RecoveryPlaintextStagingPort;
+    authorityResolver: RecordedSourceRecoveryAuthorityResolver;
+  }>,
+): Promise<RecoveryEnvelopeReadResult> {
+  try {
+    const deniedProfiles: readonly string[] = RECOVERY_UNWRAP_DENIED_PROFILES;
+    if (
+      input.recorded.transferId.length === 0 ||
+      input.recorded.transferId.includes("\0") ||
+      !/^[a-f0-9]{64}$/u.test(input.recorded.sourceDescriptorDigest) ||
+      input.bundle.state !== "finalized" ||
+      input.recorded.backupId !== input.bundle.backupId ||
+      input.recorded.bindingDigest !== input.bundle.bindingDigest ||
+      input.recorded.bindingDigest !== recoveryEnvelopeBindingDigest(input.expectedBinding) ||
+      !sameRecoveryKeyReference(
+        input.recorded.recoveryKeyReference,
+        input.bundle.recoveryKeyReference,
+      ) ||
+      !sameRecoveryKeyReference(
+        input.recorded.recoveryKeyReference,
+        input.expectedBinding.recoveryKeyReference,
+      ) ||
+      deniedProfiles.includes(input.recorded.recoveryKeyReference.profile)
+    ) {
+      throw new NormalRestoreError("restore_auth_fence_failed");
+    }
+    const authority = await input.authorityResolver.resolveRecordedSourceAuthority(input.recorded);
+    if (!sameRecoveryKeyReference(authority.reference, input.recorded.recoveryKeyReference)) {
+      throw new NormalRestoreError("restore_auth_fence_failed");
+    }
+    return await decryptRecoveryEnvelope({
+      source: input.source,
+      expectedBinding: input.expectedBinding,
+      unwrapAuthority: authority,
+      wrappedKeySource: input.wrappedKeySource,
+      plaintextSink: input.plaintextSink,
+    });
+  } catch {
+    throw new NormalRestoreError("restore_auth_fence_failed");
   }
 }
 

@@ -215,7 +215,10 @@ export class RuntimeAssetCache {
   }
 
   async #discardCreated(keys: readonly string[]): Promise<void> {
-    const retained = new Set(this.#generations.flatMap((generation) => [...generation.entries]));
+    const retained = new Set<string>();
+    for (const generation of this.#generations) {
+      for (const key of generation.entries) retained.add(key);
+    }
     for (const key of keys) {
       if (retained.has(key)) continue;
       const entry = this.#entries.get(key);

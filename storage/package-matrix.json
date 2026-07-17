@@ -133,20 +133,32 @@
   ],
   "unsupported": [
     {
+      "runtime": "any",
       "os": "linux-musl",
       "arch": "x64/arm64",
-      "reason": "musl and Alpine are outside the release-blocking native-driver matrix"
+      "reason": "musl and Alpine are outside the release-blocking native-driver matrix",
+      "guidance": "Use a glibc-based Linux distribution or a supported Debian container tuple"
     },
     {
+      "runtime": "node",
       "os": "win32",
       "arch": "arm64",
-      "reason": "Windows arm64 is not admitted by the native-driver matrix"
+      "reason": "Windows arm64 is not admitted by the native-driver matrix",
+      "guidance": "Use Windows x64 or a supported Linux/macOS arm64 tuple"
     },
     {
+      "runtime": "bun",
       "os": "win32",
       "arch": "x64/arm64",
-      "reason": "Bun on Windows is not admitted by the runtime matrix"
+      "reason": "Bun on Windows is not admitted by the runtime matrix",
+      "guidance": "Use Node 22/24 on Windows x64 or Bun on a supported Linux/macOS tuple"
     },
-    { "os": "any", "arch": "32-bit", "reason": "32-bit targets are unsupported" }
+    {
+      "runtime": "any",
+      "os": "any",
+      "arch": "32-bit",
+      "reason": "32-bit targets are unsupported",
+      "guidance": "Use a supported x64 or arm64 platform tuple"
+    }
   ]
 }

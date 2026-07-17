@@ -77,6 +77,7 @@ const REQUIRED_RUNTIME_CAPABILITIES = Object.freeze([
   "complete-snapshot-v1",
 ]);
 const SNAPSHOT_ENVELOPE_ID = "control-plane";
+const KEY_MATERIAL_CAPABILITY = /^key-material:([^:]+):([1-9]\d*):([^:]+):([a-f0-9]{64})$/u;
 const COMMON_COLUMNS = [
   "model_version",
   "id",
@@ -100,6 +101,26 @@ class StoreResultError extends Error {
     super(result.status);
   }
 }
+
+export type TransactionBoundCapletMutation = Readonly<{
+  result: Extract<ControlPlaneMutationResult, { status: "committed" }>;
+  token: ControlPlaneConvergenceToken;
+  afterCommit(): Promise<ControlPlaneMutationResult>;
+}>;
+
+export class TransactionBoundCapletMutationError extends Error {
+  constructor(readonly result: Exclude<ControlPlaneMutationResult, { status: "committed" }>) {
+    super(result.status);
+  }
+}
+
+export type ControlPlaneRepository = ControlPlaneStore &
+  Readonly<{
+    mutateCapletInTransaction(
+      transaction: ControlPlaneSqlTransaction,
+      input: CapletManagementMutation,
+    ): Promise<TransactionBoundCapletMutation>;
+  }>;
 
 type CommonVersions = Readonly<{
   aggregateVersion: number;
@@ -128,7 +149,9 @@ type SnapshotEnvelopeMetrics = Readonly<{
 
 type SnapshotEnvelopeContribution = SnapshotEnvelopeMetrics;
 
-export function createControlPlaneRepository(options: ControlPlaneStoreOptions): ControlPlaneStore {
+export function createControlPlaneRepository(
+  options: ControlPlaneStoreOptions,
+): ControlPlaneRepository {
   const reservationTtlMs = options.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS;
   let lastKnownVersions: VersionRows = {
     authorityGeneration: 0,
@@ -358,9 +381,7 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     }
   };
 
-  const mutateCaplet = async (
-    input: CapletManagementMutation,
-  ): Promise<ControlPlaneMutationResult> => {
+  const validateCapletMutation = (input: CapletManagementMutation): void => {
     validatePortableCaplet(input.aggregate.portable);
     validateCapletRelationalProjection(input.aggregate, input.projection);
     if (
@@ -369,6 +390,12 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     ) {
       throw new Error("Caplet installation provenance does not match the mutation provenance");
     }
+  };
+
+  const mutateCaplet = async (
+    input: CapletManagementMutation,
+  ): Promise<ControlPlaneMutationResult> => {
+    validateCapletMutation(input);
     const result = await runManagementMutation(
       options,
       input,
@@ -392,6 +419,60 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
       }
     }
     return result;
+  };
+
+  const mutateCapletInTransaction = async (
+    transaction: ControlPlaneSqlTransaction,
+    input: CapletManagementMutation,
+  ): Promise<TransactionBoundCapletMutation> => {
+    validateCapletMutation(input);
+    const transactionOptions: ControlPlaneStoreOptions = {
+      ...options,
+      dialect: {
+        ...options.dialect,
+        runtimeTransaction: <T>(
+          work: (activeTransaction: ControlPlaneSqlTransaction) => Promise<T>,
+        ): Promise<T> => work(transaction),
+      },
+    };
+    const result = await runManagementMutation(
+      transactionOptions,
+      input,
+      fail,
+      reservationTtlMs,
+      async (activeTransaction, state) => {
+        await writeCaplet(activeTransaction, options, input, state);
+      },
+      true,
+    );
+    if (result.status !== "committed") {
+      throw new TransactionBoundCapletMutationError(result);
+    }
+    const token = Object.freeze({
+      authorityGeneration: result.receipt.authorityToken.authorityGeneration,
+      effectiveGeneration: result.receipt.authorityToken.effectiveGeneration,
+      securityEpoch: input.expectedSecurityEpoch,
+    });
+    let completion: Promise<ControlPlaneMutationResult> | undefined;
+    const afterCommit = (): Promise<ControlPlaneMutationResult> => {
+      completion ??= (async () => {
+        cachedSnapshot = undefined;
+        lastKnownVersions = token;
+        try {
+          await fail("after-receipt");
+        } catch {
+          return { status: "indeterminate", binding: input.binding };
+        }
+        try {
+          await options.dialect.publishChange?.(token);
+        } catch {
+          // The receipt is already durable; tuple polling remains authoritative.
+        }
+        return result;
+      })();
+      return completion;
+    };
+    return Object.freeze({ result, token, afterCommit });
   };
 
   const mutateHostSetting = async (
@@ -434,9 +515,6 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     try {
       return await options.dialect.snapshotTransaction(async (transaction) => {
         const versions = await readVersions(transaction, options.identity.logicalHostId);
-        if (cachedSnapshot && sameVersions(cachedSnapshot.versions, versions)) {
-          return cachedSnapshot.snapshot;
-        }
         const snapshot = await readSnapshot(transaction, options, versions);
         cachedSnapshot = Object.freeze({ versions, snapshot });
         return snapshot;
@@ -1695,6 +1773,19 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
       }
       const now = await transaction.databaseTime();
       const versions = await readVersions(transaction, options.identity.logicalHostId);
+      const appliedNodes = await countAppliedNodes(transaction, options, now, versions);
+      let settled: number;
+      do {
+        settled = await transaction.settleConvergenceReceipts({
+          logicalHostId: options.identity.logicalHostId,
+          storeId: options.identity.storeId,
+          authorityGeneration: versions.authorityGeneration,
+          effectiveGeneration: versions.effectiveGeneration,
+          securityEpoch: versions.securityEpoch,
+          appliedNodes,
+          limit: CONVERGENCE_RECEIPT_BATCH_SIZE,
+        });
+      } while (settled === CONVERGENCE_RECEIPT_BATCH_SIZE);
       const advancedAt = await currentConvergenceAdvancedAt(
         transaction,
         options.identity,
@@ -1722,23 +1813,6 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
         );
         await retireWriterFence(transaction, options.identity, `writer:${node.nodeId}`, now);
       }
-      const appliedNodes = await countAppliedNodes(transaction, options, now, {
-        authorityGeneration: versions.authorityGeneration,
-        effectiveGeneration: versions.effectiveGeneration,
-        securityEpoch: versions.securityEpoch,
-      });
-      let settled: number;
-      do {
-        settled = await transaction.settleConvergenceReceipts({
-          logicalHostId: options.identity.logicalHostId,
-          storeId: options.identity.storeId,
-          authorityGeneration: versions.authorityGeneration,
-          effectiveGeneration: versions.effectiveGeneration,
-          securityEpoch: versions.securityEpoch,
-          appliedNodes,
-          limit: CONVERGENCE_RECEIPT_BATCH_SIZE,
-        });
-      } while (settled === CONVERGENCE_RECEIPT_BATCH_SIZE);
       return overdue;
     });
   };
@@ -1832,14 +1906,12 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
       if (!("nodeState" in observed)) {
         throw new Error("Postgres health observation did not include node state");
       }
-      const healthy =
-        observed.nodeState.readyNodes > 0 &&
-        observed.nodeState.allApplied &&
-        observed.nodeState.localReady;
-      const overdue = !healthy && observed.nodeState.overdue;
+      const locallyReady = observed.nodeState.localReady;
+      const converged = observed.nodeState.readyNodes > 0 && observed.nodeState.allApplied;
+      const overdue = !converged && observed.nodeState.overdue;
       return {
         backend: "postgres",
-        readiness: healthy ? "ready" : "not-ready",
+        readiness: locallyReady ? "ready" : "not-ready",
         connectivity: "connected",
         migration: "current",
         authorityToken: {
@@ -1847,8 +1919,13 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
           effectiveGeneration: observed.versions.effectiveGeneration,
         },
         bootstrapCompatibility: observed.activation.nextFingerprint ? "staged" : "current",
-        convergence: healthy ? "within-budget" : overdue ? "overdue" : "pending",
-        guidanceCode: healthy ? "ok" : overdue ? "convergence-overdue" : "convergence-pending",
+        convergence: converged ? "within-budget" : overdue ? "overdue" : "pending",
+        guidanceCode:
+          locallyReady && converged
+            ? "ok"
+            : overdue
+              ? "convergence-overdue"
+              : "convergence-pending",
       };
     } catch {
       return unavailableHealth(
@@ -1866,23 +1943,28 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
       const activation = await requireActivationState(transaction, options.identity);
       const now = await transaction.databaseTime();
       const nodes = await transaction.select<NodeRow>("clusterNodeLeases", scope(options.identity));
+      const readyNodes = nodes.filter(
+        (node) => node.state === "ready" && Date.parse(node.expiresAt) > Date.parse(now),
+      );
+      const compatibility = readyNodes.map(nodeDeclaredCompatibility);
+      const providerCommitmentPresent =
+        compatibility.length > 0 &&
+        compatibility.every((declared) => isCommitment(declared.providerCommitment));
+      const canaryCommitmentPresent =
+        compatibility.length > 0 &&
+        compatibility.every((declared) => isCommitment(declared.keyCanaryCommitment));
       return Object.freeze({
         backend: options.dialect.backend,
         store: Object.freeze({ ...options.identity }),
         fingerprint: activation,
         keyCompatibility: Object.freeze({
           status:
-            options.dialect.compatibility.providerCommitment &&
-            options.dialect.compatibility.keyCanaryCommitment
-              ? "compatible"
-              : "incompatible",
+            providerCommitmentPresent && canaryCommitmentPresent ? "compatible" : "incompatible",
           activeVersion: options.dialect.compatibility.keyVersion,
-          providerCommitmentPresent: Boolean(options.dialect.compatibility.providerCommitment),
-          canaryCommitmentPresent: Boolean(options.dialect.compatibility.keyCanaryCommitment),
+          providerCommitmentPresent,
+          canaryCommitmentPresent,
         }),
-        readyNodes: nodes.filter(
-          (node) => node.state === "ready" && Date.parse(node.expiresAt) > Date.parse(now),
-        ).length,
+        readyNodes: readyNodes.length,
         overdueNodes: nodes.filter((node) => node.state === "overdue").length,
       });
     });
@@ -1895,6 +1977,7 @@ export function createControlPlaneRepository(options: ControlPlaneStoreOptions):
     reserveOperation,
     lookupOrReserveNotCommitted,
     mutateCaplet,
+    mutateCapletInTransaction,
     mutateHostSetting,
     loadSnapshot,
     createConfirmationPreview,
@@ -1926,6 +2009,7 @@ async function runManagementMutation(
   fail: (point: ControlPlaneFailurePoint) => Promise<void>,
   reservationTtlMs: number,
   writeDomain: (transaction: ControlPlaneSqlTransaction, state: MutationState) => Promise<void>,
+  deferAfterReceipt = false,
 ): Promise<ControlPlaneMutationResult> {
   if (!options.dialect.ready) return { status: "unavailable" };
   if (input.binding.logicalHostId !== options.identity.logicalHostId) {
@@ -1981,10 +2065,7 @@ async function runManagementMutation(
       if (currentAggregateVersion !== input.expectedAggregateVersion) {
         throw new StoreResultError({ status: "conflict", reason: "aggregate-version" });
       }
-      const effectiveStateChanged = await changesEffectiveState(transaction, options, input);
-      // Runtime snapshots contain every SQL Caplet row, including disabled and shadowed
-      // aggregates. Their token must advance whenever any Caplet aggregate changes.
-      const snapshotDataChanged = effectiveStateChanged || "aggregate" in input;
+      const snapshotDataChanged = await changesEffectiveState(transaction, options, input);
       if (snapshotDataChanged) {
         await transaction.lock(
           `effective-generation:${options.identity.logicalHostId}:${options.identity.storeId}`,
@@ -2097,13 +2178,18 @@ async function runManagementMutation(
       await fail("after-generation");
       return { status: "committed", receipt } as const;
     });
-    try {
-      await fail("after-receipt");
-    } catch {
-      return { status: "indeterminate", binding: input.binding };
+    if (!deferAfterReceipt) {
+      try {
+        await fail("after-receipt");
+      } catch {
+        return { status: "indeterminate", binding: input.binding };
+      }
     }
     return result;
   } catch (error) {
+    if (isIndeterminateTransactionError(error)) {
+      return { status: "indeterminate", binding: input.binding };
+    }
     if (error instanceof StoreResultError) return error.result;
     if (error instanceof Error && error.message.startsWith("injected:")) throw error;
     return { status: "unavailable" };
@@ -2458,7 +2544,7 @@ async function writeProvenance(
     effectiveVersion: state.effectiveGeneration,
     securityVersion: state.versions.securityEpoch,
   });
-  await insert(
+  await insertIgnore(
     transaction,
     "cp_caplet_provenance",
     [
@@ -2485,7 +2571,30 @@ async function writeProvenance(
       encodeCanonicalJson(input.provenance.riskSummary ?? {}),
       input.provenance.ownerId ?? null,
     ],
+    ["logical_host_id", "id"],
   );
+  const [stored] = await transaction.select<ProvenanceRow>(
+    "capletProvenance",
+    scope(options.identity, { id: input.provenance.id }),
+    [],
+    1,
+  );
+  if (!stored) {
+    throw new StoreResultError({ status: "unavailable" });
+  }
+  if (
+    stored.capletId !== input.aggregate.id ||
+    stored.sourceKind !== input.provenance.sourceKind ||
+    !isDeepStrictEqual(decodeJson(stored.source), input.provenance.source) ||
+    stored.contentHash !== input.provenance.contentHash ||
+    (stored.runtimeFingerprint ?? undefined) !== input.provenance.runtimeFingerprint ||
+    (stored.installedAt ?? undefined) !== input.provenance.installedAt ||
+    (stored.resolvedRevision ?? undefined) !== input.provenance.resolvedRevision ||
+    !isDeepStrictEqual(decodeJson(stored.riskSummary), input.provenance.riskSummary ?? {}) ||
+    (stored.ownerId ?? undefined) !== input.provenance.ownerId
+  ) {
+    throw new StoreResultError({ status: "conflict", reason: "aggregate-version" });
+  }
 }
 
 async function writeActivity(
@@ -2673,7 +2782,9 @@ function createReceipt(
         ? ({ kind: "single-node" } as const)
         : ({
             kind: "pending" as const,
-            deadline: new Date(Date.parse(state.now) + 5_000).toISOString(),
+            deadline: new Date(
+              Date.parse(state.now) + STORAGE_BENCHMARK_ENVELOPE.maxConvergenceP99Ms,
+            ).toISOString(),
             requiredNodes,
           } as const),
     ...(input.managementTarget ? { management: Object.freeze({ ...input.managementTarget }) } : {}),
@@ -3599,7 +3710,8 @@ function keyProviderAdvertisementsOverlap(
 ): boolean {
   const currentMaterials = keyMaterialsByPurpose(current.capabilities);
   const declaredMaterials = keyMaterialsByPurpose(declared.capabilities);
-  const purposes = new Set([...currentMaterials.keys(), ...declaredMaterials.keys()]);
+  const purposes = new Set(currentMaterials.keys());
+  for (const purpose of declaredMaterials.keys()) purposes.add(purpose);
   if (purposes.size === 0) {
     return (
       current.providerCommitment === declared.providerCommitment &&
@@ -3610,9 +3722,16 @@ function keyProviderAdvertisementsOverlap(
     const currentKeys = currentMaterials.get(purpose);
     const declaredKeys = declaredMaterials.get(purpose);
     if (!currentKeys || !declaredKeys) return false;
-    if (![...currentKeys].some((key) => declaredKeys.has(key))) return false;
+    if (!keyMaterialsOverlap(currentKeys, declaredKeys)) return false;
   }
   return true;
+}
+
+function keyMaterialsOverlap(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  for (const material of left) {
+    if (right.has(material)) return true;
+  }
+  return false;
 }
 
 function keyMaterialsByPurpose(
@@ -3620,7 +3739,7 @@ function keyMaterialsByPurpose(
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const materials = new Map<string, Set<string>>();
   for (const capability of capabilities ?? []) {
-    const match = /^key-material:([^:]+):([1-9]\d*):([^:]+):([a-f0-9]{64})$/u.exec(capability);
+    const match = KEY_MATERIAL_CAPABILITY.exec(capability);
     if (!match) continue;
     const purpose = match[1]!;
     const material = `${match[2]}:${match[3]}:${match[4]}`;
@@ -4090,15 +4209,20 @@ async function upsert(
 ): Promise<void> {
   const tableName = requireTable(table);
   const row = rowFromColumns(transaction, table, columns, values);
-  const conflict = new Set(conflictColumns.map(sqlColumnToProperty));
-  const equals = Object.fromEntries([...conflict].map((property) => [property, row[property]]));
+  const conflictProperties = conflictColumns.map(sqlColumnToProperty);
+  const conflicts = new Set(conflictProperties);
+  const equals = Object.fromEntries(
+    conflictProperties.map((property) => [property, row[property]]),
+  );
   const existing = await transaction.select(tableName, { equals }, [], 1);
   if (existing.length === 0) {
     await transaction.insert(tableName, row);
     return;
   }
   const update = Object.fromEntries(
-    Object.entries(row).filter(([property]) => !conflict.has(property) && property !== "createdAt"),
+    Object.entries(row).filter(
+      ([property]) => !conflicts.has(property) && property !== "createdAt",
+    ),
   );
   await transaction.update(tableName, update, { equals });
 }
@@ -4256,6 +4380,16 @@ function bindingsEqual(
   return isDeepStrictEqual(left, right);
 }
 
+function isIndeterminateTransactionError(error: unknown): boolean {
+  return (
+    error instanceof CapletsError &&
+    error.code === "SERVER_UNAVAILABLE" &&
+    isRecord(error.details) &&
+    error.details.transactionOutcome === "indeterminate" &&
+    error.details.recovery === "operation-lookup"
+  );
+}
+
 function matchesStore(
   options: ControlPlaneStoreOptions,
   binding: CurrentHostOperationBinding,
@@ -4282,14 +4416,6 @@ function inventoryHash(versions: readonly string[]): string {
 function externalDestructionAffectedVersions(intent: ExternalDestructionIntent): readonly string[] {
   const material = intent.material.map((item) => `${item.kind}:${item.id}`).sort();
   return [`provider:${intent.providerIdentity}`, ...material];
-}
-
-function sameVersions(left: VersionRows, right: VersionRows): boolean {
-  return (
-    left.authorityGeneration === right.authorityGeneration &&
-    left.effectiveGeneration === right.effectiveGeneration &&
-    left.securityEpoch === right.securityEpoch
-  );
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -4473,6 +4599,18 @@ type AssetRow = ControlPlaneSqlRow & {
   bytes: Uint8Array;
   contentHash: string;
 };
+type ProvenanceRow = ControlPlaneSqlRow & {
+  capletId: string;
+  sourceKind: string;
+  source: unknown;
+  contentHash: string;
+  runtimeFingerprint?: string | null;
+  installedAt?: string | null;
+  resolvedRevision?: string | null;
+  riskSummary: unknown;
+  ownerId?: string | null;
+};
+
 type HistoryRow = ControlPlaneSqlRow & {
   capletId: string;
   sequence: number | bigint;

@@ -16,13 +16,12 @@ import {
   artifactProviderObjectKey,
   sha256Hex,
   validateArtifactRange,
+  MAX_ARTIFACT_PART_BYTES,
   type ArtifactObjectHead,
   type ArtifactProvider,
   type ArtifactProviderIdentity,
   type ArtifactPutResult,
 } from "./provider";
-
-const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 
 export class FilesystemArtifactProvider implements ArtifactProvider {
   readonly identity: ArtifactProviderIdentity;
@@ -56,8 +55,8 @@ export class FilesystemArtifactProvider implements ArtifactProvider {
 
   async putImmutable(key: string, bytes: Uint8Array): Promise<ArtifactPutResult> {
     this.#assertVerified();
-    if (bytes.byteLength > MAX_ARTIFACT_BYTES) {
-      throw new CapletsError("REQUEST_INVALID", "Artifact exceeds the supported size limit.");
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_ARTIFACT_PART_BYTES) {
+      throw new CapletsError("REQUEST_INVALID", "Immutable artifact part size is invalid.");
     }
     const path = this.#objectPath(artifactProviderObjectKey(this.identity, key));
     await this.#ensureObjectParent(path);
@@ -66,7 +65,7 @@ export class FilesystemArtifactProvider implements ArtifactProvider {
       return { created: true, size: bytes.byteLength };
     } catch (error) {
       if (!(await fileExists(path))) throw error;
-      const existing = await readBoundedSecureFile(path, { maxBytes: MAX_ARTIFACT_BYTES });
+      const existing = await readBoundedSecureFile(path, { maxBytes: MAX_ARTIFACT_PART_BYTES });
       if (sha256Hex(existing) !== sha256Hex(bytes)) {
         throw new CapletsError(
           "REQUEST_INVALID",
@@ -81,7 +80,7 @@ export class FilesystemArtifactProvider implements ArtifactProvider {
     this.#assertVerified();
     const path = this.#objectPath(artifactProviderObjectKey(this.identity, key));
     if (!(await fileExists(path))) return undefined;
-    const bytes = await readBoundedSecureFile(path, { maxBytes: MAX_ARTIFACT_BYTES });
+    const bytes = await readBoundedSecureFile(path, { maxBytes: MAX_ARTIFACT_PART_BYTES });
     return { size: bytes.byteLength, sha256: sha256Hex(bytes) };
   }
 
@@ -89,7 +88,7 @@ export class FilesystemArtifactProvider implements ArtifactProvider {
     this.#assertVerified();
     validateArtifactRange(start, endExclusive);
     const path = this.#objectPath(artifactProviderObjectKey(this.identity, key));
-    return readSecureFileRange(path, start, endExclusive, { maxBytes: MAX_ARTIFACT_BYTES });
+    return readSecureFileRange(path, start, endExclusive, { maxBytes: MAX_ARTIFACT_PART_BYTES });
   }
 
   async delete(key: string): Promise<void> {

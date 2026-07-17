@@ -44,7 +44,7 @@ import {
   withSecureStateDirectory,
   writeSecureFileExclusive,
   writeSecureJsonExclusive,
-  withSecureRegularFile,
+  withSecureMutableRegularFile,
 } from "./secure-state";
 
 const require = createRequire(import.meta.url);
@@ -57,6 +57,7 @@ export type PostgresVerificationRequest = {
   connectionString: string;
   tls: { mode: "verify-full"; serverName: string; ca?: string | undefined };
   role: string;
+  roleKind: "runtime" | "migrator" | "maintenance";
 };
 
 export type PostgresVerificationResult = {
@@ -175,13 +176,54 @@ type StorageCompatibility = {
   keyVersionFloors: FileV1VersionFloors;
   databaseIdentity: string;
   artifactIdentity: string;
+  artifactCanary: string;
 };
 
 const storageCompatibility = new WeakMap<ResolvedStorageDeployment, StorageCompatibility>();
 
+export type OfflineTransferStorageRole = "source" | "destination";
+
+/**
+ * Dedicated offline transfer resolver. Callers must present an existing SQLite authority as the
+ * source and an isolated Postgres descriptor as the destination; the serving runtime never calls
+ * this entry point.
+ */
+export async function resolveOfflineTransferStorageDeployment(
+  storage: ServeStorageConfig | undefined,
+  role: OfflineTransferStorageRole,
+  options: ResolveStorageDeploymentOptions = {},
+): Promise<ResolvedStorageDeployment> {
+  if (
+    (role === "source" && storage?.kind === "postgres") ||
+    (role === "destination" && storage?.kind !== "postgres")
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      role === "source"
+        ? "Offline SQL transfer source must resolve to SQLite."
+        : "Offline SQL transfer destination must resolve to Postgres.",
+    );
+  }
+  const deployment = await resolveStorageDeploymentInternal(storage, options);
+  if (
+    (role === "source" && deployment.backend !== "sqlite") ||
+    (role === "destination" && deployment.backend !== "postgres")
+  ) {
+    throw new CapletsError("CONFIG_INVALID", "Offline SQL transfer storage role is invalid.");
+  }
+  return deployment;
+}
+
 export async function resolveStorageDeployment(
   storage: ServeStorageConfig | undefined,
   options: ResolveStorageDeploymentOptions = {},
+): Promise<ResolvedStorageDeployment> {
+  return resolveStorageDeploymentInternal(storage, options);
+}
+
+async function resolveStorageDeploymentInternal(
+  storage: ServeStorageConfig | undefined,
+  options: ResolveStorageDeploymentOptions,
 ): Promise<ResolvedStorageDeployment> {
   const expectedOwner = options.expectedOwner ?? currentOwner();
   const stateRoot = resolve(
@@ -262,6 +304,19 @@ export function assertStorageBootstrapCompatible(
   if (!identityMatches || !compatibilityMatches) {
     throw new CapletsError("AUTH_FAILED", "Storage bootstrap compatibility verification failed.");
   }
+}
+
+export function storageArtifactProviderBinding(
+  storage: ResolvedStorageDeployment,
+): Readonly<{ identityId: string; expectedCanary: string }> {
+  const compatibility = storageCompatibility.get(storage);
+  if (!compatibility) {
+    throw new CapletsError("AUTH_FAILED", "Storage artifact compatibility is unavailable.");
+  }
+  return {
+    identityId: compatibility.artifactIdentity,
+    expectedCanary: compatibility.artifactCanary,
+  };
 }
 
 /**
@@ -367,13 +422,14 @@ async function resolveSqliteStorage(
     keyProviderCommitment = fileV1CompatibilityCommitment(keyProvider);
     keyVersionFloors = fileV1VersionFloors(keyProvider);
   }
+  const keyProviderCommitmentHex = keyProviderCommitment.toString("hex");
 
   await authorizeKeyRotationIfNeeded(
     "sqlite",
     existingBinding?.value,
     keyProviderGeneration,
     keyVersionFloors,
-    keyProviderCommitment.toString("hex"),
+    keyProviderCommitmentHex,
     options,
   );
 
@@ -404,7 +460,7 @@ async function resolveSqliteStorage(
       databaseIdentity,
       artifactIdentity,
       keyProviderGeneration,
-      keyProviderCommitment: keyProviderCommitment.toString("hex"),
+      keyProviderCommitment: keyProviderCommitmentHex,
       keyVersionFloors,
     });
   }
@@ -415,7 +471,7 @@ async function resolveSqliteStorage(
       {
         ...existingBinding.value,
         keyProviderGeneration,
-        keyProviderCommitment: keyProviderCommitment.toString("hex"),
+        keyProviderCommitment: keyProviderCommitmentHex,
         keyVersionFloors,
       },
       filesystem,
@@ -433,7 +489,7 @@ async function resolveSqliteStorage(
       artifactIdentity,
       artifactCanary,
       keyProviderGeneration,
-      keyProviderCommitment: keyProviderCommitment.toString("hex"),
+      keyProviderCommitment: keyProviderCommitmentHex,
       keyVersionFloors,
     };
     await writeSecureJsonExclusive(join(stateRoot, STORAGE_BINDING_FILE), binding, filesystem);
@@ -472,6 +528,7 @@ async function resolveSqliteStorage(
     keyVersionFloors,
     databaseIdentity,
     artifactIdentity,
+    artifactCanary,
   });
   return resolved;
 }
@@ -510,12 +567,13 @@ async function resolvePostgresStorage(
   });
   const keyProviderCommitment = fileV1CompatibilityCommitment(keyProvider);
   const keyVersionFloors = fileV1VersionFloors(keyProvider);
+  const keyProviderCommitmentHex = keyProviderCommitment.toString("hex");
   await authorizeKeyRotationIfNeeded(
     "postgres",
     existingBinding?.value,
     keyProvider.manifest.generation,
     keyVersionFloors,
-    keyProviderCommitment.toString("hex"),
+    keyProviderCommitmentHex,
     options,
   );
   const canonicalEndpoint = new URL(storage.artifacts.endpoint).toString().replace(/\/+$/u, "");
@@ -530,7 +588,7 @@ async function resolvePostgresStorage(
     assertStorageKeyAndArtifactBinding(existingBinding.value, {
       artifactIdentity: identity.identityId,
       keyProviderGeneration: keyProvider.manifest.generation,
-      keyProviderCommitment: keyProviderCommitment.toString("hex"),
+      keyProviderCommitment: keyProviderCommitmentHex,
       keyVersionFloors,
     });
   }
@@ -580,6 +638,7 @@ async function resolvePostgresStorage(
       connectionString,
       tls: { ...storage.connection.tls, ca },
       role: role.role,
+      roleKind,
     });
   } catch {
     throw new CapletsError("AUTH_FAILED", "Postgres peer and role verification failed.");
@@ -602,7 +661,7 @@ async function resolvePostgresStorage(
       databaseIdentity: postgres.databaseIdentity,
       artifactIdentity: identity.identityId,
       keyProviderGeneration: keyProvider.manifest.generation,
-      keyProviderCommitment: keyProviderCommitment.toString("hex"),
+      keyProviderCommitment: keyProviderCommitmentHex,
       keyVersionFloors,
     });
   }
@@ -642,7 +701,7 @@ async function resolvePostgresStorage(
       {
         ...existingBinding.value,
         keyProviderGeneration: keyProvider.manifest.generation,
-        keyProviderCommitment: keyProviderCommitment.toString("hex"),
+        keyProviderCommitment: keyProviderCommitmentHex,
         keyVersionFloors,
       },
       filesystem,
@@ -662,7 +721,7 @@ async function resolvePostgresStorage(
       artifactIdentity: identity.identityId,
       artifactCanary,
       keyProviderGeneration: keyProvider.manifest.generation,
-      keyProviderCommitment: keyProviderCommitment.toString("hex"),
+      keyProviderCommitment: keyProviderCommitmentHex,
       keyVersionFloors,
     };
     await writeSecureJsonExclusive(
@@ -706,6 +765,7 @@ async function resolvePostgresStorage(
     keyVersionFloors,
     databaseIdentity: postgres.databaseIdentity,
     artifactIdentity: identity.identityId,
+    artifactCanary,
   });
   return resolved;
 }
@@ -888,7 +948,7 @@ async function verifySqliteDatabase(
     return identity;
   }
   try {
-    const verified = await withSecureRegularFile(path, filesystem, async (_handle) => {
+    const verified = await withSecureMutableRegularFile(path, filesystem, async (_handle) => {
       let database: DatabaseConnection | undefined;
       try {
         // Open the verified path so SQLite can resolve its live WAL/SHM companions.

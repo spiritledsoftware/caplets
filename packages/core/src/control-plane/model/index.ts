@@ -69,6 +69,12 @@ export type ControlPlaneEntityKind =
   | "backup"
   | "recovery"
   | "retention"
+  | "artifact-manifest"
+  | "artifact-part"
+  | "artifact-session"
+  | "artifact-quota-reservation"
+  | "import-proposal"
+  | "artifact-cleanup-intent"
   | "external-destruction"
   | "recovery-checkpoint"
   | "quarantine";
@@ -315,6 +321,59 @@ export const CONTROL_PLANE_ENTITY_INVENTORY: readonly EntityInventoryEntry[] = [
   {
     kind: "retention",
     fieldCategories: ["resource", "policy", "purge-watermark", "expiry"],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "artifact-manifest",
+    fieldCategories: ["provider", "immutable-parts", "digest", "actor", "operation", "expiry"],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "artifact-part",
+    fieldCategories: ["manifest", "ordinal", "object-key", "range", "digest", "absence-proof"],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "artifact-session",
+    fieldCategories: [
+      "artifact",
+      "actor",
+      "operation",
+      "direction",
+      "offset",
+      "expiry",
+      "revocation",
+    ],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "artifact-quota-reservation",
+    fieldCategories: ["actor", "session", "bytes", "window", "release"],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "import-proposal",
+    fieldCategories: [
+      "artifact",
+      "actor",
+      "fences",
+      "collision",
+      "diff",
+      "setup",
+      "expiry",
+      "consumption",
+    ],
+    mutable: true,
+    securityCritical: true,
+  },
+  {
+    kind: "artifact-cleanup-intent",
+    fieldCategories: ["artifact", "provider", "inventory", "claim", "absence-proof", "receipt"],
     mutable: true,
     securityCritical: true,
   },

@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acknowledgeRecoveredDashboardManagementOperations,
   dashboardApi,
+  dashboardPortableDownload,
+  dashboardPortableOperation,
+  dashboardPortableStatus,
+  dashboardPortableUploadChunk,
   dashboardManagementMutation,
   dashboardStorageHealth,
   pendingManagementOperations,
@@ -442,6 +446,158 @@ describe("dashboardApi", () => {
       }),
     ]);
     expect(pendingManagementOperations()).toHaveLength(3);
+  });
+  it("sends portable operations through the authenticated semantic endpoint", async () => {
+    setDashboardPath("/dashboard/caplets");
+    setDashboardSession({
+      sessionId: "session-portable",
+      operatorClientId: "operator-portable",
+      csrfToken: "csrf-portable",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ kind: "portable_status", status: "live" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+
+    await expect(
+      dashboardPortableOperation({ kind: "portable_status" }, "portable-operation"),
+    ).resolves.toMatchObject({
+      kind: "portable_status",
+      status: "live",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/dashboard/api/portable",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        body: JSON.stringify({
+          operation: { kind: "portable_status" },
+          operationId: "portable-operation",
+        }),
+        headers: expect.objectContaining({
+          "content-type": "application/json",
+          "x-caplets-csrf": "csrf-portable",
+        }),
+      }),
+    );
+  });
+
+  it("uploads raw portable chunks without a JSON content type", async () => {
+    setDashboardPath("/dashboard/caplets");
+    setDashboardSession({
+      sessionId: "session-portable",
+      operatorClientId: "operator-portable",
+      csrfToken: "csrf-portable",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ status: "accepted", nextOffset: 3 }), { status: 200 }),
+      ),
+    );
+    const bytes = new Uint8Array([1, 2, 3]);
+
+    await dashboardPortableUploadChunk({
+      sessionId: "session-portable-upload",
+      operationId: "portable-operation",
+      offset: 0,
+      sha256: "a".repeat(64),
+      bytes,
+    });
+
+    const init = vi.mocked(fetch).mock.calls[0]?.[1];
+    expect(fetch).toHaveBeenCalledWith("/dashboard/api/portable/artifacts", {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: {
+        "x-caplets-session-id": "session-portable-upload",
+        "x-caplets-operation-id": "portable-operation",
+        "x-caplets-offset": "0",
+        "x-caplets-sha256": "a".repeat(64),
+        "x-caplets-csrf": "csrf-portable",
+      },
+      body: bytes,
+    });
+    expect(new Headers(init?.headers).has("content-type")).toBe(false);
+  });
+
+  it("returns a native same-origin portable download URL without buffering a Blob", () => {
+    setDashboardPath("/dashboard/caplets");
+    const reference = "caplets://artifacts/host/artifact?claims=safe";
+
+    expect(dashboardPortableDownload(reference)).toBe(
+      `/dashboard/api/portable/artifacts?ref=${encodeURIComponent(reference)}`,
+    );
+    expect(() => dashboardPortableDownload("file:///private/server/caplet")).toThrow(
+      "Portable artifact reference is invalid.",
+    );
+  });
+
+  it("decodes typed 409 rejections and degraded portable status outcomes", async () => {
+    setDashboardPath("/dashboard/caplets");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            kind: "portable_import_preview",
+            status: "rejected",
+            reason: "sql-collision",
+          }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            kind: "portable_status",
+            status: "stale-read-only",
+            health: {
+              backend: "postgres",
+              readiness: "stale-read-only",
+              connectivity: "unavailable",
+              migration: "current",
+              authorityToken: { authorityGeneration: 7, effectiveGeneration: 9 },
+              bootstrapCompatibility: "current",
+              staleAgeMs: 1_250,
+              convergence: "overdue",
+              guidanceCode: "storage-unavailable",
+            },
+            guidanceCode: "storage-unavailable",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      dashboardPortableOperation(
+        {
+          kind: "portable_import_preview",
+          artifactReference: "caplets://artifacts/host/upload",
+          collisionPolicy: "reject",
+          replacementConfirmed: false,
+        },
+        "portable-operation",
+      ),
+    ).resolves.toEqual({
+      kind: "portable_import_preview",
+      status: "rejected",
+      reason: "sql-collision",
+    });
+    await expect(dashboardPortableStatus()).resolves.toMatchObject({
+      kind: "portable_status",
+      status: "stale-read-only",
+      guidanceCode: "storage-unavailable",
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/v1/healthz?portable=1");
   });
 });
 

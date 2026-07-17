@@ -111,6 +111,7 @@ describe("control-plane U7 typed-Drizzle persistence", () => {
       "0006_mature_bill_hollister",
       "0007_cuddly_cerebro",
       "0008_giant_shard",
+      "0009_harsh_gideon",
     ]);
     await createControlPlaneRepository({ identity, dialect }).initialize();
     let persistence = createControlPlaneMigrationPersistence({
