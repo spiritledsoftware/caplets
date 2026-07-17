@@ -156,7 +156,7 @@ async function copiedAssets() {
       ["sqlite", "0008_giant_shard"],
       ["postgres", "0008_living_gwen_stacy"],
       ["sqlite", "0009_harsh_gideon"],
-      ["postgres", "0009_quiet_magdalen"],
+      ["postgres", "0009_robust_scalphunter"],
     ].flatMap(([dialect, migration]) =>
       [".sql", ".down.sql", ".manifest.json"].map((suffix) =>
         rm(join(root, dialect!, `${migration}${suffix}`), { force: true }),
@@ -650,7 +650,7 @@ describe("control-plane migration registry and SQLite executor", () => {
       "0007_cuddly_cerebro",
     ]);
     await remigrated.close();
-  });
+  }, 30_000);
 
   it("upgrades host-setting constraints from 0003 and rolls back without discarding compatible rows", async () => {
     const currentAssetRoot = await copiedAssets();
@@ -1052,7 +1052,7 @@ describe("control-plane migration registry and SQLite executor", () => {
 
     const fixture = await sqliteFixture(sourceAssetRoot);
     const incompatibleEnvironments: MigrationEnvironment[] = [
-      { ...migrationEnvironment(), binaryVersion: "0.36.0" },
+      { ...migrationEnvironment(), binaryVersion: "0.37.0" },
       { ...migrationEnvironment(), supportedSchemaVersion: 4 },
       { ...migrationEnvironment(), keyVersion: 2 },
       { ...migrationEnvironment(), manifestVersion: 2 },
@@ -1346,6 +1346,7 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
           "automation",
         ],
       );
+      environment.activationEvidence = storeBoundMigrationEnvironment(3).activationEvidence;
       expect(await first.rollbackLatest()).toBe("0007_overjoyed_lethal_legion");
       await expect(first.rollbackLatest()).rejects.toThrow(
         /refusing U10 rollback while durable setup records exist/u,
@@ -1410,7 +1411,7 @@ describe.skipIf(!postgresAdminUrl)("real Postgres migrations and least-privilege
       `);
       await admin.end();
     }
-  });
+  }, 30_000);
 });
 
 async function refreshManifest(

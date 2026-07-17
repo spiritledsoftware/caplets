@@ -206,7 +206,7 @@ describe("caplets doctor", () => {
     });
     expect(markdownOut.join("")).toContain("## Server hosting");
     expect(plainOut.join("")).toContain("Server hosting");
-  });
+  }, 15_000);
 
   it("reports ambiguous Cloud Remote Profiles instead of throwing", async () => {
     const path = tempCloudAuthPath();

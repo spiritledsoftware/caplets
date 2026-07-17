@@ -1162,11 +1162,22 @@ export async function createProductionControlPlane(
         if (proposal.state !== "previewed" || Date.parse(proposal.expiresAt) <= now.getTime()) {
           return { kind: operation.kind, status: "rejected", reason: "expired" };
         }
-        const bytes = await sessions.readFinalizedArtifact(
-          proposal.artifactId,
-          principal.clientId,
-          operation.binding.operationId,
-        );
+        let bytes: Uint8Array;
+        try {
+          bytes = await sessions.readFinalizedArtifact(
+            proposal.artifactId,
+            principal.clientId,
+            operation.binding.operationId,
+          );
+        } catch (error) {
+          if (error instanceof CapletsError && error.code === "AUTH_FAILED") {
+            const current = await sessions.readImportProposal(operation.proposalId);
+            if (current?.state === "consumed") {
+              return { kind: operation.kind, status: "rejected", reason: "consumed" };
+            }
+          }
+          throw error;
+        }
         const artifactSha256 = createHash("sha256").update(bytes).digest("hex");
         const imported = decodePortableCapletArtifact(bytes);
         if (imported.id !== proposal.capletId) {

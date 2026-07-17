@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,12 @@ export type WindowsHelperVerification = {
   publisher: string;
 };
 
-type WindowsSignatureInspector = (path: string) => Promise<{ status: string; publisher?: string }>;
+type WindowsSignatureInspection = {
+  status: string;
+  publisher?: string;
+  diagnostic?: string;
+};
+type WindowsSignatureInspector = (path: string) => Promise<WindowsSignatureInspection>;
 export type WindowsArtifactLocation = {
   architecture?: string;
   manifestPath: string;
@@ -410,32 +415,58 @@ function parseIdentity(value: unknown): RelocatedPathIdentity {
   };
 }
 
-async function inspectAuthenticodeSignature(
+function windowsPowerShellEnvironment(values: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const environment = { ...process.env, ...values };
+  for (const key of Object.keys(environment)) {
+    if (key.toLowerCase() === "psmodulepath") delete environment[key];
+  }
+  return environment;
+}
+
+export async function inspectWindowsAuthenticodeSignatureForTests(
   path: string,
-): Promise<{ status: string; publisher?: string }> {
+): Promise<WindowsSignatureInspection> {
+  return inspectAuthenticodeSignature(path);
+}
+
+async function inspectAuthenticodeSignature(path: string): Promise<WindowsSignatureInspection> {
   const script =
-    "$s=Get-AuthenticodeSignature -LiteralPath $args[0];" +
+    "$ErrorActionPreference='Stop';" +
+    "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop;" +
+    "if(-not (Test-Path -LiteralPath $env:CAPLETS_AUTHENTICODE_PATH -PathType Leaf)){throw 'Authenticode target is absent'};" +
+    "$s=Get-AuthenticodeSignature -LiteralPath $env:CAPLETS_AUTHENTICODE_PATH;" +
     "[Console]::Out.Write(($s | Select-Object @{n='Status';e={$_.Status.ToString()}},@{n='Publisher';e={$_.SignerCertificate.Subject}} | ConvertTo-Json -Compress))";
-  const child = spawn(
-    "powershell.exe",
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, path],
-    { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  const stdout: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-  const { promise, resolve } = Promise.withResolvers<number>();
-  child.once("error", () => resolve(1));
-  child.once("exit", (code) => resolve(code ?? 1));
-  if ((await promise) !== 0) return { status: "Error" };
+  let output: string;
   try {
-    const parsed: unknown = JSON.parse(Buffer.concat(stdout).toString("utf8"));
-    if (!isRecord(parsed) || typeof parsed.Status !== "string") return { status: "Error" };
+    output = execFileSync(
+      "powershell.exe",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        encoding: "utf8",
+        env: windowsPowerShellEnvironment({ CAPLETS_AUTHENTICODE_PATH: path }),
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    return {
+      status: "Error",
+      diagnostic: error instanceof Error ? error.message : String(error),
+    };
+  }
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (!isRecord(parsed) || typeof parsed.Status !== "string") {
+      return { status: "Error", diagnostic: `Unexpected output: ${JSON.stringify(output)}` };
+    }
     return {
       status: parsed.Status,
       ...(typeof parsed.Publisher === "string" ? { publisher: parsed.Publisher } : {}),
     };
-  } catch {
-    return { status: "Error" };
+  } catch (error) {
+    return {
+      status: "Error",
+      diagnostic: `${error instanceof Error ? error.message : String(error)}; output=${JSON.stringify(output)}`,
+    };
   }
 }
 

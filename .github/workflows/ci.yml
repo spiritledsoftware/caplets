@@ -303,24 +303,77 @@ jobs:
       - name: Install published prior Caplets fixture
         run: pnpm add --global caplets@0.25.10
 
-      - name: Create trusted test code-signing publisher
+      - name: Generate test code-signing publisher
         shell: pwsh
+        timeout-minutes: 2
         run: |
-          $cert = New-SelfSignedCertificate `
-            -Subject "CN=Caplets Exclusion Test Publisher" `
-            -Type CodeSigningCert `
-            -KeyAlgorithm RSA `
-            -KeyLength 3072 `
-            -HashAlgorithm SHA256 `
-            -CertStoreLocation Cert:\CurrentUser\My
-          $root = [Security.Cryptography.X509Certificates.X509Store]::new("Root", "CurrentUser")
-          $root.Open("ReadWrite")
-          $root.Add($cert)
-          $root.Close()
+          $subject = "CN=Caplets Exclusion Test Publisher"
+          $rsa = [Security.Cryptography.RSA]::Create(2048)
+          $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            $subject,
+            $rsa,
+            [Security.Cryptography.HashAlgorithmName]::SHA256,
+            [Security.Cryptography.RSASignaturePadding]::Pkcs1
+          )
+          $usages = [Security.Cryptography.OidCollection]::new()
+          [void]$usages.Add([Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.3"))
+          $request.CertificateExtensions.Add(
+            [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($usages, $false)
+          )
+          $request.CertificateExtensions.Add(
+            [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+              [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+              $true
+            )
+          )
+          $cert = $request.CreateSelfSigned(
+            [DateTimeOffset]::UtcNow.AddMinutes(-5),
+            [DateTimeOffset]::UtcNow.AddDays(1)
+          )
+          $password = [Guid]::NewGuid().ToString("N")
+          Write-Output "::add-mask::$password"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "caplets-exclusion-test-publisher.pfx"
+          [IO.File]::WriteAllBytes(
+            $pfxPath,
+            $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password)
+          )
+          $certificatePath = Join-Path $env:RUNNER_TEMP "caplets-exclusion-test-publisher.cer"
+          [IO.File]::WriteAllBytes(
+            $certificatePath,
+            $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+          )
+          "CAPLETS_WINDOWS_HELPER_CERT_PFX=$pfxPath" >> $env:GITHUB_ENV
+          "CAPLETS_WINDOWS_HELPER_CERT_CER=$certificatePath" >> $env:GITHUB_ENV
+          "CAPLETS_WINDOWS_HELPER_CERT_PASSWORD=$password" >> $env:GITHUB_ENV
           "CAPLETS_WINDOWS_HELPER_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
           "CAPLETS_WINDOWS_HELPER_PUBLISHER=$($cert.Subject)" >> $env:GITHUB_ENV
           "CAPLETS_WINDOWS_HELPER_ARTIFACT_ROOT=$PWD\packages\core\native\windows-exclusion-helper\artifacts" >> $env:GITHUB_ENV
           "CAPLETS_REQUIRE_WINDOWS_EXCLUSION_HELPER=1" >> $env:GITHUB_ENV
+
+      - name: Import test code-signing publisher
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $password = ConvertTo-SecureString $env:CAPLETS_WINDOWS_HELPER_CERT_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate `
+            -FilePath $env:CAPLETS_WINDOWS_HELPER_CERT_PFX `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password $password
+          if ($cert.Thumbprint -ne $env:CAPLETS_WINDOWS_HELPER_CERT_THUMBPRINT) {
+            throw "Imported Caplets exclusion test publisher thumbprint is invalid."
+          }
+
+      - name: Trust test code-signing publisher
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          & certutil.exe -f -addstore Root $env:CAPLETS_WINDOWS_HELPER_CERT_CER
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to trust the Caplets exclusion test publisher."
+          }
+          Remove-Item `
+            -LiteralPath $env:CAPLETS_WINDOWS_HELPER_CERT_PFX, $env:CAPLETS_WINDOWS_HELPER_CERT_CER `
+            -Force
 
       - name: Build and sign reviewed x64 helper
         run: pnpm --filter @caplets/core windows-helper:build

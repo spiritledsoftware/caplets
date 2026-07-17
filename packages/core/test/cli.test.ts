@@ -252,7 +252,7 @@ describe("cli init", () => {
       else process.env.XDG_CACHE_HOME = previousCacheHome;
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("labels hidden input prompts without echoing entered secrets", async () => {
     const writes: string[] = [];

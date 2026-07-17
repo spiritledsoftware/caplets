@@ -870,7 +870,7 @@ describe("control-plane key rotation", () => {
         ttlMs,
       });
 
-    const first = await register(100);
+    const first = await register(60_000);
     if (first.status !== "ready") throw new Error(`first registration was ${first.status}`);
     await manager.verifyNodeCanary({
       nodeId: "node-expired-epoch",
@@ -889,7 +889,15 @@ describe("control-plane key rotation", () => {
       }),
     ).resolves.toMatchObject({ status: "applied" });
 
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    const expiredAt = new Date(0).toISOString();
+    test.dialect.execute("UPDATE cp_cluster_node_lease SET expires_at = ? WHERE node_id = ?", [
+      expiredAt,
+      "node-expired-epoch",
+    ]);
+    test.dialect.execute("UPDATE cp_writer_fence SET expires_at = ? WHERE lease_id = ?", [
+      expiredAt,
+      first.writerFence.leaseId,
+    ]);
     const second = await register(60_000);
     if (second.status !== "ready") throw new Error(`second registration was ${second.status}`);
     expect(second.writerFence.writerEpoch).toBe(first.writerFence.writerEpoch + 1);

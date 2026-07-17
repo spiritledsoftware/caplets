@@ -341,14 +341,16 @@ describe("setup runner", () => {
     async () => {
       const dir = mkdtempSync(join(tmpdir(), "caplets-setup-process-tree-"));
       const readyPath = join(dir, "ready");
+      const readyTempPath = `${readyPath}.tmp`;
       const childScript = 'require("node:net").createServer().listen(0)';
       const parentScript = [
         'const { spawn } = require("node:child_process");',
-        'const { writeFileSync } = require("node:fs");',
+        'const { renameSync, writeFileSync } = require("node:fs");',
         `const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], {`,
         '  stdio: ["ignore", "inherit", "inherit"],',
         "});",
-        `writeFileSync(${JSON.stringify(readyPath)}, String(child.pid));`,
+        `writeFileSync(${JSON.stringify(readyTempPath)}, String(child.pid));`,
+        `renameSync(${JSON.stringify(readyTempPath)}, ${JSON.stringify(readyPath)});`,
         'require("node:net").createServer().listen(0);',
       ].join("\n");
       const ready = Promise.withResolvers<void>();

@@ -165,6 +165,10 @@ function runPriorPackageProof() {
   } catch {
     fail("Published prior package fixture returned malformed evidence.");
   }
+  const daemonInstallControl =
+    platform === "win32"
+      ? "published-daemon-install-dry-run-exact-command"
+      : "published-daemon-install-exact-command";
   if (
     proof?.status !== "passed" ||
     proof.package !== "caplets" ||
@@ -179,7 +183,7 @@ function runPriorPackageProof() {
     ) ||
     !Array.isArray(proof.successControls) ||
     proof.successControls.join(",") !==
-      "published-global-cli-exact-command,published-daemon-install-exact-command,published-daemon-descriptor-version,published-daemon-health-and-liveness" ||
+      `published-global-cli-exact-command,${daemonInstallControl},published-daemon-descriptor-version,published-daemon-health-and-liveness` ||
     !Array.isArray(proof.proofs) ||
     !proof.proofs.includes("published-daemon-held-through-final-verification-and-activation")
   ) {

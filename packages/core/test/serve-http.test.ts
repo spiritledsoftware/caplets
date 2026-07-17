@@ -1979,10 +1979,14 @@ describe("createHttpServeApp", () => {
         const first = new WebSocket(socketUrl);
         const second = new WebSocket(socketUrl);
         try {
-          await withTimeout(waitForSocketOpen(first), "open first Project Binding socket");
-          await withTimeout(waitForSocketOpen(second), "open second Project Binding socket");
-          await withTimeout(nextSocketJson(first), "receive first Project Binding ready");
-          await withTimeout(nextSocketJson(second), "receive second Project Binding ready");
+          const firstReady = nextSocketJson(first);
+          const secondReady = nextSocketJson(second);
+          await Promise.all([
+            withTimeout(waitForSocketOpen(first), "open first Project Binding socket"),
+            withTimeout(waitForSocketOpen(second), "open second Project Binding socket"),
+          ]);
+          await withTimeout(firstReady, "receive first Project Binding ready");
+          await withTimeout(secondReady, "receive second Project Binding ready");
 
           const heartbeatSocket = heartbeatFirst ? first : second;
           const endingSocket = heartbeatFirst ? second : first;
@@ -2090,10 +2094,14 @@ describe("createHttpServeApp", () => {
       const heartbeatSocket = new WebSocket(socketUrl);
       const peer = new WebSocket(socketUrl);
       try {
-        await withTimeout(waitForSocketOpen(heartbeatSocket), "open heartbeat socket");
-        await withTimeout(waitForSocketOpen(peer), "open peer socket");
-        await withTimeout(nextSocketJson(heartbeatSocket), "receive heartbeat socket ready");
-        await withTimeout(nextSocketJson(peer), "receive peer socket ready");
+        const heartbeatReady = nextSocketJson(heartbeatSocket);
+        const peerReady = nextSocketJson(peer);
+        await Promise.all([
+          withTimeout(waitForSocketOpen(heartbeatSocket), "open heartbeat socket"),
+          withTimeout(waitForSocketOpen(peer), "open peer socket"),
+        ]);
+        await withTimeout(heartbeatReady, "receive heartbeat socket ready");
+        await withTimeout(peerReady, "receive peer socket ready");
         workspaces.deferNextWrite();
         heartbeatSocket.send(
           JSON.stringify({

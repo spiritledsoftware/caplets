@@ -17,7 +17,10 @@ if (process.env.TURBO_HASH && existsSync(dashboardDistDir)) {
 }
 
 const command = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-const result = spawnSync(command, ["--dir", dashboardDir, "build"], { stdio: "inherit" });
+const result = spawnSync(command, ["--dir", dashboardDir, "build"], {
+  stdio: "inherit",
+  shell: process.platform === "win32",
+});
 
 if (result.error) {
   throw result.error;

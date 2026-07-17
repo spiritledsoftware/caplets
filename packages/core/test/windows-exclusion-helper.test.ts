@@ -11,6 +11,7 @@ import {
 } from "../src/control-plane/migration/exclusion";
 import {
   openWindowsExclusionHelper,
+  inspectWindowsAuthenticodeSignatureForTests,
   packagedWindowsExclusionHelperManifestPath,
   verifyWindowsExclusionHelperFixture,
 } from "../src/control-plane/migration/exclusion/windows";
@@ -218,6 +219,18 @@ describe("packaged Windows exclusion helper trust", () => {
   describe.runIf(
     process.platform === "win32" && Boolean(process.env.CAPLETS_WINDOWS_HELPER_ARTIFACT_ROOT),
   )("Windows exclusion helper integration", () => {
+    it("validates the signed helper through the runtime Authenticode path", async () => {
+      const artifactRoot = process.env.CAPLETS_WINDOWS_HELPER_ARTIFACT_ROOT!;
+      await expect(
+        inspectWindowsAuthenticodeSignatureForTests(
+          join(artifactRoot, "caplets-windows-exclusion-helper-win32-x64.exe"),
+        ),
+      ).resolves.toEqual({
+        status: "Valid",
+        publisher: "CN=Caplets Exclusion Test Publisher",
+      });
+    });
+
     it("uses real Restart Manager/share-deny handles and restores after a prior process stops", async () => {
       const artifactRoot = process.env.CAPLETS_WINDOWS_HELPER_ARTIFACT_ROOT!;
       const root = mkdtempSync(join(tmpdir(), "caplets-windows-exclusion-"));
@@ -451,13 +464,51 @@ function currentWindowsSid(): string {
 }
 
 function hardenWindowsAcl(path: string, sid: string): void {
-  const grants = [`*${sid}:(OI)(CI)F`, "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"];
+  const script = `
+$owner = [Security.Principal.SecurityIdentifier]::new($env:CAPLETS_TEST_OWNER_SID)
+$rights = [Security.AccessControl.FileSystemRights]::FullControl
+$allow = [Security.AccessControl.AccessControlType]::Allow
+$none = [Security.AccessControl.PropagationFlags]::None
+$items = @((Get-Item -LiteralPath $env:CAPLETS_TEST_ACL_PATH -Force)) +
+  @(Get-ChildItem -LiteralPath $env:CAPLETS_TEST_ACL_PATH -Recurse -Force)
+foreach ($item in $items) {
+  if ($item.PSIsContainer) {
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+      $owner, $rights, $inheritance, $none, $allow)
+    $security.SetOwner($owner)
+    $security.SetAccessRuleProtection($true, $false)
+    $security.AddAccessRule($rule)
+    $directory = [IO.DirectoryInfo]::new($item.FullName)
+    $directory.SetAccessControl($security)
+  } else {
+    $security = [Security.AccessControl.FileSecurity]::new()
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+      $owner, $rights, [Security.AccessControl.InheritanceFlags]::None, $none, $allow)
+    $security.SetOwner($owner)
+    $security.SetAccessRuleProtection($true, $false)
+    $security.AddAccessRule($rule)
+    $file = [IO.FileInfo]::new($item.FullName)
+    $file.SetAccessControl($security)
+  }
+}`;
   const result = spawnSync(
-    "icacls.exe",
-    [path, "/inheritance:r", "/grant:r", ...grants, "/T", "/C", "/Q"],
-    { encoding: "utf8" },
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CAPLETS_TEST_ACL_PATH: path,
+        CAPLETS_TEST_OWNER_SID: sid,
+      },
+    },
   );
-  if (result.status !== 0) throw new Error("Windows ACL fixture failed.");
+  if (result.status !== 0) {
+    throw new Error(`Windows ACL fixture failed: ${result.stderr.trim()}`);
+  }
 }
 
 async function holdWindowsFile(path: string): Promise<ChildProcessWithoutNullStreams> {
@@ -467,11 +518,16 @@ async function holdWindowsFile(path: string): Promise<ChildProcessWithoutNullStr
   });
   children.push(child);
   const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const stderr: Buffer[] = [];
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
   child.stdout.on("data", (chunk: Buffer) => {
     if (chunk.toString("utf8").includes("READY")) resolve();
   });
   child.once("error", reject);
-  child.once("exit", (code) => reject(new Error(`Windows holder exited early: ${code}`)));
+  child.once("close", (code) => {
+    const detail = Buffer.concat(stderr).toString("utf8").trim();
+    reject(new Error(`Windows holder exited early: ${code}${detail ? `: ${detail}` : ""}`));
+  });
   await promise;
   return child;
 }

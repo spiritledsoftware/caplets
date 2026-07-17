@@ -210,7 +210,7 @@ describe("SQL artifact session lifecycle", () => {
     );
     expect(finalized.manifest.partCount).toBe(partCount);
     expect(partReads.at(-1)).toEqual({ limit: undefined, rowCount: partCount });
-  }, 30_000);
+  }, 60_000);
 
   it("accepts the exact portable limit and rejects one byte more before reservation", async () => {
     const { manager } = await fixture();

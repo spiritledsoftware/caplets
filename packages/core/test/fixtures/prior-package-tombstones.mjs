@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -18,7 +19,9 @@ const PRIOR_VERSION = "0.25.10";
 const [priorBin] = process.argv.slice(2);
 if (!priorBin) throw new Error("prior Caplets executable is required");
 
-const root = mkdtempSync(join(tmpdir(), "caplets-prior-package-"));
+const temporaryRoot =
+  process.platform === "win32" ? (process.env.RUNNER_TEMP ?? process.cwd()) : tmpdir();
+const root = realpathSync(mkdtempSync(join(temporaryRoot, "caplets-prior-package-")));
 let publishedDaemon;
 try {
   chmodSync(root, 0o700);
@@ -43,6 +46,13 @@ try {
   mkdirSync(authState, { recursive: true, mode: 0o700 });
   mkdirSync(projectRoot, { recursive: true, mode: 0o700 });
   mkdirSync(join(sourceRoot, "caplets"), { recursive: true, mode: 0o700 });
+  const nativeBin = join(root, "native-bin");
+  if (process.platform === "linux") {
+    mkdirSync(nativeBin, { recursive: true, mode: 0o700 });
+    const systemctl = join(nativeBin, "systemctl");
+    writeFileSync(systemctl, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    chmodSync(systemctl, 0o700);
+  }
   mkdirSync(join(projectRoot, ".caplets"), { recursive: true, mode: 0o700 });
   writeFileSync(
     join(sourceRoot, "caplets", "tracked.md"),
@@ -63,21 +73,21 @@ try {
     })}\n`,
     { mode: 0o600 },
   );
-  writeFileSync(join(configRoot, "bootstrap.md"), "bootstrap remains outside migration\n", {
-    mode: 0o600,
-  });
+  writeFileSync(
+    join(configRoot, "bootstrap.md"),
+    "---\nname: Bootstrap\ndescription: Filesystem bootstrap fixture.\nmcpServer:\n  command: node\n---\n# Bootstrap\n",
+    { mode: 0o600 },
+  );
   writeFileSync(
     join(projectRoot, ".caplets", "project.md"),
-    "project remains outside migration\n",
-    {
-      mode: 0o600,
-    },
+    "---\nname: Project\ndescription: Project filesystem fixture.\nmcpServer:\n  command: node\n---\n# Project\n",
+    { mode: 0o600 },
   );
   writeFileSync(join(projectRoot, ".caplets.lock.json"), '{"version":1}\n', { mode: 0o600 });
 
   const env = {
     ...process.env,
-    PATH: `${dirname(priorBin)}${delimiter}${process.env.PATH ?? ""}`,
+    PATH: `${process.platform === "linux" ? `${nativeBin}${delimiter}` : ""}${dirname(priorBin)}${delimiter}${process.env.PATH ?? ""}`,
     HOME: home,
     USERPROFILE: home,
     XDG_CONFIG_HOME: configBase,
@@ -104,8 +114,20 @@ try {
   ];
 
   requireSuccessfulControl(runPrior(globalCliArgs, env, projectRoot), "global CLI");
-  requireSuccessfulControl(runPrior(daemonInstallArgs, env, projectRoot), "daemon install");
-  const daemon = JSON.parse(readFileSync(daemonConfig, "utf8"));
+  const daemonControl = runPrior(
+    process.platform === "win32" ? [...daemonInstallArgs, "--dry-run"] : daemonInstallArgs,
+    env,
+    projectRoot,
+  );
+  requireSuccessfulControl(daemonControl, "daemon install");
+  const daemon =
+    process.platform === "win32"
+      ? JSON.parse(daemonControl.output.trim()).config
+      : JSON.parse(readFileSync(daemonConfig, "utf8"));
+  if (process.platform === "win32") {
+    mkdirSync(dirname(daemonConfig), { recursive: true, mode: 0o700 });
+    writeFileSync(daemonConfig, `${JSON.stringify(daemon)}\n`, { mode: 0o600 });
+  }
   if (
     !daemon?.command ||
     typeof daemon.command.executable !== "string" ||
@@ -116,18 +138,37 @@ try {
   ) {
     throw new Error("published daemon install did not persist a runnable command descriptor");
   }
+  const descriptorExecutable =
+    process.platform === "win32" && /(?:^|[\\/])node(?:\.exe)?$/iu.test(daemon.command.executable)
+      ? process.execPath
+      : daemon.command.executable;
+  const serveArgument = daemon.command.args.indexOf("serve");
+  if (serveArgument < 0) {
+    throw new Error("published daemon descriptor did not contain the serve command");
+  }
   const descriptorVersion = runPriorUsing(
-    daemon.command.executable,
-    ["--version"],
+    descriptorExecutable,
+    [...daemon.command.args.slice(0, serveArgument), "--version"],
     env,
     projectRoot,
   );
   if (descriptorVersion.status !== 0 || !hasPriorVersion(descriptorVersion.output)) {
     throw new Error("published daemon descriptor did not resolve to caplets@0.25.10");
   }
-  publishedDaemon = spawn(daemon.command.executable, daemon.command.args, {
+  const daemonEnv =
+    process.platform === "win32"
+      ? { ...daemon.command.env, ...env }
+      : { ...env, ...daemon.command.env };
+  let daemonPath = "";
+  for (const [key, value] of Object.entries(daemonEnv)) {
+    if (key.toLowerCase() !== "path") continue;
+    daemonPath = String(value);
+    delete daemonEnv[key];
+  }
+  daemonEnv.PATH = `${dirname(process.execPath)}${delimiter}${daemonPath}`;
+  publishedDaemon = spawn(descriptorExecutable, daemon.command.args, {
     cwd: daemon.command.workingDirectory,
-    env: { ...env, ...daemon.command.env },
+    env: daemonEnv,
     stdio: ["ignore", "pipe", "pipe"],
     shell: process.platform === "win32",
     windowsHide: true,
@@ -191,7 +232,9 @@ try {
       phases,
       successControls: [
         "published-global-cli-exact-command",
-        "published-daemon-install-exact-command",
+        process.platform === "win32"
+          ? "published-daemon-install-dry-run-exact-command"
+          : "published-daemon-install-exact-command",
         "published-daemon-descriptor-version",
         "published-daemon-health-and-liveness",
       ],

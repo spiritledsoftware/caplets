@@ -14,7 +14,7 @@
     "sha256": "b4776d5c1e288a395aea91c3a6137282a23561d91c3121215d26eddf85c07e1c"
   },
   "compatibility": {
-    "binary": { "minimum": "0.34.1", "maximumExclusive": "0.36.0" },
+    "binary": { "minimum": "0.34.1", "maximumExclusive": "0.37.0" },
     "schema": { "minimum": 1, "maximum": 3 },
     "key": { "minimum": 1, "maximum": 1 },
     "manifest": { "minimum": 1, "maximum": 1 }
@@ -36,5 +36,5 @@
     "requiredRetainedKeyVersions": [1],
     "failurePolicy": "fail-closed-single-schema-authority"
   },
-  "manifestSha256": "0ff3ad93af1d871609a9123e120626c9baeca0ef10b5eef379ebd3740653a1c2"
+  "manifestSha256": "27c853a508d542ad4203cae8ec8c024c0a85a17145f56127b2ecc0abc0b0867e"
 }

@@ -824,6 +824,7 @@ function transferMigrationEnvironment(): MigrationEnvironment {
     verifiedSchemaAwareBackup: true,
     oldNodesDrained: true,
     retainedKeyVersions: [1],
+    activationEvidence: { kind: "empty-bootstrap" },
     hostAdministrator: true,
     now: new Date("2026-07-17T00:00:00.000Z"),
   };

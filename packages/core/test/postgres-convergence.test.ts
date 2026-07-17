@@ -64,6 +64,7 @@ const POSTGRES_MIGRATION_ENVIRONMENT: MigrationEnvironment = Object.freeze({
   verifiedSchemaAwareBackup: true,
   oldNodesDrained: true,
   retainedKeyVersions: [1],
+  activationEvidence: { kind: "empty-bootstrap" as const },
   hostAdministrator: true,
   now: new Date("2026-07-16T00:00:00.000Z"),
 });

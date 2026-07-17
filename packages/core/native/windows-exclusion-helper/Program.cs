@@ -228,7 +228,7 @@ internal sealed class Lease : IDisposable
                 {
                     var target = Path.Combine(tombstoneStaging, item.RelativePath);
                     if (item.Kind == "file") CreateOwnerPrivateDirectory(target, new SecurityIdentifier(expectedOwnerSid));
-                    else CreateDurableTombstoneFile(target);
+                    else CreateDurableTombstoneFile(target, new SecurityIdentifier(expectedOwnerSid));
                 }
                 MoveDirectoryDurably(tombstoneStaging, source);
             }
@@ -637,9 +637,17 @@ internal sealed class Lease : IDisposable
         if (!MoveFileExW(source, target, MoveFileWriteThrough)) throw new RefusalException();
     }
 
-    private static void CreateDurableTombstoneFile(string path)
+    private static void CreateDurableTombstoneFile(string path, SecurityIdentifier owner)
     {
         File.WriteAllText(path, "caplets legacy migration tombstone\n", new UTF8Encoding(false));
+        var security = new FileSecurity();
+        security.SetOwner(owner);
+        security.SetAccessRuleProtection(true, false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            owner,
+            FileSystemRights.FullControl,
+            AccessControlType.Allow));
+        FileSystemAclExtensions.SetAccessControl(new FileInfo(path), security);
         using var stream = new FileStream(
             path,
             FileMode.Open,

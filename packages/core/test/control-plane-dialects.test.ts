@@ -595,6 +595,14 @@ class RolePool extends EventEmitter implements PostgresPool {
     if (sql === "SHOW search_path") {
       return { rows: [{ search_path: '"caplets", pg_catalog' }], rowCount: 1 };
     }
+    if (sql.startsWith("SELECT table_name FROM information_schema.tables")) {
+      const candidates = parameters?.[1];
+      if (!Array.isArray(candidates)) throw new Error("table candidates are required");
+      return {
+        rows: candidates.map((table_name) => ({ table_name })),
+        rowCount: candidates.length,
+      };
+    }
     if (sql.includes("__caplets_storage_identity_v1") && sql.startsWith("SELECT")) {
       return { rows: [{ logical_host_id: logicalHostId, store_id: storeId }], rowCount: 1 };
     }

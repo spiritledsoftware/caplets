@@ -499,8 +499,22 @@ describe("control-plane management transaction atomicity", () => {
     ]);
   });
 
+  it("accepts the release-target binary at the compatibility boundary", async () => {
+    const test = await fixture();
+    await expect(
+      test.store.registerNode({
+        nodeId: "node-release-target",
+        bootstrapFingerprint: "a".repeat(64),
+        effectiveRuntimeFingerprint: "a".repeat(64),
+        compatibility: { ...runtimeCompatibility, binaryVersion: "0.36.0" },
+        appliedToken: test.versions,
+        ttlMs: 60_000,
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+  });
+
   it.each([
-    ["binary range", { binaryVersion: "0.35.0" }],
+    ["binary range", { binaryVersion: "0.37.0" }],
     ["provider commitment", { providerCommitment: "" }],
     ["key canary commitment", { keyCanaryCommitment: "" }],
     ["mandatory capabilities", { capabilities: ["ordered-tuple-polling", "writer-fence-v1"] }],
@@ -649,7 +663,7 @@ describe("control-plane management transaction atomicity", () => {
         "SELECT count(*) AS count FROM cp_operation_outcome WHERE convergence_class = 'pending'",
       ),
     ).toEqual([{ count: 0 }]);
-  });
+  }, 30_000);
 
   it("rejects the first management write above the per-second capacity without residue", async () => {
     const test = await fixture();

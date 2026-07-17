@@ -588,20 +588,28 @@ function createDialect(
             }
             if (options.roles.runtime !== "__unavailable_runtime__") {
               const runtimeRole = quoteSafeSqlIdentifier(options.roles.runtime);
+              const runtimeReadTables = await existingPostgresTables(client, schema, [
+                POSTGRES_HISTORY_TABLE,
+                ...RUNTIME_READ_TABLES,
+              ]);
+              const runtimeMutationTables = RUNTIME_MUTATION_TABLES.filter((table) =>
+                runtimeReadTables.includes(table),
+              );
               await client.query(
                 `GRANT USAGE ON SCHEMA ${quoteSafeSqlIdentifier(schema)} TO ${runtimeRole}`,
               );
               await client.query(
-                `GRANT SELECT ON ${[
-                  qualified(schema, POSTGRES_HISTORY_TABLE),
-                  ...RUNTIME_READ_TABLES.map((table) => qualified(schema, table)),
-                ].join(", ")} TO ${runtimeRole}`,
+                `GRANT SELECT ON ${runtimeReadTables
+                  .map((table) => qualified(schema, table))
+                  .join(", ")} TO ${runtimeRole}`,
               );
-              await client.query(
-                `GRANT INSERT, UPDATE, DELETE ON ${RUNTIME_MUTATION_TABLES.map((table) =>
-                  qualified(schema, table),
-                ).join(", ")} TO ${runtimeRole}`,
-              );
+              if (runtimeMutationTables.length > 0) {
+                await client.query(
+                  `GRANT INSERT, UPDATE, DELETE ON ${runtimeMutationTables
+                    .map((table) => qualified(schema, table))
+                    .join(", ")} TO ${runtimeRole}`,
+                );
+              }
               await client.query(
                 `GRANT INSERT, UPDATE ON ${qualified(schema, "cp_migration")} TO ${runtimeRole}`,
               );
@@ -1819,6 +1827,26 @@ function loadPoolConstructor(): PostgresPoolConstructor {
   const Pool = moduleValue.Pool;
   if (typeof Pool !== "function") throw new Error("Postgres Pool constructor is invalid");
   return Pool as PostgresPoolConstructor;
+}
+
+async function existingPostgresTables(
+  client: PostgresClient,
+  schema: string,
+  candidates: readonly string[],
+): Promise<readonly string[]> {
+  const result = await client.query(
+    "SELECT table_name FROM information_schema.tables " +
+      "WHERE table_schema = $1 AND table_name = ANY($2::text[])",
+    [schema, candidates],
+  );
+  const existing = new Set(
+    result.rows.flatMap((row) =>
+      row && typeof row === "object" && "table_name" in row && typeof row.table_name === "string"
+        ? [row.table_name]
+        : [],
+    ),
+  );
+  return candidates.filter((table) => existing.has(table));
 }
 
 function qualified(schema: string, table: string): string {

@@ -70,7 +70,7 @@ const TUPLE_FINGERPRINT_MIGRATION_PREFIX = "u10-runtime-tuple";
 const CONVERGENCE_RECEIPT_BATCH_SIZE =
   STORAGE_BENCHMARK_ENVELOPE.managementWritesPerSecond *
   STORAGE_BENCHMARK_ENVELOPE.writeBurstSeconds;
-const SUPPORTED_RUNTIME_BINARY_RANGE = ">=0.34.1 <0.35.0";
+const SUPPORTED_RUNTIME_BINARY_RANGE = ">=0.34.1 <0.37.0";
 const REQUIRED_RUNTIME_CAPABILITIES = Object.freeze([
   "ordered-tuple-polling",
   "writer-fence-v1",

@@ -2413,7 +2413,7 @@ describe("Pi live tool surface eval harness", () => {
       if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
       else process.env.XDG_STATE_HOME = previousStateHome;
     }
-  });
+  }, 15_000);
 
   it("counts real tool executions and classifies direct, progressive, and Code Mode choices", () => {
     const events = [

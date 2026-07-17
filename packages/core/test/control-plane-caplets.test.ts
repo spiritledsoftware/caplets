@@ -74,6 +74,7 @@ const migrationEnvironment: MigrationEnvironment = {
   retainedKeyVersions: [1],
   hostAdministrator: true,
   now: new Date("2026-07-14T00:00:00.000Z"),
+  activationEvidence: { kind: "empty-bootstrap" },
 };
 
 const identity = { logicalHostId, storeId, operationNamespace } as const;
@@ -210,13 +211,13 @@ afterEach(async () => {
 });
 
 describe("transactional Caplet and host-setting repository", () => {
-  it("accepts the next 0.35.0 binary across both paired migration registries", async () => {
+  it("accepts the next 0.36.0 binary across both paired migration registries", async () => {
     for (const dialect of ["sqlite", "postgres"] as const) {
       const registry = await loadMigrationRegistry({ dialect, assetRoot });
       expect(() =>
         assertMigrationEnvironment(registry, {
           ...migrationEnvironment,
-          binaryVersion: "0.35.0",
+          binaryVersion: "0.36.0",
         }),
       ).not.toThrow();
     }

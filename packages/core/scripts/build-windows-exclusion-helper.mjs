@@ -220,29 +220,41 @@ function parseManifest(bytes) {
   return value;
 }
 
+function windowsPowerShellEnvironment(values = {}) {
+  const environment = { ...process.env, ...values };
+  for (const key of Object.keys(environment)) {
+    if (key.toLowerCase() === "psmodulepath") delete environment[key];
+  }
+  return environment;
+}
+
 function signAuthenticode(path, thumbprint) {
   const script =
-    "$cert=Get-Item -LiteralPath ('Cert:\\CurrentUser\\My\\'+$args[1]);" +
-    "$result=Set-AuthenticodeSignature -LiteralPath $args[0] -Certificate $cert -HashAlgorithm SHA256;" +
+    "$cert=Get-Item -LiteralPath ('Cert:\\CurrentUser\\My\\'+$env:CAPLETS_AUTHENTICODE_THUMBPRINT);" +
+    "$result=Set-AuthenticodeSignature -LiteralPath $env:CAPLETS_AUTHENTICODE_PATH -Certificate $cert -HashAlgorithm SHA256;" +
     "if($result.Status -ne 'Valid'){throw ('Signing failed: '+$result.Status)}";
-  execFileSync(
-    "powershell.exe",
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, path, thumbprint],
-    {
-      stdio: "inherit",
-      windowsHide: true,
-    },
-  );
+  execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+    stdio: "inherit",
+    windowsHide: true,
+    env: windowsPowerShellEnvironment({
+      CAPLETS_AUTHENTICODE_PATH: path,
+      CAPLETS_AUTHENTICODE_THUMBPRINT: thumbprint,
+    }),
+  });
 }
 
 function inspectAuthenticode(path) {
   const script =
-    "$s=Get-AuthenticodeSignature -LiteralPath $args[0];" +
+    "$s=Get-AuthenticodeSignature -LiteralPath $env:CAPLETS_AUTHENTICODE_PATH;" +
     "[Console]::Out.Write(($s | Select-Object @{n='Status';e={$_.Status.ToString()}},@{n='Publisher';e={$_.SignerCertificate.Subject}} | ConvertTo-Json -Compress))";
   const output = execFileSync(
     "powershell.exe",
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, path],
-    { encoding: "utf8", windowsHide: true },
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      env: windowsPowerShellEnvironment({ CAPLETS_AUTHENTICODE_PATH: path }),
+      windowsHide: true,
+    },
   );
   const value = JSON.parse(output);
   return { status: value.Status, publisher: value.Publisher };
