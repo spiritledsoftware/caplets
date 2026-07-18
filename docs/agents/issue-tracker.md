@@ -13,6 +13,10 @@ Issues and PRDs for this repo live as GitHub issues in `spiritledsoftware/caplet
 
 `gh` can infer the repo from the current clone, but commands in skills should include `--repo spiritledsoftware/caplets` when practical so worktree location does not change the target repository.
 
+## Pull requests as a triage surface
+
+**PRs as a request surface: no.** _(Set to `yes` if this repo later treats external PRs as feature requests.)_
+
 ## When a skill says "publish to the issue tracker"
 
 Create a GitHub issue in `spiritledsoftware/caplets`.
