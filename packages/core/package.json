@@ -126,7 +126,7 @@
     "vfile-matter": "^5.0.1",
     "web-streams-polyfill": "^4.3.0",
     "whatwg-url": "^16.0.1",
-    "ws": "^8.21.0",
+    "ws": "^8.21.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
