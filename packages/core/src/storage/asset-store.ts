@@ -11,7 +11,7 @@ import { CapletsError } from "../errors";
 
 export interface AssetObjectStore {
   putVerified(hash: string, payload: Buffer): Promise<string>;
-  get(key: string): Promise<Buffer>;
+  getVerified(key: string, expected: { hash: string; size: number }): Promise<Buffer>;
   delete(key: string): Promise<void>;
   list(): Promise<Array<{ key: string; modifiedAt: Date }>>;
   health(): Promise<boolean>;
@@ -61,21 +61,35 @@ class S3AssetObjectStore implements AssetObjectStore {
         Metadata: { sha256: hash },
       }),
     );
-    const stored = await this.get(key);
-    if (stored.byteLength !== payload.byteLength || sha256(stored) !== hash) {
-      throw new CapletsError("SERVER_UNAVAILABLE", `Caplet asset ${hash} failed S3 verification.`);
-    }
+    await this.getVerified(key, { hash, size: payload.byteLength });
     return key;
   }
 
-  async get(key: string): Promise<Buffer> {
-    const response = await this.client.send(
-      new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
-    );
+  async getVerified(key: string, expected: { hash: string; size: number }): Promise<Buffer> {
+    let response;
+    try {
+      response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+      );
+    } catch {
+      throw new CapletsError("SERVER_UNAVAILABLE", `Caplet asset object ${key} is unavailable.`);
+    }
     if (!response.Body) {
       throw new CapletsError("SERVER_UNAVAILABLE", `Caplet asset object ${key} has no payload.`);
     }
-    return Buffer.from(await response.Body.transformToByteArray());
+    const payload = Buffer.from(await response.Body.transformToByteArray());
+    if (
+      response.ContentLength !== expected.size ||
+      response.Metadata?.sha256 !== expected.hash ||
+      payload.byteLength !== expected.size ||
+      sha256(payload) !== expected.hash
+    ) {
+      throw new CapletsError(
+        "INTERNAL_ERROR",
+        `Caplet asset object ${key} failed integrity verification.`,
+      );
+    }
+    return payload;
   }
 
   async delete(key: string): Promise<void> {

@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeTokenBundle, type StoredOAuthTokenBundle } from "../src/auth/store";
 import { installCaplets } from "../src/install";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
@@ -13,6 +13,7 @@ import {
   migrateLegacyHostState,
   type LegacyMigrationOptions,
 } from "../src/storage/legacy-migration";
+import { OperatorActivityStore } from "../src/storage/operator-activity";
 import { FileVaultStore } from "../src/vault";
 
 const directories: string[] = [];
@@ -356,6 +357,63 @@ describe("legacy host-state migration", () => {
     expect(existsSync(join(fixture.vaultRoot, "values", "GITHUB_TOKEN.json"))).toBe(true);
     expect(existsSync(join(fixture.remoteDir, "remote-server-credentials.json"))).toBe(true);
     expect(existsSync(fixture.backupRoot)).toBe(false);
+  });
+
+  it("rolls every imported SQL domain back when a late domain fails, then resumes", async () => {
+    const fixture = await createFullLegacyFixture();
+    const failure = vi
+      .spyOn(OperatorActivityStore.prototype, "importLegacyEntriesInTransaction")
+      .mockImplementationOnce(() => {
+        throw new Error("injected late-domain import failure");
+      });
+
+    await expect(migrateLegacyHostState(fixture.options)).rejects.toThrow(
+      "injected late-domain import failure",
+    );
+    failure.mockRestore();
+
+    const storage = await createHostStorage(
+      { type: "sqlite", path: fixture.databasePath },
+      { vaultRoot: fixture.options.targetVaultRoot },
+    );
+    try {
+      await expect(storage.caplets.get("github")).resolves.toBeUndefined();
+      await expect(storage.installations.getActive("github")).resolves.toBeUndefined();
+      await expect(storage.backendAuth.readTokenBundle("github")).resolves.toBeUndefined();
+      await expect(storage.vaultValues.getStatus("GITHUB_TOKEN")).resolves.toEqual({
+        key: "GITHUB_TOKEN",
+        present: false,
+      });
+      await expect(storage.vaultGrants.list()).resolves.toEqual([]);
+      await expect(storage.remoteSecurity.dumpForTest()).resolves.toMatchObject({
+        pairingCodes: [],
+        pendingLogins: [],
+        clients: [],
+      });
+      await expect(
+        storage.setupState.getApproval(
+          "project-fingerprint",
+          "github",
+          "sha256:setup-content",
+          "local_host",
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        storage.setupState.getAttempt(
+          "project-fingerprint",
+          "github",
+          fixture.setupAttempt.attemptId,
+        ),
+      ).resolves.toBeUndefined();
+      await expect(storage.operatorActivity.list()).resolves.toEqual({ entries: [] });
+    } finally {
+      await storage.close();
+    }
+
+    await expect(migrateLegacyHostState(fixture.options)).resolves.toMatchObject({
+      status: "migrated",
+      domains: expectedDomainReport(),
+    });
   });
 
   it("rolls every source move back when backup fails and resumes from imported SQL", async () => {

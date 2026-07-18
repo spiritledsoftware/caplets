@@ -542,47 +542,92 @@ postgresIt(
     currentGenerationSpy.mockRestore();
     await expect(first.coordination.currentConfigGeneration()).resolves.toBe(1);
 
-    const leaseA = await first.coordination.acquireLease({
-      leaseName: "asset-gc",
-      ownerNodeId: "node-a",
-      ttlMs: 1_000,
-      now,
-    });
-    expect(leaseA).toMatchObject({ ownerNodeId: "node-a", fencingToken: 1 });
-    await expect(
-      second.coordination.acquireLease({
-        leaseName: "asset-gc",
-        ownerNodeId: "node-b",
-        ttlMs: 1_000,
-        now,
-      }),
-    ).resolves.toBeUndefined();
-    const afterExpiry = new Date(now.getTime() + 1_001);
-    const leaseB = await second.coordination.acquireLease({
-      leaseName: "asset-gc",
-      ownerNodeId: "node-b",
-      ttlMs: 1_000,
-      now: afterExpiry,
-    });
-    expect(leaseB).toMatchObject({ ownerNodeId: "node-b", fencingToken: 2 });
-    await expect(
-      first.coordination.checkpointLease({
+    const authority = new Pool({ connectionString });
+    const farPast = new Date("1900-01-01T00:00:00.000Z");
+    const farFuture = new Date("2999-01-01T00:00:00.000Z");
+    const leaseTtlMs = 250;
+    try {
+      const beforeAcquire = (
+        await authority.query<{ now: Date }>("select clock_timestamp() as now")
+      ).rows[0]!.now;
+      const leaseA = await first.coordination.acquireLease({
         leaseName: "asset-gc",
         ownerNodeId: "node-a",
-        fencingToken: 1,
-        cursor: "stale",
-        now: afterExpiry,
-      }),
-    ).rejects.toMatchObject({ details: { kind: "stale_lease" } });
-    await expect(
-      second.coordination.checkpointLease({
+        ttlMs: leaseTtlMs,
+        now: farPast,
+      });
+      const afterAcquire = (await authority.query<{ now: Date }>("select clock_timestamp() as now"))
+        .rows[0]!.now;
+      expect(leaseA).toMatchObject({ ownerNodeId: "node-a", fencingToken: 1 });
+      expect(Date.parse(leaseA!.expiresAt)).toBeGreaterThanOrEqual(
+        beforeAcquire.getTime() + leaseTtlMs,
+      );
+      expect(Date.parse(leaseA!.expiresAt)).toBeLessThanOrEqual(
+        afterAcquire.getTime() + leaseTtlMs,
+      );
+      await expect(
+        second.coordination.acquireLease({
+          leaseName: "asset-gc",
+          ownerNodeId: "node-b",
+          ttlMs: leaseTtlMs,
+          now: farFuture,
+        }),
+      ).resolves.toBeUndefined();
+
+      const beforeRenew = (await authority.query<{ now: Date }>("select clock_timestamp() as now"))
+        .rows[0]!.now;
+      const renewed = await first.coordination.acquireLease({
+        leaseName: "asset-gc",
+        ownerNodeId: "node-a",
+        ttlMs: leaseTtlMs,
+        now: farFuture,
+      });
+      const afterRenew = (await authority.query<{ now: Date }>("select clock_timestamp() as now"))
+        .rows[0]!.now;
+      expect(renewed).toMatchObject({ ownerNodeId: "node-a", fencingToken: 2 });
+      expect(Date.parse(renewed!.expiresAt)).toBeGreaterThanOrEqual(
+        beforeRenew.getTime() + leaseTtlMs,
+      );
+      expect(Date.parse(renewed!.expiresAt)).toBeLessThanOrEqual(afterRenew.getTime() + leaseTtlMs);
+      await expect(
+        first.coordination.checkpointLease({
+          leaseName: "asset-gc",
+          ownerNodeId: "node-a",
+          fencingToken: 2,
+          cursor: "batch-1",
+          now: farFuture,
+        }),
+      ).resolves.toBeUndefined();
+
+      await authority.query("select pg_sleep(0.3)");
+      const leaseB = await second.coordination.acquireLease({
         leaseName: "asset-gc",
         ownerNodeId: "node-b",
-        fencingToken: 2,
-        cursor: "batch-1",
-        now: afterExpiry,
-      }),
-    ).resolves.toBeUndefined();
+        ttlMs: leaseTtlMs,
+        now: farFuture,
+      });
+      expect(leaseB).toMatchObject({ ownerNodeId: "node-b", fencingToken: 3 });
+      await expect(
+        first.coordination.checkpointLease({
+          leaseName: "asset-gc",
+          ownerNodeId: "node-a",
+          fencingToken: 2,
+          cursor: "stale",
+          now: farPast,
+        }),
+      ).rejects.toMatchObject({ details: { kind: "stale_lease" } });
+      await expect(
+        second.coordination.checkpointLease({
+          leaseName: "asset-gc",
+          ownerNodeId: "node-b",
+          fencingToken: 3,
+          cursor: "batch-2",
+          now: farFuture,
+        }),
+      ).resolves.toBeUndefined();
+    } finally {
+      await authority.end();
+    }
 
     await second.coordination.unregisterNode("node-b");
     await expect(first.coordination.nodeReady("node-b")).resolves.toBe(false);

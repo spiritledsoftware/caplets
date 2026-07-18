@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,6 +168,44 @@ describe("VaultValueStore", () => {
       }
     } finally {
       await firstStorage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("derives host runtime parity with the Vault encryption key", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-runtime-fingerprint-"));
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+    const firstKey = Buffer.alloc(32, 1);
+    const secondKey = Buffer.alloc(32, 2);
+    const first = new VaultValueStore(storage.database, {
+      env: { CAPLETS_ENCRYPTION_KEY: firstKey.toString("base64url") },
+    });
+    const sameKey = new VaultValueStore(storage.database, {
+      env: { CAPLETS_ENCRYPTION_KEY: firstKey.toString("base64url") },
+    });
+    const rotatedKey = new VaultValueStore(storage.database, {
+      env: { CAPLETS_ENCRYPTION_KEY: secondKey.toString("base64url") },
+    });
+    const hostConfigurationFingerprint = "low-entropy-runtime-shape";
+
+    try {
+      const fingerprint = first.hostRuntimeFingerprint(hostConfigurationFingerprint);
+      const expected = createHmac("sha256", firstKey)
+        .update("caplets-host-runtime-fingerprint-v1")
+        .update("\0")
+        .update(hostConfigurationFingerprint)
+        .digest("hex");
+
+      expect(fingerprint).toBe(`hmac-sha256:${expected}`);
+      expect(sameKey.hostRuntimeFingerprint(hostConfigurationFingerprint)).toBe(fingerprint);
+      expect(rotatedKey.hostRuntimeFingerprint(hostConfigurationFingerprint)).not.toBe(fingerprint);
+      expect(first.hostRuntimeFingerprint("changed-runtime-shape")).not.toBe(fingerprint);
+      expect(fingerprint).not.toContain(hostConfigurationFingerprint);
+    } finally {
+      await storage.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });

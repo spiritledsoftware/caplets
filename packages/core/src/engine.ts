@@ -60,6 +60,8 @@ import type {
   TelemetryVisibility,
 } from "./telemetry";
 
+const HOST_RUNTIME_FINGERPRINT_PATTERN = /^hmac-sha256:[a-f0-9]{64}$/u;
+
 type ToolSummary = { name: string; description?: string };
 
 export type ResolvedExposureProjection = {
@@ -93,6 +95,7 @@ export type CapletsEngineOptions = {
   hostNodeId?: string | undefined;
   hostConfigGeneration?: number | undefined;
   hostRuntimeFingerprint?: string | undefined;
+  parityConfigLoader?: (() => Promise<CapletsConfig>) | undefined;
   declaredInputReader?: DeclaredInputReader | undefined;
   observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
   observedOutputShapeScope?: ObservedOutputShapeKey["scope"] | undefined;
@@ -142,10 +145,11 @@ export class CapletsEngine {
   private readonly writeErr: (value: string) => void;
   private readonly configLoader: NonNullable<CapletsEngineOptions["configLoader"]>;
   private readonly asyncConfigLoader: CapletsEngineOptions["asyncConfigLoader"];
+  private readonly parityConfigLoader: CapletsEngineOptions["parityConfigLoader"];
   private readonly hostStorage: HostStorage | undefined;
   private readonly hostNodeId: string | undefined;
   private hostConfigGeneration: number;
-  private readonly hostRuntimeFingerprint: string;
+  private hostRuntimeFingerprint: string;
   private coordinationTimer: NodeJS.Timeout | undefined;
   private coordinationAbortController: AbortController | undefined;
   private coordinationTask: Promise<void> | undefined;
@@ -188,18 +192,18 @@ export class CapletsEngine {
           vaultResolver: await createHostStorageVaultResolver(storage),
         })
       ).config;
+    const parityConfigLoader = async (): Promise<CapletsConfig> =>
+      await load(configPath, join(recordCacheRoot, ".cluster-parity", "config.json"));
     try {
       const loaded = await loadConfigWithHostStorage(storage, configPath, projectConfigPath, {
         vaultResolver: await createHostStorageVaultResolver(storage),
         recordCacheRoot,
       });
       const initialConfig = loaded.config;
-      const parityConfig = await load(
-        configPath,
-        join(recordCacheRoot, ".cluster-parity", "config.json"),
+      const parityConfig = await parityConfigLoader();
+      const hostRuntimeFingerprint = storage.vaultValues.hostRuntimeFingerprint(
+        clusterHostConfigurationFingerprint(parityConfig),
       );
-      const hostRuntimeFingerprint =
-        runtimeFingerprintForConfig(parityConfig).hostConfigurationFingerprint;
       const hostNodeId = randomUUID();
       const registration = await storage.coordination.registerNode({
         nodeId: hostNodeId,
@@ -222,6 +226,7 @@ export class CapletsEngine {
         initialConfig,
         asyncConfigLoader: load,
         hostRuntimeFingerprint,
+        parityConfigLoader,
         hostStorage: storage,
         hostNodeId,
         hostConfigGeneration,
@@ -241,6 +246,7 @@ export class CapletsEngine {
     this.configLoader =
       options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
     this.asyncConfigLoader = options.asyncConfigLoader;
+    this.parityConfigLoader = options.parityConfigLoader;
     this.hostStorage = options.hostStorage;
     this.declaredInputReader = options.declaredInputReader;
     this.requireValidCustomFingerprint =
@@ -248,11 +254,20 @@ export class CapletsEngine {
     const config = options.initialConfig ?? this.loadConfigWithWarnings();
     this.hostNodeId = options.hostNodeId;
     this.hostConfigGeneration = options.hostConfigGeneration ?? 0;
-    this.hostRuntimeFingerprint =
-      options.hostRuntimeFingerprint ??
-      runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
     this.stableHostConfigurationFingerprint =
       runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
+    if (
+      this.hostStorage &&
+      this.hostNodeId &&
+      !HOST_RUNTIME_FINGERPRINT_PATTERN.test(options.hostRuntimeFingerprint ?? "")
+    ) {
+      throw new CapletsError(
+        "INTERNAL_ERROR",
+        "Host Node keyed parity state must be initialized before runtime startup.",
+      );
+    }
+    this.hostRuntimeFingerprint =
+      options.hostRuntimeFingerprint ?? this.stableHostConfigurationFingerprint;
     this.resolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(config);
     this.registry = new ServerRegistry(config);
     this.telemetry = createRuntimeTelemetryContext({
@@ -711,8 +726,15 @@ export class CapletsEngine {
       return false;
     }
     let nextConfig: CapletsConfig;
+    let nextHostRuntimeFingerprint = this.hostRuntimeFingerprint;
     try {
       nextConfig = await this.loadConfigWithWarningsAsync();
+      if (this.parityConfigLoader && this.hostStorage && this.hostNodeId) {
+        const parityConfig = await this.parityConfigLoader();
+        nextHostRuntimeFingerprint = this.hostStorage.vaultValues.hostRuntimeFingerprint(
+          clusterHostConfigurationFingerprint(parityConfig),
+        );
+      }
     } catch (error) {
       this.writeErr(`Caplets config reload failed; keeping last known-good config.\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
@@ -720,6 +742,11 @@ export class CapletsEngine {
     }
     if (this.closed) {
       return false;
+    }
+
+    if (nextHostRuntimeFingerprint !== this.hostRuntimeFingerprint) {
+      this.hostRuntimeFingerprint = nextHostRuntimeFingerprint;
+      await this.refreshCoordinationHeartbeat();
     }
 
     const nextStableHostConfigurationFingerprint =
@@ -1195,15 +1222,14 @@ function operationFromRequest(request: unknown): unknown {
   return isRecord(request) ? request.operation : undefined;
 }
 
+function clusterHostConfigurationFingerprint(config: CapletsConfig): string {
+  const { serve: _serve, telemetry: _telemetry, ...clusterConfig } = config;
+  return runtimeFingerprintForConfig(clusterConfig).hostConfigurationFingerprint;
+}
+
 function globalFileManifest(configPath: string): string {
   const root = resolveCapletsRoot(configPath);
   const hash = createHash("sha256");
-  if (existsSync(configPath)) {
-    hash.update("config.json");
-    hash.update("\0");
-    hash.update(readFileSync(configPath));
-    hash.update("\0");
-  }
   if (!existsSync(root)) return hash.digest("hex");
   const appendFile = (path: string, relativePath: string): void => {
     hash.update(relativePath);

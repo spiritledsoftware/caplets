@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { asc, eq, sql } from "drizzle-orm";
 import { defaultStateBaseDir } from "../config/paths";
@@ -20,7 +20,12 @@ import {
 import { VAULT_MAX_VALUE_BYTES, type VaultKeySourceStatus } from "../vault/types";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  SqliteHostDatabase,
+} from "./types";
 
 export const VAULT_VALUES_NAMESPACE = "vault-values";
 
@@ -98,6 +103,16 @@ export class VaultValueStore implements VaultValueRepository {
     this.root = options.root ?? join(defaultStateBaseDir(options.env), "caplets", "vault");
     this.keyFile = options.keyFile ?? join(this.root, "vault-key");
     this.env = options.env ?? process.env;
+  }
+
+  hostRuntimeFingerprint(hostConfigurationFingerprint: string): string {
+    const key = ensureVaultKey({ keyFile: this.keyFile, env: this.env });
+    const digest = createHmac("sha256", key)
+      .update("caplets-host-runtime-fingerprint-v1")
+      .update("\0")
+      .update(hostConfigurationFingerprint)
+      .digest("hex");
+    return `hmac-sha256:${digest}`;
   }
 
   async set(
@@ -191,50 +206,26 @@ export class VaultValueStore implements VaultValueRepository {
     const validated = validateLegacyValueImports(values);
     if (validated.length === 0) return;
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) => {
-        assertLegacyValuesMatchSqlite(transaction, validated, () =>
-          loadVaultKey({ keyFile: this.keyFile, env: this.env }),
-        );
-        const pending = validated.filter(
-          (value) =>
-            !transaction
-              .select({ key: sqlite.vaultValues.vaultKey })
-              .from(sqlite.vaultValues)
-              .where(eq(sqlite.vaultValues.vaultKey, value.key))
-              .get(),
-        );
-        if (pending.length === 0) return;
-        const key = ensureVaultKey({ keyFile: this.keyFile, env: this.env });
-        transaction
-          .insert(sqlite.vaultValues)
-          .values(pending.map((value) => legacyValueRow(value, key)))
-          .run();
-      });
+      this.database.db.transaction((transaction) =>
+        importLegacyValuesSqlite(transaction, validated, this.keyFile, this.env),
+      );
       return;
     }
-    await this.database.db.transaction(async (transaction) => {
-      for (const value of validated) {
-        await transaction.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
-            VAULT_VALUES_NAMESPACE,
-            value.key,
-          ])}, 0))`,
-        );
-      }
-      await assertLegacyValuesMatchPostgres(transaction, validated, () =>
-        loadVaultKey({ keyFile: this.keyFile, env: this.env }),
-      );
-      const existing = await transaction
-        .select({ key: postgres.vaultValues.vaultKey })
-        .from(postgres.vaultValues);
-      const existingKeys = new Set(existing.map((row) => row.key));
-      const pending = validated.filter((value) => !existingKeys.has(value.key));
-      if (pending.length === 0) return;
-      const key = ensureVaultKey({ keyFile: this.keyFile, env: this.env });
-      await transaction
-        .insert(postgres.vaultValues)
-        .values(pending.map((value) => legacyValueRow(value, key)));
-    });
+    await this.database.db.transaction(
+      async (transaction) =>
+        await importLegacyValuesPostgres(transaction, validated, this.keyFile, this.env),
+    );
+  }
+
+  importLegacyValuesInTransaction(
+    values: LegacyVaultValueMigrationRecord[],
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = validateLegacyValueImports(values);
+    if (validated.length === 0) return;
+    return transaction.dialect === "sqlite"
+      ? importLegacyValuesSqlite(transaction.db, validated, this.keyFile, this.env)
+      : importLegacyValuesPostgres(transaction.db, validated, this.keyFile, this.env);
   }
 
   async verifyLegacyValues(values: LegacyVaultValueMigrationRecord[]): Promise<void> {
@@ -256,6 +247,16 @@ export class VaultValueStore implements VaultValueRepository {
         );
       }
     }
+  }
+  verifyLegacyValuesInTransaction(
+    values: LegacyVaultValueMigrationRecord[],
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = validateLegacyValueImports(values);
+    const encryptionKey = () => loadVaultKey({ keyFile: this.keyFile, env: this.env });
+    return transaction.dialect === "sqlite"
+      ? verifyLegacyValuesSqlite(transaction.db, validated, encryptionKey)
+      : verifyLegacyValuesPostgres(transaction.db, validated, encryptionKey);
   }
 
   async delete(
@@ -280,6 +281,93 @@ type SqliteVaultValueDatabase =
 type PostgresVaultValueDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
+function importLegacyValuesSqlite(
+  database: SqliteVaultValueDatabase,
+  values: LegacyVaultValueMigrationRecord[],
+  keyFile: string,
+  env: Record<string, string | undefined>,
+): void {
+  assertLegacyValuesMatchSqlite(database, values, () => loadVaultKey({ keyFile, env }));
+  const pending = values.filter(
+    (value) =>
+      !database
+        .select({ key: sqlite.vaultValues.vaultKey })
+        .from(sqlite.vaultValues)
+        .where(eq(sqlite.vaultValues.vaultKey, value.key))
+        .get(),
+  );
+  if (pending.length === 0) return;
+  const key = ensureVaultKey({ keyFile, env });
+  database
+    .insert(sqlite.vaultValues)
+    .values(pending.map((value) => legacyValueRow(value, key)))
+    .run();
+}
+
+async function importLegacyValuesPostgres(
+  database: PostgresVaultValueDatabase,
+  values: LegacyVaultValueMigrationRecord[],
+  keyFile: string,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  for (const value of values) {
+    await database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
+        VAULT_VALUES_NAMESPACE,
+        value.key,
+      ])}, 0))`,
+    );
+  }
+  await assertLegacyValuesMatchPostgres(database, values, () => loadVaultKey({ keyFile, env }));
+  const existing = await database
+    .select({ key: postgres.vaultValues.vaultKey })
+    .from(postgres.vaultValues);
+  const existingKeys = new Set(existing.map((row) => row.key));
+  const pending = values.filter((value) => !existingKeys.has(value.key));
+  if (pending.length === 0) return;
+  const key = ensureVaultKey({ keyFile, env });
+  await database
+    .insert(postgres.vaultValues)
+    .values(pending.map((value) => legacyValueRow(value, key)));
+}
+
+function verifyLegacyValuesSqlite(
+  database: SqliteVaultValueDatabase,
+  values: LegacyVaultValueMigrationRecord[],
+  encryptionKey: () => Buffer,
+): void {
+  for (const value of values) {
+    const row = database
+      .select()
+      .from(sqlite.vaultValues)
+      .where(eq(sqlite.vaultValues.vaultKey, value.key))
+      .get();
+    if (!row || !legacyValueMatches(row, value, encryptionKey())) {
+      throw legacyValueVerificationError(value.key);
+    }
+  }
+}
+
+async function verifyLegacyValuesPostgres(
+  database: PostgresVaultValueDatabase,
+  values: LegacyVaultValueMigrationRecord[],
+  encryptionKey: () => Buffer,
+): Promise<void> {
+  for (const value of values) {
+    const [row] = await database
+      .select()
+      .from(postgres.vaultValues)
+      .where(eq(postgres.vaultValues.vaultKey, value.key))
+      .limit(1);
+    if (!row || !legacyValueMatches(row, value, encryptionKey())) {
+      throw legacyValueVerificationError(value.key);
+    }
+  }
+}
+
+function legacyValueVerificationError(key: string): CapletsError {
+  return new CapletsError("INTERNAL_ERROR", `Vault key ${key} failed post-migration verification.`);
+}
 
 function validateLegacyValueImports(
   values: LegacyVaultValueMigrationRecord[],

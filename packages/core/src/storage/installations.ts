@@ -4,7 +4,14 @@ import { CapletsError } from "../errors";
 import { advancePostgresConfigGeneration, advanceSqliteConfigGeneration } from "./coordination";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  PostgresHostTransaction,
+  SqliteHostDatabase,
+  SqliteHostTransaction,
+} from "./types";
 
 export type OperatorPrincipal = {
   clientId: string;
@@ -130,6 +137,14 @@ export class CapletInstallationStore {
     return this.database.dialect === "sqlite"
       ? getSqlite(this.database.db, capletId, true)
       : await getPostgres(this.database.db, capletId, true);
+  }
+  getActiveInTransaction(
+    capletId: string,
+    transaction: HostDatabaseTransaction,
+  ): CapletInstallationView | undefined | Promise<CapletInstallationView | undefined> {
+    return transaction.dialect === "sqlite"
+      ? getSqlite(transaction.db, capletId, true)
+      : getPostgres(transaction.db, capletId, true);
   }
 
   async getLatest(capletId: string): Promise<CapletInstallationView | undefined> {
@@ -616,7 +631,7 @@ async function detachPostgres(
 }
 
 function getSqlite(
-  db: SqliteHostDatabase,
+  db: SqliteHostDatabase | SqliteHostTransaction,
   capletId: string,
   activeOnly: boolean,
 ): CapletInstallationView | undefined {
@@ -645,7 +660,7 @@ function getSqlite(
 }
 
 async function getPostgres(
-  db: PostgresHostDatabase,
+  db: PostgresHostDatabase | PostgresHostTransaction,
   capletId: string,
   activeOnly: boolean,
 ): Promise<CapletInstallationView | undefined> {

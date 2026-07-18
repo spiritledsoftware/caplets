@@ -2,9 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfigWithHostStorage, resolveCapletsRoot } from "../src/config";
+import {
+  loadConfigWithHostStorage,
+  loadConfigWithSources,
+  resolveCapletsRoot,
+} from "../src/config";
 import { CapletsEngine } from "../src/engine";
 import { createHostStorage } from "../src/storage";
+import { hostNodes } from "../src/storage/schema/sqlite";
 
 const directories: string[] = [];
 
@@ -148,6 +153,173 @@ describe("stored Caplet source", () => {
     }
   });
 
+  it("persists keyed runtime parity while manifesting only global Caplet Files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-cluster-parity-"));
+    directories.push(root);
+    const databasePath = join(root, "caplets.sqlite3");
+    const previousStateHome = process.env.XDG_STATE_HOME;
+    const previousEncryptionKey = process.env.CAPLETS_ENCRYPTION_KEY;
+    process.env.XDG_STATE_HOME = join(root, "state");
+    process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString("base64url");
+    const engines: CapletsEngine[] = [];
+    const writeNode = (
+      name: string,
+      port: number,
+      command: string,
+      runtimeOptions: Record<string, unknown> = {},
+    ) => {
+      const nodeRoot = join(root, name);
+      const configPath = join(nodeRoot, "config.json");
+      const projectConfigPath = join(nodeRoot, "project", ".caplets", "config.json");
+      mkdirSync(nodeRoot, { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          storage: { type: "sqlite", path: databasePath },
+          serve: { host: "127.0.0.1", port },
+          ...runtimeOptions,
+        }),
+      );
+      writeFileSync(join(nodeRoot, "github.md"), caplet(command));
+      return { configPath, projectConfigPath, watch: false as const };
+    };
+    const firstNode = writeNode("node-a", 4101, "shared-command");
+    const localConfigChanged = writeNode("node-b", 4102, "shared-command");
+    const runtimeConfigChanged = writeNode("node-d", 4104, "shared-command", {
+      defaultSearchLimit: 10,
+    });
+    const capletFileChanged = writeNode("node-c", 4103, "changed-command");
+    const inspector = await createHostStorage({ type: "sqlite", path: databasePath });
+    if (inspector.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
+    const sqliteDatabase = inspector.database;
+    const persistedNodes = () => sqliteDatabase.db.select().from(hostNodes).all();
+
+    try {
+      const first = await CapletsEngine.create(firstNode);
+      engines.push(first);
+      const [firstPersisted] = persistedNodes();
+      expect(firstPersisted?.runtimeFingerprint).toMatch(/^hmac-sha256:[a-f0-9]{64}$/u);
+      expect(firstPersisted?.runtimeFingerprint).not.toBe(
+        loadConfigWithSources(firstNode.configPath, firstNode.projectConfigPath).runtimeFingerprint
+          ?.hostConfigurationFingerprint,
+      );
+
+      const sameKeyAndConfig = await CapletsEngine.create(firstNode);
+      engines.push(sameKeyAndConfig);
+      expect(persistedNodes()).toHaveLength(2);
+      expect(
+        persistedNodes().every(
+          (node) =>
+            node.globalFileManifest === firstPersisted?.globalFileManifest &&
+            node.runtimeFingerprint === firstPersisted?.runtimeFingerprint,
+        ),
+      ).toBe(true);
+
+      const nodeWithLocalConfigChange = await CapletsEngine.create(localConfigChanged);
+      engines.push(nodeWithLocalConfigChange);
+      const afterLocalConfigChange = persistedNodes();
+      expect(afterLocalConfigChange).toHaveLength(3);
+      expect(
+        afterLocalConfigChange.every(
+          (node) =>
+            node.globalFileManifest === firstPersisted?.globalFileManifest &&
+            node.runtimeFingerprint === firstPersisted?.runtimeFingerprint,
+        ),
+      ).toBe(true);
+
+      await expect(CapletsEngine.create(runtimeConfigChanged)).rejects.toMatchObject({
+        details: { conflict: "runtime_fingerprint" },
+      });
+      expect(new Set(persistedNodes().map((node) => node.runtimeFingerprint))).toHaveLength(2);
+
+      process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 2).toString("base64url");
+      await expect(CapletsEngine.create(firstNode)).rejects.toMatchObject({
+        details: { conflict: "runtime_fingerprint" },
+      });
+      const sameManifest = persistedNodes().filter(
+        (node) => node.globalFileManifest === firstPersisted?.globalFileManifest,
+      );
+      expect(sameManifest).toHaveLength(5);
+      expect(new Set(sameManifest.map((node) => node.runtimeFingerprint))).toHaveLength(3);
+
+      process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString("base64url");
+      await expect(CapletsEngine.create(capletFileChanged)).rejects.toMatchObject({
+        details: { conflict: "global_file_manifest" },
+      });
+      expect(new Set(persistedNodes().map((node) => node.globalFileManifest))).toHaveLength(2);
+    } finally {
+      await inspector.close();
+      await Promise.all(engines.map(async (engine) => await engine.close()));
+      if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousStateHome;
+      if (previousEncryptionKey === undefined) delete process.env.CAPLETS_ENCRYPTION_KEY;
+      else process.env.CAPLETS_ENCRYPTION_KEY = previousEncryptionKey;
+    }
+  });
+
+  it("keeps project overlays out of heartbeat parity and refreshes global parity on reload", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-parity-reload-"));
+    directories.push(root);
+    const databasePath = join(root, "caplets.sqlite3");
+    const configPath = join(root, "config.json");
+    const globalFilePath = join(root, "github.md");
+    const projectConfigPath = join(root, "project", ".caplets", "config.json");
+    const projectFilePath = join(dirname(projectConfigPath), "github.md");
+    const previousStateHome = process.env.XDG_STATE_HOME;
+    const previousEncryptionKey = process.env.CAPLETS_ENCRYPTION_KEY;
+    process.env.XDG_STATE_HOME = join(root, "state");
+    process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString("base64url");
+    mkdirSync(dirname(projectFilePath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: databasePath } }));
+    writeFileSync(globalFilePath, caplet("global-v1"));
+    writeFileSync(projectFilePath, caplet("project-v1"));
+    const engine = await CapletsEngine.create({ configPath, projectConfigPath, watch: false });
+    const inspector = await createHostStorage({ type: "sqlite", path: databasePath });
+    if (inspector.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
+    const sqliteDatabase = inspector.database;
+
+    try {
+      const initial = sqliteDatabase.db.select().from(hostNodes).get();
+      expect(initial?.runtimeFingerprint).toMatch(/^hmac-sha256:[a-f0-9]{64}$/u);
+      await expect
+        .poll(() => sqliteDatabase.db.select().from(hostNodes).get()?.heartbeatAt, {
+          timeout: 2_500,
+          interval: 50,
+        })
+        .not.toBe(initial?.heartbeatAt);
+      expect(sqliteDatabase.db.select().from(hostNodes).get()?.runtimeFingerprint).toBe(
+        initial?.runtimeFingerprint,
+      );
+
+      writeFileSync(projectFilePath, caplet("project-v2"));
+      await expect(engine.reload()).resolves.toBe(true);
+      expect(engine.currentConfig().mcpServers.github?.command).toBe("project-v2");
+      expect(sqliteDatabase.db.select().from(hostNodes).get()).toMatchObject({
+        globalFileManifest: initial?.globalFileManifest,
+        runtimeFingerprint: initial?.runtimeFingerprint,
+      });
+
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          storage: { type: "sqlite", path: databasePath },
+          defaultSearchLimit: 10,
+        }),
+      );
+      await expect(engine.reload()).resolves.toBe(true);
+      expect(engine.currentConfig().mcpServers.github?.command).toBe("project-v2");
+      const afterGlobalReload = sqliteDatabase.db.select().from(hostNodes).get();
+      expect(afterGlobalReload?.globalFileManifest).toBe(initial?.globalFileManifest);
+      expect(afterGlobalReload?.runtimeFingerprint).not.toBe(initial?.runtimeFingerprint);
+    } finally {
+      await engine.close();
+      await inspector.close();
+      if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousStateHome;
+      if (previousEncryptionKey === undefined) delete process.env.CAPLETS_ENCRYPTION_KEY;
+      else process.env.CAPLETS_ENCRYPTION_KEY = previousEncryptionKey;
+    }
+  });
   it("converges peer engine snapshots after a committed record generation", async () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-sql-convergence-"));
     directories.push(root);

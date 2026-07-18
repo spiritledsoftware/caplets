@@ -97,12 +97,48 @@ export class HostStorage {
         assets: { backend: assetBackend, ready: false },
       };
     }
-    const assetsReady = this.assetObjectStore ? await this.assetObjectStore.health() : true;
+    if (!this.assetObjectStore) {
+      return {
+        ...databaseHealth,
+        ready: true,
+        assets: { backend: "sql", ready: true },
+      };
+    }
+    if (!(await this.assetObjectStore.health())) {
+      return {
+        ...databaseHealth,
+        ready: false,
+        reason: "object_store_unavailable",
+        assets: { backend: "s3", ready: false },
+      };
+    }
+    let currentAssets;
+    try {
+      currentAssets = await this.caplets.currentAssetHealth();
+    } catch {
+      return {
+        ...databaseHealth,
+        ready: false,
+        reason: "database_unavailable",
+        assets: { backend: "s3", ready: false },
+      };
+    }
+    if (!currentAssets.ready) {
+      return {
+        ...databaseHealth,
+        ready: false,
+        reason: "current_record_assets_unavailable",
+        assets: {
+          backend: "s3",
+          ready: false,
+          affectedRecordIds: currentAssets.affectedRecordIds,
+        },
+      };
+    }
     return {
       ...databaseHealth,
-      ready: assetsReady,
-      ...(assetsReady ? {} : { reason: "object_store_unavailable" as const }),
-      assets: { backend: assetBackend, ready: assetsReady },
+      ready: true,
+      assets: { backend: "s3", ready: true },
     };
   }
 

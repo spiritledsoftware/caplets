@@ -20,17 +20,27 @@ export type HostStorageHealth = {
     | "schema_outdated"
     | "schema_newer"
     | "object_store_unavailable"
+    | "current_record_assets_unavailable"
     | undefined;
   assets?:
     | {
         backend: "sql" | "s3";
         ready: boolean;
+        affectedRecordIds?: string[] | undefined;
       }
     | undefined;
 };
 
 export type SqliteHostDatabase = BetterSQLite3Database<typeof sqliteSchema>;
 export type PostgresHostDatabase = NodePgDatabase<typeof postgresSchema>;
+export type SqliteHostTransaction = Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0];
+export type PostgresHostTransaction = Parameters<
+  Parameters<PostgresHostDatabase["transaction"]>[0]
+>[0];
+
+export type HostDatabaseTransaction =
+  | { dialect: "sqlite"; db: SqliteHostTransaction }
+  | { dialect: "postgres"; db: PostgresHostTransaction };
 
 export type HostDatabase =
   | { dialect: "sqlite"; db: SqliteHostDatabase }

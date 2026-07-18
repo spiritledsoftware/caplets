@@ -27,7 +27,12 @@ import { decryptVaultValue, encryptVaultValue, type VaultEncryptedRecord } from 
 import { stableJsonStringify } from "../stable-json";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  SqliteHostDatabase,
+} from "./types";
 
 export type {
   CreatePairingCodeInput,
@@ -652,6 +657,15 @@ export class RemoteSecurityStore {
       return { value: undefined, save: merged.changed };
     });
   }
+  importLegacySnapshotInTransaction(
+    snapshot: RemoteServerCredentialState,
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = parseRemoteServerCredentialState(snapshot);
+    return transaction.dialect === "sqlite"
+      ? importLegacyRemoteSecuritySqlite(transaction.db, validated)
+      : importLegacyRemoteSecurityPostgres(transaction.db, validated);
+  }
 
   async verifyLegacySnapshot(snapshot: RemoteServerCredentialState): Promise<void> {
     const result = mergeLegacyRemoteSecurityState(
@@ -664,6 +678,15 @@ export class RemoteSecurityStore {
         "Remote security state failed post-migration verification.",
       );
     }
+  }
+  verifyLegacySnapshotInTransaction(
+    snapshot: RemoteServerCredentialState,
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = parseRemoteServerCredentialState(snapshot);
+    return transaction.dialect === "sqlite"
+      ? verifyLegacyRemoteSecurityState(loadSqliteState(transaction.db), validated)
+      : verifyLegacyRemoteSecurityPostgres(transaction.db, validated);
   }
 
   async dumpForTest(): Promise<RemoteSecurityState> {
@@ -816,6 +839,51 @@ type OperatorTransitionResult<R> = {
 
 type SqliteTransaction = Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0];
 type PostgresTransaction = Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
+function importLegacyRemoteSecuritySqlite(
+  database: SqliteTransaction,
+  snapshot: RemoteServerCredentialState,
+): void {
+  const current = loadSqliteState(database);
+  const merged = mergeLegacyRemoteSecurityState(current, snapshot);
+  if (!merged.changed) return;
+  current.pairingCodes = merged.state.pairingCodes;
+  current.pendingLogins = merged.state.pendingLogins;
+  current.clients = merged.state.clients;
+  saveSqliteState(database, current);
+}
+
+async function importLegacyRemoteSecurityPostgres(
+  database: PostgresTransaction,
+  snapshot: RemoteServerCredentialState,
+): Promise<void> {
+  await lockPostgresRemoteSecurity(database);
+  const current = await loadPostgresState(database, true);
+  const merged = mergeLegacyRemoteSecurityState(current, snapshot);
+  if (!merged.changed) return;
+  current.pairingCodes = merged.state.pairingCodes;
+  current.pendingLogins = merged.state.pendingLogins;
+  current.clients = merged.state.clients;
+  await savePostgresState(database, current);
+}
+
+function verifyLegacyRemoteSecurityState(
+  current: RemoteSecurityState,
+  snapshot: RemoteServerCredentialState,
+): void {
+  if (mergeLegacyRemoteSecurityState(current, snapshot).changed) {
+    throw new CapletsError(
+      "INTERNAL_ERROR",
+      "Remote security state failed post-migration verification.",
+    );
+  }
+}
+
+async function verifyLegacyRemoteSecurityPostgres(
+  database: PostgresTransaction,
+  snapshot: RemoteServerCredentialState,
+): Promise<void> {
+  verifyLegacyRemoteSecurityState(await loadPostgresState(database), snapshot);
+}
 
 function loadSqliteState(database: SqliteHostDatabase | SqliteTransaction): RemoteSecurityState {
   return assembleState({

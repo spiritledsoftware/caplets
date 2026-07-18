@@ -11,7 +11,12 @@ import type { SetupApproval, SetupAttempt, SetupTargetKind } from "../setup/type
 import { stableJsonStringify } from "../stable-json";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  SqliteHostDatabase,
+} from "./types";
 
 export const SETUP_APPROVALS_NAMESPACE = "setup-approvals";
 export const SETUP_ATTEMPTS_NAMESPACE = "setup-attempts";
@@ -228,6 +233,16 @@ export class SetupStateStore {
       }
     });
   }
+  importLegacySnapshotInTransaction(
+    snapshot: LegacySetupMigrationSnapshot,
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = validateLegacySetupSnapshot(snapshot);
+    if (validated.approvals.length === 0 && validated.attemptSets.length === 0) return;
+    return transaction.dialect === "sqlite"
+      ? importLegacySetupSqlite(transaction.db, validated)
+      : importLegacySetupPostgres(transaction.db, validated);
+  }
 
   async verifyLegacySnapshot(snapshot: LegacySetupMigrationSnapshot): Promise<void> {
     const validated = validateLegacySetupSnapshot(snapshot);
@@ -238,6 +253,17 @@ export class SetupStateStore {
     if (pending.approvals.length > 0 || pending.attemptSets.length > 0) {
       throw new CapletsError("INTERNAL_ERROR", "Setup state failed post-migration verification.");
     }
+  }
+  verifyLegacySnapshotInTransaction(
+    snapshot: LegacySetupMigrationSnapshot,
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = validateLegacySetupSnapshot(snapshot);
+    if (transaction.dialect === "sqlite") {
+      verifyLegacySetupPending(inspectLegacySetupSqlite(transaction.db, validated));
+      return;
+    }
+    return inspectLegacySetupPostgres(transaction.db, validated).then(verifyLegacySetupPending);
   }
 
   retention(): { maxAttempts: number; days: number } {
@@ -296,6 +322,50 @@ type SqliteSetupDatabase =
 type PostgresSetupDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
+function importLegacySetupSqlite(
+  database: SqliteSetupDatabase,
+  snapshot: ValidatedLegacySetupSnapshot,
+): void {
+  const pending = inspectLegacySetupSqlite(database, snapshot);
+  if (pending.approvals.length > 0) {
+    database.insert(sqlite.setupApprovals).values(pending.approvals).run();
+  }
+  if (pending.attemptSets.length > 0) {
+    database.insert(sqlite.setupAttemptSets).values(pending.attemptSets).run();
+  }
+}
+
+async function importLegacySetupPostgres(
+  database: PostgresSetupDatabase,
+  snapshot: ValidatedLegacySetupSnapshot,
+): Promise<void> {
+  for (const approval of snapshot.approvals) {
+    await lockPostgresKey(database, SETUP_APPROVALS_NAMESPACE, approvalKey(approval));
+  }
+  for (const attempts of snapshot.attemptSets) {
+    await lockPostgresKey(
+      database,
+      SETUP_ATTEMPTS_NAMESPACE,
+      attemptsKey(attempts.projectFingerprint, attempts.capletId),
+    );
+  }
+  const pending = await inspectLegacySetupPostgres(database, snapshot);
+  if (pending.approvals.length > 0) {
+    await database.insert(postgres.setupApprovals).values(pending.approvals);
+  }
+  if (pending.attemptSets.length > 0) {
+    await database.insert(postgres.setupAttemptSets).values(pending.attemptSets);
+  }
+}
+
+function verifyLegacySetupPending(pending: {
+  approvals: LegacySetupApprovalRow[];
+  attemptSets: LegacySetupAttemptSetRow[];
+}): void {
+  if (pending.approvals.length > 0 || pending.attemptSets.length > 0) {
+    throw new CapletsError("INTERNAL_ERROR", "Setup state failed post-migration verification.");
+  }
+}
 
 function validateLegacySetupSnapshot(
   snapshot: LegacySetupMigrationSnapshot,
@@ -912,7 +982,7 @@ async function insertPostgresActivity(
 }
 
 async function lockPostgresKey(
-  transaction: Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0],
+  transaction: PostgresSetupDatabase,
   namespace: string,
   key: string,
 ): Promise<void> {

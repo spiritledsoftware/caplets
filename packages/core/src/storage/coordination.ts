@@ -523,25 +523,37 @@ async function acquireLeasePostgres(
   input: AcquireLeaseInput,
 ): Promise<MaintenanceLease | undefined> {
   return await db.transaction(async (transaction) => {
-    const now = input.now ?? new Date();
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
+        "maintenance-lease",
+        input.leaseName,
+      ])}, 0))`,
+    );
     const [existing] = await transaction
       .select()
       .from(postgres.maintenanceLeases)
       .where(eq(postgres.maintenanceLeases.leaseName, input.leaseName))
       .for("update")
       .limit(1);
+    const clockResult = await transaction.execute<{ acquiredAt: string; expiresAt: string }>(
+      sql`select
+        to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "acquiredAt",
+        to_char((clock_timestamp() + (${input.ttlMs} * interval '1 millisecond')) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "expiresAt"`,
+    );
+    const clock = clockResult.rows[0];
+    if (!clock) throw new CapletsError("INTERNAL_ERROR", "Lease clock query failed.");
     if (
       existing &&
       existing.ownerNodeId !== input.ownerNodeId &&
-      existing.expiresAt > now.toISOString()
+      existing.expiresAt > clock.acquiredAt
     )
       return undefined;
     const lease = {
       leaseName: input.leaseName,
       ownerNodeId: input.ownerNodeId,
       fencingToken: (existing?.fencingToken ?? 0) + 1,
-      expiresAt: new Date(now.getTime() + input.ttlMs).toISOString(),
-      updatedAt: now.toISOString(),
+      expiresAt: clock.expiresAt,
+      updatedAt: clock.acquiredAt,
     };
     await transaction
       .insert(postgres.maintenanceLeases)
@@ -600,14 +612,22 @@ async function checkpointPostgres(
       .where(eq(postgres.maintenanceLeases.leaseName, input.leaseName))
       .for("update")
       .limit(1);
-    assertLease(lease, input);
-    const now = (input.now ?? new Date()).toISOString();
+    const clockResult = await transaction.execute<{ authorityNow: string }>(
+      sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "authorityNow"`,
+    );
+    const clock = clockResult.rows[0];
+    if (!clock) throw new CapletsError("INTERNAL_ERROR", "Lease clock query failed.");
+    assertLease(lease, { ...input, now: new Date(clock.authorityNow) });
     await transaction
       .insert(postgres.maintenanceCursors)
-      .values({ jobName: input.leaseName, cursor: input.cursor, updatedAt: now })
+      .values({
+        jobName: input.leaseName,
+        cursor: input.cursor,
+        updatedAt: clock.authorityNow,
+      })
       .onConflictDoUpdate({
         target: postgres.maintenanceCursors.jobName,
-        set: { cursor: input.cursor, updatedAt: now },
+        set: { cursor: input.cursor, updatedAt: clock.authorityNow },
       });
   });
 }

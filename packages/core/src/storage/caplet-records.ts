@@ -14,7 +14,14 @@ import {
 } from "./installations";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  PostgresHostTransaction,
+  SqliteHostDatabase,
+  SqliteHostTransaction,
+} from "./types";
 
 export type CapletBundleInputFile = {
   path: string;
@@ -243,6 +250,31 @@ export class CapletRecordStore {
       return record;
     });
   }
+  async prepareBundleAssetsForImport(inputs: ImportCapletBundleInput[]): Promise<void> {
+    for (const input of inputs) requireOperator(input.operator);
+    await this.prepareAssetStorage(inputs.map((input) => prepareBundle(input, this.limits)));
+  }
+
+  importBundlesInTransaction(
+    inputs: ImportCapletBundleInput[],
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    for (const input of inputs) requireOperator(input.operator);
+    const bundles = inputs.map((input) => prepareBundle(input, this.limits));
+    if (bundles.length === 0) return;
+    return transaction.dialect === "sqlite"
+      ? importManySqliteTransaction(transaction.db, bundles)
+      : importManyPostgresTransaction(transaction.db, bundles);
+  }
+
+  getInTransaction(
+    id: string,
+    transaction: HostDatabaseTransaction,
+  ): CapletRecordView | undefined | Promise<CapletRecordView | undefined> {
+    return transaction.dialect === "sqlite"
+      ? getSqlite(transaction.db, id)
+      : getPostgres(transaction.db, id);
+  }
 
   async get(id: string): Promise<CapletRecordView | undefined> {
     return this.database.dialect === "sqlite"
@@ -330,6 +362,96 @@ export class CapletRecordStore {
       this.database.db.select({ count: count() }).from(postgres.capletBundleEntries),
     ]);
     return { blobs: blobs?.count ?? 0, entries: entries?.count ?? 0 };
+  }
+
+  async currentAssetHealth(): Promise<{ ready: boolean; affectedRecordIds: string[] }> {
+    if (!this.objectStore) return { ready: true, affectedRecordIds: [] };
+    const references =
+      this.database.dialect === "sqlite"
+        ? this.database.db
+            .select({
+              recordId: sqlite.capletRecords.capletId,
+              entryHash: sqlite.capletBundleEntries.blobHash,
+              entrySize: sqlite.capletBundleEntries.size,
+              blobHash: sqlite.capletAssetBlobs.hash,
+              blobSize: sqlite.capletAssetBlobs.size,
+              payload: sqlite.capletAssetBlobs.payload,
+              objectKey: sqlite.capletAssetBlobs.objectKey,
+              verificationStatus: sqlite.capletAssetBlobs.verificationStatus,
+            })
+            .from(sqlite.capletRecords)
+            .innerJoin(
+              sqlite.capletBundleEntries,
+              eq(sqlite.capletBundleEntries.revisionKey, sqlite.capletRecords.currentRevisionKey),
+            )
+            .leftJoin(
+              sqlite.capletAssetBlobs,
+              eq(sqlite.capletAssetBlobs.hash, sqlite.capletBundleEntries.blobHash),
+            )
+            .all()
+        : await this.database.db
+            .select({
+              recordId: postgres.capletRecords.capletId,
+              entryHash: postgres.capletBundleEntries.blobHash,
+              entrySize: postgres.capletBundleEntries.size,
+              blobHash: postgres.capletAssetBlobs.hash,
+              blobSize: postgres.capletAssetBlobs.size,
+              payload: postgres.capletAssetBlobs.payload,
+              objectKey: postgres.capletAssetBlobs.objectKey,
+              verificationStatus: postgres.capletAssetBlobs.verificationStatus,
+            })
+            .from(postgres.capletRecords)
+            .innerJoin(
+              postgres.capletBundleEntries,
+              eq(
+                postgres.capletBundleEntries.revisionKey,
+                postgres.capletRecords.currentRevisionKey,
+              ),
+            )
+            .leftJoin(
+              postgres.capletAssetBlobs,
+              eq(postgres.capletAssetBlobs.hash, postgres.capletBundleEntries.blobHash),
+            );
+    const checks = new Map<string, Promise<boolean>>();
+    const affectedRecordIds = new Set<string>();
+    await Promise.all(
+      references.map(async (reference) => {
+        if (
+          reference.blobHash !== reference.entryHash ||
+          reference.blobSize !== reference.entrySize ||
+          reference.verificationStatus !== "verified"
+        ) {
+          affectedRecordIds.add(reference.recordId);
+          return;
+        }
+        let check = checks.get(reference.entryHash);
+        if (!check) {
+          check = (async () => {
+            try {
+              if (reference.payload) {
+                const payload = Buffer.from(reference.payload);
+                return (
+                  payload.byteLength === reference.entrySize &&
+                  createHash("sha256").update(payload).digest("hex") === reference.entryHash
+                );
+              }
+              if (!reference.objectKey) return false;
+              await this.objectStore!.getVerified(reference.objectKey, {
+                hash: reference.entryHash,
+                size: reference.entrySize,
+              });
+              return true;
+            } catch {
+              return false;
+            }
+          })();
+          checks.set(reference.entryHash, check);
+        }
+        if (!(await check)) affectedRecordIds.add(reference.recordId);
+      }),
+    );
+    const ids = [...affectedRecordIds].sort();
+    return { ready: ids.length === 0, affectedRecordIds: ids };
   }
 
   async updateBundle(input: UpdateCapletBundleInput): Promise<CapletRecordView> {
@@ -668,6 +790,7 @@ export class CapletRecordStore {
 
   private async bundlePayloads(revision: CapletRevisionView): Promise<Map<string, Buffer>> {
     const hashes = [...new Set(revision.bundle.map((entry) => entry.hash))];
+    const expectedSizes = new Map(revision.bundle.map((entry) => [entry.hash, entry.size]));
     if (hashes.length === 0) return new Map();
     const rows =
       this.database.dialect === "sqlite"
@@ -682,20 +805,30 @@ export class CapletRecordStore {
             .where(inArray(postgres.capletAssetBlobs.hash, hashes));
     const payloads = new Map<string, Buffer>();
     for (const row of rows) {
-      const payload = row.payload
-        ? Buffer.from(row.payload)
-        : row.objectKey && this.objectStore
-          ? await this.objectStore.get(row.objectKey)
-          : undefined;
-      if (!payload) {
-        throw new CapletsError("SERVER_UNAVAILABLE", `Caplet asset ${row.hash} is unavailable.`);
-      }
-      const actualHash = createHash("sha256").update(payload).digest("hex");
-      if (actualHash !== row.hash || payload.byteLength !== row.size) {
+      if (row.verificationStatus !== "verified" || expectedSizes.get(row.hash) !== row.size) {
         throw new CapletsError(
           "INTERNAL_ERROR",
-          `Caplet asset ${row.hash} failed integrity verification.`,
+          `Caplet asset ${row.hash} has invalid stored metadata.`,
         );
+      }
+      let payload: Buffer | undefined;
+      if (row.payload) {
+        payload = Buffer.from(row.payload);
+        const actualHash = createHash("sha256").update(payload).digest("hex");
+        if (actualHash !== row.hash || payload.byteLength !== row.size) {
+          throw new CapletsError(
+            "INTERNAL_ERROR",
+            `Caplet asset ${row.hash} failed integrity verification.`,
+          );
+        }
+      } else if (row.objectKey && this.objectStore) {
+        payload = await this.objectStore.getVerified(row.objectKey, {
+          hash: row.hash,
+          size: row.size,
+        });
+      }
+      if (!payload) {
+        throw new CapletsError("SERVER_UNAVAILABLE", `Caplet asset ${row.hash} is unavailable.`);
       }
       payloads.set(row.hash, payload);
     }
@@ -953,45 +1086,50 @@ function importSqlite(db: SqliteHostDatabase, bundle: PreparedBundle): void {
 }
 
 function importManySqlite(db: SqliteHostDatabase, bundles: PreparedBundle[]): void {
-  db.transaction((transaction) => {
-    for (const bundle of bundles) {
-      if (
-        transaction
-          .select()
-          .from(sqlite.capletRecords)
-          .where(eq(sqlite.capletRecords.capletId, bundle.id))
-          .get()
-      ) {
-        throw new CapletsError("CONFIG_INVALID", `Caplet Record ${bundle.id} already exists.`);
-      }
-      transaction.insert(sqlite.capletRecords).values(recordValues(bundle)).run();
-      transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle)).run();
-      if (bundle.tags.length > 0) {
-        transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
-      }
-      if (bundle.backends.length > 0) {
-        transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
-      }
-      for (const entry of bundle.entries) {
-        ensureSqliteBlob(transaction, bundle, entry);
-        transaction.insert(sqlite.capletBundleEntries).values(entryValues(bundle, entry)).run();
-      }
+  db.transaction((transaction) => importManySqliteTransaction(transaction, bundles));
+}
+
+function importManySqliteTransaction(
+  transaction: SqliteHostTransaction,
+  bundles: PreparedBundle[],
+): void {
+  for (const bundle of bundles) {
+    if (
       transaction
-        .update(sqlite.capletRecords)
-        .set({ currentRevisionKey: bundle.revisionKey })
-        .where(eq(sqlite.capletRecords.recordKey, bundle.recordKey))
-        .run();
-      insertSqliteInstallation(transaction, bundle);
-      transaction
-        .insert(sqlite.operatorActivity)
-        .values(recordActivityValues(bundle, "caplet.import"))
-        .run();
+        .select()
+        .from(sqlite.capletRecords)
+        .where(eq(sqlite.capletRecords.capletId, bundle.id))
+        .get()
+    ) {
+      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${bundle.id} already exists.`);
     }
-    const generationHash = createHash("sha256")
-      .update(bundles.map((bundle) => bundle.contentHash).join("\0"))
-      .digest("hex");
-    advanceSqliteConfigGeneration(transaction, generationHash, bundles[0]!.actor);
-  });
+    transaction.insert(sqlite.capletRecords).values(recordValues(bundle)).run();
+    transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle)).run();
+    if (bundle.tags.length > 0) {
+      transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
+    }
+    if (bundle.backends.length > 0) {
+      transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
+    }
+    for (const entry of bundle.entries) {
+      ensureSqliteBlob(transaction, bundle, entry);
+      transaction.insert(sqlite.capletBundleEntries).values(entryValues(bundle, entry)).run();
+    }
+    transaction
+      .update(sqlite.capletRecords)
+      .set({ currentRevisionKey: bundle.revisionKey })
+      .where(eq(sqlite.capletRecords.recordKey, bundle.recordKey))
+      .run();
+    insertSqliteInstallation(transaction, bundle);
+    transaction
+      .insert(sqlite.operatorActivity)
+      .values(recordActivityValues(bundle, "caplet.import"))
+      .run();
+  }
+  const generationHash = createHash("sha256")
+    .update(bundles.map((bundle) => bundle.contentHash).join("\0"))
+    .digest("hex");
+  advanceSqliteConfigGeneration(transaction, generationHash, bundles[0]!.actor);
 }
 
 async function importPostgres(db: PostgresHostDatabase, bundle: PreparedBundle): Promise<void> {
@@ -1002,42 +1140,49 @@ async function importManyPostgres(
   db: PostgresHostDatabase,
   bundles: PreparedBundle[],
 ): Promise<void> {
-  await db.transaction(async (transaction) => {
-    for (const bundle of bundles) {
-      const [existing] = await transaction
-        .select()
-        .from(postgres.capletRecords)
-        .where(eq(postgres.capletRecords.capletId, bundle.id))
-        .limit(1);
-      if (existing) {
-        throw new CapletsError("CONFIG_INVALID", `Caplet Record ${bundle.id} already exists.`);
-      }
-      await transaction.insert(postgres.capletRecords).values(recordValues(bundle));
-      await transaction.insert(postgres.capletRevisions).values(revisionValues(bundle));
-      if (bundle.tags.length > 0) {
-        await transaction.insert(postgres.capletRevisionTags).values(tagValues(bundle));
-      }
-      if (bundle.backends.length > 0) {
-        await transaction.insert(postgres.capletRevisionBackends).values(backendValues(bundle));
-      }
-      for (const entry of bundle.entries) {
-        await ensurePostgresBlob(transaction, bundle, entry);
-        await transaction.insert(postgres.capletBundleEntries).values(entryValues(bundle, entry));
-      }
-      await transaction
-        .update(postgres.capletRecords)
-        .set({ currentRevisionKey: bundle.revisionKey })
-        .where(eq(postgres.capletRecords.recordKey, bundle.recordKey));
-      await insertPostgresInstallation(transaction, bundle);
-      await transaction
-        .insert(postgres.operatorActivity)
-        .values(recordActivityValues(bundle, "caplet.import"));
+  await db.transaction(
+    async (transaction) => await importManyPostgresTransaction(transaction, bundles),
+  );
+}
+
+async function importManyPostgresTransaction(
+  transaction: PostgresHostTransaction,
+  bundles: PreparedBundle[],
+): Promise<void> {
+  for (const bundle of bundles) {
+    const [existing] = await transaction
+      .select()
+      .from(postgres.capletRecords)
+      .where(eq(postgres.capletRecords.capletId, bundle.id))
+      .limit(1);
+    if (existing) {
+      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${bundle.id} already exists.`);
     }
-    const generationHash = createHash("sha256")
-      .update(bundles.map((bundle) => bundle.contentHash).join("\0"))
-      .digest("hex");
-    await advancePostgresConfigGeneration(transaction, generationHash, bundles[0]!.actor);
-  });
+    await transaction.insert(postgres.capletRecords).values(recordValues(bundle));
+    await transaction.insert(postgres.capletRevisions).values(revisionValues(bundle));
+    if (bundle.tags.length > 0) {
+      await transaction.insert(postgres.capletRevisionTags).values(tagValues(bundle));
+    }
+    if (bundle.backends.length > 0) {
+      await transaction.insert(postgres.capletRevisionBackends).values(backendValues(bundle));
+    }
+    for (const entry of bundle.entries) {
+      await ensurePostgresBlob(transaction, bundle, entry);
+      await transaction.insert(postgres.capletBundleEntries).values(entryValues(bundle, entry));
+    }
+    await transaction
+      .update(postgres.capletRecords)
+      .set({ currentRevisionKey: bundle.revisionKey })
+      .where(eq(postgres.capletRecords.recordKey, bundle.recordKey));
+    await insertPostgresInstallation(transaction, bundle);
+    await transaction
+      .insert(postgres.operatorActivity)
+      .values(recordActivityValues(bundle, "caplet.import"));
+  }
+  const generationHash = createHash("sha256")
+    .update(bundles.map((bundle) => bundle.contentHash).join("\0"))
+    .digest("hex");
+  await advancePostgresConfigGeneration(transaction, generationHash, bundles[0]!.actor);
 }
 
 function updateSqlite(
@@ -2331,7 +2476,10 @@ function entryValues(bundle: PreparedBundle, entry: PreparedBundle["entries"][nu
   };
 }
 
-function getSqlite(db: SqliteHostDatabase, id: string): CapletRecordView | undefined {
+function getSqlite(
+  db: SqliteHostDatabase | SqliteHostTransaction,
+  id: string,
+): CapletRecordView | undefined {
   const row = db
     .select()
     .from(sqlite.capletRecords)
@@ -2366,7 +2514,7 @@ function getSqlite(db: SqliteHostDatabase, id: string): CapletRecordView | undef
 }
 
 async function getPostgres(
-  db: PostgresHostDatabase,
+  db: PostgresHostDatabase | PostgresHostTransaction,
   id: string,
 ): Promise<CapletRecordView | undefined> {
   const [row] = await db

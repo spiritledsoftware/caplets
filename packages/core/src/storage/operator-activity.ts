@@ -4,7 +4,12 @@ import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  SqliteHostDatabase,
+} from "./types";
 
 export type OperatorActivityOutcome = "success" | "failure";
 
@@ -121,6 +126,16 @@ export class OperatorActivityStore {
       }
     });
   }
+  importLegacyEntriesInTransaction(
+    entries: OperatorActivityEntry[],
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const rows = validateLegacyActivityEntries(entries);
+    if (rows.length === 0) return;
+    return transaction.dialect === "sqlite"
+      ? importLegacyActivitySqlite(transaction.db, rows)
+      : importLegacyActivityPostgres(transaction.db, rows);
+  }
 
   async verifyLegacyEntries(entries: OperatorActivityEntry[]): Promise<void> {
     const rows = validateLegacyActivityEntries(entries);
@@ -134,6 +149,17 @@ export class OperatorActivityStore {
         "Operator Activity failed post-migration verification.",
       );
     }
+  }
+  verifyLegacyEntriesInTransaction(
+    entries: OperatorActivityEntry[],
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const rows = validateLegacyActivityEntries(entries);
+    if (transaction.dialect === "sqlite") {
+      verifyLegacyActivityPending(inspectLegacyActivitySqlite(transaction.db, rows));
+      return;
+    }
+    return inspectLegacyActivityPostgres(transaction.db, rows).then(verifyLegacyActivityPending);
   }
 
   async list(input: ListOperatorActivityInput = {}): Promise<OperatorActivityPage> {
@@ -241,6 +267,27 @@ type SqliteActivityDatabase =
 type PostgresActivityDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
+function importLegacyActivitySqlite(database: SqliteActivityDatabase, rows: ActivityRow[]): void {
+  const pending = inspectLegacyActivitySqlite(database, rows);
+  if (pending.length > 0) database.insert(sqlite.operatorActivity).values(pending).run();
+}
+
+async function importLegacyActivityPostgres(
+  database: PostgresActivityDatabase,
+  rows: ActivityRow[],
+): Promise<void> {
+  const pending = await inspectLegacyActivityPostgres(database, rows);
+  if (pending.length > 0) await database.insert(postgres.operatorActivity).values(pending);
+}
+
+function verifyLegacyActivityPending(pending: ActivityRow[]): void {
+  if (pending.length > 0) {
+    throw new CapletsError(
+      "INTERNAL_ERROR",
+      "Operator Activity failed post-migration verification.",
+    );
+  }
+}
 
 function validateLegacyActivityEntries(entries: OperatorActivityEntry[]): ActivityRow[] {
   const ids = new Set<string>();

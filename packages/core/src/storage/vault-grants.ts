@@ -5,7 +5,12 @@ import { CapletsError } from "../errors";
 import { requireOperator, type OperatorPrincipal } from "./installations";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  SqliteHostDatabase,
+} from "./types";
 
 export type StoredVaultGrant = {
   subjectKind: "record" | "file";
@@ -116,36 +121,28 @@ export class VaultGrantStore {
     const validated = validateLegacyRecordGrantImports(grants);
     if (validated.length === 0) return;
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) => {
-        const rows = assertLegacyRecordGrantsMatchSqlite(transaction, validated, operatorId);
-        const pending = rows.filter((row) => row.existing === undefined);
-        if (pending.length > 0) {
-          transaction
-            .insert(sqlite.vaultAccessGrants)
-            .values(pending.map((row) => row.values))
-            .run();
-        }
-      });
+      this.database.db.transaction((transaction) =>
+        importLegacyRecordGrantsSqlite(transaction, validated, operatorId),
+      );
       return;
     }
-    await this.database.db.transaction(async (transaction) => {
-      for (const grant of validated) {
-        await transaction.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
-            "vault-legacy-grant",
-            grant.capletId,
-            grant.referenceName,
-          ])}, 0))`,
-        );
-      }
-      const rows = await assertLegacyRecordGrantsMatchPostgres(transaction, validated, operatorId);
-      const pending = rows.filter((row) => row.existing === undefined);
-      if (pending.length > 0) {
-        await transaction
-          .insert(postgres.vaultAccessGrants)
-          .values(pending.map((row) => row.values));
-      }
-    });
+    await this.database.db.transaction(
+      async (transaction) =>
+        await importLegacyRecordGrantsPostgres(transaction, validated, operatorId),
+    );
+  }
+
+  importLegacyRecordGrantsInTransaction(
+    grants: LegacyRecordVaultGrantImport[],
+    operator: OperatorPrincipal,
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const operatorId = requireOperator(operator);
+    const validated = validateLegacyRecordGrantImports(grants);
+    if (validated.length === 0) return;
+    return transaction.dialect === "sqlite"
+      ? importLegacyRecordGrantsSqlite(transaction.db, validated, operatorId)
+      : importLegacyRecordGrantsPostgres(transaction.db, validated, operatorId);
   }
 
   async verifyLegacyRecordGrants(
@@ -173,6 +170,17 @@ export class VaultGrantStore {
         );
       }
     }
+  }
+  verifyLegacyRecordGrantsInTransaction(
+    grants: LegacyRecordVaultGrantImport[],
+    operator: OperatorPrincipal,
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const operatorId = requireOperator(operator);
+    const validated = validateLegacyRecordGrantImports(grants);
+    return transaction.dialect === "sqlite"
+      ? verifyLegacyRecordGrantsSqlite(transaction.db, validated, operatorId)
+      : verifyLegacyRecordGrantsPostgres(transaction.db, validated, operatorId);
   }
 
   async list(capletId?: string): Promise<StoredVaultGrant[]> {
@@ -231,6 +239,63 @@ type SqliteVaultGrantDatabase =
 type PostgresVaultGrantDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
+function importLegacyRecordGrantsSqlite(
+  database: SqliteVaultGrantDatabase,
+  grants: LegacyRecordVaultGrantImport[],
+  operatorId: string,
+): void {
+  const rows = assertLegacyRecordGrantsMatchSqlite(database, grants, operatorId);
+  const pending = rows.filter((row) => row.existing === undefined);
+  if (pending.length > 0) {
+    database
+      .insert(sqlite.vaultAccessGrants)
+      .values(pending.map((row) => row.values))
+      .run();
+  }
+}
+
+async function importLegacyRecordGrantsPostgres(
+  database: PostgresVaultGrantDatabase,
+  grants: LegacyRecordVaultGrantImport[],
+  operatorId: string,
+): Promise<void> {
+  for (const grant of grants) {
+    await database.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
+        "vault-legacy-grant",
+        grant.capletId,
+        grant.referenceName,
+      ])}, 0))`,
+    );
+  }
+  const rows = await assertLegacyRecordGrantsMatchPostgres(database, grants, operatorId);
+  const pending = rows.filter((row) => row.existing === undefined);
+  if (pending.length > 0) {
+    await database.insert(postgres.vaultAccessGrants).values(pending.map((row) => row.values));
+  }
+}
+
+function verifyLegacyRecordGrantsSqlite(
+  database: SqliteVaultGrantDatabase,
+  grants: LegacyRecordVaultGrantImport[],
+  operatorId: string,
+): void {
+  const rows = assertLegacyRecordGrantsMatchSqlite(database, grants, operatorId);
+  if (rows.some((row) => row.existing === undefined)) {
+    throw new CapletsError("INTERNAL_ERROR", "A Vault grant failed post-migration verification.");
+  }
+}
+
+async function verifyLegacyRecordGrantsPostgres(
+  database: PostgresVaultGrantDatabase,
+  grants: LegacyRecordVaultGrantImport[],
+  operatorId: string,
+): Promise<void> {
+  const rows = await assertLegacyRecordGrantsMatchPostgres(database, grants, operatorId);
+  if (rows.some((row) => row.existing === undefined)) {
+    throw new CapletsError("INTERNAL_ERROR", "A Vault grant failed post-migration verification.");
+  }
+}
 
 function validateLegacyRecordGrantImports(
   grants: LegacyRecordVaultGrantImport[],

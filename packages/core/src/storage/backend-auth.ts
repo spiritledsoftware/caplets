@@ -9,7 +9,12 @@ import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
-import type { HostDatabase, PostgresHostDatabase, SqliteHostDatabase } from "./types";
+import type {
+  HostDatabase,
+  HostDatabaseTransaction,
+  PostgresHostDatabase,
+  SqliteHostDatabase,
+} from "./types";
 
 export type BackendAuthMutationOptions = {
   expectedGeneration?: number | undefined;
@@ -91,48 +96,26 @@ export class BackendAuthStateStore {
     if (validated.length === 0) return;
     const timestamp = new Date().toISOString();
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) => {
-        assertLegacyBundlesMatchSqlite(transaction, validated);
-        const values = validated
-          .filter(
-            (bundle) =>
-              !transaction
-                .select({ server: sqlite.backendAuthStates.server })
-                .from(sqlite.backendAuthStates)
-                .where(eq(sqlite.backendAuthStates.server, bundle.server))
-                .get(),
-          )
-          .map((bundle) => ({
-            server: bundle.server,
-            generation: 1,
-            tokenBundle: bundle,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          }));
-        if (values.length > 0) {
-          transaction.insert(sqlite.backendAuthStates).values(values).run();
-        }
-      });
+      this.database.db.transaction((transaction) =>
+        importLegacyBundlesSqlite(transaction, validated, timestamp),
+      );
       return;
     }
-    await this.database.db.transaction(async (transaction) => {
-      for (const bundle of validated) await lockPostgresState(transaction, bundle.server);
-      await assertLegacyBundlesMatchPostgres(transaction, validated);
-      const existing = await transaction
-        .select({ server: postgres.backendAuthStates.server })
-        .from(postgres.backendAuthStates);
-      const existingServers = new Set(existing.map((row) => row.server));
-      const values = validated
-        .filter((bundle) => !existingServers.has(bundle.server))
-        .map((bundle) => ({
-          server: bundle.server,
-          generation: 1,
-          tokenBundle: bundle,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        }));
-      if (values.length > 0) await transaction.insert(postgres.backendAuthStates).values(values);
-    });
+    await this.database.db.transaction(
+      async (transaction) => await importLegacyBundlesPostgres(transaction, validated, timestamp),
+    );
+  }
+
+  importLegacyBundlesInTransaction(
+    bundles: StoredOAuthTokenBundle[],
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = validateLegacyBundles(bundles);
+    if (validated.length === 0) return;
+    const timestamp = new Date().toISOString();
+    return transaction.dialect === "sqlite"
+      ? importLegacyBundlesSqlite(transaction.db, validated, timestamp)
+      : importLegacyBundlesPostgres(transaction.db, validated, timestamp);
   }
 
   async verifyLegacyBundles(bundles: StoredOAuthTokenBundle[]): Promise<void> {
@@ -145,6 +128,15 @@ export class BackendAuthStateStore {
         );
       }
     }
+  }
+  verifyLegacyBundlesInTransaction(
+    bundles: StoredOAuthTokenBundle[],
+    transaction: HostDatabaseTransaction,
+  ): void | Promise<void> {
+    const validated = validateLegacyBundles(bundles);
+    return transaction.dialect === "sqlite"
+      ? verifyLegacyBundlesSqlite(transaction.db, validated)
+      : verifyLegacyBundlesPostgres(transaction.db, validated);
   }
 
   async deleteTokenBundle(
@@ -165,6 +157,100 @@ type SqliteBackendAuthDatabase =
 type PostgresBackendAuthDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
+function importLegacyBundlesSqlite(
+  database: SqliteBackendAuthDatabase,
+  bundles: StoredOAuthTokenBundle[],
+  timestamp: string,
+): void {
+  assertLegacyBundlesMatchSqlite(database, bundles);
+  const values = bundles
+    .filter(
+      (bundle) =>
+        !database
+          .select({ server: sqlite.backendAuthStates.server })
+          .from(sqlite.backendAuthStates)
+          .where(eq(sqlite.backendAuthStates.server, bundle.server))
+          .get(),
+    )
+    .map((bundle) => ({
+      server: bundle.server,
+      generation: 1,
+      tokenBundle: bundle,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+  if (values.length > 0) database.insert(sqlite.backendAuthStates).values(values).run();
+}
+
+async function importLegacyBundlesPostgres(
+  database: Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0],
+  bundles: StoredOAuthTokenBundle[],
+  timestamp: string,
+): Promise<void> {
+  for (const bundle of bundles) await lockPostgresState(database, bundle.server);
+  await assertLegacyBundlesMatchPostgres(database, bundles);
+  const existing = await database
+    .select({ server: postgres.backendAuthStates.server })
+    .from(postgres.backendAuthStates);
+  const existingServers = new Set(existing.map((row) => row.server));
+  const values = bundles
+    .filter((bundle) => !existingServers.has(bundle.server))
+    .map((bundle) => ({
+      server: bundle.server,
+      generation: 1,
+      tokenBundle: bundle,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+  if (values.length > 0) await database.insert(postgres.backendAuthStates).values(values);
+}
+
+function verifyLegacyBundlesSqlite(
+  database: SqliteBackendAuthDatabase,
+  bundles: StoredOAuthTokenBundle[],
+): void {
+  for (const bundle of bundles) {
+    const row = database
+      .select()
+      .from(sqlite.backendAuthStates)
+      .where(eq(sqlite.backendAuthStates.server, bundle.server))
+      .get();
+    if (
+      !row ||
+      stableJsonStringify(tokenBundleView(row, bundle.server).bundle) !==
+        stableJsonStringify(bundle)
+    ) {
+      throw legacyBundleVerificationError(bundle.server);
+    }
+  }
+}
+
+async function verifyLegacyBundlesPostgres(
+  database: PostgresBackendAuthDatabase,
+  bundles: StoredOAuthTokenBundle[],
+): Promise<void> {
+  for (const bundle of bundles) {
+    const [row] = await database
+      .select()
+      .from(postgres.backendAuthStates)
+      .where(eq(postgres.backendAuthStates.server, bundle.server))
+      .limit(1);
+    if (
+      !row ||
+      stableJsonStringify(tokenBundleView(row, bundle.server).bundle) !==
+        stableJsonStringify(bundle)
+    ) {
+      throw legacyBundleVerificationError(bundle.server);
+    }
+  }
+}
+
+function legacyBundleVerificationError(server: string): CapletsError {
+  return new CapletsError(
+    "INTERNAL_ERROR",
+    `Backend auth state for ${server} failed post-migration verification.`,
+  );
+}
 
 function validateLegacyBundles(bundles: StoredOAuthTokenBundle[]): StoredOAuthTokenBundle[] {
   const servers = new Set<string>();
