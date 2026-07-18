@@ -150,7 +150,7 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("uses issued remote credentials for protected self-hosted route classes", async () => {
+  it("treats operator credentials as a superset of access credentials", async () => {
     const context = testContext();
     const engine = new CapletsEngine({
       configPath: context.configPath,
@@ -226,13 +226,13 @@ describe("createHttpServeApp", () => {
     const operatorAttach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
       headers: { authorization: `Bearer ${operatorCredentials.accessToken}` },
     });
-    expect(operatorAttach.status).toBe(403);
+    expect(operatorAttach.status).toBe(200);
 
     const operatorProjectBinding = await app.request(
       "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
       { headers: { authorization: `Bearer ${operatorCredentials.accessToken}` } },
     );
-    expect(operatorProjectBinding.status).toBe(403);
+    expect(operatorProjectBinding.status).toBe(200);
 
     const operatorMcp = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
@@ -253,7 +253,7 @@ describe("createHttpServeApp", () => {
         },
       }),
     });
-    expect(operatorMcp.status).toBe(403);
+    expect(operatorMcp.status).toBe(200);
     await engine.close();
   });
 
@@ -2068,7 +2068,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("rechecks role loss after a queued first heartbeat commits but before the next mutation starts", async () => {
+  it("rechecks credential revocation after a queued first heartbeat commits but before the next mutation starts", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2107,7 +2107,7 @@ describe("createHttpServeApp", () => {
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         workspaces.deferNextWrite();
         workspaces.runAfterNextWritePostCommit(() => {
-          store.changeClientRole(credentials.clientId, "operator");
+          store.revokeClient(credentials.clientId);
         });
         const closed = waitForSocketClose(socket);
         socket.send(
@@ -2172,7 +2172,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("rejects in-flight heartbeat state after post-write durable role loss", async () => {
+  it("rejects in-flight heartbeat state after post-write credential revocation", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2221,7 +2221,7 @@ describe("createHttpServeApp", () => {
           }),
         );
         await withTimeout(workspaces.nextWriteStarted, "start in-flight candidate lease write");
-        store.changeClientRole(credentials.clientId, "operator");
+        store.revokeClient(credentials.clientId);
         workspaces.releaseNextWrite();
 
         await expect(withTimeout(closed, "close post-write demoted socket")).resolves.toMatchObject(
@@ -2256,7 +2256,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("does not return a successful HTTP end after post-write role loss", async () => {
+  it("does not return a successful HTTP end after post-write credential revocation", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2297,7 +2297,7 @@ describe("createHttpServeApp", () => {
         },
       );
       await workspaces.nextWriteStarted;
-      store.changeClientRole(credentials.clientId, "operator");
+      store.revokeClient(credentials.clientId);
       workspaces.releaseNextWrite();
 
       expect((await ending).status).toBe(403);
@@ -2378,7 +2378,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("does not acknowledge a socket end after post-write durable role loss", async () => {
+  it("does not acknowledge a socket end after post-write credential revocation", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2430,7 +2430,7 @@ describe("createHttpServeApp", () => {
           }),
         );
         await withTimeout(workspaces.nextWriteStarted, "start in-flight terminal lease write");
-        store.changeClientRole(credentials.clientId, "operator");
+        store.revokeClient(credentials.clientId);
         workspaces.releaseNextWrite();
 
         await expect(

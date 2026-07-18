@@ -20,13 +20,14 @@ import {
 } from "../vault/crypto";
 import { normalizeRemoteProfileHostUrl } from "./options";
 import { createPairingCode, parsePairingCode, randomToken } from "./pairing";
-import type {
-  IssuedRemoteClientCredentials,
-  RemoteClientRole,
-  RemoteClientStatus,
-  RemotePendingLoginStatus,
-  RemotePendingLoginState,
-  ValidatedRemoteClient,
+import {
+  remoteClientRoleSatisfies,
+  type IssuedRemoteClientCredentials,
+  type RemoteClientRole,
+  type RemoteClientStatus,
+  type RemotePendingLoginStatus,
+  type RemotePendingLoginState,
+  type ValidatedRemoteClient,
 } from "./server-credentials";
 
 export type RemoteServerCredentialStoreOptions = {
@@ -489,7 +490,10 @@ export class RemoteServerCredentialStore {
       }
 
       const role = flow.grantedRole ?? flow.requestedRole;
-      if (input.requiredRole !== undefined && role !== input.requiredRole) {
+      if (
+        input.requiredRole !== undefined &&
+        !remoteClientRoleSatisfies(role, input.requiredRole)
+      ) {
         throw new CapletsError("AUTH_FAILED", `${input.requiredRole} role is required.`);
       }
 

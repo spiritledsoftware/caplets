@@ -15,13 +15,14 @@ import {
   type RemoteServerCredentialState,
   type ValidateAccessTokenInput,
 } from "../remote/server-credential-store";
-import type {
-  IssuedRemoteClientCredentials,
-  RemoteClientRole,
-  RemoteClientStatus,
-  RemotePendingLoginState,
-  RemotePendingLoginStatus,
-  ValidatedRemoteClient,
+import {
+  remoteClientRoleSatisfies,
+  type IssuedRemoteClientCredentials,
+  type RemoteClientRole,
+  type RemoteClientStatus,
+  type RemotePendingLoginState,
+  type RemotePendingLoginStatus,
+  type ValidatedRemoteClient,
 } from "../remote/server-credentials";
 import { decryptVaultValue, encryptVaultValue, type VaultEncryptedRecord } from "../vault/crypto";
 import { stableJsonStringify } from "../stable-json";
@@ -428,7 +429,7 @@ export class RemoteSecurityStore {
         );
       }
       const role = flow.grantedRole ?? flow.requestedRole;
-      if (input.requiredRole !== undefined && role !== input.requiredRole)
+      if (input.requiredRole !== undefined && !remoteClientRoleSatisfies(role, input.requiredRole))
         throw new CapletsError("AUTH_FAILED", `${input.requiredRole} role is required.`);
       const accessToken = `cap_remote_access_${randomToken(32)}`;
       const refreshToken = `cap_remote_refresh_${randomToken(32)}`;

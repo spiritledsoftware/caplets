@@ -61,7 +61,11 @@ import { RemoteServerCredentialStore } from "../remote/server-credential-store";
 import type { RemoteSecurityStore } from "../storage/remote-security";
 import type { BackendAuthStateStore } from "../storage/backend-auth";
 import type { HostStorage } from "../storage/database";
-import type { RemoteClientRole, ValidatedRemoteClient } from "../remote/server-credentials";
+import {
+  remoteClientRoleSatisfies,
+  type RemoteClientRole,
+  type ValidatedRemoteClient,
+} from "../remote/server-credentials";
 import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
@@ -2057,7 +2061,11 @@ export function createHttpServeApp(
     const client = (await remoteCredentialStore.listClients()).find(
       (candidate) => candidate.clientId === ownerKey,
     );
-    return client?.role === "access" && client.revokedAt === undefined;
+    return (
+      client !== undefined &&
+      remoteClientRoleSatisfies(client.role, "access") &&
+      client.revokedAt === undefined
+    );
   }
 
   async function terminalizeProjectBindingRecordInQueue(
@@ -3288,7 +3296,7 @@ function routeAuth(
         ),
         accessToken: token,
       });
-      if (requiredRole !== undefined && client.role !== requiredRole) {
+      if (requiredRole !== undefined && !remoteClientRoleSatisfies(client.role, requiredRole)) {
         return c.text(`Forbidden: ${requiredRole} role required`, 403);
       }
       retainAuthenticatedClient?.(c.req.raw, client);
