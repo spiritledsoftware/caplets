@@ -1,3 +1,4 @@
+import BetterSqlite3 from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +48,65 @@ describe("host storage", () => {
     } finally {
       await storage.close();
     }
+  });
+
+  it("tracks SQLite migrations with integer keys and immutable hashes", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-storage-"));
+    directories.push(directory);
+    const path = join(directory, "caplets.sqlite3");
+    const config = { type: "sqlite" as const, path };
+
+    await migrateHostStorage(config);
+    const database = new BetterSqlite3(path);
+    try {
+      const idColumn = (
+        database.pragma("table_info(caplets_migrations)") as Array<{
+          name: string;
+          type: string;
+          pk: number;
+        }>
+      ).find((column) => column.name === "id");
+      expect(idColumn).toMatchObject({ type: "INTEGER", pk: 1 });
+      const rows = database
+        .prepare("SELECT id, hash FROM caplets_migrations ORDER BY created_at")
+        .all() as Array<{ id: number; hash: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((row) => Number.isInteger(row.id))).toBe(true);
+      database
+        .prepare(
+          "UPDATE caplets_migrations SET hash = 'tampered' WHERE created_at = (SELECT MIN(created_at) FROM caplets_migrations)",
+        )
+        .run();
+    } finally {
+      database.close();
+    }
+
+    await expect(migrateHostStorage(config)).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
+  });
+
+  it("rejects gaps in SQLite migration history", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-storage-"));
+    directories.push(directory);
+    const path = join(directory, "caplets.sqlite3");
+    const config = { type: "sqlite" as const, path };
+
+    await migrateHostStorage(config);
+    const database = new BetterSqlite3(path);
+    try {
+      database
+        .prepare(
+          "DELETE FROM caplets_migrations WHERE created_at = (SELECT MIN(created_at) FROM caplets_migrations)",
+        )
+        .run();
+    } finally {
+      database.close();
+    }
+
+    await expect(migrateHostStorage(config)).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
   });
 
   it("rejects invalid and unavailable PostgreSQL storage", async () => {

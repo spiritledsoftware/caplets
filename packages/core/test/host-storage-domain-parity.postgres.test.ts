@@ -481,18 +481,19 @@ postgresIt(
   "shares host identity, enforces node parity, notifies peers, and fences expired leases",
   async () => {
     const { first, second } = await openPair("coordination");
-    const now = new Date();
+    const farPast = new Date("1900-01-01T00:00:00.000Z");
+    const farFuture = new Date("2999-01-01T00:00:00.000Z");
     const nodeA = await first.coordination.registerNode({
       nodeId: "node-a",
       globalFileManifest: "manifest-a",
       runtimeFingerprint: "runtime-a",
-      now,
+      now: farPast,
     });
     const nodeB = await second.coordination.registerNode({
       nodeId: "node-b",
       globalFileManifest: "manifest-a",
       runtimeFingerprint: "runtime-a",
-      now,
+      now: farFuture,
     });
     expect(nodeB).toMatchObject({ hostId: nodeA.hostId, ready: true, conflict: null });
     await expect(first.coordination.activeNodeCount(60_000)).resolves.toBe(2);
@@ -501,7 +502,7 @@ postgresIt(
         nodeId: "node-b",
         globalFileManifest: "manifest-b",
         runtimeFingerprint: "runtime-a",
-        now,
+        now: farPast,
       }),
     ).resolves.toMatchObject({ ready: false, conflict: "global_file_manifest" });
     await expect(
@@ -509,7 +510,7 @@ postgresIt(
         nodeId: "node-b",
         globalFileManifest: "manifest-a",
         runtimeFingerprint: "runtime-b",
-        now,
+        now: farFuture,
       }),
     ).resolves.toMatchObject({ ready: false, conflict: "runtime_fingerprint" });
     await expect(second.coordination.nodeReady("node-b")).resolves.toBe(false);
@@ -518,7 +519,7 @@ postgresIt(
         nodeId: "node-b",
         globalFileManifest: "manifest-a",
         runtimeFingerprint: "runtime-a",
-        now,
+        now: farPast,
       }),
     ).resolves.toMatchObject({ ready: true, conflict: null });
 
@@ -543,8 +544,6 @@ postgresIt(
     await expect(first.coordination.currentConfigGeneration()).resolves.toBe(1);
 
     const authority = new Pool({ connectionString });
-    const farPast = new Date("1900-01-01T00:00:00.000Z");
-    const farFuture = new Date("2999-01-01T00:00:00.000Z");
     const leaseTtlMs = 250;
     try {
       const beforeAcquire = (

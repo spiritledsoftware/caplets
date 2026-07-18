@@ -283,19 +283,9 @@ export class CapletRecordStore {
   }
 
   async list(): Promise<CapletRecordView[]> {
-    const ids =
-      this.database.dialect === "sqlite"
-        ? this.database.db
-            .select({ id: sqlite.capletRecords.capletId })
-            .from(sqlite.capletRecords)
-            .orderBy(asc(sqlite.capletRecords.capletId))
-            .all()
-        : await this.database.db
-            .select({ id: postgres.capletRecords.capletId })
-            .from(postgres.capletRecords)
-            .orderBy(asc(postgres.capletRecords.capletId));
-    const records = await Promise.all(ids.map(async ({ id }) => await this.get(id)));
-    return records.filter((record): record is CapletRecordView => record !== undefined);
+    return this.database.dialect === "sqlite"
+      ? listSqlite(this.database.db)
+      : await listPostgres(this.database.db);
   }
 
   async collectAssetGarbage(input: {
@@ -2474,6 +2464,112 @@ function entryValues(bundle: PreparedBundle, entry: PreparedBundle["entries"][nu
     size: entry.size,
     executable: entry.executable,
   };
+}
+
+function listSqlite(db: SqliteHostDatabase): CapletRecordView[] {
+  const records = db
+    .select()
+    .from(sqlite.capletRecords)
+    .orderBy(asc(sqlite.capletRecords.capletId))
+    .all();
+  const revisionKeys = records.flatMap(({ currentRevisionKey }) =>
+    currentRevisionKey === null ? [] : [currentRevisionKey],
+  );
+  if (revisionKeys.length === 0) return [];
+  const revisions = db
+    .select()
+    .from(sqlite.capletRevisions)
+    .where(inArray(sqlite.capletRevisions.revisionKey, revisionKeys))
+    .all();
+  const tags = db
+    .select()
+    .from(sqlite.capletRevisionTags)
+    .where(inArray(sqlite.capletRevisionTags.revisionKey, revisionKeys))
+    .orderBy(asc(sqlite.capletRevisionTags.position))
+    .all();
+  const backends = db
+    .select()
+    .from(sqlite.capletRevisionBackends)
+    .where(inArray(sqlite.capletRevisionBackends.revisionKey, revisionKeys))
+    .orderBy(asc(sqlite.capletRevisionBackends.position))
+    .all();
+  const entries = db
+    .select()
+    .from(sqlite.capletBundleEntries)
+    .where(inArray(sqlite.capletBundleEntries.revisionKey, revisionKeys))
+    .orderBy(asc(sqlite.capletBundleEntries.path))
+    .all();
+  return recordViews(records, revisions, tags, backends, entries);
+}
+
+async function listPostgres(db: PostgresHostDatabase): Promise<CapletRecordView[]> {
+  const records = await db
+    .select()
+    .from(postgres.capletRecords)
+    .orderBy(asc(postgres.capletRecords.capletId));
+  const revisionKeys = records.flatMap(({ currentRevisionKey }) =>
+    currentRevisionKey === null ? [] : [currentRevisionKey],
+  );
+  if (revisionKeys.length === 0) return [];
+  const revisions = await db
+    .select()
+    .from(postgres.capletRevisions)
+    .where(inArray(postgres.capletRevisions.revisionKey, revisionKeys));
+  const [tags, backends, entries] = await Promise.all([
+    db
+      .select()
+      .from(postgres.capletRevisionTags)
+      .where(inArray(postgres.capletRevisionTags.revisionKey, revisionKeys))
+      .orderBy(asc(postgres.capletRevisionTags.position)),
+    db
+      .select()
+      .from(postgres.capletRevisionBackends)
+      .where(inArray(postgres.capletRevisionBackends.revisionKey, revisionKeys))
+      .orderBy(asc(postgres.capletRevisionBackends.position)),
+    db
+      .select()
+      .from(postgres.capletBundleEntries)
+      .where(inArray(postgres.capletBundleEntries.revisionKey, revisionKeys))
+      .orderBy(asc(postgres.capletBundleEntries.path)),
+  ]);
+  return recordViews(records, revisions, tags, backends, entries);
+}
+
+function recordViews(
+  records: Array<typeof sqlite.capletRecords.$inferSelect>,
+  revisions: Array<typeof sqlite.capletRevisions.$inferSelect>,
+  tags: Array<typeof sqlite.capletRevisionTags.$inferSelect>,
+  backends: Array<typeof sqlite.capletRevisionBackends.$inferSelect>,
+  entries: Array<typeof sqlite.capletBundleEntries.$inferSelect>,
+): CapletRecordView[] {
+  const revisionsByKey = new Map(revisions.map((revision) => [revision.revisionKey, revision]));
+  const tagsByRevision = groupByRevisionKey(tags);
+  const backendsByRevision = groupByRevisionKey(backends);
+  const entriesByRevision = groupByRevisionKey(entries);
+  return records.flatMap((record) => {
+    if (record.currentRevisionKey === null) return [];
+    const revision = revisionsByKey.get(record.currentRevisionKey);
+    if (!revision) throw missingCurrentRevision(record.capletId);
+    return [
+      recordView(
+        record,
+        revision,
+        tagsByRevision.get(revision.revisionKey) ?? [],
+        backendsByRevision.get(revision.revisionKey) ?? [],
+        entriesByRevision.get(revision.revisionKey) ?? [],
+      ),
+    ];
+  });
+}
+
+function groupByRevisionKey<T extends { revisionKey: string }>(rows: T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const group = grouped.get(row.revisionKey);
+    if (group) group.push(row);
+    else grouped.set(row.revisionKey, [row]);
+  }
+  return grouped;
 }
 
 function getSqlite(

@@ -36,7 +36,12 @@ function migrateSqliteExclusively(
   database: Extract<HostDatabase, { dialect: "sqlite" }>,
   appliedAt: string,
 ): void {
+  type AppliedMigration = {
+    hash: string;
+    created_at: number;
+  };
   type Statement = {
+    all(...params: unknown[]): unknown[];
     get(...params: unknown[]): unknown;
     run(...params: unknown[]): unknown;
   };
@@ -63,13 +68,38 @@ function migrateSqliteExclusively(
         }
       }
       client.exec(
-        "CREATE TABLE IF NOT EXISTS caplets_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)",
+        "CREATE TABLE IF NOT EXISTS caplets_migrations (id INTEGER PRIMARY KEY, hash text NOT NULL, created_at numeric NOT NULL)",
       );
-      const last = client
-        .prepare("SELECT created_at FROM caplets_migrations ORDER BY created_at DESC LIMIT 1")
-        .get() as { created_at?: number } | undefined;
+      const appliedMigrations = client
+        .prepare("SELECT hash, created_at FROM caplets_migrations ORDER BY created_at")
+        .all() as AppliedMigration[];
+      const appliedByCreatedAt = new Map<number, string>();
+      for (const migration of appliedMigrations) {
+        if (
+          typeof migration.hash !== "string" ||
+          typeof migration.created_at !== "number" ||
+          appliedByCreatedAt.has(migration.created_at)
+        ) {
+          throw invalidSqliteMigrationHistory("contains malformed or duplicate entries");
+        }
+        appliedByCreatedAt.set(migration.created_at, migration.hash);
+      }
+      const latestApplied = appliedMigrations.at(-1)?.created_at;
       for (const migration of migrations) {
-        if (last?.created_at !== undefined && last.created_at >= migration.folderMillis) continue;
+        const appliedHash = appliedByCreatedAt.get(migration.folderMillis);
+        if (appliedHash !== undefined) {
+          if (appliedHash !== migration.hash) {
+            throw invalidSqliteMigrationHistory(
+              `hash mismatch for migration ${migration.folderMillis}`,
+            );
+          }
+          continue;
+        }
+        if (latestApplied !== undefined && migration.folderMillis < latestApplied) {
+          throw invalidSqliteMigrationHistory(
+            `migration ${migration.folderMillis} is missing before ${latestApplied}`,
+          );
+        }
         for (const statement of migration.sql) client.exec(statement);
         client
           .prepare("INSERT INTO caplets_migrations (hash, created_at) VALUES (?, ?)")
@@ -142,6 +172,10 @@ function schemaNewerError(version: number | undefined): CapletsError {
     "CONFIG_INVALID",
     `Host storage schema ${version} is newer than supported schema ${HOST_STORAGE_SCHEMA_VERSION}.`,
   );
+}
+
+function invalidSqliteMigrationHistory(reason: string): CapletsError {
+  return new CapletsError("CONFIG_INVALID", `SQLite migration history ${reason}.`);
 }
 
 function errorCode(error: unknown): string | undefined {

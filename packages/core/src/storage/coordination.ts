@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, ne, sql } from "drizzle-orm";
 import { CapletsError } from "../errors";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
@@ -109,17 +109,26 @@ export class HostCoordinationStore {
   }
 
   async activeNodeCount(maxHeartbeatAgeMs = 5_000): Promise<number> {
-    const rows =
-      this.database.dialect === "sqlite"
-        ? this.database.db
-            .select({ heartbeatAt: sqlite.hostNodes.heartbeatAt })
-            .from(sqlite.hostNodes)
-            .all()
-        : await this.database.db
-            .select({ heartbeatAt: postgres.hostNodes.heartbeatAt })
-            .from(postgres.hostNodes);
-    const cutoff = Date.now() - maxHeartbeatAgeMs;
-    return rows.filter((row) => Date.parse(row.heartbeatAt) >= cutoff).length;
+    if (this.database.dialect === "sqlite") {
+      const row = this.database.db
+        .select({ count: count() })
+        .from(sqlite.hostNodes)
+        .where(
+          gt(sqlite.hostNodes.heartbeatAt, new Date(Date.now() - maxHeartbeatAgeMs).toISOString()),
+        )
+        .get();
+      return row?.count ?? 0;
+    }
+    const [row] = await this.database.db
+      .select({ count: count() })
+      .from(postgres.hostNodes)
+      .where(
+        sql`${postgres.hostNodes.heartbeatAt} >= to_char(
+          clock_timestamp() - (${maxHeartbeatAgeMs} * interval '1 millisecond'),
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+        )`,
+      );
+    return row?.count ?? 0;
   }
 
   async publishConfigGeneration(contentHash: string, createdBy: string): Promise<number> {
@@ -427,9 +436,11 @@ async function registerPostgres(
   input: RegisterNodeInput,
 ): Promise<HostNodeRegistration> {
   return await db.transaction(async (transaction) => {
-    const now = input.now ?? new Date();
-    const nowText = now.toISOString();
-    const cutoff = new Date(now.getTime() - (input.heartbeatTtlMs ?? 15_000)).toISOString();
+    const clockResult = await transaction.execute<{ now: string }>(
+      sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "now"`,
+    );
+    const nowText = clockResult.rows[0]?.now;
+    if (!nowText) throw new CapletsError("INTERNAL_ERROR", "Host-node clock query failed.");
     await transaction
       .insert(postgres.hostIdentity)
       .values({ singleton: 1, hostId: randomUUID(), createdAt: nowText })
@@ -446,7 +457,10 @@ async function registerPostgres(
       .where(
         and(
           ne(postgres.hostNodes.nodeId, input.nodeId),
-          gt(postgres.hostNodes.heartbeatAt, cutoff),
+          sql`${postgres.hostNodes.heartbeatAt} >= to_char(
+            clock_timestamp() - (${input.heartbeatTtlMs ?? 15_000} * interval '1 millisecond'),
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+          )`,
         ),
       )
       .for("update");
@@ -489,33 +503,36 @@ function acquireLeaseSqlite(
   db: SqliteHostDatabase,
   input: AcquireLeaseInput,
 ): MaintenanceLease | undefined {
-  return db.transaction((transaction) => {
-    const now = input.now ?? new Date();
-    const existing = transaction
-      .select()
-      .from(sqlite.maintenanceLeases)
-      .where(eq(sqlite.maintenanceLeases.leaseName, input.leaseName))
-      .get();
-    if (
-      existing &&
-      existing.ownerNodeId !== input.ownerNodeId &&
-      existing.expiresAt > now.toISOString()
-    )
-      return undefined;
-    const lease = {
-      leaseName: input.leaseName,
-      ownerNodeId: input.ownerNodeId,
-      fencingToken: (existing?.fencingToken ?? 0) + 1,
-      expiresAt: new Date(now.getTime() + input.ttlMs).toISOString(),
-      updatedAt: now.toISOString(),
-    };
-    transaction
-      .insert(sqlite.maintenanceLeases)
-      .values(lease)
-      .onConflictDoUpdate({ target: sqlite.maintenanceLeases.leaseName, set: lease })
-      .run();
-    return lease;
-  });
+  return db.transaction(
+    (transaction) => {
+      const now = input.now ?? new Date();
+      const existing = transaction
+        .select()
+        .from(sqlite.maintenanceLeases)
+        .where(eq(sqlite.maintenanceLeases.leaseName, input.leaseName))
+        .get();
+      if (
+        existing &&
+        existing.ownerNodeId !== input.ownerNodeId &&
+        existing.expiresAt > now.toISOString()
+      )
+        return undefined;
+      const lease = {
+        leaseName: input.leaseName,
+        ownerNodeId: input.ownerNodeId,
+        fencingToken: (existing?.fencingToken ?? 0) + 1,
+        expiresAt: new Date(now.getTime() + input.ttlMs).toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      transaction
+        .insert(sqlite.maintenanceLeases)
+        .values(lease)
+        .onConflictDoUpdate({ target: sqlite.maintenanceLeases.leaseName, set: lease })
+        .run();
+      return lease;
+    },
+    { behavior: "exclusive" },
+  );
 }
 
 async function acquireLeasePostgres(
