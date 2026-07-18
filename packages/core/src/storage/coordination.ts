@@ -449,6 +449,7 @@ async function registerPostgres(
       .select()
       .from(postgres.hostIdentity)
       .where(eq(postgres.hostIdentity.singleton, 1))
+      .for("update")
       .limit(1);
     if (!identity) throw new CapletsError("INTERNAL_ERROR", "Host identity registration failed.");
     const peers = await transaction
@@ -462,8 +463,7 @@ async function registerPostgres(
             'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
           )`,
         ),
-      )
-      .for("update");
+      );
     const conflict = parityConflict(peers, input);
     await transaction
       .insert(postgres.hostNodes)

@@ -634,6 +634,28 @@ postgresIt(
   },
 );
 
+postgresIt("serializes concurrent node heartbeats without deadlocks", async () => {
+  const { first, second } = await openPair("heartbeat_race");
+  const input = {
+    globalFileManifest: "manifest",
+    runtimeFingerprint: "runtime",
+  };
+  await first.coordination.registerNode({ ...input, nodeId: "node-a" });
+  await second.coordination.registerNode({ ...input, nodeId: "node-b" });
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await expect(
+      Promise.all([
+        first.coordination.heartbeat({ ...input, nodeId: "node-a" }),
+        second.coordination.heartbeat({ ...input, nodeId: "node-b" }),
+      ]),
+    ).resolves.toEqual([
+      expect.objectContaining({ nodeId: "node-a", ready: true }),
+      expect.objectContaining({ nodeId: "node-b", ready: true }),
+    ]);
+  }
+});
+
 function setupAttempt(attemptId: string, now: Date): SetupAttempt {
   return {
     attemptId,
