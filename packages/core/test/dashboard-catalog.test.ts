@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { currentHostCatalogInstallSource } from "../src/current-host/catalog";
 import { CapletsEngine } from "../src/engine";
-import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { createHostStorage, type HostStorage } from "../src/storage";
+import type { RemoteSecurityStore } from "../src/storage/remote-security";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
 
@@ -92,7 +93,7 @@ describe("dashboard caplets and catalog APIs", () => {
       signal: expect.any(AbortSignal),
     });
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it("returns all 150 compact official entries without the former search ceiling", async () => {
@@ -109,7 +110,7 @@ describe("dashboard caplets and catalog APIs", () => {
     expect(body.entries[149]).toMatchObject({ id: "entry-149" });
     expect(body.entries.some((entry) => "contentMarkdown" in entry)).toBe(false);
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it("preserves legacy catalog search limits when query parameters are present", async () => {
@@ -132,7 +133,7 @@ describe("dashboard caplets and catalog APIs", () => {
       expect.objectContaining({ id: "entry-1" }),
     ]);
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it("rejects an official compact index above 10,000 entries as a protocol error", async () => {
@@ -153,7 +154,7 @@ describe("dashboard caplets and catalog APIs", () => {
       error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
     });
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it("rejects overlong compact fields as a protocol error", async () => {
@@ -173,7 +174,7 @@ describe("dashboard caplets and catalog APIs", () => {
       error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
     });
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it.each([
@@ -252,7 +253,7 @@ describe("dashboard caplets and catalog APIs", () => {
       ok: false,
       error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
     });
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it("pins official installer input to the inspected revision", () => {
@@ -290,7 +291,7 @@ describe("dashboard caplets and catalog APIs", () => {
       ok: false,
       error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
     });
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it("searches catalog sources and returns detail readiness, warnings, and install metadata", async () => {
@@ -336,10 +337,10 @@ describe("dashboard caplets and catalog APIs", () => {
       projectScopedInstallAvailable: false,
     });
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
-  it("installs catalog caplets globally, updates lockfile state, and records activity", async () => {
+  it("installs catalog caplets globally as SQL records and installations", async () => {
     const setup = await authenticatedDashboard();
     const source = catalogSource();
 
@@ -347,40 +348,71 @@ describe("dashboard caplets and catalog APIs", () => {
       source,
       entryKey: await localEntryKey(setup, source),
     });
-    expect(installed.status).toBe(200);
-    await expect(installed.json()).resolves.toMatchObject({
+    expect(installed.status, await installed.clone().text()).toBe(200);
+    const installedBody = (await installed.json()) as {
+      installed: Array<Record<string, unknown>>;
+      setupActions: unknown[];
+    };
+    expect(installedBody).toMatchObject({
       installed: [
         expect.objectContaining({
           id: "sample",
           status: "installed",
-          lockfile: setup.context.globalLockfilePath,
+          destination: "sql://caplet-records/sample",
         }),
       ],
       setupActions: expect.arrayContaining([expect.objectContaining({ kind: "auth" })]),
     });
+    expect(installedBody.installed[0]).not.toHaveProperty("lockfile");
 
-    expect(existsSync(join(setup.context.globalCapletsRoot, "sample.md"))).toBe(true);
-    expect(JSON.parse(readFileSync(setup.context.globalLockfilePath, "utf8"))).toMatchObject({
-      entries: [expect.objectContaining({ id: "sample", destination: "sample.md" })],
+    const record = await setup.storage.caplets.readBundle("sample", {
+      operator: { clientId: setup.operatorClientId, role: "operator" },
     });
+    const installation = await setup.storage.installations.getActive("sample");
+    const observation = await setup.storage.installations.getLatestObservation("sample");
+    expect(record).toMatchObject({
+      record: { id: "sample", headGeneration: 1 },
+      files: [expect.objectContaining({ path: "CAPLET.md" })],
+    });
+    expect(installation).toMatchObject({
+      capletId: "sample",
+      generation: 1,
+      status: "active",
+      sourceKind: "local",
+      sourceIdentity: source,
+    });
+    expect(observation).toMatchObject({
+      status: "current",
+      contentHash: expect.stringMatching(/^sha256:/),
+    });
+    expect(installation?.recordKey).toBe(record?.record.recordKey);
+    expect(existsSync(setup.context.globalCapletsRoot)).toBe(false);
+    expect(existsSync(setup.context.globalLockfilePath)).toBe(false);
+    expect(await setup.storage.installations.listActivity()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operatorClientId: setup.operatorClientId,
+          action: "caplet.import",
+        }),
+      ]),
+    );
 
     const updates = await dashboardGet(setup, "/dashboard/api/catalog/updates");
     expect(updates.status).toBe(200);
-    await expect(updates.json()).resolves.toMatchObject({
-      updates: [expect.objectContaining({ id: "sample", status: "locked" })],
-    });
+    await expect(updates.json()).resolves.toEqual({ updates: [] });
 
     const activity = await dashboardGet(setup, "/dashboard/api/activity?action=catalog_installed");
     expect(activity.status).toBe(200);
     const text = await activity.text();
     expect(text).toContain('"action":"catalog_installed"');
     expect(text).toContain('"id":"sample"');
+    expect(text).toContain(setup.operatorClientId);
     expect(text).not.toContain(source);
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
-  it("rejects acknowledged catalog updates when installed files have local modifications", async () => {
+  it("requires acknowledgement for SQL catalog updates that increase risk", async () => {
     const setup = await authenticatedDashboard();
     const source = catalogSource();
 
@@ -388,27 +420,58 @@ describe("dashboard caplets and catalog APIs", () => {
       source,
       entryKey: await localEntryKey(setup, source),
     });
-    expect(installed.status).toBe(200);
-    const installedPath = join(setup.context.globalCapletsRoot, "sample.md");
-    const localContents = "# Local changes\n\n";
-    writeFileSync(installedPath, localContents);
+    expect(installed.status, await installed.clone().text()).toBe(200);
+    makeCatalogSourceDestructive(source);
 
-    const update = await dashboardPost(setup, "/dashboard/api/catalog/update", {
+    const rejected = await dashboardPost(setup, "/dashboard/api/catalog/update", {
+      capletId: "sample",
+      acknowledgeRiskIncrease: false,
+    });
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: expect.stringContaining("risk profile"),
+      },
+    });
+    await expect(setup.storage.caplets.get("sample")).resolves.toMatchObject({
+      headGeneration: 1,
+    });
+    await expect(setup.storage.installations.getActive("sample")).resolves.toMatchObject({
+      generation: 1,
+    });
+
+    const updated = await dashboardPost(setup, "/dashboard/api/catalog/update", {
       capletId: "sample",
       acknowledgeRiskIncrease: true,
     });
-
-    expect(update.status).toBe(409);
-    await expect(update.json()).resolves.toMatchObject({
-      ok: false,
-      error: {
-        code: "CONFIG_EXISTS",
-        message: expect.stringContaining("local modifications"),
-      },
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({
+      installed: [
+        expect.objectContaining({
+          id: "sample",
+          status: "updated",
+          destination: "sql://caplet-records/sample",
+        }),
+      ],
     });
-    expect(readFileSync(installedPath, "utf8")).toBe(localContents);
+    await expect(setup.storage.caplets.get("sample")).resolves.toMatchObject({
+      headGeneration: 2,
+    });
+    await expect(setup.storage.installations.getActive("sample")).resolves.toMatchObject({
+      generation: 2,
+    });
+    await expect(setup.storage.installations.getLatestObservation("sample")).resolves.toMatchObject(
+      {
+        status: "current",
+        risk: expect.objectContaining({ destructive: true }),
+      },
+    );
+    expect(existsSync(setup.context.globalCapletsRoot)).toBe(false);
+    expect(existsSync(setup.context.globalLockfilePath)).toBe(false);
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 
   it("does not report unavailable catalog update sources as unauthorized", async () => {
@@ -419,7 +482,7 @@ describe("dashboard caplets and catalog APIs", () => {
       source,
       entryKey: await localEntryKey(setup, source),
     });
-    expect(installed.status).toBe(200);
+    expect(installed.status, await installed.clone().text()).toBe(200);
 
     rmSync(source, { recursive: true, force: true });
 
@@ -432,8 +495,13 @@ describe("dashboard caplets and catalog APIs", () => {
       ok: false,
       error: { code: "CONFIG_NOT_FOUND" },
     });
+    await expect(setup.storage.installations.getLatestObservation("sample")).resolves.toMatchObject(
+      {
+        status: "source-unavailable",
+      },
+    );
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
   it("rejects dashboard install before an unvalidated source reaches installation", async () => {
     const setup = await authenticatedDashboard();
@@ -449,12 +517,16 @@ describe("dashboard caplets and catalog APIs", () => {
       error: { code: string; message: string };
     };
 
-    const pending = setup.store.createPendingLogin({
+    const pending = await setup.store.createPendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       requestedRole: "operator",
     });
-    setup.store.approvePendingLogin({ operatorCode: pending.operatorCode });
-    const operator = setup.store.completePendingLogin({
+    await setup.store.approvePendingLogin({
+      operatorClientId: "bootstrap_bearer_test",
+      operatorCode: pending.operatorCode,
+      grantedRole: "operator",
+    });
+    const operator = await setup.store.completePendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       flowId: pending.flowId,
       pendingCompletionSecret: pending.pendingCompletionSecret,
@@ -484,7 +556,7 @@ describe("dashboard caplets and catalog APIs", () => {
     expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("transport_secret");
     expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("127.0.0.1");
 
-    await setup.engine.close();
+    await closeDashboard(setup);
   });
 });
 
@@ -499,7 +571,8 @@ interface DashboardCatalogTestContext {
 interface TestAppSetup {
   app: CapletsHttpApp;
   engine: CapletsEngine;
-  store: RemoteServerCredentialStore;
+  store: RemoteSecurityStore;
+  storage: HostStorage;
   stateDir: string;
   context: DashboardCatalogTestContext;
 }
@@ -511,14 +584,18 @@ interface AuthenticatedDashboard extends TestAppSetup {
 }
 
 async function authenticatedDashboard(): Promise<AuthenticatedDashboard> {
-  const setup = testApp();
+  const setup = await testApp();
   const started = await appPost(setup, "/dashboard/api/login/start", { clientLabel: "Browser" });
   const startBody = (await started.json()) as {
     flowId: string;
     pendingCompletionSecret: string;
     approvalCommand: string;
   };
-  setup.store.approvePendingLogin({ operatorCode: approvalCode(startBody.approvalCommand) });
+  await setup.store.approvePendingLogin({
+    operatorClientId: "bootstrap_test",
+    operatorCode: approvalCode(startBody.approvalCommand),
+    grantedRole: "operator",
+  });
   const completed = await appPost(setup, "/dashboard/api/login/complete", {
     flowId: startBody.flowId,
     pendingCompletionSecret: startBody.pendingCompletionSecret,
@@ -579,21 +656,30 @@ function approvalCode(command: string): string {
   return code;
 }
 
-function testApp(): TestAppSetup {
+async function testApp(): Promise<TestAppSetup> {
   const stateDir = tempDir("caplets-dashboard-catalog-state-");
   const context = testContext();
+  const storage = await createHostStorage(
+    { type: "sqlite", path: join(stateDir, "host.sqlite3") },
+    { vaultRoot: join(stateDir, "vault") },
+  );
   const engine = new CapletsEngine({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
+    hostStorage: storage,
     watch: false,
   });
-  const store = new RemoteServerCredentialStore({ dir: stateDir });
+  const store = storage.remoteSecurity;
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},
     control: context,
-    remoteCredentialStore: store,
+    authoritativeStorage: storage,
   });
-  return { app, engine, store, stateDir, context };
+  return { app, engine, store, storage, stateDir, context };
+}
+async function closeDashboard(setup: TestAppSetup): Promise<void> {
+  await setup.engine.close();
+  await setup.storage.close();
 }
 
 function httpOptions(stateDir: string): HttpServeOptions {
@@ -615,10 +701,8 @@ function testContext(): DashboardCatalogTestContext {
   const dir = tempDir("caplets-dashboard-catalog-");
   const userRoot = join(dir, "user");
   const projectRoot = join(dir, "project", ".caplets");
-  const globalCapletsRoot = join(dir, "global-caplets");
   mkdirSync(userRoot, { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
-  mkdirSync(globalCapletsRoot, { recursive: true });
   const configPath = join(userRoot, "config.json");
   const projectConfigPath = join(projectRoot, "config.json");
   writeFileSync(
@@ -639,17 +723,25 @@ function testContext(): DashboardCatalogTestContext {
     configPath,
     projectConfigPath,
     projectCapletsRoot: projectRoot,
-    globalCapletsRoot,
+    globalCapletsRoot: join(dir, "global-caplets"),
     globalLockfilePath: join(dir, "remote-state", "caplets.lock.json"),
   };
 }
 
 function catalogSource(): string {
   const source = tempDir("caplets-dashboard-catalog-source-");
-  const caplets = join(source, "caplets");
-  mkdirSync(caplets, { recursive: true });
+  mkdirSync(join(source, "caplets"), { recursive: true });
+  writeCatalogSource(source, "POST");
+  return source;
+}
+
+function makeCatalogSourceDestructive(source: string): void {
+  writeCatalogSource(source, "DELETE");
+}
+
+function writeCatalogSource(source: string, method: "POST" | "DELETE"): void {
   writeFileSync(
-    join(caplets, "sample.md"),
+    join(source, "caplets", "sample.md"),
     [
       "---",
       "name: Sample",
@@ -669,7 +761,7 @@ function catalogSource(): string {
       "    token: $env:SAMPLE_TOKEN",
       "  actions:",
       "    create:",
-      "      method: POST",
+      `      method: ${method}`,
       "      path: /items",
       "---",
       "",
@@ -677,7 +769,6 @@ function catalogSource(): string {
       "",
     ].join("\n"),
   );
-  return source;
 }
 
 function officialCompactEntry(index: number) {

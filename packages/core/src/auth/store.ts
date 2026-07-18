@@ -29,6 +29,41 @@ export type StoredOAuthTokenBundle = {
   metadata?: Record<string, unknown>;
 };
 
+export type StoredOAuthTokenBundleView = {
+  bundle: StoredOAuthTokenBundle;
+  generation: number;
+};
+
+export function isStoredOAuthTokenBundle(value: unknown): value is StoredOAuthTokenBundle {
+  if (!isRecord(value)) return false;
+  if (typeof value.server !== "string" || !value.server) return false;
+  if (typeof value.accessToken !== "string") return false;
+  if (value.authType !== undefined && value.authType !== "oauth2" && value.authType !== "oidc") {
+    return false;
+  }
+  for (const field of optionalTokenBundleStringFields) {
+    if (value[field] !== undefined && typeof value[field] !== "string") return false;
+  }
+  return value.metadata === undefined || isRecord(value.metadata);
+}
+
+const optionalTokenBundleStringFields = [
+  "refreshToken",
+  "tokenType",
+  "expiresAt",
+  "scope",
+  "idToken",
+  "issuer",
+  "subject",
+  "clientId",
+  "clientSecret",
+  "protectedResourceOrigin",
+] as const satisfies ReadonlyArray<keyof StoredOAuthTokenBundle>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function authStorePath(server: string, authDir = DEFAULT_AUTH_DIR): string {
   if (!server || server.includes("/") || server.includes("\\") || server.includes("..")) {
     throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);
@@ -67,6 +102,44 @@ export function listTokenBundles(authDir?: string): StoredOAuthTokenBundle[] {
     .map((entry) => readTokenBundle(entry.name.slice(0, -".json".length), dir))
     .filter((bundle): bundle is StoredOAuthTokenBundle => Boolean(bundle))
     .sort((left, right) => left.server.localeCompare(right.server));
+}
+
+export type LegacyOAuthTokenBundleSnapshot = {
+  bundles: StoredOAuthTokenBundle[];
+  sourcePaths: string[];
+};
+
+/**
+ * Strict migration reader. Unlike the runtime compatibility reader, this fails
+ * the whole snapshot when any legacy token file is malformed.
+ */
+export function readLegacyOAuthTokenBundleSnapshot(
+  authDir: string,
+): LegacyOAuthTokenBundleSnapshot {
+  if (!existsSync(authDir)) return { bundles: [], sourcePaths: [] };
+  const bundles: StoredOAuthTokenBundle[] = [];
+  const sourcePaths: string[] = [];
+  for (const entry of readdirSync(authDir, { withFileTypes: true })
+    .filter((candidate) => candidate.name.endsWith(".json"))
+    .sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isFile()) {
+      throw new CapletsError("CONFIG_INVALID", "A legacy OAuth token artifact is not a file.");
+    }
+    const server = entry.name.slice(0, -".json".length);
+    const path = authStorePath(server, authDir);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    } catch {
+      throw new CapletsError("CONFIG_INVALID", `Legacy OAuth token bundle ${server} is invalid.`);
+    }
+    if (!isStoredOAuthTokenBundle(parsed) || parsed.server !== server) {
+      throw new CapletsError("CONFIG_INVALID", `Legacy OAuth token bundle ${server} is invalid.`);
+    }
+    bundles.push(parsed);
+    sourcePaths.push(path);
+  }
+  return { bundles, sourcePaths };
 }
 
 export function deleteTokenBundle(server: string, authDir?: string): boolean {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
-import { genericOAuthHeaders, readTokenBundle } from "../auth";
+import { genericOAuthHeaders } from "../auth";
 import type { GoogleDiscoveryApiConfig } from "../config";
 import {
   compactToolSafetyHints,
@@ -15,6 +15,7 @@ import { DEFAULT_MAX_RESPONSE_BYTES, isAbortError, readLimitedText } from "../ht
 import { readMediaInput, type ResolvedMediaInput } from "../media";
 import type { ServerRegistry } from "../registry";
 import { markdownStructuredContent } from "../result-content";
+import type { BackendAuthStateStore } from "../storage/backend-auth";
 import { searchToolList } from "../tool-search";
 import {
   discoveryOperations,
@@ -45,6 +46,7 @@ export class GoogleDiscoveryManager {
   constructor(
     private registry: ServerRegistry,
     private readonly options: {
+      backendAuth?: BackendAuthStateStore;
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
@@ -113,7 +115,7 @@ export class GoogleDiscoveryManager {
       : args;
     const url = buildGoogleDiscoveryUrl(requestApi, operation, requestArgs);
     const headers = new Headers(
-      await authHeaders(requestApi, this.options.authDir, operation.scopes),
+      await authHeaders(requestApi, this.options.backendAuth, operation.scopes),
     );
     const init = buildJsonRequestInit(operation, args, headers);
     const controller = new AbortController();
@@ -188,7 +190,7 @@ export class GoogleDiscoveryManager {
     if (this.options.artifactDir) mediaOptions.artifactRoot = this.options.artifactDir;
     if (this.options.exposeLocalArtifactPaths === false) mediaOptions.allowLocalPaths = false;
     const media = await readMediaInput(args.media, mediaOptions);
-    const headers = new Headers(await authHeaders(api, this.options.authDir, operation.scopes));
+    const headers = new Headers(await authHeaders(api, this.options.backendAuth, operation.scopes));
     const protocol = selectUploadProtocol(operation, media, args);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), api.requestTimeoutMs);
@@ -392,7 +394,7 @@ export class GoogleDiscoveryManager {
     if (!force && isFresh) return cached.operations ?? [];
 
     try {
-      const document = await loadGoogleDiscoveryDocument(api, this.options.authDir);
+      const document = await loadGoogleDiscoveryDocument(api, this.options.backendAuth);
       const baseUrl = googleDiscoveryBaseUrl(api, document);
       const operations = discoveryOperations({
         server: api.server,
@@ -588,9 +590,9 @@ async function fetchGoogleRequest(
 
 async function loadGoogleDiscoveryDocument(
   api: GoogleDiscoveryApiConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<GoogleDiscoveryDocument> {
-  const source = await loadGoogleDiscoverySource(api, authDir);
+  const source = await loadGoogleDiscoverySource(api, authStore);
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
@@ -611,7 +613,7 @@ async function loadGoogleDiscoveryDocument(
 
 async function loadGoogleDiscoverySource(
   api: GoogleDiscoveryApiConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<string> {
   if (api.discoveryPath) {
     return readFile(api.discoveryPath, "utf8");
@@ -622,7 +624,7 @@ async function loadGoogleDiscoverySource(
       `${api.server} is missing Google Discovery document source`,
     );
   }
-  return fetchDiscoverySource(api, await discoveryAuthHeaders(api, authDir));
+  return fetchDiscoverySource(api, await discoveryAuthHeaders(api, authStore));
 }
 
 async function fetchDiscoverySource(
@@ -666,23 +668,24 @@ async function fetchDiscoverySource(
 
 async function discoveryAuthHeaders(
   api: GoogleDiscoveryApiConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<Record<string, string>> {
   if (api.auth.type === "none") return {};
   if (api.auth.type === "oauth2" || api.auth.type === "oidc") {
-    const protectedOrigin = discoveryProtectedResourceOrigin(api, authDir);
+    const protectedOrigin = await discoveryProtectedResourceOrigin(api, authStore);
     if (!protectedOrigin || !shouldSendDiscoveryAuth(api, protectedOrigin)) return {};
-    const bundle = readTokenBundle(api.server, authDir);
-    if (!bundle?.accessToken && !bundle?.refreshToken) return {};
-    return genericOAuthHeaders({ ...api, baseUrl: protectedOrigin }, authDir);
+    if (!authStore) return {};
+    const state = await authStore.readTokenBundle(api.server);
+    if (!state?.bundle.accessToken && !state?.bundle.refreshToken) return {};
+    return genericOAuthHeaders({ ...api, baseUrl: protectedOrigin }, authStore);
   }
   if (!api.baseUrl || !shouldSendDiscoveryAuth(api, new URL(api.baseUrl).origin)) return {};
-  return authHeaders(api, authDir);
+  return authHeaders(api, authStore);
 }
 
 async function authHeaders(
   api: GoogleDiscoveryApiConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
   resolvedScopes?: string[],
 ): Promise<Record<string, string>> {
   switch (api.auth.type) {
@@ -694,17 +697,23 @@ async function authHeaders(
       return api.auth.headers;
     case "oauth2":
     case "oidc":
-      return genericOAuthHeaders({ ...api, resolvedScopes }, authDir);
+      if (!authStore) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Authoritative backend auth storage is unavailable.",
+        );
+      }
+      return genericOAuthHeaders({ ...api, resolvedScopes }, authStore);
   }
 }
 
-function discoveryProtectedResourceOrigin(
+async function discoveryProtectedResourceOrigin(
   api: GoogleDiscoveryApiConfig,
-  authDir?: string,
-): string | undefined {
+  authStore?: BackendAuthStateStore,
+): Promise<string | undefined> {
   if (api.baseUrl) return new URL(api.baseUrl).origin;
-  const bundle = readTokenBundle(api.server, authDir);
-  return bundle?.protectedResourceOrigin;
+  if (!authStore) return undefined;
+  return (await authStore.readTokenBundle(api.server))?.bundle.protectedResourceOrigin;
 }
 
 function copySessionAuthorization(

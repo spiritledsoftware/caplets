@@ -1,33 +1,27 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { createHostStorage, type HostStorage, type RemoteSecurityStore } from "../src/storage";
 
 const dirs: string[] = [];
+const storages = new Set<HostStorage>();
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all([...storages].map(async (storage) => await storage.close()));
+  storages.clear();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("caplets remote CLI", () => {
   it("reports migration guidance instead of minting Pairing Codes", async () => {
-    const serverStateDir = tempDir("caplets-remote-cli-server-");
     const out: string[] = [];
 
     await runCli(
-      [
-        "remote",
-        "host",
-        "pair",
-        "--host-url",
-        "https://caplets.example.com/caplets",
-        "--state-path",
-        serverStateDir,
-        "--json",
-      ],
+      ["remote", "host", "pair", "--host-url", "https://caplets.example.com/caplets", "--json"],
       { writeOut: (value) => out.push(value) },
     );
 
@@ -38,7 +32,6 @@ describe("caplets remote CLI", () => {
       message: expect.stringContaining("Pairing Code bootstrap is no longer supported"),
     });
     expect(out.join("")).not.toContain("cap_pair_");
-    expect(existsSync(join(serverStateDir, "remote-server-credentials.json"))).toBe(false);
   });
 
   it("hides legacy Pairing Code login flags from help", async () => {
@@ -276,7 +269,6 @@ describe("caplets remote CLI", () => {
           serverApprovalCommand = [
             "sudo -u caplets caplets remote host approve",
             pending.operatorCode,
-            "--state-path /srv/caplets/remote-state",
             "--yes",
           ].join(" ");
           return Response.json({ ...pending, approvalCommand: serverApprovalCommand });
@@ -963,17 +955,17 @@ describe("caplets remote CLI", () => {
   });
 
   it("prints paired self-hosted client labels without terminal control bytes", async () => {
-    const serverStateDir = tempDir("caplets-remote-cli-server-");
-    const server = new RemoteServerCredentialStore({ dir: serverStateDir });
-    const issued = server.createPairingCode({ hostUrl: "https://caplets.example.com" });
-    server.exchangePairingCode({
+    const { env, store } = await remoteSecurityFixture();
+    const issued = await store.createPairingCode({ hostUrl: "https://caplets.example.com" });
+    await store.exchangePairingCode({
       hostUrl: "https://caplets.example.com",
       code: issued.code,
       clientLabel: `Bad${String.fromCharCode(0x1b)}[31mName${String.fromCharCode(0x07)}`,
     });
     const out: string[] = [];
 
-    await runCli(["remote", "host", "clients", "--state-path", serverStateDir], {
+    await runCli(["remote", "host", "clients"], {
+      env,
       writeOut: (value) => out.push(value),
     });
 
@@ -983,9 +975,8 @@ describe("caplets remote CLI", () => {
   });
 
   it("lists and approves pending self-hosted logins from server state", async () => {
-    const serverStateDir = tempDir("caplets-remote-cli-server-");
-    const server = new RemoteServerCredentialStore({ dir: serverStateDir });
-    const pending = server.createPendingLogin({
+    const { env, store } = await remoteSecurityFixture();
+    const pending = await store.createPendingLogin({
       hostUrl: "https://caplets.example.com",
       clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
       clientFingerprint: "fp_test",
@@ -993,7 +984,8 @@ describe("caplets remote CLI", () => {
     });
     const listOut: string[] = [];
 
-    await runCli(["remote", "host", "logins", "--state-path", serverStateDir, "--json"], {
+    await runCli(["remote", "host", "logins", "--json"], {
+      env,
       writeOut: (value) => listOut.push(value),
     });
 
@@ -1013,26 +1005,18 @@ describe("caplets remote CLI", () => {
     expect(listOut.join("")).not.toContain(pending.pendingRefreshSecret);
     expect(listOut.join("")).not.toContain(pending.pendingCompletionSecret);
     const plainListOut: string[] = [];
-    await runCli(["remote", "host", "logins", "--state-path", serverStateDir], {
+    await runCli(["remote", "host", "logins"], {
+      env,
       writeOut: (value) => plainListOut.push(value),
     });
     expect(plainListOut.join("")).toContain(pending.operatorCodeFingerprint);
     expect(plainListOut.join("")).not.toContain(pending.operatorCode);
 
     const approveOut: string[] = [];
-    await runCli(
-      [
-        "remote",
-        "host",
-        "approve",
-        pending.operatorCode,
-        "--state-path",
-        serverStateDir,
-        "--yes",
-        "--json",
-      ],
-      { writeOut: (value) => approveOut.push(value) },
-    );
+    await runCli(["remote", "host", "approve", pending.operatorCode, "--yes", "--json"], {
+      env,
+      writeOut: (value) => approveOut.push(value),
+    });
 
     expect(JSON.parse(approveOut.join(""))).toMatchObject({
       flowId: pending.flowId,
@@ -1042,7 +1026,7 @@ describe("caplets remote CLI", () => {
       clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
     });
     expect(
-      server.completePendingLogin({
+      await store.completePendingLogin({
         hostUrl: "https://caplets.example.com",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
@@ -1051,9 +1035,8 @@ describe("caplets remote CLI", () => {
   });
 
   it("allows host approval to override requested login roles", async () => {
-    const serverStateDir = tempDir("caplets-remote-cli-server-");
-    const server = new RemoteServerCredentialStore({ dir: serverStateDir });
-    const pending = server.createPendingLogin({
+    const { env, store } = await remoteSecurityFixture();
+    const pending = await store.createPendingLogin({
       hostUrl: "https://caplets.example.com",
       requestedRole: "operator",
       clientLabel: "Dashboard",
@@ -1061,19 +1044,8 @@ describe("caplets remote CLI", () => {
     const approveOut: string[] = [];
 
     await runCli(
-      [
-        "remote",
-        "host",
-        "approve",
-        pending.operatorCode,
-        "--state-path",
-        serverStateDir,
-        "--role",
-        "access",
-        "--yes",
-        "--json",
-      ],
-      { writeOut: (value) => approveOut.push(value) },
+      ["remote", "host", "approve", pending.operatorCode, "--role", "access", "--yes", "--json"],
+      { env, writeOut: (value) => approveOut.push(value) },
     );
 
     expect(JSON.parse(approveOut.join(""))).toMatchObject({
@@ -1082,7 +1054,7 @@ describe("caplets remote CLI", () => {
       grantedRole: "access",
     });
     expect(
-      server.completePendingLogin({
+      await store.completePendingLogin({
         hostUrl: "https://caplets.example.com",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
@@ -1246,6 +1218,19 @@ describe("caplets remote CLI", () => {
     expect(out.join("")).not.toContain("beta-refresh");
   });
 });
+
+async function remoteSecurityFixture(): Promise<{
+  env: { CAPLETS_CONFIG: string };
+  store: RemoteSecurityStore;
+}> {
+  const root = tempDir("caplets-remote-cli-server-");
+  const databasePath = join(root, "host.sqlite3");
+  const configPath = join(root, "config.json");
+  writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: databasePath } }));
+  const storage = await createHostStorage({ type: "sqlite", path: databasePath });
+  storages.add(storage);
+  return { env: { CAPLETS_CONFIG: configPath }, store: storage.remoteSecurity };
+}
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));

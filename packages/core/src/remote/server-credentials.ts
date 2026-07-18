@@ -1,5 +1,12 @@
 export type RemoteClientRole = "access" | "operator";
 
+export function remoteClientRoleSatisfies(
+  role: RemoteClientRole,
+  requiredRole: RemoteClientRole,
+): boolean {
+  return role === "operator" || role === requiredRole;
+}
+
 export type IssuedRemoteClientCredentials = {
   hostUrl: string;
   clientId: string;

@@ -16,12 +16,7 @@ import {
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types";
 import type { CapletServerConfig } from "./config";
-import {
-  classifyRemoteAuthError,
-  FileOAuthProvider,
-  readTokenBundle,
-  staticRemoteHeaders,
-} from "./auth";
+import { classifyRemoteAuthError, FileOAuthProvider, staticRemoteHeaders } from "./auth";
 import { CapletsError, toSafeError, type CapletsErrorCode, type SafeErrorSummary } from "./errors";
 import {
   projectBindingConnectionKey,
@@ -29,6 +24,7 @@ import {
   type ProjectBindingExecutionContext,
 } from "./project-binding/execution-context";
 import type { ServerRegistry } from "./registry";
+import type { BackendAuthStateStore } from "./storage/backend-auth";
 import { searchToolList } from "./tool-search";
 
 export type CompactTool = {
@@ -87,6 +83,11 @@ type ManagedConnection = {
   closing?: boolean;
 };
 
+type ConnectionAttempt = {
+  configFingerprint: string;
+  promise: Promise<ManagedConnection>;
+};
+
 type PendingConnection = {
   connection: ManagedConnection;
   promise: Promise<ManagedConnection>;
@@ -96,10 +97,12 @@ export class DownstreamManager {
   private readonly connections = new Map<string, ManagedConnection>();
   private readonly connecting = new Map<string, PendingConnection>();
   private readonly restartState = new Map<string, { restartUsed: boolean; backoffUntil: number }>();
+  private readonly connectionAttempts = new Map<string, ConnectionAttempt>();
 
   constructor(
     private registry: ServerRegistry,
     private readonly options: {
+      backendAuth?: BackendAuthStateStore | undefined;
       authDir?: string | undefined;
       projectBindingContext?: ProjectBindingExecutionContext | undefined;
     } = {},
@@ -563,6 +566,27 @@ export class DownstreamManager {
   private async connect(server: CapletServerConfig): Promise<ManagedConnection> {
     const expectedFingerprint = this.currentServerFingerprint(server);
     const connectionKey = this.connectionKey(server);
+    const existingAttempt = this.connectionAttempts.get(connectionKey);
+    if (existingAttempt?.configFingerprint === expectedFingerprint) {
+      return existingAttempt.promise;
+    }
+
+    const promise = this.connectUnshared(server, expectedFingerprint, connectionKey);
+    this.connectionAttempts.set(connectionKey, { configFingerprint: expectedFingerprint, promise });
+    try {
+      return await promise;
+    } finally {
+      if (this.connectionAttempts.get(connectionKey)?.promise === promise) {
+        this.connectionAttempts.delete(connectionKey);
+      }
+    }
+  }
+
+  private async connectUnshared(
+    server: CapletServerConfig,
+    expectedFingerprint: string,
+    connectionKey: string,
+  ): Promise<ManagedConnection> {
     const existing = this.connections.get(connectionKey);
     if (existing) {
       if (existing.configFingerprint !== expectedFingerprint) {
@@ -607,7 +631,7 @@ export class DownstreamManager {
     this.registry.setStatus(server.server, "starting");
     try {
       const client = new Client({ name: "caplets", version: "1.0.0" }, { capabilities: {} });
-      const transport = this.createTransport(server);
+      const transport = await this.createTransport(server);
       const connection: ManagedConnection = {
         client,
         transport,
@@ -727,7 +751,7 @@ export class DownstreamManager {
     }
   }
 
-  private createTransport(server: CapletServerConfig): any {
+  private async createTransport(server: CapletServerConfig): Promise<any> {
     if (server.transport === "stdio") {
       const cwd = resolveProjectBoundCwd({
         caplet: server,
@@ -757,7 +781,7 @@ export class DownstreamManager {
 
     const headers = staticRemoteHeaders(server);
     const requestInit = Object.keys(headers).length ? { headers } : undefined;
-    const authProvider = this.oauthProvider(server);
+    const authProvider = await this.oauthProvider(server);
     const fetchWithAuthClassification = async (
       input: Parameters<typeof fetch>[0],
       init?: RequestInit,
@@ -800,11 +824,19 @@ export class DownstreamManager {
     throw new CapletsError("UNSUPPORTED_TRANSPORT", `Unsupported transport for ${server.server}`);
   }
 
-  private oauthProvider(server: CapletServerConfig): FileOAuthProvider | undefined {
+  private async oauthProvider(server: CapletServerConfig): Promise<FileOAuthProvider | undefined> {
     if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
       return undefined;
     }
-    const bundle = readTokenBundle(server.server, this.options.authDir);
+    const authStore = this.options.backendAuth;
+    if (!authStore) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Authoritative backend auth storage is unavailable.",
+      );
+    }
+    const state = await authStore.readTokenBundle(server.server);
+    const bundle = state?.bundle;
     if (!bundle?.accessToken && !bundle?.refreshToken) {
       throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
         server: server.server,
@@ -822,7 +854,8 @@ export class DownstreamManager {
           nextAction: "run_caplets_auth_login",
         });
       },
-      this.options.authDir,
+      authStore,
+      state,
     );
   }
 

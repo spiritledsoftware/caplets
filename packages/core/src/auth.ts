@@ -13,10 +13,10 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth";
 import {
   isTokenBundleExpired,
-  readTokenBundle,
-  writeTokenBundle,
   type StoredOAuthTokenBundle,
+  type StoredOAuthTokenBundleView,
 } from "./auth/store";
+import type { BackendAuthStateStore } from "./storage/backend-auth";
 import type { CapletServerConfig } from "./config";
 import { CapletsError, redactSecrets } from "./errors";
 
@@ -55,6 +55,7 @@ export type GenericAuthTarget = {
   auth?: OAuthLikeAuthConfig | { type: string } | undefined;
   requestTimeoutMs?: number | undefined;
 };
+type BackendAuthStoreInput = BackendAuthStateStore | string | undefined;
 
 export function staticRemoteHeaders(server: CapletServerConfig): Record<string, string> {
   if (server.auth?.type === "bearer") {
@@ -68,19 +69,21 @@ export function staticRemoteHeaders(server: CapletServerConfig): Record<string, 
 
 export async function oauthHeaders(
   server: CapletServerConfig,
-  authDir?: string,
+  authStoreInput: BackendAuthStoreInput,
 ): Promise<Record<string, string>> {
   if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
     return {};
   }
-  let bundle = readTokenBundle(server.server, authDir);
-  if (!bundle?.accessToken && !bundle?.refreshToken) {
+  const authStore = requireBackendAuthStore(authStoreInput);
+  const state = await authStore.readTokenBundle(server.server);
+  if (!state || (!state.bundle.accessToken && !state.bundle.refreshToken)) {
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
       server: server.server,
       authType: server.auth.type,
       nextAction: "run_caplets_auth_login",
     });
   }
+  let bundle = state.bundle;
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
     if (!server.url) {
       throw new CapletsError("CONFIG_INVALID", `${server.server} is missing url`);
@@ -102,7 +105,8 @@ export async function oauthHeaders(
         protectedResourceOrigin:
           bundle.protectedResourceOrigin ?? (server.url ? new URL(server.url).origin : undefined),
       },
-      authDir,
+      authStore,
+      state.generation,
     );
   }
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
@@ -117,14 +121,15 @@ export async function oauthHeaders(
 
 export async function genericOAuthHeaders(
   target: GenericAuthTarget,
-  authDir?: string,
+  authStoreInput?: BackendAuthStateStore | string,
 ): Promise<Record<string, string>> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     return {};
   }
+  const authStore = requireBackendAuthStore(authStoreInput);
   const authConfig = target.auth as OAuthLikeAuthConfig;
-  let bundle = readTokenBundle(target.server, authDir);
-  if (!bundle?.accessToken && !bundle?.refreshToken) {
+  const state = await authStore.readTokenBundle(target.server);
+  if (!state || (!state.bundle.accessToken && !state.bundle.refreshToken)) {
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${target.server}`, {
       server: target.server,
       backend: target.backend,
@@ -132,9 +137,16 @@ export async function genericOAuthHeaders(
       nextAction: "run_caplets_auth_login",
     });
   }
+  let bundle = state.bundle;
   assertTokenBundleMatchesTarget(bundle, target, authConfig);
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
-    bundle = await refreshGenericOAuthBundle(target, authConfig, bundle, authDir);
+    bundle = await refreshGenericOAuthBundle(
+      target,
+      authConfig,
+      bundle,
+      authStore,
+      state.generation,
+    );
   }
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
@@ -149,17 +161,18 @@ export async function genericOAuthHeaders(
 
 export async function refreshOAuthTokenBundle(
   target: CapletServerConfig | GenericAuthTarget,
-  authDir?: string,
+  authStoreInput: BackendAuthStoreInput,
 ): Promise<StoredOAuthTokenBundle> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     throw new CapletsError("AUTH_REFRESH_FAILED", `${target.server} is not configured for OAuth`, {
       server: target.server,
     });
   }
+  const authStore = requireBackendAuthStore(authStoreInput);
   const genericTarget = authRefreshTarget(target);
   const authConfig = target.auth as OAuthLikeAuthConfig;
-  const bundle = readTokenBundle(target.server, authDir);
-  if (!bundle?.refreshToken) {
+  const state = await authStore.readTokenBundle(target.server);
+  if (!state?.bundle.refreshToken) {
     throw new CapletsError(
       "AUTH_REFRESH_FAILED",
       `OAuth refresh token required for ${target.server}`,
@@ -171,6 +184,7 @@ export async function refreshOAuthTokenBundle(
       },
     );
   }
+  const bundle = state.bundle;
   const normalized = stripUndefined({
     ...bundle,
     server: target.server,
@@ -181,7 +195,13 @@ export async function refreshOAuthTokenBundle(
       bundle.protectedResourceOrigin ?? protectedResourceOrigin(genericTarget, authConfig),
   }) as StoredOAuthTokenBundle;
   assertTokenBundleMatchesTarget(normalized, genericTarget, authConfig);
-  return refreshGenericOAuthBundle(genericTarget, authConfig, normalized, authDir);
+  return refreshGenericOAuthBundle(
+    genericTarget,
+    authConfig,
+    normalized,
+    authStore,
+    state.generation,
+  );
 }
 
 function authRefreshTarget(target: CapletServerConfig | GenericAuthTarget): GenericAuthTarget {
@@ -200,6 +220,8 @@ function authRefreshTarget(target: CapletServerConfig | GenericAuthTarget): Gene
 export class FileOAuthProvider implements OAuthClientProvider {
   private verifier = base64url(randomBytes(32));
   private readonly stateValue = base64url(randomBytes(24));
+  private bundle: StoredOAuthTokenBundle | undefined;
+  private generation: number | undefined;
   private clientInfo?: OAuthClientInformationMixed;
   readonly clientMetadataUrl?: string;
 
@@ -207,9 +229,15 @@ export class FileOAuthProvider implements OAuthClientProvider {
     readonly server: CapletServerConfig,
     readonly redirectUrl: string,
     private readonly onRedirect: (url: URL) => void,
-    private readonly authDir?: string,
-    private readonly options: { ignoreLegacyDynamicTokens?: boolean } = {},
+    private readonly authStore?: BackendAuthStateStore | string,
+    initialState?: StoredOAuthTokenBundleView,
+    private readonly options: {
+      ignoreLegacyDynamicTokens?: boolean;
+      operatorClientId?: string;
+    } = {},
   ) {
+    this.bundle = initialState?.bundle;
+    this.generation = initialState?.generation;
     if (
       (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
       this.server.auth.clientMetadataUrl
@@ -254,12 +282,11 @@ export class FileOAuthProvider implements OAuthClientProvider {
         ...(this.server.auth.clientSecret ? { client_secret: this.server.auth.clientSecret } : {}),
       };
     }
-    const bundle = readTokenBundle(this.server.server, this.authDir);
-    if (bundle?.clientId) {
+    if (this.bundle?.clientId) {
       return {
         ...this.clientMetadata,
-        client_id: bundle.clientId,
-        ...(bundle.clientSecret ? { client_secret: bundle.clientSecret } : {}),
+        client_id: this.bundle.clientId,
+        ...(this.bundle.clientSecret ? { client_secret: this.bundle.clientSecret } : {}),
       };
     }
     return undefined;
@@ -270,7 +297,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   tokens(): OAuthTokens | undefined {
-    const bundle = readTokenBundle(this.server.server, this.authDir);
+    const bundle = this.bundle;
     if (!bundle) {
       return undefined;
     }
@@ -298,23 +325,27 @@ export class FileOAuthProvider implements OAuthClientProvider {
     );
   }
 
-  saveTokens(tokens: OAuthTokens): void {
+  async saveTokens(tokens: OAuthTokens): Promise<void> {
     const clientInformation = this.clientInformation();
-    writeTokenBundle(
-      stripUndefined({
-        server: this.server.server,
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
-        tokenType: tokens.token_type,
-        expiresAt: tokens.expires_in
-          ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
-          : undefined,
-        scope: tokens.scope,
-        clientId: clientInformation?.client_id,
-        clientSecret: clientInformation?.client_secret,
-      }),
-      this.authDir,
-    );
+    const bundle = stripUndefined({
+      server: this.server.server,
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      tokenType: tokens.token_type,
+      expiresAt: tokens.expires_in
+        ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+        : undefined,
+      scope: tokens.scope,
+      clientId: clientInformation?.client_id,
+      clientSecret: clientInformation?.client_secret,
+    });
+    const authStore = requireBackendAuthStore(this.authStore);
+    const persisted = await authStore.writeTokenBundle(bundle, {
+      expectedGeneration: this.generation,
+      ...(this.options.operatorClientId ? { operatorClientId: this.options.operatorClientId } : {}),
+    });
+    this.bundle = persisted.bundle;
+    this.generation = persisted.generation;
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
@@ -353,7 +384,13 @@ export type StartedOAuthFlow = {
 
 export async function startOAuthFlow(
   server: CapletServerConfig,
-  options: { redirectUri: string; authDir?: string; print?: (line: string) => void },
+  options: {
+    redirectUri: string;
+    authStore?: BackendAuthStateStore;
+    authDir?: string;
+    operatorClientId?: string;
+    print?: (line: string) => void;
+  },
 ): Promise<StartedOAuthFlow> {
   if (
     server.transport === "stdio" ||
@@ -366,6 +403,8 @@ export async function startOAuthFlow(
     );
   }
 
+  const authStore = requireBackendAuthStore(options.authStore);
+  const initialState = await authStore.readTokenBundle(server.server);
   let redirectUrl: URL | undefined;
   const provider = new FileOAuthProvider(
     server,
@@ -374,8 +413,12 @@ export async function startOAuthFlow(
       redirectUrl = url;
       options.print?.(`Open this URL to authorize ${server.server}:\n${url.toString()}`);
     },
-    options.authDir,
-    { ignoreLegacyDynamicTokens: true },
+    authStore,
+    initialState,
+    {
+      ignoreLegacyDynamicTokens: true,
+      ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
+    },
   );
   const scope = scopesFor(server.auth);
   try {
@@ -417,13 +460,16 @@ export async function runOAuthFlow(
   server: CapletServerConfig,
   options: {
     noOpen?: boolean;
+    authStore?: BackendAuthStateStore;
     authDir?: string;
+    operatorClientId?: string;
     manualInput?: string;
     readManualInput?: () => Promise<string | undefined>;
     open?: (url: string) => Promise<void>;
     print?: (line: string) => void;
-  } = {},
+  },
 ): Promise<AuthResult> {
+  const authStore = requireBackendAuthStore(options.authStore);
   let callbackCode: string | undefined;
   let callbackState: string | undefined;
   const callback = await createLoopbackCallback((url) => {
@@ -441,7 +487,8 @@ export async function runOAuthFlow(
   try {
     const started = await startOAuthFlow(server, {
       redirectUri: callback.redirectUri,
-      ...(options.authDir ? { authDir: options.authDir } : {}),
+      authStore,
+      ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
       ...(options.print ? { print: options.print } : {}),
     });
     if (!started.authorizationUrl) {
@@ -531,12 +578,20 @@ type AuthorizationServerMetadata = {
 
 export async function startGenericOAuthFlow(
   target: GenericAuthTarget,
-  options: { redirectUri: string; authDir?: string; print?: (line: string) => void },
+  options: {
+    redirectUri: string;
+    authStore?: BackendAuthStateStore;
+    authDir?: string;
+    operatorClientId?: string;
+    print?: (line: string) => void;
+  },
 ): Promise<StartedOAuthFlow> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
   }
+  const authStore = requireBackendAuthStore(options.authStore);
   const authConfig = target.auth as OAuthLikeAuthConfig;
+  const initialState = await authStore.readTokenBundle(target.server);
   const redirectUri = authConfig.redirectUri ?? options.redirectUri;
   const verifier = base64url(randomBytes(32));
   const state = base64url(randomBytes(24));
@@ -601,7 +656,7 @@ export async function startGenericOAuthFlow(
       const idToken = asString(tokenResponse.id_token);
       const idClaims = parseJwtPayload(idToken);
       validateOidcToken(authConfig, metadata, idToken, idClaims, client.clientId);
-      writeTokenBundle(
+      await authStore.writeTokenBundle(
         stripUndefined({
           server: target.server,
           authType: authConfig.type,
@@ -626,7 +681,10 @@ export async function startGenericOAuthFlow(
             dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
           }) as Record<string, unknown>,
         }),
-        options.authDir,
+        {
+          expectedGeneration: initialState?.generation,
+          ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
+        },
       );
     },
   };
@@ -636,17 +694,21 @@ export async function runGenericOAuthFlow(
   target: GenericAuthTarget,
   options: {
     noOpen?: boolean;
+    authStore?: BackendAuthStateStore;
     authDir?: string;
+    operatorClientId?: string;
     manualInput?: string;
     readManualInput?: () => Promise<string | undefined>;
     open?: (url: string) => Promise<void>;
     print?: (line: string) => void;
-  } = {},
+  },
 ): Promise<StoredOAuthTokenBundle> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
   }
+  const authStore = requireBackendAuthStore(options.authStore);
   const authConfig = target.auth as OAuthLikeAuthConfig;
+  const initialState = await authStore.readTokenBundle(target.server);
   let callbackCode: string | undefined;
   let callbackState: string | undefined;
   const callback = await createLoopbackCallback((url) => {
@@ -761,7 +823,10 @@ export async function runGenericOAuthFlow(
         dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
       }) as Record<string, unknown>,
     });
-    writeTokenBundle(bundle, options.authDir);
+    await authStore.writeTokenBundle(bundle, {
+      expectedGeneration: initialState?.generation,
+      ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
+    });
     return bundle;
   } finally {
     await callback.close();
@@ -1009,11 +1074,20 @@ async function resolveGenericClient(
   };
 }
 
+function requireBackendAuthStore(input: BackendAuthStoreInput): BackendAuthStateStore {
+  if (input && typeof input !== "string") return input;
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    "Backend OAuth state requires Authoritative Host State storage.",
+  );
+}
+
 async function refreshGenericOAuthBundle(
   target: GenericAuthTarget,
   authConfig: OAuthLikeAuthConfig,
   bundle: StoredOAuthTokenBundle,
-  authDir?: string,
+  authStore: BackendAuthStateStore,
+  expectedGeneration: number,
 ): Promise<StoredOAuthTokenBundle> {
   if (!bundle.refreshToken) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
@@ -1110,7 +1184,7 @@ async function refreshGenericOAuthBundle(
     clientSecret,
     protectedResourceOrigin: protectedResourceOrigin(target, authConfig),
   });
-  writeTokenBundle(refreshed, authDir);
+  await authStore.writeTokenBundle(refreshed, { expectedGeneration });
   return refreshed;
 }
 

@@ -95,6 +95,7 @@ import { EPHEMERAL_REVEAL_TTL_MS, createEphemeralRevealExpiry } from "@/lib/ephe
 import { dashboardBasePath, dashboardPath } from "@/lib/paths";
 
 import { CatalogPage } from "@/components/catalog/CatalogPage";
+import { StoredCapletsPage } from "@/components/StoredCapletsPage";
 const REVEAL_DURATION_SECONDS = EPHEMERAL_REVEAL_TTL_MS / 1_000;
 const ACTION_DISCARDED = Symbol("dashboard-action-discarded");
 
@@ -131,6 +132,7 @@ type RouteKey =
   | "overview"
   | "access"
   | "caplets"
+  | "stored-caplets"
   | "catalog"
   | "vault"
   | "runtime"
@@ -191,6 +193,12 @@ const routes: Array<{
   { key: "overview", label: "Overview", href: dashboardPath(), icon: HomeIcon },
   { key: "access", label: "Access", href: dashboardPath("access"), icon: ShieldCheckIcon },
   { key: "caplets", label: "Caplets", href: dashboardPath("caplets"), icon: BoxesIcon },
+  {
+    key: "stored-caplets",
+    label: "Stored Caplets",
+    href: dashboardPath("stored-caplets"),
+    icon: DatabaseIcon,
+  },
   { key: "catalog", label: "Catalog", href: dashboardPath("catalog"), icon: BoxIcon },
   { key: "vault", label: "Vault", href: dashboardPath("vault"), icon: KeyRoundIcon },
   { key: "runtime", label: "Runtime", href: dashboardPath("runtime"), icon: TerminalIcon },
@@ -255,6 +263,15 @@ function useActionConfirm() {
   return {
     confirmAction: async (title: string, description: string) =>
       Boolean(await confirm({ title, description, confirmLabel: "Continue" })),
+    confirmDestructive: async (title: string, description: string, confirmLabel = "Delete") =>
+      Boolean(
+        await confirm({
+          title,
+          description,
+          confirmLabel,
+          destructive: true,
+        }),
+      ),
     confirmTyped: async (title: string, description: string, expectedPhrase: string) =>
       Boolean(
         await confirm({
@@ -783,9 +800,18 @@ function Page({
   session: DashboardSession;
   action: DashboardAction;
 }) {
-  const { confirmTyped } = useActionConfirm();
+  const { confirmAction, confirmDestructive, confirmTyped } = useActionConfirm();
   if (route === "access") return <AccessPage data={data} loading={loading} action={action} />;
   if (route === "caplets") return <CapletsPage data={data} loading={loading} action={action} />;
+  if (route === "stored-caplets")
+    return (
+      <StoredCapletsPage
+        action={action}
+        confirmAction={confirmAction}
+        confirmDestructive={confirmDestructive}
+        confirmTyped={confirmTyped}
+      />
+    );
   if (route === "catalog")
     return <CatalogPage data={data} action={action} confirmTyped={confirmTyped} />;
   if (route === "vault") return <VaultPage data={data} loading={loading} action={action} />;

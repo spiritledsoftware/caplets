@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { CapletsError, toSafeError } from "../errors";
+import { CapletsError, toSafeError } from "./errors";
 
 export const CAPLETS_LOCKFILE_VERSION = 1;
 

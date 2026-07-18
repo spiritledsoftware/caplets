@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CapletsEngine } from "../src/engine";
-import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
+import { createHostStorage } from "../src/storage";
 import type { HttpServeOptions } from "../src/serve/options";
 
 const dirs: string[] = [];
@@ -40,6 +40,7 @@ describe("dashboard runtime, diagnostics, logs, and events APIs", () => {
     });
 
     await setup.engine.close();
+    await setup.storage.close();
   });
 
   it("emits a replayable dashboard event stream snapshot", async () => {
@@ -52,19 +53,23 @@ describe("dashboard runtime, diagnostics, logs, and events APIs", () => {
     expect(text).toContain('"type":"runtime_health"');
     expect(text).toContain('"state":"disconnected"');
     await setup.engine.close();
+    await setup.storage.close();
   });
 });
 type Setup = Awaited<ReturnType<typeof authenticatedDashboard>>;
 
 async function authenticatedDashboard() {
-  const setup = testApp();
+  const setup = await testApp();
   const started = await appPost(setup, "/dashboard/api/login/start", { clientLabel: "Browser" });
   const startBody = (await started.json()) as {
     flowId: string;
     pendingCompletionSecret: string;
     approvalCommand: string;
   };
-  setup.store.approvePendingLogin({ operatorCode: approvalCode(startBody.approvalCommand) });
+  await setup.store.approvePendingLogin({
+    operatorClientId: "bootstrap_test",
+    operatorCode: approvalCode(startBody.approvalCommand),
+  });
   const completed = await appPost(setup, "/dashboard/api/login/complete", {
     flowId: startBody.flowId,
     pendingCompletionSecret: startBody.pendingCompletionSecret,
@@ -118,21 +123,27 @@ function approvalCode(command: string): string {
   return code;
 }
 
-function testApp() {
-  const stateDir = tempDir("caplets-dashboard-catalog-state-");
+async function testApp() {
+  const stateDir = tempDir("caplets-dashboard-runtime-state-");
   const context = testContext();
+  const storage = await createHostStorage(
+    { type: "sqlite", path: join(stateDir, "host.sqlite3") },
+    { vaultRoot: join(stateDir, "vault") },
+  );
   const engine = new CapletsEngine({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
+    authDir: context.authDir,
+    hostStorage: storage,
     watch: false,
   });
-  const store = new RemoteServerCredentialStore({ dir: stateDir });
+  const store = storage.remoteSecurity;
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},
     control: context,
-    remoteCredentialStore: store,
+    authoritativeStorage: storage,
   });
-  return { app, engine, store, stateDir, context };
+  return { app, engine, store, storage, stateDir, context };
 }
 
 function httpOptions(stateDir: string): HttpServeOptions {

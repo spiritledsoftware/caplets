@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultCacheBaseDir } from "../config/paths";
 import { CapletsError } from "../errors";
@@ -9,7 +9,7 @@ import {
   type SetupTargetKind,
 } from "./types";
 
-type SetupApprovalInput = Omit<SetupApproval, "projectFingerprint"> & {
+export type SetupApprovalInput = Omit<SetupApproval, "projectFingerprint"> & {
   projectFingerprint?: string | undefined;
 };
 
@@ -20,6 +20,12 @@ export type LocalSetupStoreOptions = {
   now?: () => Date;
   maxAttempts?: number;
   retentionDays?: number;
+};
+
+export type LegacySetupMigrationSnapshot = {
+  approvals: SetupApproval[];
+  attempts: SetupAttempt[];
+  sourcePaths: string[];
 };
 
 export class LocalSetupStore {
@@ -62,11 +68,8 @@ export class LocalSetupStore {
   }
 
   async approve(input: SetupApprovalInput): Promise<SetupApproval> {
-    const approval = {
-      ...input,
-      projectFingerprint: input.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT,
-    };
-    assertSetupTargetKind(approval.targetKind);
+    assertSetupTargetKind(input.targetKind);
+    const approval = parseSetupApproval(input);
     const approvals = this.approvals().filter(
       (existing) =>
         existing.projectFingerprint !== approval.projectFingerprint ||
@@ -84,14 +87,15 @@ export class LocalSetupStore {
 
   async recordAttempt(attempt: SetupAttempt): Promise<void> {
     assertSetupTargetKind(attempt.targetKind);
-    const projectFingerprint = attempt.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT;
+    const parsedAttempt = parseSetupAttempt(attempt);
+    const projectFingerprint = parsedAttempt.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT;
     const attempts = this.prunedAttempts([
-      ...this.attempts(projectFingerprint, attempt.capletId),
-      { ...attempt, projectFingerprint },
+      ...this.attempts(projectFingerprint, parsedAttempt.capletId),
+      { ...parsedAttempt, projectFingerprint },
     ]);
     mkdirSync(this.attemptsDir(projectFingerprint), { recursive: true });
     writeFileSync(
-      this.attemptsPath(projectFingerprint, attempt.capletId),
+      this.attemptsPath(projectFingerprint, parsedAttempt.capletId),
       attempts.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
       { mode: 0o600 },
     );
@@ -109,14 +113,46 @@ export class LocalSetupStore {
     return { maxAttempts: this.maxAttempts, days: this.retentionDays };
   }
 
+  exportForMigration(): LegacySetupMigrationSnapshot {
+    const approvals = this.approvals();
+    const sourcePaths = existsSync(this.approvalsPath()) ? [this.approvalsPath()] : [];
+    const attempts: SetupAttempt[] = [];
+    const projectsRoot = join(this.root, "projects");
+    if (existsSync(projectsRoot)) {
+      for (const project of readdirSync(projectsRoot, { withFileTypes: true })) {
+        if (!project.isDirectory()) continue;
+        const attemptsRoot = join(projectsRoot, project.name, "attempts");
+        if (!existsSync(attemptsRoot)) continue;
+        for (const entry of readdirSync(attemptsRoot, { withFileTypes: true })
+          .filter((candidate) => candidate.name.endsWith(".jsonl"))
+          .sort((left, right) => left.name.localeCompare(right.name))) {
+          if (!entry.isFile()) {
+            throw invalidPersistedSetupState("attempt artifact");
+          }
+          const path = join(attemptsRoot, entry.name);
+          let lines: string[];
+          try {
+            lines = readFileSync(path, "utf8")
+              .split("\n")
+              .filter((line) => line.length > 0);
+            attempts.push(...lines.map((line) => parseSetupAttempt(JSON.parse(line) as unknown)));
+          } catch {
+            throw invalidPersistedSetupState("attempt list");
+          }
+          sourcePaths.push(path);
+        }
+      }
+    }
+    assertUniqueSetupSnapshot(approvals, attempts);
+    return { approvals, attempts, sourcePaths: sourcePaths.sort() };
+  }
+
   private approvals(): SetupApproval[] {
     const path = this.approvalsPath();
     if (!existsSync(path)) return [];
-    const approvals = JSON.parse(readFileSync(path, "utf8")) as SetupApprovalInput[];
-    return approvals.map((approval) => ({
-      ...approval,
-      projectFingerprint: approval.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT,
-    }));
+    const approvals: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(approvals)) throw invalidPersistedSetupState("approval list");
+    return approvals.map(parseSetupApproval);
   }
 
   private prunedAttempts(attempts: SetupAttempt[]): SetupAttempt[] {
@@ -136,7 +172,7 @@ export class LocalSetupStore {
     return readFileSync(path, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as SetupAttempt);
+      .map((line) => parseSetupAttempt(JSON.parse(line) as unknown));
   }
 
   private attemptsDir(projectFingerprint: string): string {
@@ -145,6 +181,38 @@ export class LocalSetupStore {
 
   private attemptsPath(projectFingerprint: string, capletId: string): string {
     return join(this.attemptsDir(projectFingerprint), `${safeFileName(capletId)}.jsonl`);
+  }
+}
+
+function assertUniqueSetupSnapshot(approvals: SetupApproval[], attempts: SetupAttempt[]): void {
+  const approvalKeys = new Set<string>();
+  for (const approval of approvals) {
+    const identity = JSON.stringify([
+      approval.projectFingerprint,
+      approval.capletId,
+      approval.contentHash,
+      approval.targetKind,
+    ]);
+    if (approvalKeys.has(identity) || !Number.isFinite(Date.parse(approval.approvedAt))) {
+      throw invalidPersistedSetupState("approval list");
+    }
+    approvalKeys.add(identity);
+  }
+  const attemptKeys = new Set<string>();
+  for (const attempt of attempts) {
+    const identity = JSON.stringify([
+      attempt.projectFingerprint,
+      attempt.capletId,
+      attempt.attemptId,
+    ]);
+    if (
+      attemptKeys.has(identity) ||
+      !Number.isFinite(Date.parse(attempt.startedAt)) ||
+      !Number.isFinite(Date.parse(attempt.finishedAt))
+    ) {
+      throw invalidPersistedSetupState("attempt list");
+    }
+    attemptKeys.add(identity);
   }
 }
 
@@ -159,4 +227,116 @@ function assertSetupTargetKind(value: string): asserts value is SetupTargetKind 
       "setup target must be one of: local_host, remote_host, hosted_sandbox",
     );
   }
+}
+
+export function parseSetupApproval(value: unknown): SetupApproval {
+  if (
+    !isRecord(value) ||
+    typeof value.capletId !== "string" ||
+    typeof value.contentHash !== "string" ||
+    !isSetupTargetKindValue(value.targetKind) ||
+    typeof value.approvedAt !== "string" ||
+    !isSetupActor(value.actor) ||
+    (value.projectFingerprint !== undefined && typeof value.projectFingerprint !== "string")
+  ) {
+    throw invalidPersistedSetupState("approval");
+  }
+  return {
+    projectFingerprint: value.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT,
+    capletId: value.capletId,
+    contentHash: value.contentHash,
+    targetKind: value.targetKind,
+    approvedAt: value.approvedAt,
+    actor: value.actor,
+  };
+}
+
+export function parseSetupAttempt(value: unknown): SetupAttempt {
+  if (
+    !isRecord(value) ||
+    typeof value.attemptId !== "string" ||
+    typeof value.projectFingerprint !== "string" ||
+    typeof value.capletId !== "string" ||
+    typeof value.contentHash !== "string" ||
+    (value.setupHash !== undefined && typeof value.setupHash !== "string") ||
+    !isSetupTargetKindValue(value.targetKind) ||
+    !isRuntimeFeatures(value.runtimeFeatures) ||
+    !isSetupActor(value.actor) ||
+    !isSetupAttemptStatus(value.status) ||
+    (value.phase !== "commands" && value.phase !== "verify") ||
+    typeof value.commandLabel !== "string" ||
+    !isStringArray(value.argv) ||
+    (value.exitCode !== undefined && typeof value.exitCode !== "number") ||
+    (value.signal !== undefined && typeof value.signal !== "string") ||
+    typeof value.durationMs !== "number" ||
+    typeof value.startedAt !== "string" ||
+    typeof value.finishedAt !== "string" ||
+    typeof value.stdout !== "string" ||
+    typeof value.stderr !== "string" ||
+    typeof value.redacted !== "boolean" ||
+    !isRetention(value.retention)
+  ) {
+    throw invalidPersistedSetupState("attempt");
+  }
+  return {
+    attemptId: value.attemptId,
+    projectFingerprint: value.projectFingerprint,
+    capletId: value.capletId,
+    contentHash: value.contentHash,
+    ...(value.setupHash === undefined ? {} : { setupHash: value.setupHash }),
+    targetKind: value.targetKind,
+    ...(value.runtimeFeatures === undefined ? {} : { runtimeFeatures: value.runtimeFeatures }),
+    actor: value.actor,
+    status: value.status,
+    phase: value.phase,
+    commandLabel: value.commandLabel,
+    argv: value.argv,
+    ...(value.exitCode === undefined ? {} : { exitCode: value.exitCode }),
+    ...(value.signal === undefined ? {} : { signal: value.signal }),
+    durationMs: value.durationMs,
+    startedAt: value.startedAt,
+    finishedAt: value.finishedAt,
+    stdout: value.stdout,
+    stderr: value.stderr,
+    redacted: value.redacted,
+    retention: value.retention,
+  };
+}
+
+function isSetupTargetKindValue(value: unknown): value is SetupTargetKind {
+  return typeof value === "string" && isSetupTargetKind(value);
+}
+
+function isSetupActor(value: unknown): value is SetupApproval["actor"] {
+  return (
+    value === "cli-interactive" || value === "cli-yes" || value === "ui" || value === "automation"
+  );
+}
+
+function isSetupAttemptStatus(value: unknown): value is SetupAttempt["status"] {
+  return value === "running" || value === "succeeded" || value === "failed";
+}
+
+function isRuntimeFeatures(value: unknown): value is SetupAttempt["runtimeFeatures"] {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.every((feature) => feature === "docker" || feature === "browser"))
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isRetention(value: unknown): value is SetupAttempt["retention"] {
+  return isRecord(value) && typeof value.maxAttempts === "number" && typeof value.days === "number";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function invalidPersistedSetupState(kind: string): CapletsError {
+  return new CapletsError("INTERNAL_ERROR", `Persisted setup ${kind} is invalid.`);
 }

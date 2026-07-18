@@ -1,21 +1,25 @@
+import BetterSqlite3 from "better-sqlite3";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CapletsEngine } from "../src/engine";
-import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
+import { createHostStorage, type HostStorage, type RemoteSecurityStore } from "../src/storage";
 import type { HttpServeOptions } from "../src/serve/options";
 
 const dirs: string[] = [];
+const storages = new Set<HostStorage>();
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all([...storages].map(async (storage) => await storage.close()));
+  storages.clear();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("dashboard sessions", () => {
   it("serves the unauthenticated dashboard shell without operator data", async () => {
-    const { app, engine } = testApp();
+    const { app, engine } = await testApp();
 
     const response = await app.request("http://127.0.0.1:5387/dashboard");
 
@@ -31,7 +35,7 @@ describe("dashboard sessions", () => {
   });
 
   it("requires a session cookie for remote-credential dashboard sessions", async () => {
-    const { app, engine } = testApp();
+    const { app, engine } = await testApp();
 
     const response = await app.request("http://127.0.0.1:5387/dashboard/api/session");
 
@@ -41,7 +45,7 @@ describe("dashboard sessions", () => {
   });
 
   it("serves a development operator session and dashboard data without cookies", async () => {
-    const { app, engine } = developmentTestApp();
+    const { app, engine } = await developmentTestApp();
 
     const session = await app.request("http://127.0.0.1:5387/dashboard/api/session");
     expect(session.status).toBe(200);
@@ -71,7 +75,7 @@ describe("dashboard sessions", () => {
     await engine.close();
   });
   it("denies non-loopback development administration while preserving runtime access", async () => {
-    const { app, engine } = developmentTestApp({ host: "0.0.0.0", loopback: false });
+    const { app, engine } = await developmentTestApp({ host: "0.0.0.0", loopback: false });
     const baseUrl = "http://10.0.0.5:5387";
 
     const session = await app.request(`${baseUrl}/dashboard/api/session`);
@@ -120,7 +124,7 @@ describe("dashboard sessions", () => {
   });
 
   it("logs out development operator sessions without cookie-backed sessions", async () => {
-    const { app, engine } = developmentTestApp();
+    const { app, engine } = await developmentTestApp();
 
     const expectedStatuses = [
       {
@@ -148,7 +152,7 @@ describe("dashboard sessions", () => {
   });
 
   it("starts dashboard authorization as an operator pending login", async () => {
-    const { app, engine, store, stateDir } = testApp();
+    const { app, engine, store } = await testApp();
 
     const response = await app.request("http://127.0.0.1:5387/dashboard/api/login/start", {
       method: "POST",
@@ -167,9 +171,9 @@ describe("dashboard sessions", () => {
       approvalCommand: expect.stringContaining("caplets remote host approve cap_login_"),
       requestedRole: "operator",
     });
-    expect(body.approvalCommand).toContain(`--state-path ${stateDir}`);
+    expect(body.approvalCommand).not.toContain("--state-path");
     expect(body.approvalCommand).toContain("--yes");
-    expect(store.listPendingLogins()).toContainEqual(
+    expect(await store.listPendingLogins()).toContainEqual(
       expect.objectContaining({ clientLabel: "Browser", requestedRole: "operator" }),
     );
 
@@ -177,10 +181,13 @@ describe("dashboard sessions", () => {
   });
 
   it("completes approved dashboard authorization into an HttpOnly session cookie", async () => {
-    const { app, engine, store } = testApp();
+    const { app, engine, store } = await testApp();
     const started = await startDashboardLogin(app);
     const code = approvalCode(started.approvalCommand);
-    store.approvePendingLogin({ operatorCode: code });
+    await store.approvePendingLogin({
+      operatorClientId: "bootstrap_test",
+      operatorCode: code,
+    });
 
     const response = await app.request("http://127.0.0.1:5387/dashboard/api/login/complete", {
       method: "POST",
@@ -216,9 +223,10 @@ describe("dashboard sessions", () => {
   });
 
   it("rejects downgraded dashboard approvals without creating orphaned access clients", async () => {
-    const { app, engine, store } = testApp();
+    const { app, engine, store } = await testApp();
     const started = await startDashboardLogin(app);
-    store.approvePendingLogin({
+    await store.approvePendingLogin({
+      operatorClientId: "bootstrap_test",
       operatorCode: approvalCode(started.approvalCommand),
       grantedRole: "access",
     });
@@ -237,18 +245,21 @@ describe("dashboard sessions", () => {
       ok: false,
       error: { code: "AUTH_FAILED", message: expect.stringContaining("operator role") },
     });
-    expect(store.listClients()).toHaveLength(0);
+    expect(await store.listClients()).toHaveLength(0);
 
     await engine.close();
   });
 
   it("sets a Secure dashboard session cookie when HTTPS public origin fronts HTTP proxy traffic", async () => {
-    const { app, engine, store } = testApp({
+    const { app, engine, store } = await testApp({
       publicOrigin: "https://caplets.example.com",
       trustProxy: true,
     });
     const started = await startDashboardLogin(app);
-    store.approvePendingLogin({ operatorCode: approvalCode(started.approvalCommand) });
+    await store.approvePendingLogin({
+      operatorClientId: "bootstrap_test",
+      operatorCode: approvalCode(started.approvalCommand),
+    });
 
     const response = await app.request("http://10.0.0.5:5387/dashboard/api/login/complete", {
       method: "POST",
@@ -268,20 +279,32 @@ describe("dashboard sessions", () => {
   });
 
   it("returns 503 instead of logging out on dashboard session lock contention", async () => {
-    const setup = testApp();
+    const setup = await testApp();
     const { cookie } = await approvedDashboardSession(setup.app, setup.store);
+    if (setup.storage.database.dialect !== "sqlite") {
+      throw new Error("Expected SQLite HostStorage.");
+    }
+    const sqlite = setup.storage.database.db as unknown as {
+      $client: { pragma(source: string): unknown };
+    };
+    sqlite.$client.pragma("busy_timeout = 1");
+    const lock = new BetterSqlite3(setup.databasePath);
+    try {
+      lock.exec("BEGIN IMMEDIATE");
+      const response = await setup.app.request("http://127.0.0.1:5387/dashboard/api/session", {
+        headers: { cookie },
+      });
 
-    mkdirSync(join(setup.stateDir, "dashboard-sessions.lock"), { recursive: true });
-    const response = await setup.app.request("http://127.0.0.1:5387/dashboard/api/session", {
-      headers: { cookie },
-    });
-
-    expect(response.status).toBe(503);
+      expect(response.status).toBe(503);
+    } finally {
+      lock.exec("ROLLBACK");
+      lock.close();
+    }
     await setup.engine.close();
   });
 
   it("requires a remote-credential session and CSRF on unsafe dashboard APIs and invalidates logout", async () => {
-    const { app, engine, store } = testApp();
+    const { app, engine, store } = await testApp();
     const missingSession = await app.request("http://127.0.0.1:5387/dashboard/api/logout", {
       method: "POST",
     });
@@ -311,15 +334,17 @@ describe("dashboard sessions", () => {
   });
 
   it("reloads durable sessions and rejects them after backing operator revocation", async () => {
-    const setup = testApp();
+    const setup = await testApp();
     const { cookie } = await approvedDashboardSession(setup.app, setup.store);
     await setup.engine.close();
+    await setup.storage.close();
 
-    const reloadedEngine = engineFor(setup.context);
+    const reloadedStorage = await createTestHostStorage(setup.stateDir, setup.databasePath);
+    const reloadedEngine = engineFor(setup.context, reloadedStorage);
     const reloadedApp = createHttpServeApp(httpOptions(setup.stateDir), reloadedEngine, {
       writeErr: () => {},
       control: setup.context,
-      remoteCredentialStore: setup.store,
+      authoritativeStorage: reloadedStorage,
     });
     const restored = await reloadedApp.request("http://127.0.0.1:5387/dashboard/api/session", {
       headers: { cookie },
@@ -327,7 +352,10 @@ describe("dashboard sessions", () => {
     expect(restored.status).toBe(200);
     const restoredBody = (await restored.json()) as { session: { operatorClientId: string } };
 
-    setup.store.revokeClient(restoredBody.session.operatorClientId);
+    await reloadedStorage.remoteSecurity.revokeClient({
+      operatorClientId: "bootstrap_test",
+      clientId: restoredBody.session.operatorClientId,
+    });
     const revoked = await reloadedApp.request("http://127.0.0.1:5387/dashboard/api/session", {
       headers: { cookie },
     });
@@ -357,10 +385,13 @@ async function startDashboardLogin(app: CapletsHttpApp): Promise<{
 
 async function approvedDashboardSession(
   app: CapletsHttpApp,
-  store: RemoteServerCredentialStore,
+  store: RemoteSecurityStore,
 ): Promise<{ cookie: string; csrfToken: string }> {
   const started = await startDashboardLogin(app);
-  store.approvePendingLogin({ operatorCode: approvalCode(started.approvalCommand) });
+  await store.approvePendingLogin({
+    operatorClientId: "bootstrap_test",
+    operatorCode: approvalCode(started.approvalCommand),
+  });
   const response = await app.request("http://127.0.0.1:5387/dashboard/api/login/complete", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -381,34 +412,51 @@ function approvalCode(command: string): string {
   return code;
 }
 
-function testApp(overrides: Partial<HttpServeOptions> = {}) {
+async function testApp(overrides: Partial<HttpServeOptions> = {}) {
   const stateDir = tempDir("caplets-dashboard-state-");
+  const databasePath = join(stateDir, "host.sqlite3");
   const context = testContext();
-  const engine = engineFor(context);
-  const store = new RemoteServerCredentialStore({ dir: stateDir });
+  const storage = await createTestHostStorage(stateDir, databasePath);
+  const engine = engineFor(context, storage);
+  const store = storage.remoteSecurity;
   const app = createHttpServeApp(httpOptions(stateDir, overrides), engine, {
     writeErr: () => {},
     control: context,
-    remoteCredentialStore: store,
+    authoritativeStorage: storage,
   });
-  return { app, engine, store, stateDir, context };
+  return { app, engine, store, storage, databasePath, stateDir, context };
 }
 
-function developmentTestApp(overrides: Partial<HttpServeOptions> = {}) {
+async function developmentTestApp(overrides: Partial<HttpServeOptions> = {}) {
   const stateDir = tempDir("caplets-dashboard-dev-state-");
   const context = testContext();
-  const engine = engineFor(context);
+  const storage = await createTestHostStorage(stateDir, join(stateDir, "host.sqlite3"));
+  const engine = engineFor(context, storage);
   const app = createHttpServeApp(developmentHttpOptions(stateDir, overrides), engine, {
     writeErr: () => {},
     control: context,
+    authoritativeStorage: storage,
   });
-  return { app, engine, stateDir, context };
+  return { app, engine, storage, stateDir, context };
 }
 
-function engineFor(context: { configPath: string; projectConfigPath: string }): CapletsEngine {
+async function createTestHostStorage(stateDir: string, databasePath: string): Promise<HostStorage> {
+  const storage = await createHostStorage(
+    { type: "sqlite", path: databasePath },
+    { vaultRoot: join(stateDir, "vault") },
+  );
+  storages.add(storage);
+  return storage;
+}
+
+function engineFor(
+  context: { configPath: string; projectConfigPath: string },
+  storage: HostStorage,
+): CapletsEngine {
   return new CapletsEngine({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
+    hostStorage: storage,
     watch: false,
   });
 }

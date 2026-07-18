@@ -1,12 +1,18 @@
 import type { CatalogCompactEntry, CatalogEntry } from "../catalog";
-import {
-  DashboardActivityLog,
-  type DashboardActivityAction,
-  type DashboardActivityEntry,
+import type {
+  AppendDashboardActivityInput,
+  DashboardActivityAction,
+  ListDashboardActivityInput,
 } from "../dashboard/activity-log";
 import type { CapletsEngine } from "../engine";
 import { CapletsError, toSafeError, type SafeErrorSummary } from "../errors";
 import type { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import type { VaultGrantStore } from "../storage/vault-grants";
+import type { OperatorActivityEntry } from "../storage/operator-activity";
+import type { VaultValueRepository } from "../storage/vault-values";
+import type { RemoteSecurityStore } from "../storage/remote-security";
+import type { CapletRecordStore, CapletRecordView } from "../storage/caplet-records";
+import type { HostStorage } from "../storage/database";
 import type {
   RemoteClientRole,
   RemoteClientStatus,
@@ -21,6 +27,7 @@ import {
 } from "./catalog";
 import { createCurrentHostCatalogOperations } from "./catalog-operations";
 import { createCurrentHostClientOperations } from "./client-operations";
+import { createCurrentHostRecordOperations } from "./record-operations";
 import { createCurrentHostVaultOperations } from "./vault-operations";
 
 const TRUSTED_DEVELOPMENT_PRINCIPAL = Symbol("trusted-development-principal");
@@ -167,6 +174,34 @@ export type CurrentHostOperation =
       storedKey?: string | undefined;
       capletId?: string | undefined;
     }
+  | { kind: "stored_caplets_list" }
+  | { kind: "stored_caplet_get"; id: string; revisionKey?: string | undefined }
+  | {
+      kind: "stored_caplet_import";
+      id: string;
+      document: string;
+      historyLimit?: number | undefined;
+    }
+  | {
+      kind: "stored_caplet_update";
+      id: string;
+      document: string;
+      expectedGeneration: number;
+    }
+  | { kind: "stored_caplet_delete"; id: string; expectedGeneration: number }
+  | { kind: "stored_caplet_revisions"; id: string }
+  | {
+      kind: "stored_caplet_restore_revision";
+      id: string;
+      revisionKey: string;
+      expectedGeneration: number;
+    }
+  | {
+      kind: "stored_caplet_delete_revision";
+      id: string;
+      revisionKey: string;
+      expectedGeneration: number;
+    }
   | {
       kind: "runtime";
       baseUrl: string;
@@ -224,7 +259,7 @@ export type CurrentHostSummary = {
 };
 
 export type CurrentHostActivityPage = {
-  entries: DashboardActivityEntry[];
+  entries: OperatorActivityEntry[];
   nextCursor?: string | undefined;
 };
 
@@ -295,6 +330,24 @@ export type CurrentHostOperationOutcome =
   | { kind: "vault_access_grant"; grant: CurrentHostVaultAccessGrant }
   | { kind: "vault_access_revoke"; revoked: CurrentHostVaultAccessGrant[] }
   | { kind: "vault_access_list"; grants: CurrentHostVaultAccessGrant[] }
+  | { kind: "stored_caplets_list"; records: CapletRecordView[] }
+  | {
+      kind: "stored_caplet_get";
+      record: CapletRecordView;
+      document: string;
+    }
+  | { kind: "stored_caplet_import"; record: CapletRecordView }
+  | { kind: "stored_caplet_update"; record: CapletRecordView }
+  | { kind: "stored_caplet_delete"; deleted: true; id: string }
+  | {
+      kind: "stored_caplet_revisions";
+      revisions: Array<{ revisionKey: string; sequence: number; name: string }>;
+    }
+  | { kind: "stored_caplet_restore_revision"; record: CapletRecordView }
+  | {
+      kind: "stored_caplet_delete_revision";
+      record?: CapletRecordView | undefined;
+    }
   | {
       kind: "runtime";
       runtime: {
@@ -348,11 +401,24 @@ export interface CurrentHostOperations {
   ): Promise<CurrentHostOperationOutcomeFor<TOperation>>;
 }
 
+export type CurrentHostActivityStore = {
+  append(input: AppendDashboardActivityInput): unknown | Promise<unknown>;
+  list(
+    input?: ListDashboardActivityInput,
+  ): CurrentHostActivityPage | Promise<CurrentHostActivityPage>;
+};
+
 export type CurrentHostOperationsDependencies = {
   engine: Pick<CapletsEngine, "enabledServers">;
   control?: CurrentHostControlContext | undefined;
-  activityLog: DashboardActivityLog;
-  remoteCredentialStore?: RemoteServerCredentialStore | undefined;
+  activityLog: CurrentHostActivityStore;
+  remoteCredentialStore?: RemoteServerCredentialStore | RemoteSecurityStore | undefined;
+  capletRecords?: CapletRecordStore | undefined;
+  invalidateConfig?: ((operatorClientId: string) => Promise<void>) | undefined;
+  activateConfig?: (() => Promise<void>) | undefined;
+  catalogStorage?: HostStorage | undefined;
+  vaultGrants?: VaultGrantStore | undefined;
+  vaultValues?: VaultValueRepository | undefined;
   version: string;
 };
 
@@ -362,6 +428,7 @@ export function createCurrentHostOperations(
   const catalog = createCurrentHostCatalogOperations(dependencies);
   const clients = createCurrentHostClientOperations(dependencies);
   const vault = createCurrentHostVaultOperations(dependencies);
+  const records = createCurrentHostRecordOperations(dependencies);
 
   return {
     async execute<const TOperation extends CurrentHostOperation>(
@@ -374,6 +441,7 @@ export function createCurrentHostOperations(
         catalog,
         clients,
         vault,
+        records,
         principal,
         operation,
       );
@@ -387,12 +455,13 @@ async function executeCurrentHostOperation(
   catalog: ReturnType<typeof createCurrentHostCatalogOperations>,
   clients: ReturnType<typeof createCurrentHostClientOperations>,
   vault: ReturnType<typeof createCurrentHostVaultOperations>,
+  records: ReturnType<typeof createCurrentHostRecordOperations>,
   principal: CurrentHostOperatorPrincipal,
   operation: CurrentHostOperation,
 ): Promise<CurrentHostOperationOutcome> {
   switch (operation.kind) {
     case "summary":
-      return clients.summary(vault.valueCount(), operation);
+      return clients.summary(await vault.valueCount(), operation);
     case "caplets_list":
       return catalog.capletsList(operation);
     case "catalog_search":
@@ -408,33 +477,49 @@ async function executeCurrentHostOperation(
     case "catalog_update":
       return await catalog.update(principal, operation);
     case "clients_list":
-      return clients.listClients();
+      return await clients.listClients();
     case "pending_logins_list":
-      return clients.listPendingLogins();
+      return await clients.listPendingLogins();
     case "pending_login_approve":
-      return clients.approvePendingLogin(principal, operation);
+      return await clients.approvePendingLogin(principal, operation);
     case "pending_login_deny":
-      return clients.denyPendingLogin(principal, operation);
+      return await clients.denyPendingLogin(principal, operation);
     case "client_revoke":
-      return clients.revokeClient(principal, operation);
+      return await clients.revokeClient(principal, operation);
     case "client_change_role":
-      return clients.changeClientRole(principal, operation);
+      return await clients.changeClientRole(principal, operation);
     case "activity_list":
-      return { kind: "activity_list", activity: dependencies.activityLog.list(operation) };
+      return { kind: "activity_list", activity: await dependencies.activityLog.list(operation) };
     case "vault_set":
-      return vault.set(principal, operation);
+      return await vault.set(principal, operation);
     case "vault_list":
-      return vault.list(operation);
+      return await vault.list(operation);
     case "vault_get":
-      return vault.get(operation);
+      return await vault.get(operation);
     case "vault_delete":
-      return vault.delete(principal, operation);
+      return await vault.delete(principal, operation);
     case "vault_access_grant":
-      return vault.grant(principal, operation);
+      return await vault.grant(principal, operation);
     case "vault_access_revoke":
-      return vault.revoke(principal, operation);
+      return await vault.revoke(principal, operation);
     case "vault_access_list":
-      return vault.listAccess(operation);
+      return await vault.listAccess(operation);
+    case "stored_caplets_list":
+      return await records.list(principal);
+    case "stored_caplet_get":
+      return await records.get(principal, operation);
+    case "stored_caplet_import":
+      return await records.import(principal, operation);
+    case "stored_caplet_update":
+      return await records.update(principal, operation);
+    case "stored_caplet_delete":
+      return await records.delete(principal, operation);
+    case "stored_caplet_revisions":
+      return await records.revisions(principal, operation);
+    case "stored_caplet_restore_revision":
+      return await records.restoreRevision(principal, operation);
+    case "stored_caplet_delete_revision":
+      return await records.deleteRevision(principal, operation);
     case "runtime":
       return {
         kind: "runtime",
@@ -448,7 +533,7 @@ async function executeCurrentHostOperation(
         daemon: { restartAvailable: false, stopAvailable: false, uninstallAvailable: false },
       };
     case "runtime_restart":
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "runtime_restart_requested",
         outcome: "failure",

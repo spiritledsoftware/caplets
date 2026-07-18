@@ -47,6 +47,20 @@ type SetOptions = {
   now?: Date | undefined;
 };
 
+export type LegacyVaultValueMigrationRecord = {
+  key: string;
+  plaintext: string;
+  valueBytes: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LegacyVaultMigrationSnapshot = {
+  values: LegacyVaultValueMigrationRecord[];
+  grants: VaultAccessGrant[];
+  sourcePaths: string[];
+};
+
 export class FileVaultStore {
   readonly root: string;
   readonly env: Record<string, string | undefined>;
@@ -196,6 +210,57 @@ export class FileVaultStore {
       };
     }
     return { storedKey: grant.storedKey, value: this.resolveValue(grant.storedKey) };
+  }
+
+  /**
+   * Decrypts a fully validated legacy snapshot for immediate re-encryption by
+   * the offline SQL migration. Callers must never serialize this result.
+   */
+  exportForMigration(): LegacyVaultMigrationSnapshot {
+    const statuses = this.listValues();
+    const keys = new Set<string>();
+    const values = statuses.map((status): LegacyVaultValueMigrationRecord => {
+      if (
+        keys.has(status.key) ||
+        !status.present ||
+        !Number.isSafeInteger(status.valueBytes) ||
+        (status.valueBytes as number) < 0 ||
+        typeof status.createdAt !== "string" ||
+        typeof status.updatedAt !== "string" ||
+        !Number.isFinite(Date.parse(status.createdAt)) ||
+        !Number.isFinite(Date.parse(status.updatedAt)) ||
+        status.updatedAt < status.createdAt
+      ) {
+        throw new CapletsError("CONFIG_INVALID", "A legacy Vault value record is malformed.");
+      }
+      keys.add(status.key);
+      const plaintext = this.resolveValue(status.key);
+      if (Buffer.byteLength(plaintext, "utf8") !== status.valueBytes) {
+        throw new CapletsError("CONFIG_INVALID", "A legacy Vault value record is malformed.");
+      }
+      return {
+        key: status.key,
+        plaintext,
+        valueBytes: status.valueBytes,
+        createdAt: status.createdAt,
+        updatedAt: status.updatedAt,
+      };
+    });
+    const grants = this.listAccess();
+    const grantKeys = new Set<string>();
+    for (const grant of grants) {
+      const identity = accessGrantIdentity(grant);
+      if (grantKeys.has(identity)) {
+        throw new CapletsError("CONFIG_INVALID", "Legacy Vault access grants contain duplicates.");
+      }
+      grantKeys.add(identity);
+    }
+    const sourcePaths = [
+      ...(values.length > 0 && existsSync(this.paths.keyFile) ? [this.paths.keyFile] : []),
+      ...(existsSync(this.paths.grantsFile) ? [this.paths.grantsFile] : []),
+      ...values.map((value) => this.valuePath(value.key)),
+    ].sort();
+    return { values, grants, sourcePaths };
   }
 
   private loadValueRecord(key: string): VaultEncryptedRecord | undefined {

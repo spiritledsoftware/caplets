@@ -35,13 +35,14 @@
     "release:publish": "pnpm telemetry:prepare-release-env && pnpm release",
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
+    "storage:check": "pnpm --filter @caplets/core storage:check",
     "test": "vitest run",
     "telemetry:check-release-env": "tsx ./scripts/check-telemetry-release-env.ts",
     "telemetry:check-source-maps": "tsx ./scripts/check-sentry-source-maps.ts",
     "telemetry:check-web-env": "tsx ./scripts/check-web-observability-env.ts",
     "telemetry:prepare-release-env": "tsx ./scripts/check-telemetry-release-env.ts --write-bundled-intake",
     "typecheck": "tsgo --noEmit && turbo typecheck",
-    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
+    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm storage:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
     "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {

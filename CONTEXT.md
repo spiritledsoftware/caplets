@@ -20,6 +20,38 @@ _Avoid_: Caplets utility namespace, custom helper surface
 The first compatibility-global set for Code Mode: URL and query handling, text encoding, base64 and Buffer-compatible byte handling, web binary payload objects, safe crypto primitives, timing, scheduling, and structured cloning.
 _Avoid_: Minimal encoding helpers, full Node compatibility
 
+**Caplet Record**:
+The canonical structured form of a Caplet persisted in runtime-owned storage. A Caplet File is its portable Markdown import/export projection, not the stored record itself.
+_Avoid_: SQL Caplet File, stored Caplet File
+
+**Caplet Revision**:
+An immutable saved version of a Caplet Record's structured content and Caplet Bundle Snapshot; the record's current Caplet ID is stable metadata outside content history. A record selects one current revision; removing it promotes the newest remaining revision, while removing the sole revision removes the record.
+_Avoid_: Mutable draft, audit-log entry
+
+**Caplet Installation**:
+A provenance-bearing lifecycle that connects a Caplet Record to an external source and update channel. Detaching ends update tracking without erasing that lifecycle; replacing a detached install starts a new Caplet Installation.
+_Avoid_: Global lockfile entry, permanent source ownership
+
+**Caplet Bundle Snapshot**:
+A portable normalized snapshot of every regular auxiliary file in a Caplet bundle, including its relative path, content identity, and executable intent; `CAPLET.md` is represented by the Caplet Record instead. Safe in-bundle symlinks become regular files; escaping or broken links and special files are invalid.
+_Avoid_: Bundle archive blob, mounted bundle path
+
+**Caplet File Layer**:
+A live filesystem-backed source whose Caplet Files can shadow lower-precedence Caplets without modifying them. Project Caplet Files outrank global Caplet Files, which outrank SQL-backed Caplet Records.
+_Avoid_: One-time bootstrap import, filesystem synchronization
+
+**Effective Caplet**:
+The Caplet selected for an ID after all configured Caplet sources are resolved. Ordinary runtime and dashboard views show only the Effective Caplet; explicit storage operations may still address a shadowed Caplet Record.
+_Avoid_: Active record, merged Caplet
+
+**Authoritative Host State**:
+The correctness-bearing state owned by a Caplets host that must present one coherent view across all of that host's server nodes. It excludes node-local caches and artifacts, client-owned credentials, and native service files.
+_Avoid_: All runtime files, shared cache
+
+**Host Node**:
+A running server instance participating in one logical Caplets host. Host Nodes share Authoritative Host State but own their live Code Mode heap, bound workspace copy, and any node-local artifacts.
+_Avoid_: Independent host, tenant
+
 **Caplets exposure projection**:
 A shared adapter-neutral runtime view of which local and remote Caplets are exposed as Code Mode handles, progressive tools, direct downstream operations, or direct MCP surfaces, including non-callable diagnostic breadcrumbs for hidden Caplets. MCP, native, and attach host adapters render it differently; they do not own exposure policy or execution behavior.
 _Avoid_: Tool registration list, exposure wrapper map, transport-specific surface

@@ -1,8 +1,13 @@
-import { loadConfigWithSources, resolveConfigPath, resolveProjectConfigPath } from "../config";
+import {
+  loadConfigWithHostStorage,
+  loadHostStorageConfig,
+  resolveConfigPath,
+  resolveProjectConfigPath,
+} from "../config";
 import { CapletsError } from "../errors";
 import { capletSetupContentHash } from "../setup/hash";
-import { LocalSetupStore } from "../setup/local-store";
 import { runCapletSetup, type SetupSpawn } from "../setup/runner";
+import { createHostStorage, createHostStorageVaultResolver, type HostStorage } from "../storage";
 import type { SetupActor, SetupTargetKind } from "../setup/types";
 
 export type CapletSetupCliOptions = {
@@ -11,7 +16,7 @@ export type CapletSetupCliOptions = {
   remote?: boolean;
   configPath?: string | undefined;
   projectConfigPath?: string | undefined;
-  baseDir?: string | undefined;
+  hostStorage?: HostStorage | undefined;
   spawn?: SetupSpawn;
 };
 
@@ -29,78 +34,91 @@ export async function runCapletSetupCli(
 
   const configPath = options.configPath ?? resolveConfigPath();
   const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
-  const loaded = loadConfigWithSources(configPath, projectConfigPath);
-  const config = loaded.config;
-  const caplet = Object.values({
-    ...config.mcpServers,
-    ...config.openapiEndpoints,
-    ...config.googleDiscoveryApis,
-    ...config.graphqlEndpoints,
-    ...config.httpApis,
-    ...config.cliTools,
-    ...config.capletSets,
-  }).find((entry) => entry.server === capletId);
-  if (!caplet) throw new CapletsError("CONFIG_INVALID", `Unknown Caplet ID: ${capletId}`);
-  if (!caplet.setup || (!caplet.setup.commands?.length && !caplet.setup.verify?.length)) {
-    return `No setup metadata is defined for ${caplet.name} (${caplet.server}).\n`;
-  }
+  const storage =
+    options.hostStorage ?? (await createHostStorage(loadHostStorageConfig(configPath)));
+  const ownsStorage = options.hostStorage === undefined;
+  try {
+    const loaded = await loadConfigWithHostStorage(storage, configPath, projectConfigPath, {
+      vaultResolver: await createHostStorageVaultResolver(storage),
+    });
+    const config = loaded.config;
+    const caplet = Object.values({
+      ...config.mcpServers,
+      ...config.openapiEndpoints,
+      ...config.googleDiscoveryApis,
+      ...config.graphqlEndpoints,
+      ...config.httpApis,
+      ...config.cliTools,
+      ...config.capletSets,
+    }).find((entry) => entry.server === capletId);
+    if (!caplet) throw new CapletsError("CONFIG_INVALID", `Unknown Caplet ID: ${capletId}`);
+    if (!caplet.setup || (!caplet.setup.commands?.length && !caplet.setup.verify?.length)) {
+      return `No setup metadata is defined for ${caplet.name} (${caplet.server}).\n`;
+    }
 
-  const runtimeFingerprint = loaded.runtimeFingerprint?.caplets[caplet.server];
-  const contentHash = capletSetupContentHash(runtimeFingerprint);
-  const projectFingerprint = "default";
-  const store = new LocalSetupStore(options.baseDir ? { baseDir: options.baseDir } : {});
-  const existingApproval =
-    runtimeFingerprint?.persistenceEligible === false
-      ? undefined
-      : await store.getApproval(projectFingerprint, caplet.server, contentHash, targetKind);
-  const actor: SetupActor = options.yes ? "cli-yes" : "cli-interactive";
-  if (!existingApproval && !options.yes) {
-    return [
-      `Setup approval required for ${caplet.name} (${caplet.server}).`,
-      `Content hash: ${contentHash}`,
-      `Target: ${targetKind}`,
-      "",
-      "Commands:",
-      ...formatCommands(caplet.setup.commands ?? []),
-      "Verify:",
-      ...formatCommands(caplet.setup.verify ?? []),
-      "",
-      `Run caplets setup ${caplet.server} --yes to approve and execute these exact steps.`,
-      "",
-    ].join("\n");
-  }
+    const runtimeFingerprint = loaded.runtimeFingerprint?.caplets[caplet.server];
+    const contentHash = capletSetupContentHash(runtimeFingerprint);
+    const projectFingerprint = "default";
+    const store = storage.setupState;
+    const existingApproval =
+      runtimeFingerprint?.persistenceEligible === false
+        ? undefined
+        : await store.getApproval(projectFingerprint, caplet.server, contentHash, targetKind);
+    const actor: SetupActor = options.yes ? "cli-yes" : "cli-interactive";
+    if (!existingApproval && !options.yes) {
+      return [
+        `Setup approval required for ${caplet.name} (${caplet.server}).`,
+        `Content hash: ${contentHash}`,
+        `Target: ${targetKind}`,
+        "",
+        "Commands:",
+        ...formatCommands(caplet.setup.commands ?? []),
+        "Verify:",
+        ...formatCommands(caplet.setup.verify ?? []),
+        "",
+        `Run caplets setup ${caplet.server} --yes to approve and execute these exact steps.`,
+        "",
+      ].join("\n");
+    }
 
-  if (options.yes && !existingApproval && runtimeFingerprint?.persistenceEligible !== false) {
-    await store.approve({
+    if (options.yes && !existingApproval && runtimeFingerprint?.persistenceEligible !== false) {
+      await store.approve(
+        {
+          projectFingerprint,
+          capletId: caplet.server,
+          contentHash,
+          targetKind,
+          approvedAt: new Date().toISOString(),
+          actor,
+        },
+        { operatorClientId: "local_cli" },
+      );
+    }
+
+    const attempts = await runCapletSetup({
       projectFingerprint,
       capletId: caplet.server,
       contentHash,
       targetKind,
-      approvedAt: new Date().toISOString(),
+      setup: caplet.setup,
       actor,
+      approved: true,
+      store,
+      operatorClientId: "local_cli",
+      ...(options.spawn ? { spawn: options.spawn } : {}),
     });
+    const failed = attempts.find((attempt) => attempt.status === "failed");
+    if (failed) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        `Setup failed for ${caplet.server}: ${failed.commandLabel}`,
+        { attempts },
+      );
+    }
+    return `Completed setup for ${caplet.name} (${caplet.server}).\n`;
+  } finally {
+    if (ownsStorage) await storage.close();
   }
-
-  const attempts = await runCapletSetup({
-    projectFingerprint,
-    capletId: caplet.server,
-    contentHash,
-    targetKind,
-    setup: caplet.setup,
-    actor,
-    approved: true,
-    store,
-    ...(options.spawn ? { spawn: options.spawn } : {}),
-  });
-  const failed = attempts.find((attempt) => attempt.status === "failed");
-  if (failed) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      `Setup failed for ${caplet.server}: ${failed.commandLabel}`,
-      { attempts },
-    );
-  }
-  return `Completed setup for ${caplet.name} (${caplet.server}).\n`;
 }
 
 function resolveSetupTarget(options: CapletSetupCliOptions): SetupTargetKind {

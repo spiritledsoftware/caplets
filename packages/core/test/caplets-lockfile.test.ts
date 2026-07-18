@@ -16,7 +16,7 @@ import {
   validateLockfileDestination,
   writeCapletsLockfile,
   type CapletsLockfile,
-} from "../src/cli/lockfile";
+} from "../src/lockfile";
 import type { CapletsError } from "../src/errors";
 
 describe("caplets lockfile", () => {

@@ -1,0 +1,77 @@
+services:
+  caplets-postgres:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${CAPLETS_POSTGRES_DATABASE:-caplets}
+      POSTGRES_USER: caplets_admin
+      POSTGRES_PASSWORD: ${CAPLETS_POSTGRES_ADMIN_PASSWORD:?set CAPLETS_POSTGRES_ADMIN_PASSWORD}
+      CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
+      CAPLETS_POSTGRES_MIGRATOR_PASSWORD: ${CAPLETS_POSTGRES_MIGRATOR_PASSWORD:?set CAPLETS_POSTGRES_MIGRATOR_PASSWORD}
+      CAPLETS_POSTGRES_RUNTIME_PASSWORD: ${CAPLETS_POSTGRES_RUNTIME_PASSWORD:?set CAPLETS_POSTGRES_RUNTIME_PASSWORD}
+    volumes:
+      - caplets-postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-caplets-roles.sh:/docker-entrypoint-initdb.d/10-caplets-roles.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username caplets_admin --dbname "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  caplets-postgres-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: caplets:local
+    restart: "no"
+    depends_on:
+      caplets-postgres:
+        condition: service_healthy
+    environment:
+      CAPLETS_CONFIG: /tmp/caplets-migrator-config.json
+      CAPLETS_POSTGRES_HOST: caplets-postgres
+      CAPLETS_POSTGRES_PORT: "5432"
+      CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}
+      CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
+      CAPLETS_POSTGRES_MIGRATOR_PASSWORD: ${CAPLETS_POSTGRES_MIGRATOR_PASSWORD:?set CAPLETS_POSTGRES_MIGRATOR_PASSWORD}
+    volumes:
+      - ./deploy/postgres/render-config.mjs:/usr/local/bin/render-caplets-postgres-config.mjs:ro
+      - ./deploy/postgres/finalize-runtime-grants.mjs:/usr/local/bin/finalize-caplets-postgres-grants.mjs:ro
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        node /usr/local/bin/render-caplets-postgres-config.mjs migrator
+        node dist/index.js storage schema-migrate
+        node /usr/local/bin/finalize-caplets-postgres-grants.mjs
+
+  caplets:
+    depends_on:
+      caplets-postgres:
+        condition: service_healthy
+      caplets-postgres-migrate:
+        condition: service_completed_successfully
+    environment:
+      CAPLETS_CONFIG: /tmp/caplets-runtime-config.json
+      CAPLETS_BASE_CONFIG: /data/config/caplets/config.json
+      CAPLETS_POSTGRES_HOST: caplets-postgres
+      CAPLETS_POSTGRES_PORT: "5432"
+      CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}
+      CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
+      CAPLETS_POSTGRES_RUNTIME_PASSWORD: ${CAPLETS_POSTGRES_RUNTIME_PASSWORD:?set CAPLETS_POSTGRES_RUNTIME_PASSWORD}
+    volumes:
+      - ./deploy/postgres/render-config.mjs:/usr/local/bin/render-caplets-postgres-config.mjs:ro
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        test -f "$${CAPLETS_BASE_CONFIG}" || env CAPLETS_CONFIG="$${CAPLETS_BASE_CONFIG}" CAPLETS_MODE=local node dist/index.js init --global
+        node /usr/local/bin/render-caplets-postgres-config.mjs runtime
+        exec env CAPLETS_MODE=local node dist/index.js serve --transport http --host 0.0.0.0
+
+volumes:
+  caplets-postgres-data:

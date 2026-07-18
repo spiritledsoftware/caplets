@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCurrentHostCatalogOperations } from "../src/current-host/catalog-operations";
 import type * as CatalogModule from "../src/current-host/catalog";
-import type * as InstallModule from "../src/cli/install";
+import type * as InstallModule from "../src/install";
 import type {
   CurrentHostOperationsDependencies,
   CurrentHostOperatorPrincipal,
@@ -19,7 +19,7 @@ vi.mock("../src/current-host/catalog", async (importOriginal) => ({
   currentHostCatalogDetail: mocks.detail,
 }));
 
-vi.mock("../src/cli/install", async (importOriginal) => ({
+vi.mock("../src/install", async (importOriginal) => ({
   ...(await importOriginal<typeof InstallModule>()),
   installCaplets: mocks.install,
   updateCapletsFromLockfile: mocks.update,

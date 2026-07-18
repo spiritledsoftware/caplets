@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, parse } from "node:path";
 import {
   createBackendOperationRuntime,
@@ -11,6 +12,8 @@ import {
   type CapletConfig,
   type CapletsConfig,
   loadLocalRuntimeConfig,
+  loadConfigWithHostStorage,
+  loadHostStorageConfig,
   type LocalOverlayConfigWarning,
   resolveCapletsRoot,
   resolveConfigPath,
@@ -18,7 +21,7 @@ import {
   runtimeFingerprintForConfig,
   vaultResolverForAuthDir,
 } from "./config";
-import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
+import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR, defaultStateBaseDir } from "./config/paths";
 import {
   resolvedExecutionFingerprintForConfig,
   type DeclaredInputReader,
@@ -36,6 +39,7 @@ import {
 } from "./observed-output-shapes";
 import type { ProjectBindingExecutionContext } from "./project-binding/execution-context";
 import { ServerRegistry } from "./registry";
+import { createHostStorage, createHostStorageVaultResolver, type HostStorage } from "./storage";
 import { extractArtifacts, handleServerTool } from "./tools";
 import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
 import { buildExposureProjection, type ExposureProjection } from "./exposure/projection";
@@ -55,6 +59,8 @@ import type {
   TelemetrySurface,
   TelemetryVisibility,
 } from "./telemetry";
+
+const HOST_RUNTIME_FINGERPRINT_PATTERN = /^hmac-sha256:[a-f0-9]{64}$/u;
 
 type ToolSummary = { name: string; description?: string };
 
@@ -79,6 +85,17 @@ export type CapletsEngineOptions = {
     projectConfigPath: string,
     options?: { writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined },
   ) => CapletsConfig;
+  asyncConfigLoader?: (
+    configPath: string,
+    projectConfigPath: string,
+    options?: { writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined },
+  ) => Promise<CapletsConfig>;
+  initialConfig?: CapletsConfig | undefined;
+  hostStorage?: HostStorage | undefined;
+  hostNodeId?: string | undefined;
+  hostConfigGeneration?: number | undefined;
+  hostRuntimeFingerprint?: string | undefined;
+  parityConfigLoader?: (() => Promise<CapletsConfig>) | undefined;
   declaredInputReader?: DeclaredInputReader | undefined;
   observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
   observedOutputShapeScope?: ObservedOutputShapeKey["scope"] | undefined;
@@ -127,6 +144,15 @@ export class CapletsEngine {
   private readonly watchEnabled: boolean;
   private readonly writeErr: (value: string) => void;
   private readonly configLoader: NonNullable<CapletsEngineOptions["configLoader"]>;
+  private readonly asyncConfigLoader: CapletsEngineOptions["asyncConfigLoader"];
+  private readonly parityConfigLoader: CapletsEngineOptions["parityConfigLoader"];
+  private readonly hostStorage: HostStorage | undefined;
+  private readonly hostNodeId: string | undefined;
+  private hostConfigGeneration: number;
+  private hostRuntimeFingerprint: string;
+  private coordinationTimer: NodeJS.Timeout | undefined;
+  private coordinationAbortController: AbortController | undefined;
+  private coordinationTask: Promise<void> | undefined;
   private readonly declaredInputReader: DeclaredInputReader | undefined;
   private readonly requireValidCustomFingerprint: boolean;
   private readonly observedOutputShapeStore: ObservedOutputShapeStore | undefined;
@@ -146,6 +172,71 @@ export class CapletsEngine {
   private stableHostConfigurationFingerprint: string;
   private resolvedExecutionFingerprint: string;
 
+  static async create(options: CapletsEngineOptions = {}): Promise<CapletsEngine> {
+    const configPath = resolveConfigPath(options.configPath);
+    const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
+    const storage = await createHostStorage(loadHostStorageConfig(configPath), {
+      vaultRoot: options.authDir ? join(options.authDir, "vault") : undefined,
+    });
+    const recordCacheRoot = join(defaultStateBaseDir(), "record-caplets");
+    const load = async (
+      path: string,
+      projectPath: string,
+      _loaderOptions?: {
+        writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined;
+      },
+    ): Promise<CapletsConfig> =>
+      (
+        await loadConfigWithHostStorage(storage, path, projectPath, {
+          recordCacheRoot,
+          vaultResolver: await createHostStorageVaultResolver(storage),
+        })
+      ).config;
+    const parityConfigLoader = async (): Promise<CapletsConfig> =>
+      await load(configPath, join(recordCacheRoot, ".cluster-parity", "config.json"));
+    try {
+      const loaded = await loadConfigWithHostStorage(storage, configPath, projectConfigPath, {
+        vaultResolver: await createHostStorageVaultResolver(storage),
+        recordCacheRoot,
+      });
+      const initialConfig = loaded.config;
+      const parityConfig = await parityConfigLoader();
+      const hostRuntimeFingerprint = storage.vaultValues.hostRuntimeFingerprint(
+        clusterHostConfigurationFingerprint(parityConfig),
+      );
+      const hostNodeId = randomUUID();
+      const registration = await storage.coordination.registerNode({
+        nodeId: hostNodeId,
+        globalFileManifest: globalFileManifest(configPath),
+        runtimeFingerprint: hostRuntimeFingerprint,
+      });
+      if (!registration.ready) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          `Host Node configuration conflicts with another active node (${registration.conflict}).`,
+          { conflict: registration.conflict },
+        );
+      }
+      const hostConfigGeneration = await storage.coordination.publishConfigGeneration(
+        resolvedExecutionFingerprintForConfig(parityConfig),
+        hostNodeId,
+      );
+      return new CapletsEngine({
+        ...options,
+        initialConfig,
+        asyncConfigLoader: load,
+        hostRuntimeFingerprint,
+        parityConfigLoader,
+        hostStorage: storage,
+        hostNodeId,
+        hostConfigGeneration,
+      });
+    } catch (error) {
+      await storage.close();
+      throw error;
+    }
+  }
+
   constructor(options: CapletsEngineOptions = {}) {
     this.paths = {
       configPath: resolveConfigPath(options.configPath),
@@ -154,11 +245,29 @@ export class CapletsEngine {
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
     this.configLoader =
       options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
+    this.asyncConfigLoader = options.asyncConfigLoader;
+    this.parityConfigLoader = options.parityConfigLoader;
+    this.hostStorage = options.hostStorage;
     this.declaredInputReader = options.declaredInputReader;
-    this.requireValidCustomFingerprint = options.configLoader !== undefined;
-    const config = this.loadConfigWithWarnings();
+    this.requireValidCustomFingerprint =
+      options.configLoader !== undefined || options.asyncConfigLoader !== undefined;
+    const config = options.initialConfig ?? this.loadConfigWithWarnings();
+    this.hostNodeId = options.hostNodeId;
+    this.hostConfigGeneration = options.hostConfigGeneration ?? 0;
     this.stableHostConfigurationFingerprint =
       runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
+    if (
+      this.hostStorage &&
+      this.hostNodeId &&
+      !HOST_RUNTIME_FINGERPRINT_PATTERN.test(options.hostRuntimeFingerprint ?? "")
+    ) {
+      throw new CapletsError(
+        "INTERNAL_ERROR",
+        "Host Node keyed parity state must be initialized before runtime startup.",
+      );
+    }
+    this.hostRuntimeFingerprint =
+      options.hostRuntimeFingerprint ?? this.stableHostConfigurationFingerprint;
     this.resolvedExecutionFingerprint = resolvedExecutionFingerprintForConfig(config);
     this.registry = new ServerRegistry(config);
     this.telemetry = createRuntimeTelemetryContext({
@@ -176,6 +285,7 @@ export class CapletsEngine {
       options.telemetrySurface === "code_mode" ? "code_mode" : "progressive";
     this.downstream = new DownstreamManager(this.registry, {
       ...selectAuthOptions(options.authDir),
+      ...(options.hostStorage ? { backendAuth: options.hostStorage.backendAuth } : {}),
       projectBindingContext: options.projectBindingContext,
     });
     this.openapi = new OpenApiManager(this.registry, selectHttpLikeOptions(options));
@@ -211,6 +321,50 @@ export class CapletsEngine {
     if (this.watchEnabled) {
       this.resetWatchers();
     }
+    if (this.hostStorage && this.hostNodeId) {
+      this.coordinationAbortController = new AbortController();
+      this.coordinationTask = this.watchConfigGenerations(this.coordinationAbortController.signal);
+      this.coordinationTimer = setInterval(() => {
+        void this.refreshCoordinationHeartbeat();
+      }, 1_000);
+      this.coordinationTimer.unref();
+    }
+  }
+
+  async readiness(): Promise<{
+    ready: boolean;
+    backend?: "sqlite" | "postgres" | undefined;
+    reason?: string | undefined;
+  }> {
+    try {
+      await this.assertHostStorageReady();
+      return {
+        ready: true,
+        ...(this.hostStorage ? { backend: this.hostStorage.backend } : {}),
+      };
+    } catch (error) {
+      let reason = "host_not_ready";
+      if (
+        error instanceof CapletsError &&
+        error.details &&
+        typeof error.details === "object" &&
+        "reason" in error.details &&
+        typeof error.details.reason === "string"
+      ) {
+        reason = error.details.reason;
+      }
+      return {
+        ready: false,
+        ...(this.hostStorage ? { backend: this.hostStorage.backend } : {}),
+        reason,
+      };
+    }
+  }
+  authoritativeStorage(): HostStorage | undefined {
+    return this.hostStorage;
+  }
+  hostNodeIdentity(): string | undefined {
+    return this.hostNodeId;
   }
 
   currentConfig(): CapletsConfig {
@@ -306,6 +460,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.assertHostStorageReady();
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       const result = await handleServerTool(caplet, request, this.registry, this.backendRuntime, {
@@ -347,6 +502,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.assertHostStorageReady();
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       const result = await this.backendRuntime.operations.callTool(caplet, toolName, args);
@@ -370,6 +526,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.assertHostStorageReady();
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP completions`);
@@ -392,6 +549,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.assertHostStorageReady();
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP resources`);
@@ -415,6 +573,7 @@ export class CapletsEngine {
     const started = Date.now();
     let caplet: CapletConfig | undefined;
     try {
+      await this.assertHostStorageReady();
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP prompts`);
@@ -476,6 +635,12 @@ export class CapletsEngine {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.coordinationAbortController?.abort();
+    this.coordinationAbortController = undefined;
+    if (this.coordinationTimer) {
+      clearInterval(this.coordinationTimer);
+      this.coordinationTimer = undefined;
+    }
     try {
       if (this.reloadTimer) {
         clearTimeout(this.reloadTimer);
@@ -485,14 +650,22 @@ export class CapletsEngine {
         clearTimeout(this.watcherRefreshTimer);
         this.watcherRefreshTimer = undefined;
       }
+      if (this.coordinationTask) {
+        await this.coordinationTask;
+        this.coordinationTask = undefined;
+      }
       if (this.reloading) {
         await this.reloading;
+      }
+      if (this.hostStorage && this.hostNodeId) {
+        await this.hostStorage.coordination.unregisterNode(this.hostNodeId);
       }
     } finally {
       this.closeWatchers();
       await this.downstream.close();
       await this.capletSets.close();
       await this.telemetry.dispatcher.shutdown();
+      await this.hostStorage?.close();
       this.reloadListeners.clear();
     }
   }
@@ -553,8 +726,15 @@ export class CapletsEngine {
       return false;
     }
     let nextConfig: CapletsConfig;
+    let nextHostRuntimeFingerprint = this.hostRuntimeFingerprint;
     try {
-      nextConfig = this.loadConfigWithWarnings();
+      nextConfig = await this.loadConfigWithWarningsAsync();
+      if (this.parityConfigLoader && this.hostStorage && this.hostNodeId) {
+        const parityConfig = await this.parityConfigLoader();
+        nextHostRuntimeFingerprint = this.hostStorage.vaultValues.hostRuntimeFingerprint(
+          clusterHostConfigurationFingerprint(parityConfig),
+        );
+      }
     } catch (error) {
       this.writeErr(`Caplets config reload failed; keeping last known-good config.\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
@@ -562,6 +742,11 @@ export class CapletsEngine {
     }
     if (this.closed) {
       return false;
+    }
+
+    if (nextHostRuntimeFingerprint !== this.hostRuntimeFingerprint) {
+      this.hostRuntimeFingerprint = nextHostRuntimeFingerprint;
+      await this.refreshCoordinationHeartbeat();
     }
 
     const nextStableHostConfigurationFingerprint =
@@ -606,12 +791,82 @@ export class CapletsEngine {
     return invalidated;
   }
 
+  private async assertHostStorageReady(): Promise<void> {
+    if (!this.hostStorage) return;
+    if (this.hostNodeId && !(await this.hostStorage.coordination.nodeReady(this.hostNodeId))) {
+      throw new CapletsError("SERVER_UNAVAILABLE", "Host Node configuration parity is not ready.");
+    }
+    const health = await this.hostStorage.health();
+    if (!health.ready) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Authoritative Host State storage is unavailable.",
+        { backend: health.backend, reason: health.reason },
+      );
+    }
+  }
+
+  private async refreshCoordinationHeartbeat(): Promise<void> {
+    if (!this.hostStorage || !this.hostNodeId || this.closed) return;
+    try {
+      await this.hostStorage.coordination.heartbeat({
+        nodeId: this.hostNodeId,
+        globalFileManifest: globalFileManifest(this.paths.configPath),
+        runtimeFingerprint: this.hostRuntimeFingerprint,
+      });
+    } catch {
+      // Request-time storage and node-readiness checks fail closed while coordination recovers.
+    }
+  }
+
+  private async watchConfigGenerations(signal: AbortSignal): Promise<void> {
+    if (!this.hostStorage) return;
+    let observedGeneration = this.hostConfigGeneration;
+    while (!this.closed && !signal.aborted) {
+      try {
+        const generation = await this.hostStorage.coordination.waitForConfigGeneration(
+          observedGeneration,
+          { signal },
+        );
+        if (this.closed || signal.aborted) return;
+        observedGeneration = Math.max(observedGeneration, generation);
+        if (generation > this.hostConfigGeneration && (await this.reload())) {
+          this.hostConfigGeneration = generation;
+        }
+      } catch {
+        if (this.closed || signal.aborted) return;
+        await coordinationRetryDelay(signal);
+      }
+    }
+  }
+
   private loadConfigWithWarnings(): CapletsConfig {
     const config = this.configLoader(this.paths.configPath, this.paths.projectConfigPath, {
       writeWarning: (warning) => {
         this.writeErr(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
       },
     });
+    const runtimeFingerprint = runtimeFingerprintForConfig(config, this.declaredInputReader);
+    if (this.requireValidCustomFingerprint && !runtimeFingerprint.valid) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "Caplets runtime references must be present and readable.",
+      );
+    }
+    return config;
+  }
+
+  private async loadConfigWithWarningsAsync(): Promise<CapletsConfig> {
+    if (!this.asyncConfigLoader) return this.loadConfigWithWarnings();
+    const config = await this.asyncConfigLoader(
+      this.paths.configPath,
+      this.paths.projectConfigPath,
+      {
+        writeWarning: (warning) => {
+          this.writeErr(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
+        },
+      },
+    );
     const runtimeFingerprint = runtimeFingerprintForConfig(config, this.declaredInputReader);
     if (this.requireValidCustomFingerprint && !runtimeFingerprint.valid) {
       throw new CapletsError(
@@ -797,6 +1052,20 @@ export class CapletsEngine {
   }
 }
 
+function coordinationRetryDelay(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, 1_000);
+    timer.unref();
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
+
 function runtimeConfigLoader(
   authDir: string | undefined,
   vaultRecoveryTarget: CapletsEngineOptions["vaultRecoveryTarget"],
@@ -816,6 +1085,7 @@ function selectAuthOptions(authDir: string | undefined): { authDir?: string } {
 
 function selectHttpLikeOptions(options: CapletsEngineOptions): {
   authDir?: string;
+  backendAuth?: HostStorage["backendAuth"];
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
   mediaInlineThresholdBytes?: number;
@@ -823,6 +1093,7 @@ function selectHttpLikeOptions(options: CapletsEngineOptions): {
 } {
   return {
     ...selectAuthOptions(options.authDir),
+    ...(options.hostStorage ? { backendAuth: options.hostStorage.backendAuth } : {}),
     ...(options.artifactDir ? { artifactDir: options.artifactDir } : {}),
     ...(options.exposeLocalArtifactPaths === false ? { exposeLocalArtifactPaths: false } : {}),
     ...(options.mediaInlineThresholdBytes === undefined
@@ -949,6 +1220,42 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function operationFromRequest(request: unknown): unknown {
   return isRecord(request) ? request.operation : undefined;
+}
+
+function clusterHostConfigurationFingerprint(config: CapletsConfig): string {
+  const { serve: _serve, telemetry: _telemetry, ...clusterConfig } = config;
+  return runtimeFingerprintForConfig(clusterConfig).hostConfigurationFingerprint;
+}
+
+function globalFileManifest(configPath: string): string {
+  const root = resolveCapletsRoot(configPath);
+  const hash = createHash("sha256");
+  if (!existsSync(root)) return hash.digest("hex");
+  const appendFile = (path: string, relativePath: string): void => {
+    hash.update(relativePath);
+    hash.update("\0");
+    hash.update(readFileSync(path));
+    hash.update("\0");
+  };
+  const visitBundle = (directory: string, relativeRoot: string): void => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      const relativePath = join(relativeRoot, name);
+      const stat = statSync(path);
+      if (stat.isDirectory()) visitBundle(path, relativePath);
+      else if (stat.isFile()) appendFile(path, relativePath);
+    }
+  };
+  for (const name of readdirSync(root).sort()) {
+    const path = join(root, name);
+    const stat = statSync(path);
+    if (stat.isFile() && name.toLowerCase().endsWith(".md")) {
+      appendFile(path, name);
+    } else if (stat.isDirectory() && existsSync(join(path, "CAPLET.md"))) {
+      visitBundle(path, name);
+    }
+  }
+  return hash.digest("hex");
 }
 
 function runtimeModeFromEnv(env: NodeJS.ProcessEnv | undefined): RuntimeMode {

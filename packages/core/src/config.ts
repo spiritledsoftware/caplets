@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./config-runtime";
 import {
   defaultConfigPath,
+  defaultStateBaseDir,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectConfigPath,
@@ -348,6 +350,38 @@ export type CapletsOptions = {
   completion: CompletionConfig;
 };
 
+export type AssetStorageConfig =
+  | { type: "sql" }
+  | {
+      type: "s3";
+      endpoint?: string | undefined;
+      region: string;
+      bucket: string;
+      prefix?: string | undefined;
+      forcePathStyle?: boolean | undefined;
+      accessKeyId?: string | undefined;
+      secretAccessKey?: string | undefined;
+    };
+
+type HostStorageCommonConfig = {
+  assets?: AssetStorageConfig | undefined;
+  bundleLimits?:
+    | {
+        maxFiles?: number | undefined;
+        maxFileBytes?: number | undefined;
+        maxTotalBytes?: number | undefined;
+      }
+    | undefined;
+};
+
+export type HostStorageConfig =
+  | ({ type: "sqlite"; path?: string | undefined } & HostStorageCommonConfig)
+  | ({
+      type: "postgres";
+      connectionString: string;
+      schema?: string | undefined;
+    } & HostStorageCommonConfig);
+
 export type ServeConfig = {
   host?: string | undefined;
   port?: number | undefined;
@@ -370,6 +404,7 @@ export type CapletsConfig = {
   version: 1;
   telemetry?: boolean | undefined;
   serve?: ServeConfig | undefined;
+  storage: HostStorageConfig;
   options: CapletsOptions;
   namespaceAliases: NamespaceAliasesConfig;
   mcpServers: Record<string, CapletServerConfig>;
@@ -381,7 +416,12 @@ export type CapletsConfig = {
   capletSets: Record<string, CapletSetConfig>;
 };
 
-export type ConfigSourceKind = "global-config" | "global-file" | "project-config" | "project-file";
+export type ConfigSourceKind =
+  | "stored-record"
+  | "global-config"
+  | "global-file"
+  | "project-config"
+  | "project-file";
 
 export type ConfigSource = {
   kind: ConfigSourceKind;
@@ -1177,6 +1217,7 @@ type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 type ConfigInput = {
   telemetry?: unknown;
   serve?: unknown;
+  storage?: unknown;
   namespaceAliases?: unknown;
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
@@ -1251,6 +1292,62 @@ const serveConfigSchema = z
   })
   .strict();
 
+const assetStorageConfigSchema = z
+  .discriminatedUnion("type", [
+    z.object({ type: z.literal("sql") }).strict(),
+    z
+      .object({
+        type: z.literal("s3"),
+        endpoint: z.string().url().optional(),
+        region: z.string().trim().min(1),
+        bucket: z.string().trim().min(1),
+        prefix: z.string().trim().optional(),
+        forcePathStyle: z.boolean().optional(),
+        accessKeyId: z.string().min(1).optional(),
+        secretAccessKey: z.string().min(1).optional(),
+      })
+      .strict()
+      .refine(
+        (value) => Boolean(value.accessKeyId) === Boolean(value.secretAccessKey),
+        "S3 accessKeyId and secretAccessKey must be configured together",
+      ),
+  ])
+  .optional();
+
+const bundleLimitsSchema = z
+  .object({
+    maxFiles: z.number().int().positive().max(100_000).optional(),
+    maxFileBytes: z.number().int().positive().optional(),
+    maxTotalBytes: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
+const storageConfigSchema = z
+  .discriminatedUnion("type", [
+    z
+      .object({
+        type: z.literal("sqlite"),
+        path: z.string().trim().min(1).optional(),
+        assets: assetStorageConfigSchema,
+        bundleLimits: bundleLimitsSchema,
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("postgres"),
+        connectionString: z.string().trim().min(1),
+        schema: z
+          .string()
+          .regex(/^[a-z_][a-z0-9_]{0,62}$/u, "invalid PostgreSQL schema name")
+          .optional(),
+        assets: assetStorageConfigSchema,
+        bundleLimits: bundleLimitsSchema,
+      })
+      .strict(),
+  ])
+  .default({ type: "sqlite" });
+
 const serveDefaultsFileSchema = z.object({ serve: serveConfigSchema.optional() }).passthrough();
 
 type MissingEnvReference = {
@@ -1288,6 +1385,9 @@ function configSchemaFor(
         .boolean()
         .optional()
         .describe("Set false to disable anonymous Caplets telemetry for this user config."),
+      storage: storageConfigSchema.describe(
+        "Authoritative Host State backend. SQLite is used when omitted.",
+      ),
       serve: serveConfigSchema
         .optional()
         .describe("User-owned HTTP serve defaults. Ignored from project config for security."),
@@ -1788,6 +1888,90 @@ export function loadConfigWithSources(
     "Caplets config must define at least one MCP server, OpenAPI endpoint, Google Discovery API, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
     options,
   );
+}
+
+export function loadHostStorageConfig(path = resolveConfigPath()): HostStorageConfig {
+  if (!existsSync(path)) return { type: "sqlite" };
+  const input = readPublicConfigInput(path) as ConfigInput;
+  return storageConfigSchema.parse(input.storage ?? { type: "sqlite" });
+}
+
+type StoredCapletSource = {
+  caplets: {
+    list(): Promise<Array<{ id: string }>>;
+    materializeRuntimeBundle(id: string, destination: string): Promise<void>;
+  };
+};
+
+export async function loadConfigWithHostStorage(
+  storage: StoredCapletSource,
+  path = resolveConfigPath(),
+  projectPath = resolveProjectConfigPath(),
+  options: Pick<ConfigParseOptions, "vaultResolver"> & {
+    recordCacheRoot?: string | undefined;
+  } = {},
+): Promise<ConfigWithSources> {
+  const recordCacheRoot = options.recordCacheRoot ?? join(defaultStateBaseDir(), "record-caplets");
+  await materializeStoredCaplets(storage, recordCacheRoot);
+  const storedCaplets = loadCapletFilesWithPaths(recordCacheRoot);
+  const userConfig = existsSync(path) ? readPublicConfigInput(path) : undefined;
+  const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
+  const projectConfig = existsSync(projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(
+        stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+        projectPath,
+      )
+    : undefined;
+  const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
+  const projectCaplets = projectCapletsRoot
+    ? loadCapletFilesWithPaths(projectCapletsRoot)
+    : undefined;
+  return buildConfigWithSources(
+    [
+      storedCaplets
+        ? {
+            input: storedCaplets.config,
+            source: { kind: "stored-record", path: storedCaplets.paths },
+          }
+        : undefined,
+      { input: userConfig, source: { kind: "global-config", path } },
+      userCaplets
+        ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
+        : undefined,
+      { input: projectConfig, source: { kind: "project-config", path: projectPath } },
+      projectCaplets
+        ? {
+            input: projectCaplets.config,
+            source: { kind: "project-file", path: projectCaplets.paths },
+          }
+        : undefined,
+    ],
+    `Caplets config not found at ${path} or ${projectPath}`,
+    "Caplets config must define at least one MCP server, OpenAPI endpoint, Google Discovery API, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
+    options,
+  );
+}
+
+async function materializeStoredCaplets(
+  storage: StoredCapletSource,
+  destination: string,
+): Promise<void> {
+  const parent = dirname(destination);
+  const staging = join(parent, `.${basename(destination)}.tmp-${randomUUID()}`);
+  const backup = join(parent, `.${basename(destination)}.backup-${randomUUID()}`);
+  mkdirSync(staging, { recursive: true, mode: 0o700 });
+  try {
+    for (const record of await storage.caplets.list()) {
+      await storage.caplets.materializeRuntimeBundle(record.id, join(staging, record.id));
+    }
+    if (existsSync(destination)) renameSync(destination, backup);
+    renameSync(staging, destination);
+    rmSync(backup, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    if (!existsSync(destination) && existsSync(backup)) renameSync(backup, destination);
+    throw error;
+  }
 }
 
 export function loadGlobalConfig(
@@ -3056,7 +3240,7 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
 }
 
 function stripUserOnlyConfig(input: ConfigInput): ConfigInput {
-  const { telemetry: _telemetry, serve: _serve, ...rest } = input;
+  const { telemetry: _telemetry, serve: _serve, storage: _storage, ...rest } = input;
   return rest;
 }
 
@@ -3212,6 +3396,7 @@ export function parseConfig(input: unknown, options: ConfigParseOptions = {}): C
     version: parsed.data.version,
     telemetry: parsed.data.telemetry,
     ...(parsed.data.serve ? { serve: normalizeServeConfig(parsed.data.serve) } : {}),
+    storage: parsed.data.storage,
     options: {
       defaultSearchLimit: parsed.data.defaultSearchLimit,
       maxSearchLimit: parsed.data.maxSearchLimit,

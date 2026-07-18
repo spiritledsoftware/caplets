@@ -4,6 +4,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { serve, type WebSocketServerLike } from "@hono/node-server";
+import BetterSqlite3 from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { CapletsEngine } from "../src/engine";
@@ -25,13 +27,17 @@ import type { HttpAttachSessionFactory, HttpMcpSessionFactory } from "../src/ser
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import { buildManifestExposureProjection } from "../src/exposure/projection";
 import type { HttpServeOptions } from "../src/serve/options";
+import { BackendAuthStateStore } from "../src/storage/backend-auth";
+import { sqliteSchema } from "../src/storage/schema/sqlite";
 
 const dirs: string[] = [];
+const backendAuthDatabases: Array<InstanceType<typeof BetterSqlite3>> = [];
 
 afterEach(() => {
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+  for (const database of backendAuthDatabases.splice(0)) database.close();
 });
 
 it("forces remote artifact paths off after caller engine options", () => {
@@ -94,6 +100,7 @@ describe("createHttpServeApp", () => {
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toEqual({
       status: "ok",
+      ready: true,
     });
 
     await engine.close();
@@ -143,7 +150,7 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("uses issued remote credentials for protected self-hosted route classes", async () => {
+  it("treats operator credentials as a superset of access credentials", async () => {
     const context = testContext();
     const engine = new CapletsEngine({
       configPath: context.configPath,
@@ -219,13 +226,13 @@ describe("createHttpServeApp", () => {
     const operatorAttach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
       headers: { authorization: `Bearer ${operatorCredentials.accessToken}` },
     });
-    expect(operatorAttach.status).toBe(403);
+    expect(operatorAttach.status).toBe(200);
 
     const operatorProjectBinding = await app.request(
       "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
       { headers: { authorization: `Bearer ${operatorCredentials.accessToken}` } },
     );
-    expect(operatorProjectBinding.status).toBe(403);
+    expect(operatorProjectBinding.status).toBe(200);
 
     const operatorMcp = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
@@ -246,7 +253,7 @@ describe("createHttpServeApp", () => {
         },
       }),
     });
-    expect(operatorMcp.status).toBe(403);
+    expect(operatorMcp.status).toBe(200);
     await engine.close();
   });
 
@@ -2061,7 +2068,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("rechecks role loss after a queued first heartbeat commits but before the next mutation starts", async () => {
+  it("rechecks credential revocation after a queued first heartbeat commits but before the next mutation starts", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2100,7 +2107,7 @@ describe("createHttpServeApp", () => {
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         workspaces.deferNextWrite();
         workspaces.runAfterNextWritePostCommit(() => {
-          store.changeClientRole(credentials.clientId, "operator");
+          store.revokeClient(credentials.clientId);
         });
         const closed = waitForSocketClose(socket);
         socket.send(
@@ -2165,7 +2172,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("rejects in-flight heartbeat state after post-write durable role loss", async () => {
+  it("rejects in-flight heartbeat state after post-write credential revocation", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2214,7 +2221,7 @@ describe("createHttpServeApp", () => {
           }),
         );
         await withTimeout(workspaces.nextWriteStarted, "start in-flight candidate lease write");
-        store.changeClientRole(credentials.clientId, "operator");
+        store.revokeClient(credentials.clientId);
         workspaces.releaseNextWrite();
 
         await expect(withTimeout(closed, "close post-write demoted socket")).resolves.toMatchObject(
@@ -2249,7 +2256,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("does not return a successful HTTP end after post-write role loss", async () => {
+  it("does not return a successful HTTP end after post-write credential revocation", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2290,7 +2297,7 @@ describe("createHttpServeApp", () => {
         },
       );
       await workspaces.nextWriteStarted;
-      store.changeClientRole(credentials.clientId, "operator");
+      store.revokeClient(credentials.clientId);
       workspaces.releaseNextWrite();
 
       expect((await ending).status).toBe(403);
@@ -2371,7 +2378,7 @@ describe("createHttpServeApp", () => {
     }
   });
 
-  it("does not acknowledge a socket end after post-write durable role loss", async () => {
+  it("does not acknowledge a socket end after post-write credential revocation", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2423,7 +2430,7 @@ describe("createHttpServeApp", () => {
           }),
         );
         await withTimeout(workspaces.nextWriteStarted, "start in-flight terminal lease write");
-        store.changeClientRole(credentials.clientId, "operator");
+        store.revokeClient(credentials.clientId);
         workspaces.releaseNextWrite();
 
         await expect(
@@ -2565,7 +2572,7 @@ describe("createHttpServeApp", () => {
 
     const health = await app.request("http://127.0.0.1:5387/caplets/v1/healthz");
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toEqual({ status: "ok" });
+    await expect(health.json()).resolves.toEqual({ status: "ok", ready: true });
 
     await engine.close();
   });
@@ -2710,6 +2717,7 @@ describe("createHttpServeApp", () => {
     });
     const app = createHttpServeApp(httpOptions({ path: "/control-api" }), engine, {
       writeErr: () => {},
+      backendAuthStore: testBackendAuthStore(),
       control: context,
     });
 
@@ -2743,6 +2751,7 @@ describe("createHttpServeApp", () => {
       engine,
       {
         writeErr: () => {},
+        backendAuthStore: testBackendAuthStore(),
         control: context,
       },
     );
@@ -2779,6 +2788,7 @@ describe("createHttpServeApp", () => {
       engine,
       {
         writeErr: () => {},
+        backendAuthStore: testBackendAuthStore(),
         control: context,
         remoteCredentialStore: store,
       },
@@ -2821,6 +2831,7 @@ describe("createHttpServeApp", () => {
       engine,
       {
         writeErr: () => {},
+        backendAuthStore: testBackendAuthStore(),
         control: context,
         remoteCredentialStore: store,
       },
@@ -2867,6 +2878,7 @@ describe("createHttpServeApp", () => {
       engine,
       {
         writeErr: () => {},
+        backendAuthStore: testBackendAuthStore(),
         control: context,
         remoteCredentialStore: store,
       },
@@ -4444,6 +4456,32 @@ function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
   return dir;
+}
+
+function testBackendAuthStore(): BackendAuthStateStore {
+  const sqlite = new BetterSqlite3(":memory:");
+  backendAuthDatabases.push(sqlite);
+  sqlite.exec(`
+    create table backend_auth_states (
+      server text primary key not null,
+      generation integer not null,
+      token_bundle text not null,
+      created_at text not null,
+      updated_at text not null
+    );
+    create table operator_activity (
+      activity_key text primary key not null,
+      operator_client_id text not null,
+      action text not null,
+      target_kind text not null,
+      target_key text not null,
+      outcome text not null,
+      metadata text not null,
+      created_at text not null
+    )
+  `);
+  const database = drizzle(sqlite, { schema: sqliteSchema });
+  return new BackendAuthStateStore({ dialect: "sqlite", db: database });
 }
 
 function testEngine(config: Record<string, unknown> = {}): {

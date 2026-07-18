@@ -8,7 +8,7 @@ import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
 import type { CapletsError } from "../src/errors";
-import { writeTokenBundle } from "../src/auth";
+import { createHostStorage, type HostStorage } from "../src/storage";
 import { handleServerTool } from "../src/tools";
 import type { Tool } from "@modelcontextprotocol/sdk/types";
 import { testBackendOperationRuntime } from "./backend-operation-runtime";
@@ -762,6 +762,7 @@ function projectBindingContext(projectRoot: string, projectFingerprint: string) 
 describe("downstream remote OAuth lifecycle", () => {
   it("surfaces missing OAuth credentials as AUTH_REQUIRED", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    const storage = await createTestAuthStorage(dir);
     try {
       const config = parseConfig({
         mcpServers: {
@@ -775,7 +776,7 @@ describe("downstream remote OAuth lifecycle", () => {
         },
       });
       const registry = new ServerRegistry(config);
-      const manager = new DownstreamManager(registry, { authDir: join(dir, "auth") });
+      const manager = new DownstreamManager(registry, { backendAuth: storage.backendAuth });
 
       await expect(manager.listTools(config.mcpServers.remote!)).rejects.toMatchObject({
         code: "AUTH_REQUIRED",
@@ -785,13 +786,14 @@ describe("downstream remote OAuth lifecycle", () => {
       } satisfies Partial<CapletsError>);
       expect(registry.getStatus("remote")).toBe("unavailable");
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("classifies OAuth 403 responses as AUTH_FAILED", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
-    const authDir = join(dir, "auth");
+    const storage = await createTestAuthStorage(dir);
     const server = createServer((request: IncomingMessage, response: ServerResponse) => {
       let body = "";
       request.setEncoding("utf8");
@@ -837,16 +839,13 @@ describe("downstream remote OAuth lifecycle", () => {
       if (!address || typeof address === "string") {
         throw new Error("Could not bind fixture server");
       }
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "secret-oauth-token",
-          refreshToken: "secret-refresh-token",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-        },
-        authDir,
-      );
+      await storage.backendAuth.writeTokenBundle({
+        server: "remote",
+        accessToken: "secret-oauth-token",
+        refreshToken: "secret-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      });
       const config = parseConfig({
         mcpServers: {
           remote: {
@@ -859,7 +858,7 @@ describe("downstream remote OAuth lifecycle", () => {
         },
       });
       const registry = new ServerRegistry(config);
-      const manager = new DownstreamManager(registry, { authDir });
+      const manager = new DownstreamManager(registry, { backendAuth: storage.backendAuth });
 
       try {
         await expect(manager.listTools(config.mcpServers.remote!)).rejects.toMatchObject({
@@ -875,13 +874,14 @@ describe("downstream remote OAuth lifecycle", () => {
       }
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("uses the MCP SDK auth provider for stored OAuth tokens", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
-    const authDir = join(dir, "auth");
+    const storage = await createTestAuthStorage(dir);
     const authorizationHeaders: Array<string | undefined> = [];
     let baseUrl = "";
     const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -936,16 +936,13 @@ describe("downstream remote OAuth lifecycle", () => {
         throw new Error("Could not bind fixture server");
       }
       baseUrl = `http://127.0.0.1:${address.port}/mcp`;
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "secret-oauth-token",
-          refreshToken: "secret-refresh-token",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-        },
-        authDir,
-      );
+      await storage.backendAuth.writeTokenBundle({
+        server: "remote",
+        accessToken: "secret-oauth-token",
+        refreshToken: "secret-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      });
       const config = parseConfig({
         mcpServers: {
           remote: {
@@ -958,7 +955,7 @@ describe("downstream remote OAuth lifecycle", () => {
         },
       });
       const registry = new ServerRegistry(config);
-      const manager = new DownstreamManager(registry, { authDir });
+      const manager = new DownstreamManager(registry, { backendAuth: storage.backendAuth });
 
       try {
         await manager.listTools(config.mcpServers.remote!);
@@ -969,6 +966,7 @@ describe("downstream remote OAuth lifecycle", () => {
       expect(authorizationHeaders).toContain("Bearer secret-oauth-token");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -996,4 +994,8 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+async function createTestAuthStorage(directory: string): Promise<HostStorage> {
+  return createHostStorage({ type: "sqlite", path: join(directory, "host.sqlite3") });
 }

@@ -7,7 +7,7 @@ export type ServeStdioOptions = CapletsEngineOptions & {
 };
 
 export async function serveStdio(options: ServeStdioOptions = {}): Promise<void> {
-  const engine = new CapletsEngine(options);
+  const engine = await CapletsEngine.create(options);
   const session = new CapletsMcpSession(engine);
   let closing = false;
 

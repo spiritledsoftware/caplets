@@ -49,7 +49,7 @@ describe("CLI completion scripts", () => {
 describe("CLI completion resolver", () => {
   it("suggests top-level commands", async () => {
     await expect(completeCliWords([""])).resolves.toEqual(
-      expect.arrayContaining(["add", "auth", "call-tool", "completion", "serve"]),
+      expect.arrayContaining(["add", "auth", "call-tool", "completion", "serve", "storage"]),
     );
   });
 
@@ -95,6 +95,32 @@ describe("CLI completion resolver", () => {
       "pair",
       "clients",
       "revoke",
+    ]);
+    await expect(completeCliWords(["storage", ""])).resolves.toEqual([
+      "status",
+      "schema-migrate",
+      "migrate-legacy",
+      "records",
+    ]);
+    await expect(completeCliWords(["storage", "records", ""])).resolves.toEqual([
+      "list",
+      "get",
+      "import",
+      "update",
+      "export",
+      "revisions",
+      "restore",
+      "delete-revision",
+      "retention",
+      "rename",
+      "delete",
+      "installation",
+    ]);
+    await expect(completeCliWords(["storage", "records", "installation", ""])).resolves.toEqual([
+      "status",
+      "detach",
+      "observe",
+      "replace",
     ]);
     await expect(completeCliWords(["completion", ""])).resolves.toEqual([
       "bash",

@@ -10,7 +10,7 @@ import { createRemoteProfileStore } from "../src/remote/profile-store";
 import { remoteProfileKey } from "../src/remote/profiles";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
-import { FileVaultStore } from "../src/vault";
+import { createHostStorage } from "../src/storage";
 
 const dirs: string[] = [];
 
@@ -100,6 +100,7 @@ describe("remote CLI routing", () => {
     writeFileSync(
       context.configPath,
       JSON.stringify({
+        storage: { type: "sqlite", path: context.storagePath },
         googleDiscoveryApis: {
           drive: {
             name: "Drive API",
@@ -239,7 +240,6 @@ describe("remote CLI routing", () => {
     const context = testContext("caplets-cli-remote-vault-");
     const requests: unknown[] = [];
     const out: string[] = [];
-    const localState = join(context.projectConfigPath, "..", "..", "local-state");
     const fetch = vi.fn(
       async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         requests.push(JSON.parse(String(init?.body ?? "{}")));
@@ -253,7 +253,7 @@ describe("remote CLI routing", () => {
     await runCli(
       ["vault", "set", "GH_TOKEN_REMOTE", "--remote", "--grant", "github", "--as", "GH_TOKEN"],
       {
-        env: { ...remoteEnv(context), XDG_STATE_HOME: localState },
+        env: remoteEnv(context),
         fetch,
         readStdin: async () => "remote_cli_secret\n",
         writeOut: (value) => out.push(value),
@@ -274,10 +274,15 @@ describe("remote CLI routing", () => {
     ]);
     expect(out.join("")).toContain("Set remote Vault key GH_TOKEN_REMOTE.");
     expect(out.join("")).not.toContain("remote_cli_secret");
-    expect(
-      new FileVaultStore({ env: { XDG_STATE_HOME: localState } }).getStatus("GH_TOKEN_REMOTE")
-        .present,
-    ).toBe(false);
+    const storage = await createHostStorage({ type: "sqlite", path: context.storagePath });
+    try {
+      await expect(storage.vaultValues.getStatus("GH_TOKEN_REMOTE")).resolves.toEqual({
+        key: "GH_TOKEN_REMOTE",
+        present: false,
+      });
+    } finally {
+      await storage.close();
+    }
   });
 
   it("prints remote Vault set JSON when --json is passed", async () => {
@@ -420,7 +425,10 @@ describe("remote CLI routing", () => {
     const err: string[] = [];
     writeFileSync(
       context.configPath,
-      JSON.stringify({ mcpServers: { broken: { name: "Broken" } } }),
+      JSON.stringify({
+        storage: { type: "sqlite", path: context.storagePath },
+        mcpServers: { broken: { name: "Broken" } },
+      }),
       "utf8",
     );
     writeProjectMcpCaplet(context.projectCapletsRoot, "project-only", "Project Only");
@@ -1218,24 +1226,23 @@ describe("remote CLI routing", () => {
       writeOut: (value) => out.push(value),
     });
 
-    expect(
-      readFileSync(join(dirname(context.configPath), "github", "CAPLET.md"), "utf8"),
-    ).toContain("name: GitHub");
+    const storage = await createHostStorage({ type: "sqlite", path: context.storagePath });
+    try {
+      await expect(
+        storage.caplets.getStored("github", { role: "operator", clientId: "cli_test" }),
+      ).resolves.toMatchObject({
+        id: "github",
+        currentRevision: {
+          name: "GitHub",
+          backends: [expect.objectContaining({ family: "mcpServer" })],
+        },
+      });
+    } finally {
+      await storage.close();
+    }
     expect(existsSync(join(context.projectCapletsRoot, "github"))).toBe(false);
-    expect(out.join("")).toContain(
-      `Installed github to global ${join(dirname(context.configPath), "github")}`,
-    );
+    expect(out.join("")).toContain("Installed github to sql://caplet-records/github");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(
-      JSON.parse(
-        readFileSync(
-          join(dirname(context.configPath), "state", "caplets", "caplets.lock.json"),
-          "utf8",
-        ),
-      ),
-    ).toMatchObject({
-      entries: [expect.objectContaining({ id: "github" })],
-    });
   });
 
   it("routes install through remote control with --remote", async () => {
@@ -1773,6 +1780,7 @@ function writeCliCapletConfig(
   writeFileSync(
     path,
     JSON.stringify({
+      storage: { type: "sqlite", path: join(dir, "host.sqlite3") },
       cliTools: {
         [id]: {
           name,
@@ -1796,6 +1804,7 @@ function writeAuthConfig(path: string, id: string): void {
   writeFileSync(
     path,
     JSON.stringify({
+      storage: { type: "sqlite", path: join(dirname(path), "host.sqlite3") },
       mcpServers: {
         [id]: {
           name: id,
@@ -1815,6 +1824,7 @@ function writeCapletSetConfig(path: string, id: string, name: string): void {
   writeFileSync(
     path,
     JSON.stringify({
+      storage: { type: "sqlite", path: join(dirname(path), "host.sqlite3") },
       capletSets: {
         [id]: {
           name,
@@ -1864,6 +1874,7 @@ function writeInstallableRepo(repo: string): void {
 
 function testContext(prefix: string): {
   configPath: string;
+  storagePath: string;
   projectConfigPath: string;
   projectCapletsRoot: string;
   authDir: string;
@@ -1877,10 +1888,12 @@ function testContext(prefix: string): {
   mkdirSync(userRoot, { recursive: true });
   mkdirSync(projectCapletsRoot, { recursive: true });
   const configPath = join(userRoot, "config.json");
+  const storagePath = join(dir, "host.sqlite3");
   const projectConfigPath = join(projectCapletsRoot, "config.json");
   writeFileSync(
     configPath,
     JSON.stringify({
+      storage: { type: "sqlite", path: storagePath },
       mcpServers: {
         fixture: {
           name: "Fixture",
@@ -1893,7 +1906,14 @@ function testContext(prefix: string): {
     }),
   );
   writeSelfHostedRemoteProfile(authDir);
-  return { configPath, projectConfigPath, projectCapletsRoot, authDir, watch: false };
+  return {
+    configPath,
+    storagePath,
+    projectConfigPath,
+    projectCapletsRoot,
+    authDir,
+    watch: false,
+  };
 }
 
 function writeSelfHostedRemoteProfile(authDir: string): void {

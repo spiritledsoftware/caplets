@@ -19,9 +19,17 @@
 
 ## Agent skills
 
-- Issues and PRDs live in GitHub Issues for `spiritledsoftware/caplets`; use `gh` with `--repo spiritledsoftware/caplets`. Details: `docs/agents/issue-tracker.md`.
-- Triage labels are documented in `docs/agents/triage-labels.md`; current live labels include `question` for `needs-info` and `wontfix` for `wontfix`.
-- This is a single-context repo. Start with `CONTEXT.md`, relevant ADRs in `docs/adr/`, and `docs/agents/domain.md`; use `STRATEGY.md`, `CONCEPTS.md`, and `docs/solutions/` when the task touches product direction, vocabulary, or documented patterns.
+### Issue tracker
+
+Issues and PRDs live in GitHub Issues for `spiritledsoftware/caplets`; use `gh` with `--repo spiritledsoftware/caplets`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels without overrides. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repo: start with root `CONTEXT.md` and relevant ADRs in `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Test Quality Bar
 

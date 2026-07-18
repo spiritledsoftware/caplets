@@ -111,8 +111,9 @@ export async function completeCliWords(
       return prefixFilter(cliSubcommands[command as keyof typeof cliSubcommands], current);
     }
 
-    const nestedStaticSubcommands = nestedSubcommandsFor(command, subcommand);
-    if (normalized.length === 3 && nestedStaticSubcommands) {
+    const nestedStaticSubcommands =
+      cliNestedSubcommands[command]?.[normalized.slice(1, -1).join(" ")];
+    if (nestedStaticSubcommands) {
       return prefixFilter(nestedStaticSubcommands, current);
     }
 
@@ -187,11 +188,6 @@ function suggestionsForOptionValue(
     optionValueSuggestions[command]?.[previous] ??
     optionValueSuggestions["*"]?.[previous]
   );
-}
-
-function nestedSubcommandsFor(command: string, subcommand: string): readonly string[] | undefined {
-  if (command !== cliCommands.remote || subcommand !== "host") return undefined;
-  return cliNestedSubcommands.remote.host;
 }
 
 const promptResourceCommands = new Set<string>([

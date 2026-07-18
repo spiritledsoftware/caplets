@@ -29,19 +29,19 @@ import {
   loadCapletFilesFromMap,
   loadCapletFilesWithPaths,
   validateCapletFile,
-} from "../caplet-files";
-import type { CapletFileConfig } from "../caplet-files";
+} from "./caplet-files";
+import type { CapletFileConfig } from "./caplet-files";
 import {
   createMemoryDeclaredInputReader,
   createRuntimeFingerprintSnapshot,
   type RuntimeFingerprintSnapshot,
-} from "../caplet-source";
-import { parseConfig } from "../config-runtime";
-import { resolveProjectCapletsRoot } from "../config";
-import { SERVER_ID_PATTERN } from "../config/validation";
-import { CapletsError, toSafeError } from "../errors";
-import type { CatalogIndexingResult } from "../catalog-indexing/payload";
-import { catalogIndexingPayloadForLockEntry } from "../catalog-indexing/eligibility";
+} from "./caplet-source";
+import { parseConfig } from "./config-runtime";
+import { resolveProjectCapletsRoot } from "./config";
+import { SERVER_ID_PATTERN } from "./config/validation";
+import { CapletsError, toSafeError } from "./errors";
+import type { CatalogIndexingResult } from "./catalog-indexing/payload";
+import { catalogIndexingPayloadForLockEntry } from "./catalog-indexing/eligibility";
 import {
   catalogAuthRequiredFromFrontmatter,
   catalogIconFromFrontmatter,
@@ -58,7 +58,7 @@ import {
   type CatalogEntry,
   type CatalogEntryChild,
   type CatalogWorkflowSummary,
-} from "../catalog";
+} from "./catalog";
 import {
   replaceCapletsLockfileTemporary,
   parseCapletsLockfile,
@@ -476,7 +476,7 @@ function updateCapletsFromLockfileUnlocked(
         if (
           status === "updated" &&
           !allowRiskIncrease &&
-          riskIncrease(entry.risk, candidate.risk)
+          capletRiskIncreases(entry.risk, candidate.risk)
         ) {
           throw new CapletsError(
             "REQUEST_INVALID",
@@ -1671,7 +1671,10 @@ function riskSummaryForSourcePath(sourcePath: string): CapletsLockEntry["risk"] 
   };
 }
 
-function riskIncrease(current: CapletsLockEntry["risk"], next: CapletsLockEntry["risk"]): boolean {
+export function capletRiskIncreases(
+  current: CapletsLockEntry["risk"],
+  next: CapletsLockEntry["risk"],
+): boolean {
   if (current.safety === "unknown" || next.safety === "unknown") return true;
   if (riskRank(next.safety) > riskRank(current.safety)) return true;
   if (!current.projectBindingRequired && next.projectBindingRequired) return true;

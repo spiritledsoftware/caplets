@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type * as InstallModule from "../src/cli/install";
+import type * as InstallModule from "../src/install";
 
 const mocks = vi.hoisted(() => ({
   restore: vi.fn(),
 }));
 
-vi.mock("../src/cli/install", async (importOriginal) => ({
+vi.mock("../src/install", async (importOriginal) => ({
   ...(await importOriginal<typeof InstallModule>()),
   restoreCapletsFromLockfile: mocks.restore,
 }));

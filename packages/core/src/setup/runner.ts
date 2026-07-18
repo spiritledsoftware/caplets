@@ -4,7 +4,6 @@ import { isAbsolute, resolve } from "node:path";
 import type { CapletSetupCommandConfig, CapletSetupConfig } from "../config";
 import type { RuntimeFeature } from "../config-runtime";
 import { CapletsError } from "../errors";
-import type { LocalSetupStore } from "./local-store";
 import {
   isSetupTargetKind,
   type SetupActor,
@@ -31,6 +30,14 @@ export type SetupSpawn = (
   },
 ) => Promise<SpawnResult>;
 
+export type SetupAttemptStore = {
+  recordAttempt(
+    attempt: SetupAttempt,
+    options?: { operatorClientId?: string | undefined },
+  ): Promise<void>;
+  retention(): { maxAttempts: number; days: number };
+};
+
 export type RunCapletSetupOptions = {
   projectFingerprint?: string;
   capletId: string;
@@ -43,7 +50,8 @@ export type RunCapletSetupOptions = {
   setup: CapletSetupConfig;
   actor: SetupActor;
   approved: boolean;
-  store: Pick<LocalSetupStore, "recordAttempt" | "retention">;
+  store: SetupAttemptStore;
+  operatorClientId?: string | undefined;
   spawn?: SetupSpawn;
   now?: () => Date;
 };
@@ -64,7 +72,12 @@ export async function runCapletSetup(options: RunCapletSetupOptions): Promise<Se
     for (const command of phase === "commands" ? commands : verify) {
       const attempt = await runSetupCommand(options, phase, command);
       attempts.push(attempt);
-      await options.store.recordAttempt(attempt);
+      await options.store.recordAttempt(
+        attempt,
+        options.operatorClientId === undefined
+          ? {}
+          : { operatorClientId: options.operatorClientId },
+      );
       if (attempt.status !== "succeeded") {
         return attempts;
       }

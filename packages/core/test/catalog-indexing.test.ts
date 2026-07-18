@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogIndexingPayloadForLockEntry } from "../src/catalog-indexing/eligibility";
-import { indexInstalledCapletsFromLockfile } from "../src/cli/install";
-import { writeCapletsLockfile, type CapletsLockEntry } from "../src/cli/lockfile";
+import { indexInstalledCapletsFromLockfile } from "../src/install";
+import { writeCapletsLockfile, type CapletsLockEntry } from "../src/lockfile";
 
 const tempDirs: string[] = [];
 

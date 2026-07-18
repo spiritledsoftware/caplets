@@ -1,0 +1,46 @@
+CREATE TABLE `project_bindings` (
+	`binding_id` text PRIMARY KEY NOT NULL,
+	`session_id` text NOT NULL,
+	`project_fingerprint` text NOT NULL,
+	`project_root` text NOT NULL,
+	`server_project_root` text NOT NULL,
+	`owner_node_id` text NOT NULL,
+	`generation` integer NOT NULL,
+	`revision` integer NOT NULL,
+	`state` text NOT NULL,
+	`sync_state` text NOT NULL,
+	`readiness` text NOT NULL,
+	`active` integer NOT NULL,
+	`last_heartbeat_at` text NOT NULL,
+	`expires_at` text NOT NULL,
+	`quarantined_at` text,
+	`quarantine_reason` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `project_bindings_owner_expiry_idx` ON `project_bindings` (`owner_node_id`,`expires_at`);--> statement-breakpoint
+CREATE INDEX `project_bindings_active_expiry_idx` ON `project_bindings` (`active`,`expires_at`);--> statement-breakpoint
+CREATE TABLE `setup_approvals` (
+	`project_fingerprint` text NOT NULL,
+	`caplet_id` text NOT NULL,
+	`content_hash` text NOT NULL,
+	`target_kind` text NOT NULL,
+	`generation` integer NOT NULL,
+	`payload` text NOT NULL,
+	`approved_at` text NOT NULL,
+	`actor` text NOT NULL,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	PRIMARY KEY(`project_fingerprint`, `caplet_id`, `content_hash`, `target_kind`)
+);
+--> statement-breakpoint
+CREATE TABLE `setup_attempt_sets` (
+	`project_fingerprint` text NOT NULL,
+	`caplet_id` text NOT NULL,
+	`generation` integer NOT NULL,
+	`payload` text NOT NULL,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	PRIMARY KEY(`project_fingerprint`, `caplet_id`)
+);

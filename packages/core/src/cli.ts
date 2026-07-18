@@ -2,7 +2,7 @@ import { Command, CommanderError, Option } from "commander";
 import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { version as packageJsonVersion } from "../package.json";
@@ -59,9 +59,9 @@ import {
   indexInstalledCapletsFromLockfile,
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
-} from "./cli/install";
+} from "./install";
 import type { CatalogIndexingResult } from "./catalog-indexing/payload";
-import { readCapletsLockfile } from "./cli/lockfile";
+import { readCapletsLockfile } from "./lockfile";
 import {
   formatSetupMenu,
   runInteractiveSetup,
@@ -79,11 +79,12 @@ import {
   type LocalOverlayConfigWithSources,
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
-  defaultCapletsLockfilePath,
   formatVaultRecoveryCommand,
   loadGlobalServeDefaults,
   loadConfigWithSources,
+  loadConfigWithHostStorage,
   loadLocalOverlayConfigWithSources,
+  loadHostStorageConfig,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
@@ -99,13 +100,12 @@ import { attachProjectOnce } from "./project-binding/attach";
 import { ProjectBindingError } from "./project-binding/errors";
 import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
-import type { RemoteCliCommand } from "./remote-control/types";
+import type { RemoteCapletBundleFile, RemoteCliCommand } from "./remote-control/types";
 import {
   cloudCredentialsFromRemoteProfile,
   createRemoteProfileStore,
   type FileRemoteProfileStore,
 } from "./remote/profile-store";
-import { RemoteServerCredentialStore } from "./remote/server-credential-store";
 import type { RemoteClientRole } from "./remote/server-credentials";
 import { resolveRemoteSelection } from "./remote/selection";
 import {
@@ -131,7 +131,7 @@ import {
   type DaemonOperationOptions,
 } from "./daemon";
 import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
-import { DEFAULT_AUTH_DIR, defaultTelemetryStateDir } from "./config/paths";
+import { defaultTelemetryStateDir } from "./config/paths";
 import { appendBasePath } from "./server/options";
 import {
   acknowledgeTelemetryAttributionClaim,
@@ -157,11 +157,35 @@ import {
   writeTelemetryAttribution,
 } from "./telemetry";
 import { maybePrintUpdateNotice } from "./update-check";
-import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
-import type { VaultAccessGrantFilter } from "./vault";
+import {
+  VAULT_MAX_VALUE_BYTES,
+  validateVaultKeyName,
+  type VaultDeleteStatus,
+  type VaultValueStatus,
+} from "./vault";
+import {
+  createHostStorage,
+  createHostStorageVaultResolver,
+  migrateHostStorage,
+  migrateLegacyHostState,
+  type BackendAuthStateStore,
+  type HostStorage,
+  type RemoteSecurityStore,
+  type StoredVaultGrant,
+} from "./storage";
+import {
+  materializeCapletBundleFiles,
+  type CapletBundleInputFile,
+  type CapletRecordView,
+} from "./storage/caplet-records";
+import {
+  installSqlCatalogCaplets,
+  readCapletBundleFiles,
+  updateSqlCatalogCaplets,
+} from "./storage/catalog-lifecycle";
 
 export { initConfig, starterConfig } from "./cli/init";
-export { installCaplets, normalizeGitRepo } from "./cli/install";
+export { installCaplets, normalizeGitRepo } from "./install";
 export {
   addCliCaplet,
   addGoogleDiscoveryCaplet,
@@ -750,14 +774,45 @@ function hiddenOption(flags: string, description: string): Option {
   return new Option(flags, description).hideHelp();
 }
 
-function remoteServerCredentialStore(
+async function useRemoteSecurityStore<T>(
   statePath: string | undefined,
-  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
-): RemoteServerCredentialStore {
-  return new RemoteServerCredentialStore({
-    dir:
-      statePath ?? env.CAPLETS_REMOTE_SERVER_STATE_DIR ?? join(DEFAULT_AUTH_DIR, "remote-server"),
-  });
+  configPath: string | undefined,
+  run: (store: RemoteSecurityStore) => Promise<T>,
+): Promise<T> {
+  if (statePath !== undefined) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--state-path no longer selects server credential state; configure Authoritative Host State storage instead.",
+    );
+  }
+  const storage = await createHostStorage(loadHostStorageConfig(configPath));
+  try {
+    return await run(storage.remoteSecurity);
+  } finally {
+    await storage.close();
+  }
+}
+async function useBackendAuthStore<T>(
+  configPath: string | undefined,
+  run: (store: BackendAuthStateStore) => Promise<T>,
+): Promise<T> {
+  const storage = await createHostStorage(loadHostStorageConfig(configPath));
+  try {
+    return await run(storage.backendAuth);
+  } finally {
+    await storage.close();
+  }
+}
+async function useConfiguredHostStorage<T>(
+  configPath: string | undefined,
+  run: (storage: HostStorage) => Promise<T>,
+): Promise<T> {
+  const storage = await createHostStorage(loadHostStorageConfig(configPath));
+  try {
+    return await run(storage);
+  } finally {
+    await storage.close();
+  }
 }
 
 function compactCloudCaplet(value: unknown): Record<string, unknown> {
@@ -2245,10 +2300,14 @@ export function createProgram(io: CliIO = {}): Command {
   remoteHost
     .command("clients")
     .description("List paired self-hosted remote clients from server state.")
-    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
-    .action((options: { statePath?: string; json?: boolean }) => {
-      const clients = remoteServerCredentialStore(options.statePath, env).listClients();
+    .action(async (options: { statePath?: string; json?: boolean }) => {
+      const clients = await useRemoteSecurityStore(
+        options.statePath,
+        currentConfigPath(),
+        async (store) => await store.listClients(),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify({ clients }, null, 2)}\n`);
         return;
@@ -2266,10 +2325,14 @@ export function createProgram(io: CliIO = {}): Command {
   remoteHost
     .command("logins")
     .description("List pending self-hosted Remote Login approvals from server state.")
-    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
-    .action((options: { statePath?: string; json?: boolean }) => {
-      const pendingLogins = remoteServerCredentialStore(options.statePath, env).listPendingLogins();
+    .action(async (options: { statePath?: string; json?: boolean }) => {
+      const pendingLogins = await useRemoteSecurityStore(
+        options.statePath,
+        currentConfigPath(),
+        async (store) => await store.listPendingLogins(),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify({ pendingLogins }, null, 2)}\n`);
         return;
@@ -2288,22 +2351,28 @@ export function createProgram(io: CliIO = {}): Command {
     .command("approve")
     .description("Approve one pending self-hosted Remote Login code from server state.")
     .argument("<code>", "operator-visible Remote Login code")
-    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--role <role>", "grant role override: access or operator", parseRemoteClientRole)
     .option("--yes", "approve without an interactive confirmation prompt")
     .option("--json", "print JSON output")
     .action(
-      (
+      async (
         code: string,
         options: { statePath?: string; role?: RemoteClientRole; yes?: boolean; json?: boolean },
       ) => {
         if (!options.yes && !options.json) {
           throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
         }
-        const approved = remoteServerCredentialStore(options.statePath, env).approvePendingLogin({
-          operatorCode: code,
-          ...(options.role ? { grantedRole: options.role } : {}),
-        });
+        const approved = await useRemoteSecurityStore(
+          options.statePath,
+          currentConfigPath(),
+          async (store) =>
+            await store.approvePendingLogin({
+              operatorClientId: "local_cli",
+              operatorCode: code,
+              ...(options.role ? { grantedRole: options.role } : {}),
+            }),
+        );
         if (options.json) {
           writeOut(`${JSON.stringify(approved, null, 2)}\n`);
           return;
@@ -2315,12 +2384,18 @@ export function createProgram(io: CliIO = {}): Command {
     .command("deny")
     .description("Deny one pending self-hosted Remote Login code from server state.")
     .argument("<code>", "operator-visible Remote Login code")
-    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
-    .action((code: string, options: { statePath?: string; json?: boolean }) => {
-      const denied = remoteServerCredentialStore(options.statePath, env).denyPendingLogin({
-        operatorCode: code,
-      });
+    .action(async (code: string, options: { statePath?: string; json?: boolean }) => {
+      const denied = await useRemoteSecurityStore(
+        options.statePath,
+        currentConfigPath(),
+        async (store) =>
+          await store.denyPendingLogin({
+            operatorClientId: "local_cli",
+            operatorCode: code,
+          }),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify(denied, null, 2)}\n`);
         return;
@@ -2331,10 +2406,14 @@ export function createProgram(io: CliIO = {}): Command {
     .command("revoke")
     .description("Revoke one paired self-hosted remote client from server state.")
     .argument("<client-id>", "remote client ID")
-    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
-    .action((clientId: string, options: { statePath?: string; json?: boolean }) => {
-      const revoked = remoteServerCredentialStore(options.statePath, env).revokeClient(clientId);
+    .action(async (clientId: string, options: { statePath?: string; json?: boolean }) => {
+      const revoked = await useRemoteSecurityStore(
+        options.statePath,
+        currentConfigPath(),
+        async (store) => await store.revokeClient({ operatorClientId: "local_cli", clientId }),
+      );
       if (options.json) {
         writeOut(`${JSON.stringify({ revoked, clientId }, null, 2)}\n`);
         return;
@@ -2716,38 +2795,47 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
         const value = await readVaultValue(io);
-        const store = new FileVaultStore({ env });
-        const existed = store.getStatus(name).present;
-        const previousValue = existed && options.grant ? store.resolveValue(name) : undefined;
-        const status = store.set(name, value, { force: Boolean(options.force) });
-        try {
+        await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+          const existed = (await storage.vaultValues.getStatus(name)).present;
+          const previousValue =
+            existed && options.grant ? await storage.vaultValues.resolveValue(name) : undefined;
+          const status = await storage.vaultValues.set(name, value, {
+            force: Boolean(options.force),
+            operatorClientId: "local_cli",
+          });
+          try {
+            if (options.grant) {
+              await storage.vaultGrants.grant({
+                capletId: options.grant,
+                vaultKey: name,
+                referenceName: options.as ?? name,
+                originKind: "stored-record",
+                operator: { role: "operator", clientId: "local_cli" },
+              });
+            }
+          } catch (error) {
+            if (existed && previousValue !== undefined) {
+              await storage.vaultValues.set(name, previousValue, {
+                force: true,
+                operatorClientId: "local_cli",
+              });
+            } else {
+              await storage.vaultValues.delete(name, { operatorClientId: "local_cli" });
+            }
+            throw error;
+          }
+          await storage.invalidateConfig("local_cli");
+          if (options.json) {
+            writeOut(`${JSON.stringify(status, null, 2)}\n`);
+            return;
+          }
+          writeOut(`Set Vault key ${validateVaultKeyName(name)}.\n`);
           if (options.grant) {
-            const origin = resolveVaultAccessOrigin(options.grant, io);
-            store.grantAccess({
-              storedKey: name,
-              referenceName: options.as ?? name,
-              capletId: options.grant,
-              origin,
-            });
+            writeOut(
+              `Granted Vault key ${validateVaultKeyName(name)} to ${options.grant} as ${validateVaultKeyName(options.as ?? name)}.\n`,
+            );
           }
-        } catch (error) {
-          if (existed && previousValue !== undefined) {
-            store.set(name, previousValue, { force: true });
-          } else {
-            store.delete(name);
-          }
-          throw error;
-        }
-        if (options.json) {
-          writeOut(`${JSON.stringify(status, null, 2)}\n`);
-          return;
-        }
-        writeOut(`Set Vault key ${validateVaultKeyName(name)}.\n`);
-        if (options.grant) {
-          writeOut(
-            `Granted Vault key ${validateVaultKeyName(name)} to ${options.grant} as ${validateVaultKeyName(options.as ?? name)}.\n`,
-          );
-        }
+        });
       },
     );
 
@@ -2772,23 +2860,24 @@ export function createProgram(io: CliIO = {}): Command {
             writeOut(options.json ? `${JSON.stringify(result, null, 2)}\n` : `${value}\n`);
             return;
           }
+          writeOut(formatVaultValueStatus(result as VaultValueStatus, Boolean(options.json)));
+          return;
+        }
+        await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+          if (options.show) {
+            const value = await storage.vaultValues.resolveValue(name);
+            writeOut(
+              options.json ? `${JSON.stringify({ key: name, value }, null, 2)}\n` : `${value}\n`,
+            );
+            return;
+          }
           writeOut(
             formatVaultValueStatus(
-              result as ReturnType<FileVaultStore["getStatus"]>,
+              await storage.vaultValues.getStatus(name),
               Boolean(options.json),
             ),
           );
-          return;
-        }
-        const store = new FileVaultStore({ env });
-        if (options.show) {
-          const value = store.resolveValue(name);
-          writeOut(
-            options.json ? `${JSON.stringify({ key: name, value }, null, 2)}\n` : `${value}\n`,
-          );
-          return;
-        }
-        writeOut(formatVaultValueStatus(store.getStatus(name), Boolean(options.json)));
+        });
       },
     );
 
@@ -2802,17 +2891,14 @@ export function createProgram(io: CliIO = {}): Command {
       const target = parseVaultTarget(options);
       if (target === "remote") {
         const result = await remoteVaultList(io);
-        writeOut(
-          formatVaultValueList(
-            result as ReturnType<FileVaultStore["listValues"]>,
-            Boolean(options.json),
-          ),
-        );
+        writeOut(formatVaultValueList(result as VaultValueStatus[], Boolean(options.json)));
         return;
       }
-      writeOut(
-        formatVaultValueList(new FileVaultStore({ env }).listValues(), Boolean(options.json)),
-      );
+      await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+        writeOut(
+          formatVaultValueList(await storage.vaultValues.listValues(), Boolean(options.json)),
+        );
+      });
     });
 
   vault
@@ -2826,17 +2912,24 @@ export function createProgram(io: CliIO = {}): Command {
       const target = parseVaultTarget(options);
       if (target === "remote") {
         const result = await remoteVaultDelete(io, name);
+        writeOut(formatVaultDeleteStatus(result as VaultDeleteStatus, Boolean(options.json)));
+        return;
+      }
+      await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+        const grantsRetained = (await storage.vaultGrants.list()).filter(
+          (grant) => grant.vaultKey === validateVaultKeyName(name),
+        ).length;
+        const result = await storage.vaultValues.delete(name, {
+          operatorClientId: "local_cli",
+        });
+        if (result.deleted) await storage.invalidateConfig("local_cli");
         writeOut(
           formatVaultDeleteStatus(
-            result as ReturnType<FileVaultStore["delete"]>,
+            { key: result.key, deleted: result.deleted, grantsRetained },
             Boolean(options.json),
           ),
         );
-        return;
-      }
-      writeOut(
-        formatVaultDeleteStatus(new FileVaultStore({ env }).delete(name), Boolean(options.json)),
-      );
+      });
     });
 
   const vaultAccess = vault.command("access").description("Manage Vault access grants.");
@@ -2865,20 +2958,34 @@ export function createProgram(io: CliIO = {}): Command {
           });
           writeOut(
             formatVaultAccessGrant(
-              grant as ReturnType<FileVaultStore["grantAccess"]>,
+              grant as Parameters<typeof formatVaultAccessGrant>[0],
               Boolean(options.json),
             ),
           );
           return;
         }
-        const origin = resolveVaultAccessOrigin(capletId, io);
-        const grant = new FileVaultStore({ env }).grantAccess({
-          storedKey: name,
-          referenceName: options.as ?? name,
-          capletId,
-          origin,
+        await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+          await storage.vaultGrants.grant({
+            capletId,
+            vaultKey: name,
+            referenceName: options.as ?? name,
+            originKind: "stored-record",
+            operator: { role: "operator", clientId: "local_cli" },
+          });
+          const grant = (await storage.vaultGrants.list(capletId)).find(
+            (candidate) =>
+              candidate.vaultKey === validateVaultKeyName(name) &&
+              candidate.referenceName === validateVaultKeyName(options.as ?? name),
+          );
+          if (!grant) {
+            throw new CapletsError(
+              "INTERNAL_ERROR",
+              "Stored Vault access grant could not be reloaded.",
+            );
+          }
+          await storage.invalidateConfig("local_cli");
+          writeOut(formatVaultAccessGrant(storedVaultGrantForCli(grant), Boolean(options.json)));
         });
-        writeOut(formatVaultAccessGrant(grant, Boolean(options.json)));
       },
     );
 
@@ -2912,18 +3019,20 @@ export function createProgram(io: CliIO = {}): Command {
           });
           writeOut(
             formatVaultAccessList(
-              grants as ReturnType<FileVaultStore["listAccess"]>,
+              grants as Parameters<typeof formatVaultAccessList>[0],
               Boolean(options.json),
             ),
           );
           return;
         }
-        writeOut(
-          formatVaultAccessList(
-            new FileVaultStore({ env }).listAccess(vaultAccessFilter(name, capletFilter)),
-            Boolean(options.json),
-          ),
-        );
+        await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+          const grants = (await storage.vaultGrants.list(capletFilter)).filter(
+            (grant) => name === undefined || grant.vaultKey === validateVaultKeyName(name),
+          );
+          writeOut(
+            formatVaultAccessList(grants.map(storedVaultGrantForCli), Boolean(options.json)),
+          );
+        });
       },
     );
 
@@ -2957,9 +3066,28 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
-        const filter = vaultAccessFilter(name, capletId, options.as);
-        const revoked = new FileVaultStore({ env }).revokeAccess(filter);
-        writeOut(formatVaultAccessRevoke(revoked.length, Boolean(options.json)));
+        await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+          const candidates = (await storage.vaultGrants.list(capletId)).filter(
+            (grant) =>
+              grant.vaultKey === validateVaultKeyName(name) &&
+              (options.as === undefined || grant.referenceName === options.as),
+          );
+          let revoked = 0;
+          for (const grant of candidates) {
+            if (
+              await storage.vaultGrants.revoke({
+                capletId,
+                vaultKey: grant.vaultKey,
+                referenceName: grant.referenceName,
+                operator: { role: "operator", clientId: "local_cli" },
+              })
+            ) {
+              revoked += 1;
+            }
+          }
+          if (revoked > 0) await storage.invalidateConfig("local_cli");
+          writeOut(formatVaultAccessRevoke(revoked, Boolean(options.json)));
+        });
       },
     );
 
@@ -2969,33 +3097,83 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--all", "include disabled Caplets")
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
-    .action(async (options: { all?: boolean; json?: boolean; format?: CliOutputFormat }) => {
-      const includeDisabled = Boolean(options.all);
-      const remote = remoteClientForCli(io);
-      if (remote) {
-        const remoteRows = (await remote.request("list", { includeDisabled })) as CapletListRow[];
-        const localOverlay = tryLoadLocalOverlayForCli(io, writeErr);
-        const rows = mergeRemoteAndLocalRows(remoteRows, localOverlay, {
-          includeDisabled,
-          writeErr,
-        });
-        if (options.json || options.format === "json") {
-          writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+    .option("--stored", "show the Operator-only stored SQL view, including hidden records")
+    .action(
+      async (options: {
+        all?: boolean;
+        json?: boolean;
+        format?: CliOutputFormat;
+        stored?: boolean;
+      }) => {
+        const includeDisabled = Boolean(options.all);
+        const remote = remoteClientForCli(io);
+        if (options.stored) {
+          if (remote) {
+            throw new CapletsError(
+              "REQUEST_INVALID",
+              "Remote stored-record inspection is available through the remote Operator dashboard.",
+            );
+          }
+          const rows = await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+            const loaded = await loadConfigWithHostStorage(
+              storage,
+              currentConfigPath(),
+              envProjectConfigPath(env),
+              { vaultResolver: await createHostStorageVaultResolver(storage) },
+            );
+            return (
+              await storage.caplets.listStored({
+                role: "operator",
+                clientId: "local_cli",
+              })
+            ).map((record) => {
+              const source = loaded.sources[record.id];
+              return {
+                ...record,
+                shadowed: source !== undefined && source.kind !== "stored-record",
+                ...(source === undefined || source.kind === "stored-record"
+                  ? {}
+                  : { shadowSource: source }),
+              };
+            });
+          });
+          if (options.json || options.format === "json") {
+            writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+            return;
+          }
+          writeOut(formatStoredCapletRows(rows, options.format ?? "plain"));
           return;
         }
-        writeOut(formatCapletList(rows, options.format ?? "plain"));
-        return;
-      }
-      const config = loadConfigWithSources(currentConfigPath(), envProjectConfigPath(env), {
-        vaultResolver: vaultBootstrapResolver,
-      });
-      const rows = listCaplets(config, { includeDisabled });
-      if (options.json || options.format === "json") {
-        writeOut(`${JSON.stringify(rows, null, 2)}\n`);
-        return;
-      }
-      writeOut(formatCapletList(rows, options.format ?? "plain"));
-    });
+        if (remote) {
+          const remoteRows = (await remote.request("list", { includeDisabled })) as CapletListRow[];
+          const localOverlay = tryLoadLocalOverlayForCli(io, writeErr);
+          const rows = mergeRemoteAndLocalRows(remoteRows, localOverlay, {
+            includeDisabled,
+            writeErr,
+          });
+          if (options.json || options.format === "json") {
+            writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+            return;
+          }
+          writeOut(formatCapletList(rows, options.format ?? "plain"));
+          return;
+        }
+        await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
+          const loaded = await loadConfigWithHostStorage(
+            storage,
+            currentConfigPath(),
+            envProjectConfigPath(env),
+            { vaultResolver: await createHostStorageVaultResolver(storage) },
+          );
+          const rows = listCaplets(loaded, { includeDisabled });
+          if (options.json || options.format === "json") {
+            writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+            return;
+          }
+          writeOut(formatCapletList(rows, options.format ?? "plain"));
+        });
+      },
+    );
 
   program
     .command(cliCommands.install)
@@ -3016,11 +3194,7 @@ export function createProgram(io: CliIO = {}): Command {
         printTelemetryNotice("cli");
         const target = parseCatalogLifecycleTarget(options);
         const localLockfilePath =
-          target === "remote"
-            ? undefined
-            : target === "global"
-              ? defaultCapletsLockfilePath(env)
-              : resolveProjectLockfilePath(process.cwd());
+          target === "project" ? resolveProjectLockfilePath(process.cwd()) : undefined;
         const installSource =
           repo &&
           isInstallSourceArgument(repo, {
@@ -3062,10 +3236,38 @@ export function createProgram(io: CliIO = {}): Command {
           }
           return;
         }
-        const destinationRoot =
-          target === "global"
-            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
-            : envProjectCapletsRoot(env);
+        if (target === "global") {
+          if (!installSource) {
+            throw new CapletsError(
+              "REQUEST_INVALID",
+              "Global SQL catalog install requires a repository source.",
+            );
+          }
+          const result = await useConfiguredHostStorage(currentConfigPath(), async (storage) =>
+            installSqlCatalogCaplets({
+              storage,
+              operator: { clientId: "local_cli", role: "operator" },
+              source: installSource,
+              capletIds: selectedCapletIds,
+              force: Boolean(options.force),
+              disableCatalogIndexing: catalogIndexingDisabled(env),
+            }),
+          );
+          attachVaultSetupResults(result.installed, io);
+          if (options.json) {
+            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            return;
+          }
+          for (const caplet of result.installed) {
+            writeOut(
+              `${installStatusLabel(caplet.status, "Installed")} ${caplet.id} to ${caplet.destination}\n`,
+            );
+            writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
+            writeVaultSetupNotice(caplet.vaultSetup, writeOut);
+          }
+          return;
+        }
+        const destinationRoot = envProjectCapletsRoot(env);
         const lockfilePath = localLockfilePath ?? resolveProjectLockfilePath(process.cwd());
         if (!installSource) {
           const result = restoreCapletsFromLockfile({
@@ -3154,14 +3356,31 @@ export function createProgram(io: CliIO = {}): Command {
           }
           return;
         }
-        const destinationRoot =
-          target === "global"
-            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
-            : envProjectCapletsRoot(env);
-        const lockfilePath =
-          target === "global"
-            ? defaultCapletsLockfilePath(env)
-            : resolveProjectLockfilePath(process.cwd());
+        if (target === "global") {
+          const result = await useConfiguredHostStorage(currentConfigPath(), async (storage) =>
+            updateSqlCatalogCaplets({
+              storage,
+              operator: { clientId: "local_cli", role: "operator" },
+              capletIds,
+              force: Boolean(options.force),
+              allowRiskIncrease: Boolean(options.force),
+              disableCatalogIndexing: catalogIndexingDisabled(env),
+            }),
+          );
+          attachVaultSetupResults(result.installed, io);
+          if (options.json) {
+            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            return;
+          }
+          for (const caplet of result.installed) {
+            writeOut(`${updateStatusLabel(caplet.status)} ${caplet.id} at ${caplet.destination}\n`);
+            writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
+            writeVaultSetupNotice(caplet.vaultSetup, writeOut);
+          }
+          return;
+        }
+        const destinationRoot = envProjectCapletsRoot(env);
+        const lockfilePath = resolveProjectLockfilePath(process.cwd());
         const result = updateCapletsFromLockfile({
           capletIds,
           force: Boolean(options.force),
@@ -3756,20 +3975,23 @@ export function createProgram(io: CliIO = {}): Command {
       }
       const configPath = currentConfigPath();
       const projectConfigPath = envProjectConfigPath(env);
-      await loginAuth(serverId, {
-        noOpen: options.open === false,
-        writeOut,
-        writeErr,
+      const config = localAuthConfigForTarget({
+        serverId,
+        ...(io.authDir ? { authDir: io.authDir } : {}),
         ...(configPath ? { configPath } : {}),
         ...(projectConfigPath ? { projectConfigPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
+        source: target,
+      });
+      await useBackendAuthStore(configPath, async (authStore) => {
+        await loginAuth(serverId, {
+          authStore,
+          noOpen: options.open === false,
+          writeOut,
+          writeErr,
           ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
+          config,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+        });
       });
     });
 
@@ -3796,17 +4018,21 @@ export function createProgram(io: CliIO = {}): Command {
       }
       const configPath = currentConfigPath();
       const projectConfigPath = envProjectConfigPath(env);
-      logoutAuth(serverId, {
-        writeOut,
-        ...(configPath ? { configPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
-          ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
+      const config = localAuthConfigForTarget({
+        serverId,
         ...(io.authDir ? { authDir: io.authDir } : {}),
+        ...(configPath ? { configPath } : {}),
+        ...(projectConfigPath ? { projectConfigPath } : {}),
+        source: target,
+      });
+      await useBackendAuthStore(configPath, async (authStore) => {
+        await logoutAuth(serverId, {
+          authStore,
+          writeOut,
+          ...(configPath ? { configPath } : {}),
+          config,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+        });
       });
     });
 
@@ -3827,17 +4053,21 @@ export function createProgram(io: CliIO = {}): Command {
       }
       const configPath = currentConfigPath();
       const projectConfigPath = envProjectConfigPath(env);
-      await refreshAuth(serverId, {
-        writeOut,
-        ...(configPath ? { configPath } : {}),
-        config: localAuthConfigForTarget({
-          serverId,
-          ...(io.authDir ? { authDir: io.authDir } : {}),
-          ...(configPath ? { configPath } : {}),
-          ...(projectConfigPath ? { projectConfigPath } : {}),
-          source: target,
-        }),
+      const config = localAuthConfigForTarget({
+        serverId,
         ...(io.authDir ? { authDir: io.authDir } : {}),
+        ...(configPath ? { configPath } : {}),
+        ...(projectConfigPath ? { projectConfigPath } : {}),
+        source: target,
+      });
+      await useBackendAuthStore(configPath, async (authStore) => {
+        await refreshAuth(serverId, {
+          authStore,
+          writeOut,
+          ...(configPath ? { configPath } : {}),
+          config,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+        });
       });
     });
 
@@ -3863,7 +4093,676 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut(formatAuthRows(rows, format));
     });
 
+  configureStorageCommands(program, {
+    configPath: () => resolveConfigPath(currentConfigPath()),
+    env,
+    writeOut,
+    io,
+  });
+
   return program;
+}
+function configureStorageCommands(
+  program: Command,
+  context: {
+    configPath: () => string;
+    env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+    writeOut: (value: string) => void;
+    io: CliIO;
+  },
+): void {
+  const operator = { role: "operator" as const, clientId: "local_cli" };
+  const storage = program.command("storage").description("Administer Authoritative Host State.");
+
+  storage
+    .command("status")
+    .description("Inspect Authoritative Host State health and record counts.")
+    .option("--json", "print JSON output")
+    .action(async (options: { json?: boolean }) => {
+      const status = await useConfiguredHostStorage(context.configPath(), async (hostStorage) => ({
+        ...(await hostStorage.health()),
+        records: (await hostStorage.caplets.list()).length,
+        assetRows: await hostStorage.caplets.assetStats(),
+      }));
+      context.writeOut(
+        options.json
+          ? `${JSON.stringify(status, null, 2)}\n`
+          : `Authoritative Host State: ${status.ready ? "ready" : "unavailable"} (${status.backend}, schema ${status.schemaVersion ?? "unknown"}, ${status.records} records).\n`,
+      );
+    });
+
+  storage
+    .command("schema-migrate")
+    .description("Apply configured SQLite or PostgreSQL Authoritative Host State DDL.")
+    .action(async () => {
+      const config = loadHostStorageConfig(context.configPath());
+      await migrateHostStorage(config);
+      context.writeOut(`${JSON.stringify({ migrated: true, backend: config.type }, null, 2)}\n`);
+    });
+
+  storage
+    .command("migrate-legacy")
+    .description("Migrate verified legacy Host state into SQL storage.")
+    .requiredOption("--caplets-root <path>", "tracked global Caplet installation root")
+    .requiredOption("--lockfile <path>", "tracked global Caplet lockfile")
+    .option("--dry-run", "verify migration inputs without writing or moving files")
+    .option("--backup-root <path>", "timestamped backup destination")
+    .option(
+      "--operator-client <id>",
+      "Operator Client identity for the migration audit",
+      "cli-migration",
+    )
+    .action(
+      async (options: {
+        capletsRoot: string;
+        lockfile: string;
+        dryRun?: boolean;
+        backupRoot?: string;
+        operatorClient: string;
+      }) => {
+        const configPath = context.configPath();
+        const report = await migrateLegacyHostState({
+          storage: loadHostStorageConfig(configPath),
+          capletsRoot: resolve(options.capletsRoot),
+          lockfilePath: resolve(options.lockfile),
+          operatorClientId: options.operatorClient,
+          ...(options.backupRoot ? { backupRoot: options.backupRoot } : {}),
+          dryRun: options.dryRun ?? false,
+        });
+        context.writeOut(`${JSON.stringify(report, null, 2)}\n`);
+      },
+    );
+
+  const records = storage.command("records").description("Administer stored SQL Caplet Records.");
+
+  records
+    .command("list")
+    .description("List stored SQL Caplet Records.")
+    .requiredOption("--stored", "select the stored SQL view")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(async (options: StorageRemoteOptions) => {
+      const remote = remoteClientForStorageOptions(context.io, options);
+      const result = remote
+        ? await remote.request("storage_records_list", {})
+        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+            hostStorage.caplets.listStored(operator),
+          );
+      context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+    });
+
+  records
+    .command("get")
+    .description("Read one stored SQL Caplet Record.")
+    .argument("<id>", "Caplet Record ID")
+    .requiredOption("--stored", "select the stored SQL view")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(async (id: string, options: StorageRemoteOptions) => {
+      const remote = remoteClientForStorageOptions(context.io, options);
+      const record = remote
+        ? parseRemoteCapletBundleResult(await remote.request("storage_records_get", { id })).record
+        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+            hostStorage.caplets.getStored(id, operator),
+          );
+      if (!record) throw new CapletsError("CONFIG_NOT_FOUND", `Caplet Record ${id} was not found.`);
+      context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
+    });
+
+  records
+    .command("import")
+    .description("Import a filesystem Caplet bundle as a new SQL record.")
+    .argument("<bundle-path>", "directory bundle or CAPLET.md path")
+    .option("--id <id>", "Caplet Record ID override")
+    .option("--history-limit <n>", "retained revision count", parseStorageNonNegativeInteger)
+    .option("--source-kind <kind>", "installation source kind")
+    .option("--source-identity <identity>", "installation source identity")
+    .option("--channel <channel>", "installation source channel")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (
+        bundlePath: string,
+        options: StorageRemoteOptions & {
+          id?: string;
+          historyLimit?: number;
+          sourceKind?: string;
+          sourceIdentity?: string;
+          channel?: string;
+        },
+      ) => {
+        const bundle = readCapletBundleFiles(bundlePath);
+        const installation = installationSourceOptions(options);
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const record = remote
+          ? await remote.request("storage_records_import", {
+              id: options.id ?? bundle.id,
+              files: encodeRemoteCapletBundleFiles(bundle.files),
+              ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),
+              ...installation,
+            })
+          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+              hostStorage.caplets.importBundle({
+                id: options.id ?? bundle.id,
+                files: bundle.files,
+                operator,
+                ...(options.historyLimit === undefined
+                  ? {}
+                  : { historyLimit: options.historyLimit }),
+                ...(installation ? { installation } : {}),
+              }),
+            );
+        context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
+      },
+    );
+
+  records
+    .command("update")
+    .description("Replace a SQL Caplet Record with a complete filesystem bundle.")
+    .argument("<id>", "Caplet Record ID")
+    .argument("<bundle-path>", "directory bundle or CAPLET.md path")
+    .requiredOption("--generation <n>", "observed record generation", parsePositiveInteger)
+    .option("--detach-installation", "detach an active tracked installation before updating")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (
+        id: string,
+        bundlePath: string,
+        options: StorageRemoteOptions & { generation: number; detachInstallation?: boolean },
+      ) => {
+        const bundle = readCapletBundleFiles(bundlePath);
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const record = remote
+          ? await remote.request("storage_records_update", {
+              id,
+              files: encodeRemoteCapletBundleFiles(bundle.files),
+              expectedGeneration: options.generation,
+              ...(options.detachInstallation ? { detachInstallation: true } : {}),
+            })
+          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+              hostStorage.caplets.updateBundle({
+                id,
+                files: bundle.files,
+                operator,
+                expectedGeneration: options.generation,
+                ...(options.detachInstallation ? { detachInstallation: true } : {}),
+              }),
+            );
+        context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
+      },
+    );
+
+  records
+    .command("export")
+    .description("Export a stored Caplet bundle to the filesystem.")
+    .argument("<id>", "Caplet Record ID")
+    .argument("<destination>", "export destination directory")
+    .option("--revision <key>", "specific revision key")
+    .option("--replace", "replace an existing destination")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (
+        id: string,
+        destination: string,
+        options: StorageRemoteOptions & { revision?: string; replace?: boolean },
+      ) => {
+        const remote = remoteClientForStorageOptions(context.io, options);
+        if (remote) {
+          const result = parseRemoteCapletBundleResult(
+            await remote.request("storage_records_export", {
+              id,
+              ...(options.revision ? { revisionKey: options.revision } : {}),
+            }),
+          );
+          materializeCapletBundleFiles(result.files, destination, options);
+        } else {
+          await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+            hostStorage.caplets.exportBundle(id, destination, {
+              operator,
+              ...(options.revision ? { revisionKey: options.revision } : {}),
+              ...(options.replace ? { replace: true } : {}),
+            }),
+          );
+        }
+        context.writeOut(
+          `${JSON.stringify({ exported: true, id, destination: resolve(destination) }, null, 2)}\n`,
+        );
+      },
+    );
+
+  records
+    .command("revisions")
+    .description("List retained revisions for a Caplet Record.")
+    .argument("<id>", "Caplet Record ID")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(async (id: string, options: StorageRemoteOptions) => {
+      const remote = remoteClientForStorageOptions(context.io, options);
+      const revisions = remote
+        ? await remote.request("storage_records_revisions", { id })
+        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+            hostStorage.caplets.listRevisions(id, operator),
+          );
+      context.writeOut(`${JSON.stringify(revisions, null, 2)}\n`);
+    });
+
+  records
+    .command("restore")
+    .description("Restore a retained revision as a new current revision.")
+    .argument("<id>", "Caplet Record ID")
+    .argument("<revision>", "revision key")
+    .requiredOption("--generation <n>", "observed record generation", parsePositiveInteger)
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (
+        id: string,
+        revision: string,
+        options: StorageRemoteOptions & { generation: number },
+      ) => {
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const record = remote
+          ? await remote.request("storage_records_restore", {
+              id,
+              revisionKey: revision,
+              expectedGeneration: options.generation,
+            })
+          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+              hostStorage.caplets.restoreRevision({
+                id,
+                revisionKey: revision,
+                expectedGeneration: options.generation,
+                operator,
+              }),
+            );
+        context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
+      },
+    );
+
+  records
+    .command("delete-revision")
+    .description("Delete a retained revision.")
+    .argument("<id>", "Caplet Record ID")
+    .argument("<revision>", "revision key")
+    .requiredOption("--generation <n>", "observed record generation", parsePositiveInteger)
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (
+        id: string,
+        revision: string,
+        options: StorageRemoteOptions & { generation: number },
+      ) => {
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const result = remote
+          ? await remote.request("storage_records_delete_revision", {
+              id,
+              revisionKey: revision,
+              expectedGeneration: options.generation,
+            })
+          : {
+              deleted: true,
+              record: await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+                hostStorage.caplets.deleteRevision({
+                  id,
+                  revisionKey: revision,
+                  expectedGeneration: options.generation,
+                  operator,
+                }),
+              ),
+            };
+        context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+      },
+    );
+
+  records
+    .command("retention")
+    .description("Set retained revision count, or inherit the host default.")
+    .argument("<id>", "Caplet Record ID")
+    .argument("<limit>", "non-negative revision count or 'inherit'")
+    .requiredOption("--generation <n>", "observed record generation", parsePositiveInteger)
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (id: string, limit: string, options: StorageRemoteOptions & { generation: number }) => {
+        const historyLimit = limit === "inherit" ? null : parseStorageNonNegativeInteger(limit);
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const record = remote
+          ? await remote.request("storage_records_retention", {
+              id,
+              historyLimit,
+              expectedGeneration: options.generation,
+            })
+          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+              hostStorage.caplets.setRetention({
+                id,
+                historyLimit,
+                expectedGeneration: options.generation,
+                operator,
+              }),
+            );
+        context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
+      },
+    );
+
+  records
+    .command("rename")
+    .description("Rename a Caplet Record.")
+    .argument("<id>", "current Caplet Record ID")
+    .argument("<new-id>", "new Caplet Record ID")
+    .requiredOption("--generation <n>", "observed record generation", parsePositiveInteger)
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (id: string, newId: string, options: StorageRemoteOptions & { generation: number }) => {
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const record = remote
+          ? await remote.request("storage_records_rename", {
+              id,
+              newId,
+              expectedGeneration: options.generation,
+            })
+          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+              hostStorage.caplets.rename({
+                id,
+                newId,
+                expectedGeneration: options.generation,
+                operator,
+              }),
+            );
+        context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
+      },
+    );
+
+  records
+    .command("delete")
+    .description("Hard-delete a Caplet Record and all retained revisions.")
+    .argument("<id>", "Caplet Record ID")
+    .requiredOption("--generation <n>", "observed record generation", parsePositiveInteger)
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(async (id: string, options: StorageRemoteOptions & { generation: number }) => {
+      const remote = remoteClientForStorageOptions(context.io, options);
+      const result = remote
+        ? await remote.request("storage_records_delete", {
+            id,
+            expectedGeneration: options.generation,
+          })
+        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) => {
+            await hostStorage.caplets.hardDelete({
+              id,
+              expectedGeneration: options.generation,
+              operator,
+            });
+            return { deleted: true, id };
+          });
+      context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+    });
+
+  const installation = records
+    .command("installation")
+    .description("Administer Caplet installation provenance.");
+
+  installation
+    .command("status")
+    .description("Inspect installation lifecycles and observations.")
+    .argument("<id>", "Caplet Record ID")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(async (id: string, options: StorageRemoteOptions) => {
+      const remote = remoteClientForStorageOptions(context.io, options);
+      const result = remote
+        ? await remote.request("storage_records_installation_status", { id })
+        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) => ({
+            installations: await hostStorage.installations.list(id),
+            observations: await hostStorage.installations.listObservations(id),
+          }));
+      context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+    });
+
+  installation
+    .command("detach")
+    .description("Detach the active installation lifecycle.")
+    .argument("<id>", "Caplet Record ID")
+    .requiredOption("--generation <n>", "observed installation generation", parsePositiveInteger)
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(async (id: string, options: StorageRemoteOptions & { generation: number }) => {
+      const remote = remoteClientForStorageOptions(context.io, options);
+      const result = remote
+        ? await remote.request("storage_records_installation_detach", {
+            id,
+            expectedGeneration: options.generation,
+          })
+        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+            hostStorage.installations.detach({
+              capletId: id,
+              expectedGeneration: options.generation,
+              operator,
+            }),
+          );
+      context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+    });
+
+  installation
+    .command("observe")
+    .description("Append an installation source observation.")
+    .argument("<id>", "Caplet Record ID")
+    .requiredOption("--generation <n>", "observed installation generation", parsePositiveInteger)
+    .requiredOption(
+      "--status <status>",
+      "current, metadata-only, or source-unavailable",
+      parseInstallationObservationStatus,
+    )
+    .option("--resolved-revision <revision>", "resolved source revision")
+    .option("--content-hash <hash>", "resolved source content hash")
+    .option("--risk-json <json>", "sanitized risk snapshot JSON")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (
+        id: string,
+        options: StorageRemoteOptions & {
+          generation: number;
+          status: "current" | "metadata-only" | "source-unavailable";
+          resolvedRevision?: string;
+          contentHash?: string;
+          riskJson?: string;
+        },
+      ) => {
+        const risk = options.riskJson ? parseStorageJsonObject(options.riskJson) : undefined;
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const input = {
+          id,
+          expectedGeneration: options.generation,
+          status: options.status,
+          ...(options.resolvedRevision ? { resolvedRevision: options.resolvedRevision } : {}),
+          ...(options.contentHash ? { contentHash: options.contentHash } : {}),
+          ...(risk ? { risk } : {}),
+        };
+        const result = remote
+          ? await remote.request("storage_records_installation_observe", input)
+          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+              hostStorage.installations.appendObservation({
+                capletId: id,
+                expectedGeneration: options.generation,
+                status: options.status,
+                operator,
+                ...(options.resolvedRevision ? { resolvedRevision: options.resolvedRevision } : {}),
+                ...(options.contentHash ? { contentHash: options.contentHash } : {}),
+                ...(risk ? { risk } : {}),
+              }),
+            );
+        context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+      },
+    );
+
+  installation
+    .command("replace")
+    .description("Replace the latest detached installation with a new active lifecycle.")
+    .argument("<id>", "Caplet Record ID")
+    .requiredOption(
+      "--generation <n>",
+      "observed detached installation generation",
+      parsePositiveInteger,
+    )
+    .requiredOption("--source-kind <kind>", "replacement source kind")
+    .requiredOption("--source-identity <identity>", "replacement source identity")
+    .option("--channel <channel>", "replacement source channel")
+    .option("--detached-installation <key>", "expected detached installation key")
+    .option("--remote [server]", "administer the selected remote Host")
+    .action(
+      async (
+        id: string,
+        options: StorageRemoteOptions & {
+          generation: number;
+          sourceKind: string;
+          sourceIdentity: string;
+          channel?: string;
+          detachedInstallation?: string;
+        },
+      ) => {
+        const remote = remoteClientForStorageOptions(context.io, options);
+        const result = remote
+          ? await remote.request("storage_records_installation_replace", {
+              id,
+              expectedGeneration: options.generation,
+              sourceKind: options.sourceKind,
+              sourceIdentity: options.sourceIdentity,
+              ...(options.channel ? { channel: options.channel } : {}),
+              ...(options.detachedInstallation
+                ? { detachedInstallationKey: options.detachedInstallation }
+                : {}),
+            })
+          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+              hostStorage.installations.replaceDetached({
+                capletId: id,
+                expectedGeneration: options.generation,
+                sourceKind: options.sourceKind,
+                sourceIdentity: options.sourceIdentity,
+                operator,
+                ...(options.channel ? { channel: options.channel } : {}),
+                ...(options.detachedInstallation
+                  ? { detachedInstallationKey: options.detachedInstallation }
+                  : {}),
+              }),
+            );
+        context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+      },
+    );
+}
+
+type StorageRemoteOptions = {
+  remote?: string | boolean | undefined;
+};
+
+function remoteClientForStorageOptions(
+  io: CliIO,
+  options: StorageRemoteOptions,
+): RemoteControlClient | undefined {
+  if (options.remote === undefined || options.remote === false) return undefined;
+  const remoteUrl = typeof options.remote === "string" ? options.remote : undefined;
+  return requireRemoteClientForTarget(io, remoteUrl, true);
+}
+
+function encodeRemoteCapletBundleFiles(files: CapletBundleInputFile[]): RemoteCapletBundleFile[] {
+  return files.map((file) => ({
+    path: file.path,
+    contentBase64: file.content.toString("base64"),
+    executable: file.executable,
+  }));
+}
+
+function parseRemoteCapletBundleResult(value: unknown): {
+  record: unknown;
+  files: CapletBundleInputFile[];
+} {
+  if (!isCliRecord(value) || !("record" in value) || !("files" in value)) {
+    throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
+  }
+  return { record: value.record, files: decodeRemoteCapletBundleFiles(value.files) };
+}
+
+function decodeRemoteCapletBundleFiles(value: unknown): CapletBundleInputFile[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 2_049) {
+    throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
+  }
+  const files: CapletBundleInputFile[] = [];
+  let totalBytes = 0;
+  for (const item of value) {
+    if (
+      !isCliRecord(item) ||
+      Object.keys(item).some(
+        (key) => key !== "path" && key !== "contentBase64" && key !== "executable",
+      ) ||
+      typeof item.path !== "string" ||
+      !item.path ||
+      typeof item.contentBase64 !== "string" ||
+      typeof item.executable !== "boolean" ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(item.contentBase64)
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
+    }
+    const content = Buffer.from(item.contentBase64, "base64");
+    if (
+      content.byteLength > 64 * 1024 * 1024 ||
+      content.toString("base64") !== item.contentBase64
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
+    }
+    totalBytes += content.byteLength;
+    if (totalBytes > 256 * 1024 * 1024) {
+      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is too large.");
+    }
+    files.push({ path: item.path, content, executable: item.executable });
+  }
+  return files;
+}
+
+function isCliRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseStorageNonNegativeInteger(value: string): number {
+  return parseNonNegativeInteger(value, "Storage value");
+}
+
+function parseInstallationObservationStatus(
+  value: string,
+): "current" | "metadata-only" | "source-unavailable" {
+  if (value === "current" || value === "metadata-only" || value === "source-unavailable") {
+    return value;
+  }
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    `Installation observation status must be current, metadata-only, or source-unavailable; got ${value}`,
+  );
+}
+
+function parseStorageJsonObject(value: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new CapletsError("REQUEST_INVALID", "Storage risk JSON must be valid JSON.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", "Storage risk JSON must be an object.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function installationSourceOptions(options: {
+  sourceKind?: string;
+  sourceIdentity?: string;
+  channel?: string;
+}):
+  | {
+      sourceKind: string;
+      sourceIdentity: string;
+      channel?: string;
+    }
+  | undefined {
+  if (options.sourceKind === undefined && options.sourceIdentity === undefined) return undefined;
+  if (!options.sourceKind || !options.sourceIdentity) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--source-kind and --source-identity must be provided together.",
+    );
+  }
+  return {
+    sourceKind: options.sourceKind,
+    sourceIdentity: options.sourceIdentity,
+    ...(options.channel ? { channel: options.channel } : {}),
+  };
 }
 
 function formatDaemonStatus(status: Awaited<ReturnType<typeof daemonStatus>>): string {
@@ -3885,9 +4784,13 @@ function envConfigPath(
   return env.CAPLETS_CONFIG?.trim() || undefined;
 }
 
-function remoteClientForCli(io: CliIO): RemoteControlClient | undefined {
+function remoteClientForCli(
+  io: CliIO,
+  remoteUrl?: string | undefined,
+  forceRemote = false,
+): RemoteControlClient | undefined {
   const env = io.env ?? process.env;
-  if (resolveRemoteMode({}, env).mode !== "remote") {
+  if (!forceRemote && remoteUrl === undefined && resolveRemoteMode({}, env).mode !== "remote") {
     return undefined;
   }
   return new RemoteControlClient({
@@ -3895,16 +4798,14 @@ function remoteClientForCli(io: CliIO): RemoteControlClient | undefined {
       const selection = await resolveRemoteSelection(
         {
           mode: "remote",
+          ...(remoteUrl ? { remoteUrl } : {}),
           ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(io.fetch ? { fetch: io.fetch } : {}),
         },
         env,
       );
       if (selection.kind !== "self_hosted_remote") {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "--remote requires CAPLETS_MODE=remote and a self-hosted CAPLETS_REMOTE_URL",
-        );
+        throw new CapletsError("REQUEST_INVALID", "--remote requires a self-hosted remote Host");
       }
       return {
         baseUrl: selection.remote.baseUrl,
@@ -4223,36 +5124,48 @@ function assertVaultTransportValueSize(value: string): void {
   }
 }
 
-function resolveVaultAccessOrigin(capletId: string, io: CliIO): ConfigSource {
-  const env = io.env ?? process.env;
-  const configPath = envConfigPath(env);
-  const projectConfigPath = envProjectConfigPath(env);
-  const config = loadConfigWithSources(configPath, projectConfigPath, {
-    vaultResolver: vaultBootstrapResolver,
-  });
-  if (config.shadows[capletId]?.length) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      `Caplet ${capletId} is shadowed in multiple config sources; resolve the active config before granting Vault access.`,
-    );
-  }
-  const origin = config.sources[capletId];
-  if (!origin) {
-    throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
-  }
-  return origin;
+function storedVaultGrantForCli(grant: StoredVaultGrant) {
+  return {
+    storedKey: grant.vaultKey,
+    referenceName: grant.referenceName,
+    capletId: grant.capletId,
+    origin: {
+      kind: grant.originKind,
+      ...(grant.originPath === null ? {} : { path: grant.originPath }),
+    },
+    createdAt: grant.createdAt,
+    updatedAt: grant.createdAt,
+  };
 }
 
-function vaultAccessFilter(
-  storedKey?: string,
-  capletId?: string,
-  referenceName?: string,
-): VaultAccessGrantFilter {
-  return {
-    ...(storedKey ? { storedKey: validateVaultKeyName(storedKey) } : {}),
-    ...(capletId ? { capletId } : {}),
-    ...(referenceName ? { referenceName: validateVaultKeyName(referenceName) } : {}),
-  };
+type StoredCapletRow = CapletRecordView & {
+  shadowed: boolean;
+  shadowSource?: ConfigSource | undefined;
+};
+
+function formatStoredCapletRows(rows: StoredCapletRow[], format: CliOutputFormat): string {
+  if (rows.length === 0) return "No stored SQL Caplet Records.\n";
+  if (format === "markdown") {
+    return [
+      "| Caplet Record | Generation | Effective state |",
+      "| --- | ---: | --- |",
+      ...rows.map(
+        (row) =>
+          `| \`${row.id}\` | ${row.headGeneration} | ${
+            row.shadowed ? `shadowed by ${row.shadowSource?.kind ?? "higher layer"}` : "effective"
+          } |`,
+      ),
+      "",
+    ].join("\n");
+  }
+  return `${rows
+    .map(
+      (row) =>
+        `${row.id}\tgeneration ${row.headGeneration}\t${
+          row.shadowed ? `shadowed by ${row.shadowSource?.kind ?? "higher layer"}` : "effective"
+        }`,
+    )
+    .join("\n")}\n`;
 }
 
 function localMutationTargetLabel(target: Exclude<MutationTarget, "remote">, io: CliIO): string {
@@ -4462,12 +5375,15 @@ async function authListRowsForCli(
   if (target === "remote") {
     return remoteAuthRows(requireRemoteClientForTarget(io));
   }
-  const localRows = listLocalAuthRows({
-    ...(configPath ? { configPath } : {}),
-    ...(projectConfigPath ? { projectConfigPath } : {}),
-    ...(io.authDir ? { authDir: io.authDir } : {}),
-    ...(target ? { source: target } : {}),
-  });
+  const localRows = await useBackendAuthStore(configPath, async (authStore) =>
+    listLocalAuthRows({
+      authStore,
+      ...(configPath ? { configPath } : {}),
+      ...(projectConfigPath ? { projectConfigPath } : {}),
+      ...(io.authDir ? { authDir: io.authDir } : {}),
+      ...(target ? { source: target } : {}),
+    }),
+  );
   if (target) return localRows;
   const remote = remoteClientForCli(io);
   if (!remote) return localRows;
@@ -4508,8 +5424,12 @@ async function remoteAuthLogin(
   }
 }
 
-function requireRemoteClientForTarget(io: CliIO): RemoteControlClient {
-  const remote = remoteClientForCli(io);
+function requireRemoteClientForTarget(
+  io: CliIO,
+  remoteUrl?: string | undefined,
+  forceRemote = false,
+): RemoteControlClient {
+  const remote = remoteClientForCli(io, remoteUrl, forceRemote);
   if (!remote) {
     throw new CapletsError(
       "REQUEST_INVALID",
@@ -4614,13 +5534,17 @@ async function completeCliWordsLocally(
     config?: CapletsConfig | undefined;
   },
 ): Promise<string[]> {
-  const engine = new CapletsEngine({
-    ...(options.configPath ? { configPath: options.configPath } : {}),
-    ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
-    ...(options.authDir ? { authDir: options.authDir } : {}),
-    watch: false,
-    ...(options.config ? { configLoader: () => options.config as CapletsConfig } : {}),
-  });
+  const engine = options.config
+    ? new CapletsEngine({
+        configLoader: () => options.config as CapletsConfig,
+        watch: false,
+      })
+    : await CapletsEngine.create({
+        ...(options.configPath ? { configPath: options.configPath } : {}),
+        ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
+        ...(options.authDir ? { authDir: options.authDir } : {}),
+        watch: false,
+      });
   try {
     return await engine.completeCliWords(words);
   } finally {
@@ -4984,20 +5908,31 @@ async function executeLocalOperation(
   config?: CapletsConfig,
 ): Promise<void> {
   const configPath = envConfigPath(io.env ?? process.env);
-  const engine = new CapletsEngine({
-    ...(configPath ? { configPath } : {}),
-    projectConfigPath: envProjectConfigPath(io.env ?? process.env),
-    ...(io.authDir ? { authDir: io.authDir } : {}),
-    watch: false,
-    writeErr: io.writeErr,
-    telemetryEnv: io.env ?? process.env,
-    telemetryStateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(io.env ?? process.env),
-    telemetrySurface: "cli",
-    telemetryVisibility: "visible",
-    telemetryRuntimeMode: runtimeModeForEnv(io.env ?? process.env),
-    telemetryDebugSink: io.telemetryDebugSink,
-    ...(config ? { configLoader: () => config } : {}),
-  });
+  const engine = config
+    ? new CapletsEngine({
+        configLoader: () => config,
+        watch: false,
+        writeErr: io.writeErr,
+        telemetryEnv: io.env ?? process.env,
+        telemetryStateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(io.env ?? process.env),
+        telemetrySurface: "cli",
+        telemetryVisibility: "visible",
+        telemetryRuntimeMode: runtimeModeForEnv(io.env ?? process.env),
+        telemetryDebugSink: io.telemetryDebugSink,
+      })
+    : await CapletsEngine.create({
+        ...(configPath ? { configPath } : {}),
+        projectConfigPath: envProjectConfigPath(io.env ?? process.env),
+        ...(io.authDir ? { authDir: io.authDir } : {}),
+        watch: false,
+        writeErr: io.writeErr,
+        telemetryEnv: io.env ?? process.env,
+        telemetryStateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(io.env ?? process.env),
+        telemetrySurface: "cli",
+        telemetryVisibility: "visible",
+        telemetryRuntimeMode: runtimeModeForEnv(io.env ?? process.env),
+        telemetryDebugSink: io.telemetryDebugSink,
+      });
   try {
     const result = await engine.execute(caplet, request);
     const output = cliOutputForOperation(result, { ...request, caplet }, io.format ?? "markdown");

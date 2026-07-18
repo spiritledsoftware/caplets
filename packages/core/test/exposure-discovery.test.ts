@@ -240,6 +240,7 @@ function configFor(
 ): CapletsConfig {
   return {
     version: 1,
+    storage: { type: "sqlite" },
     options: {
       defaultSearchLimit: 20,
       maxSearchLimit: 50,

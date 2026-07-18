@@ -10,18 +10,19 @@ vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
   auth: mockMcpAuth,
 }));
 
-import { readTokenBundle, writeTokenBundle } from "../src/auth";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
 import { createCurrentHostOperations } from "../src/current-host/operations";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
-import { FileVaultStore } from "../src/vault";
+import { createHostStorage, type HostStorage } from "../src/storage";
 
 const dirs: string[] = [];
+const storages: HostStorage[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   mockMcpAuth.mockReset();
+  await Promise.allSettled(storages.splice(0).map(async (storage) => await storage.close()));
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -173,6 +174,9 @@ describe("dispatchRemoteCliRequest", () => {
         },
       }),
     );
+    const storage = await configuredTestStorage({ ...context, authDir });
+    const dispatchContext = { ...context, authDir, hostStorage: storage };
+    const administration = currentHostAdministration({ ...context, authDir, storage });
 
     const set = await dispatchRemoteCliRequest(
       {
@@ -185,26 +189,27 @@ describe("dispatchRemoteCliRequest", () => {
           force: false,
         },
       },
-      { ...context, authDir },
-      currentHostAdministration({ ...context, authDir }),
+      dispatchContext,
+      administration,
     );
     const list = await dispatchRemoteCliRequest(
       { command: "vault_access_list", arguments: {} },
-      { ...context, authDir },
-      currentHostAdministration({ ...context, authDir }),
+      dispatchContext,
+      administration,
     );
     const inspect = await dispatchRemoteCliRequest(
       {
         command: "inspect",
         arguments: { caplet: "github", request: { operation: "inspect" } },
       },
-      { ...context, authDir },
+      dispatchContext,
     );
 
-    const store = new FileVaultStore({ root: join(authDir, "vault") });
     expect(set).toMatchObject({ ok: true, result: { key: "GH_TOKEN_REMOTE", present: true } });
     expect(JSON.stringify(set)).not.toContain("remote_dispatch_secret");
-    expect(store.resolveValue("GH_TOKEN_REMOTE")).toBe("remote_dispatch_secret");
+    await expect(storage.vaultValues.resolveValue("GH_TOKEN_REMOTE")).resolves.toBe(
+      "remote_dispatch_secret",
+    );
     expect(list).toMatchObject({
       ok: true,
       result: [
@@ -229,6 +234,9 @@ describe("dispatchRemoteCliRequest", () => {
   it("does not retain a remote Vault value when set-and-grant fails", async () => {
     const context = testContext();
     const authDir = join(context.tempRoot, "auth");
+    const storage = await configuredTestStorage({ ...context, authDir });
+    const dispatchContext = { ...context, authDir, hostStorage: storage };
+    const administration = currentHostAdministration({ ...context, authDir, storage });
 
     const response = await dispatchRemoteCliRequest(
       {
@@ -240,21 +248,25 @@ describe("dispatchRemoteCliRequest", () => {
           force: false,
         },
       },
-      { ...context, authDir },
-      currentHostAdministration({ ...context, authDir }),
+      dispatchContext,
+      administration,
     );
 
-    const store = new FileVaultStore({ root: join(authDir, "vault") });
     expect(response).toMatchObject({ ok: false });
-    expect(store.getStatus("GH_TOKEN")).toEqual({ key: "GH_TOKEN", present: false });
+    await expect(storage.vaultValues.getStatus("GH_TOKEN")).resolves.toEqual({
+      key: "GH_TOKEN",
+      present: false,
+    });
     expect(JSON.stringify(response)).not.toContain("remote_orphan_secret");
   });
 
   it("restores the previous remote Vault value when force set-and-grant fails", async () => {
     const context = testContext();
     const authDir = join(context.tempRoot, "auth");
-    const store = new FileVaultStore({ root: join(authDir, "vault") });
-    store.set("GH_TOKEN", "original_secret");
+    const storage = await configuredTestStorage({ ...context, authDir });
+    await storage.vaultValues.set("GH_TOKEN", "original_secret");
+    const dispatchContext = { ...context, authDir, hostStorage: storage };
+    const administration = currentHostAdministration({ ...context, authDir, storage });
 
     const response = await dispatchRemoteCliRequest(
       {
@@ -266,19 +278,18 @@ describe("dispatchRemoteCliRequest", () => {
           force: true,
         },
       },
-      { ...context, authDir },
-      currentHostAdministration({ ...context, authDir }),
+      dispatchContext,
+      administration,
     );
 
     expect(response).toMatchObject({ ok: false });
-    expect(store.resolveValue("GH_TOKEN")).toBe("original_secret");
+    await expect(storage.vaultValues.resolveValue("GH_TOKEN")).resolves.toBe("original_secret");
     expect(JSON.stringify(response)).not.toContain("replacement_secret");
   });
 
   it("rejects forged remote Vault raw reveal requests", async () => {
     const context = testContext();
     const authDir = join(context.tempRoot, "auth");
-    new FileVaultStore({ root: join(authDir, "vault") }).set("GH_TOKEN", "remote_secret");
 
     const response = await dispatchRemoteCliRequest(
       {
@@ -624,6 +635,12 @@ describe("dispatchRemoteCliRequest", () => {
 
   it("lists, refreshes, and logs out server-side auth credentials", async () => {
     const fixture = remoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = {
+      ...fixture.context,
+      hostStorage: storage,
+      backendAuthStore: storage.backendAuth,
+    };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         access_token: "new-access-token",
@@ -632,19 +649,16 @@ describe("dispatchRemoteCliRequest", () => {
         expires_in: 3600,
       }),
     );
-    writeTokenBundle(
-      {
-        server: "remote",
-        accessToken: "secret-access-token",
-        refreshToken: "old-refresh-token",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-      },
-      fixture.context.authDir,
-    );
+    await storage.backendAuth.writeTokenBundle({
+      server: "remote",
+      accessToken: "secret-access-token",
+      refreshToken: "old-refresh-token",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    });
 
     const listed = await dispatchRemoteCliRequest(
       { command: "auth_list", arguments: {} },
-      fixture.context,
+      dispatchContext,
     );
     expect(listed).toEqual({
       ok: true,
@@ -653,7 +667,7 @@ describe("dispatchRemoteCliRequest", () => {
 
     const refreshed = await dispatchRemoteCliRequest(
       { command: "auth_refresh", arguments: { server: "remote" } },
-      fixture.context,
+      dispatchContext,
     );
     expect(refreshed).toEqual({
       ok: true,
@@ -666,19 +680,22 @@ describe("dispatchRemoteCliRequest", () => {
         body: expect.stringContaining("refresh_token=old-refresh-token"),
       }),
     );
-    expect(readTokenBundle("remote", fixture.context.authDir)).toMatchObject({
-      accessToken: "new-access-token",
-      refreshToken: "new-refresh-token",
+    await expect(storage.backendAuth.readTokenBundle("remote")).resolves.toMatchObject({
+      bundle: {
+        accessToken: "new-access-token",
+        refreshToken: "new-refresh-token",
+      },
     });
 
     const loggedOut = await dispatchRemoteCliRequest(
       { command: "auth_logout", arguments: { server: "remote" } },
-      fixture.context,
+      dispatchContext,
     );
     expect(loggedOut).toEqual({
       ok: true,
       result: { server: "remote", deleted: true },
     });
+    await expect(storage.backendAuth.readTokenBundle("remote")).resolves.toBeUndefined();
   });
 
   it("resolves Google Discovery scopes before starting remote OAuth login", async () => {
@@ -729,15 +746,19 @@ describe("dispatchRemoteCliRequest", () => {
         },
       }),
     );
+    const storage = await configuredTestStorage({ ...context, authDir });
+    const dispatchContext = {
+      ...context,
+      authDir,
+      hostStorage: storage,
+      backendAuthStore: storage.backendAuth,
+      controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+      authFlowStore,
+    };
 
     const response = await dispatchRemoteCliRequest(
       { command: "auth_login_start", arguments: { server: "drive" } },
-      {
-        ...context,
-        authDir,
-        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-        authFlowStore,
-      },
+      dispatchContext,
     );
 
     expect(response).toMatchObject({ ok: true });
@@ -765,12 +786,7 @@ describe("dispatchRemoteCliRequest", () => {
           callbackUrl: `http://127.0.0.1/callback?code=code&state=${authorizationUrl.searchParams.get("state")}`,
         },
       },
-      {
-        ...context,
-        authDir,
-        authFlowStore,
-        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-      },
+      dispatchContext,
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -780,11 +796,13 @@ describe("dispatchRemoteCliRequest", () => {
         body: expect.stringContaining("code=code"),
       }),
     );
-    expect(readTokenBundle("drive", authDir)).toMatchObject({
-      protectedResourceOrigin: "https://www.googleapis.com",
-      metadata: {
-        protectedResource: "https://www.googleapis.com/drive/v3/",
-        requestedScopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+    await expect(storage.backendAuth.readTokenBundle("drive")).resolves.toMatchObject({
+      bundle: {
+        protectedResourceOrigin: "https://www.googleapis.com",
+        metadata: {
+          protectedResource: "https://www.googleapis.com/drive/v3/",
+          requestedScopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+        },
       },
     });
   });
@@ -792,16 +810,20 @@ describe("dispatchRemoteCliRequest", () => {
   it("does not create a pending auth flow when MCP auth is already authorized", async () => {
     const fixture = remoteFixtureWithOAuth();
     const authFlowStore = new RemoteAuthFlowStore();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = {
+      ...fixture.context,
+      hostStorage: storage,
+      backendAuthStore: storage.backendAuth,
+      controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+      authFlowStore,
+    };
     const create = vi.spyOn(authFlowStore, "create");
     mockMcpAuth.mockResolvedValueOnce("AUTHORIZED");
 
     const response = await dispatchRemoteCliRequest(
       { command: "auth_login_start", arguments: { server: "remote" } },
-      {
-        ...fixture.context,
-        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-        authFlowStore,
-      },
+      dispatchContext,
     );
 
     expect(response).toEqual({ ok: true, result: { server: "remote", authenticated: true } });
@@ -850,6 +872,273 @@ describe("dispatchRemoteCliRequest", () => {
     expect(response).toMatchObject({ ok: false });
     expect(authFlowStore.get(flow.id)).toBeUndefined();
   });
+  it("rejects a forged Access principal for stored record administration", async () => {
+    const context = testContext();
+    const administration = currentHostAdministration(context);
+    Object.defineProperty(administration.principal, "role", { value: "access" });
+
+    await expect(
+      dispatchRemoteCliRequest(
+        { command: "storage_records_list", arguments: {} },
+        context,
+        administration,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "AUTH_FAILED",
+        message: "Current Host administration requires an Operator principal.",
+      },
+    });
+  });
+
+  it("administers complete stored bundles and installation lifecycles", async () => {
+    const context = testContext();
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(context.tempRoot, "records.sqlite3"),
+    });
+    const activateConfig = vi.fn(async () => undefined);
+    const administration = {
+      ...currentHostAdministration(context),
+      storage,
+      activateConfig,
+    };
+    const document = (command: string, title: string) =>
+      Buffer.from(
+        `---\nname: Remote Record\ndescription: Remote bundle fixture.\nmcpServer:\n  command: ${command}\n---\n# ${title}\n`,
+      );
+    const wireFiles = (command: string, title: string) => [
+      {
+        path: "CAPLET.md",
+        contentBase64: document(command, title).toString("base64"),
+        executable: false,
+      },
+      {
+        path: "bin/run",
+        contentBase64: Buffer.from([0, 1, 2, 255]).toString("base64"),
+        executable: true,
+      },
+    ];
+
+    try {
+      const imported = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_import",
+          arguments: {
+            id: "remote-record",
+            files: wireFiles("first", "First"),
+            historyLimit: 4,
+          },
+        },
+        context,
+        administration,
+      );
+      expect(imported).toMatchObject({
+        ok: true,
+        result: { id: "remote-record", headGeneration: 1 },
+      });
+
+      const read = await dispatchRemoteCliRequest(
+        { command: "storage_records_get", arguments: { id: "remote-record" } },
+        context,
+        administration,
+      );
+      expect(read).toMatchObject({
+        ok: true,
+        result: {
+          record: { id: "remote-record" },
+          files: expect.arrayContaining([
+            {
+              path: "bin/run",
+              contentBase64: Buffer.from([0, 1, 2, 255]).toString("base64"),
+              executable: true,
+            },
+          ]),
+        },
+      });
+
+      const updated = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_update",
+          arguments: {
+            id: "remote-record",
+            files: wireFiles("second", "Second"),
+            expectedGeneration: 1,
+          },
+        },
+        context,
+        administration,
+      );
+      expect(updated).toMatchObject({ ok: true, result: { headGeneration: 2 } });
+      await expect(
+        dispatchRemoteCliRequest(
+          {
+            command: "storage_records_update",
+            arguments: {
+              id: "remote-record",
+              files: wireFiles("stale", "Stale"),
+              expectedGeneration: 1,
+            },
+          },
+          context,
+          administration,
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "REQUEST_INVALID", message: expect.stringContaining("reload and retry") },
+      });
+      await storage.installations.install({
+        capletId: "remote-record",
+        sourceKind: "git",
+        sourceIdentity: "https://example.test/remote.git",
+        operator: { role: "operator", clientId: "test" },
+      });
+
+      const revisions = await storage.caplets.listRevisions("remote-record", {
+        role: "operator",
+        clientId: "test",
+      });
+      const oldRevision = revisions.find((revision) => revision.sequence === 1);
+      expect(oldRevision).toBeDefined();
+
+      const retained = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_retention",
+          arguments: { id: "remote-record", historyLimit: 3, expectedGeneration: 2 },
+        },
+        context,
+        administration,
+      );
+      expect(retained).toMatchObject({ ok: true, result: { headGeneration: 3, historyLimit: 3 } });
+      const renamed = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_rename",
+          arguments: { id: "remote-record", newId: "renamed-record", expectedGeneration: 3 },
+        },
+        context,
+        administration,
+      );
+      expect(renamed).toMatchObject({ ok: true, result: { id: "renamed-record" } });
+
+      const status = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_installation_status",
+          arguments: { id: "renamed-record" },
+        },
+        context,
+        administration,
+      );
+      expect(status).toMatchObject({
+        ok: true,
+        result: { installations: [{ status: "active", generation: 1 }], observations: [] },
+      });
+      await expect(
+        dispatchRemoteCliRequest(
+          {
+            command: "storage_records_installation_observe",
+            arguments: {
+              id: "renamed-record",
+              expectedGeneration: 1,
+              status: "metadata-only",
+              resolvedRevision: "abc123",
+              risk: { network: "low" },
+            },
+          },
+          context,
+          administration,
+        ),
+      ).resolves.toMatchObject({ ok: true, result: { status: "metadata-only" } });
+      const detached = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_installation_detach",
+          arguments: { id: "renamed-record", expectedGeneration: 2 },
+        },
+        context,
+        administration,
+      );
+      expect(detached).toMatchObject({
+        ok: true,
+        result: { status: "detached", generation: 3 },
+      });
+      const detachedInstallationKey =
+        detached.ok &&
+        detached.result &&
+        typeof detached.result === "object" &&
+        "installationKey" in detached.result &&
+        typeof detached.result.installationKey === "string"
+          ? detached.result.installationKey
+          : "";
+      await expect(
+        dispatchRemoteCliRequest(
+          {
+            command: "storage_records_installation_replace",
+            arguments: {
+              id: "renamed-record",
+              expectedGeneration: 3,
+              sourceKind: "git",
+              sourceIdentity: "https://example.test/replacement.git",
+              detachedInstallationKey,
+            },
+          },
+          context,
+          administration,
+        ),
+      ).resolves.toMatchObject({ ok: true, result: { status: "active", generation: 1 } });
+
+      const restored = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_restore",
+          arguments: {
+            id: "renamed-record",
+            revisionKey: oldRevision!.revisionKey,
+            expectedGeneration: 4,
+          },
+        },
+        context,
+        administration,
+      );
+      expect(restored).toMatchObject({ ok: true, result: { headGeneration: 5 } });
+      const afterRestore = await storage.caplets.listRevisions("renamed-record", {
+        role: "operator",
+        clientId: "test",
+      });
+      const deletable = afterRestore.find((revision) => revision.sequence !== 3);
+      expect(deletable).toBeDefined();
+      const deletedRevision = await dispatchRemoteCliRequest(
+        {
+          command: "storage_records_delete_revision",
+          arguments: {
+            id: "renamed-record",
+            revisionKey: deletable!.revisionKey,
+            expectedGeneration: 5,
+          },
+        },
+        context,
+        administration,
+      );
+      expect(deletedRevision).toMatchObject({
+        ok: true,
+        result: { deleted: true, record: { headGeneration: 6 } },
+      });
+      await expect(
+        dispatchRemoteCliRequest(
+          {
+            command: "storage_records_delete",
+            arguments: { id: "renamed-record", expectedGeneration: 6 },
+          },
+          context,
+          administration,
+        ),
+      ).resolves.toEqual({
+        ok: true,
+        result: { deleted: true, id: "renamed-record" },
+      });
+      expect(activateConfig).toHaveBeenCalledTimes(7);
+    } finally {
+      await storage.close();
+    }
+  });
 });
 
 function testContext(options: { writeConfig?: boolean } = {}) {
@@ -893,6 +1182,7 @@ type DispatchAdministrationContext = {
   authDir?: string | undefined;
   globalCapletsRoot?: string | undefined;
   globalLockfilePath?: string | undefined;
+  storage?: HostStorage | undefined;
 };
 
 function currentHostAdministration(context: DispatchAdministrationContext) {
@@ -908,14 +1198,38 @@ function currentHostAdministration(context: DispatchAdministrationContext) {
           context.globalLockfilePath ?? join(context.tempRoot, "remote-state", "caplets.lock.json"),
       },
       activityLog: new DashboardActivityLog({ dir: join(context.tempRoot, "activity") }),
+      ...(context.storage
+        ? {
+            capletRecords: context.storage.caplets,
+            catalogStorage: context.storage,
+            vaultGrants: context.storage.vaultGrants,
+            vaultValues: context.storage.vaultValues,
+          }
+        : {}),
       version: "test-version",
     }),
+    ...(context.storage ? { storage: context.storage } : {}),
     principal: {
       clientId: "rcli_abcdefghijklmnop",
       hostUrl: "http://127.0.0.1:5387/",
       role: "operator" as const,
     },
   };
+}
+
+async function configuredTestStorage(context: DispatchAdministrationContext): Promise<HostStorage> {
+  const databasePath = join(context.tempRoot, "host-state.sqlite3");
+  const config = existsSync(context.configPath)
+    ? (JSON.parse(readFileSync(context.configPath, "utf8")) as Record<string, unknown>)
+    : {};
+  config.storage = { type: "sqlite", path: databasePath };
+  writeFileSync(context.configPath, JSON.stringify(config));
+  const storage = await createHostStorage(
+    { type: "sqlite", path: databasePath },
+    { vaultRoot: join(context.authDir ?? context.tempRoot, "vault") },
+  );
+  storages.push(storage);
+  return storage;
 }
 
 function remoteFixtureWithOAuth() {

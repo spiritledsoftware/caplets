@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createCapletsOpenCodeHooks } from "../src/hooks";
 
 vi.mock("@opencode-ai/plugin", () => ({
   tool: Object.assign((definition: unknown) => definition, {
@@ -47,7 +48,6 @@ vi.mock("@opencode-ai/plugin", () => ({
 
 describe("@caplets/opencode", () => {
   it("registers one prefixed native tool per Caplet plus Code Mode", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
         {
@@ -153,7 +153,6 @@ describe("@caplets/opencode", () => {
   });
 
   it("returns stable text when tool result serialization fails", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
         {
@@ -182,7 +181,6 @@ describe("@caplets/opencode", () => {
   });
 
   it("uses direct native input schemas without progressive operation args", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
         {
@@ -231,7 +229,6 @@ describe("@caplets/opencode", () => {
   });
 
   it("returns stable text when JSON.stringify returns undefined", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
         {
@@ -257,7 +254,6 @@ describe("@caplets/opencode", () => {
   });
 
   it("refreshes system guidance for remaining registered tools only", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     let tools = [
       {
         caplet: "git-hub",

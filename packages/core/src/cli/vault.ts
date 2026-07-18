@@ -1,5 +1,9 @@
 import type { VaultAccessGrant, VaultDeleteStatus, VaultValueStatus } from "../vault";
 
+type VaultAccessGrantDisplay = Omit<VaultAccessGrant, "origin"> & {
+  origin?: { kind: string; path?: string | undefined } | undefined;
+};
+
 export function formatVaultValueStatus(status: VaultValueStatus, json = false): string {
   if (json) return `${JSON.stringify(status, null, 2)}\n`;
   if (!status.present) return `Vault key ${status.key} is not set.\n`;
@@ -26,17 +30,19 @@ export function formatVaultDeleteStatus(status: VaultDeleteStatus, json = false)
     : `No Vault key ${status.key} found.\n`;
 }
 
-export function formatVaultAccessGrant(grant: VaultAccessGrant, json = false): string {
+export function formatVaultAccessGrant(grant: VaultAccessGrantDisplay, json = false): string {
   if (json) return `${JSON.stringify(grant, null, 2)}\n`;
   return `Granted Vault key ${grant.storedKey} to ${grant.capletId} as ${grant.referenceName}.\n`;
 }
 
-export function formatVaultAccessList(grants: VaultAccessGrant[], json = false): string {
+export function formatVaultAccessList(grants: VaultAccessGrantDisplay[], json = false): string {
   if (json) return `${JSON.stringify(grants, null, 2)}\n`;
   if (grants.length === 0) return "No Vault access grants.\n";
   return `${grants
     .map((grant) => {
-      const origin = grant.origin ? ` (${grant.origin.kind} ${grant.origin.path})` : "";
+      const origin = grant.origin
+        ? ` (${grant.origin.kind}${grant.origin.path ? ` ${grant.origin.path}` : ""})`
+        : "";
       return `${grant.storedKey} -> ${grant.capletId}:${grant.referenceName}${origin}`;
     })
     .join("\n")}\n`;

@@ -83,6 +83,7 @@ Public OpenAPI endpoint:
 | `defaultSearchLimit`  | Optional | integer | Default maximum number of same-server search results.                     |
 | `maxSearchLimit`      | Optional | integer | Maximum accepted search_tools limit.                                      |
 | `telemetry`           | Optional | boolean | Set false to disable anonymous Caplets telemetry for this user config.    |
+| `storage`             | Optional | object  | Authoritative Host State backend. SQLite is used when omitted.            |
 | `serve`               | Optional | object  | User-owned HTTP serve defaults. Ignored from project config for security. |
 | `completion`          | Optional | object  | Shell completion discovery timeout and cache settings.                    |
 | `options`             | Optional | object  | Global Caplets runtime options.                                           |

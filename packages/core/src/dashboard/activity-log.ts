@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { CapletsError } from "../errors";
 import { randomToken } from "../remote/pairing";
 import type { RemoteClientRole } from "../remote/server-credentials";
 
@@ -110,6 +111,27 @@ export class DashboardActivityLog {
     return { entries: page, ...(nextCursor ? { nextCursor } : {}) };
   }
 
+  exportForMigration(): {
+    entries: DashboardActivityEntry[];
+    sourcePaths: string[];
+  } {
+    const path = this.path();
+    if (!existsSync(path)) return { entries: [], sourcePaths: [] };
+    const raw = readFileSync(path, "utf8");
+    const entries = raw
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map(parseActivityEntryForMigration);
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (ids.has(entry.id) || !Number.isFinite(Date.parse(entry.createdAt))) {
+        throw new CapletsError("CONFIG_INVALID", "Legacy Operator Activity is invalid.");
+      }
+      ids.add(entry.id);
+    }
+    return { entries, sourcePaths: [path] };
+  }
+
   private readEntries(): DashboardActivityEntry[] {
     const path = this.path();
     if (!existsSync(path)) return [];
@@ -165,6 +187,14 @@ function parseActivityEntry(line: string): DashboardActivityEntry[] {
     return [sanitizeActivityEntry(JSON.parse(line) as Partial<DashboardActivityEntry>)];
   } catch {
     return [];
+  }
+}
+
+function parseActivityEntryForMigration(line: string): DashboardActivityEntry {
+  try {
+    return sanitizeActivityEntry(JSON.parse(line) as Partial<DashboardActivityEntry>);
+  } catch {
+    throw new CapletsError("CONFIG_INVALID", "Legacy Operator Activity is invalid.");
   }
 }
 

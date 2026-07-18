@@ -12,6 +12,7 @@ import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { createHostStorage } from "../src/storage";
 
 const dirs: string[] = [];
 
@@ -100,6 +101,115 @@ describe("Current Host administration operations", () => {
       expect(serialized).not.toContain(setup.configPath);
     } finally {
       await setup.engine.close();
+    }
+  });
+
+  it("administers stored Caplet revisions through the operator surface", async () => {
+    const root = tempDir("caplets-current-host-records-");
+    const configPath = join(root, "config.json");
+    const projectConfigPath = join(root, "project", ".caplets", "config.json");
+    const authDir = join(root, "auth");
+    const globalCapletsRoot = join(root, "global-caplets");
+    const globalLockfilePath = join(root, "remote-state", "caplets.lock.json");
+    const databasePath = join(root, "host.sqlite3");
+    mkdirSync(join(root, "project", ".caplets"), { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        storage: { type: "sqlite", path: databasePath },
+        httpApis: {
+          status: {
+            name: "Status",
+            description: "Status API.",
+            baseUrl: "http://127.0.0.1:1",
+            auth: { type: "none" },
+            actions: { check: { method: "GET", path: "/check" } },
+          },
+        },
+      }),
+    );
+    const storage = await createHostStorage({ type: "sqlite", path: databasePath });
+    const engine = new CapletsEngine({
+      configPath,
+      projectConfigPath,
+      hostStorage: storage,
+      watch: false,
+    });
+    const credentials = new RemoteServerCredentialStore({ dir: join(root, "remote-state") });
+    const issued = issueOperator(credentials, "Stored Caplet Operator");
+    const activity = new DashboardActivityLog({ dir: join(root, "activity") });
+    const operations = createCurrentHostOperations({
+      engine,
+      control: { configPath, projectConfigPath, authDir, globalCapletsRoot, globalLockfilePath },
+      activityLog: activity,
+      remoteCredentialStore: credentials,
+      capletRecords: storage.caplets,
+      invalidateConfig: async (actor) => {
+        await storage.invalidateConfig(actor);
+        await engine.reload();
+      },
+      version: "test-version",
+    });
+    const principal = {
+      clientId: issued.clientId,
+      clientLabel: issued.clientLabel,
+      hostUrl: issued.hostUrl,
+      role: "operator" as const,
+    };
+
+    try {
+      const imported = await operations.execute(principal, {
+        kind: "stored_caplet_import",
+        id: "stored",
+        document: storedDocument("first"),
+        historyLimit: 3,
+      });
+      if (imported.kind !== "stored_caplet_import") throw new Error("Expected stored import.");
+      const updated = await operations.execute(principal, {
+        kind: "stored_caplet_update",
+        id: "stored",
+        document: storedDocument("second"),
+        expectedGeneration: imported.record.headGeneration,
+      });
+      if (updated.kind !== "stored_caplet_update") throw new Error("Expected stored update.");
+      const revisions = await operations.execute(principal, {
+        kind: "stored_caplet_revisions",
+        id: "stored",
+      });
+      if (revisions.kind !== "stored_caplet_revisions") throw new Error("Expected revisions.");
+      expect(revisions.revisions).toHaveLength(2);
+      const restored = await operations.execute(principal, {
+        kind: "stored_caplet_restore_revision",
+        id: "stored",
+        revisionKey: revisions.revisions[1]!.revisionKey,
+        expectedGeneration: updated.record.headGeneration,
+      });
+      if (restored.kind !== "stored_caplet_restore_revision") {
+        throw new Error("Expected revision restore.");
+      }
+      const read = await operations.execute(principal, {
+        kind: "stored_caplet_get",
+        id: "stored",
+      });
+      expect(read).toMatchObject({
+        kind: "stored_caplet_get",
+        record: { id: "stored", headGeneration: restored.record.headGeneration },
+        document: expect.stringContaining("command: first"),
+      });
+      await operations.execute(principal, {
+        kind: "stored_caplet_delete",
+        id: "stored",
+        expectedGeneration: restored.record.headGeneration,
+      });
+      await expect(operations.execute(principal, { kind: "stored_caplets_list" })).resolves.toEqual(
+        { kind: "stored_caplets_list", records: [] },
+      );
+      expect(
+        (await storage.installations.listActivity()).map((entry) => entry.operatorClientId),
+      ).toEqual(expect.arrayContaining([principal.clientId]));
+    } finally {
+      await engine.close();
+      await storage.close();
     }
   });
 
@@ -634,6 +744,20 @@ function catalogSource(root: string): string {
     ].join("\n"),
   );
   return source;
+}
+
+function storedDocument(command: string): string {
+  return [
+    "---",
+    "name: Stored",
+    "description: Stored Caplet administration fixture.",
+    "mcpServer:",
+    `  command: ${command}`,
+    "---",
+    "",
+    "# Stored",
+    "",
+  ].join("\n");
 }
 
 function tempDir(prefix: string): string {
