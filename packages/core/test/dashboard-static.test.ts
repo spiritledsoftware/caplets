@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CapletsEngine } from "../src/engine";
 import { createHttpServeApp } from "../src/serve/http";
 import { dashboardStaticResponse } from "../src/dashboard/routes";
+import { createHostStorage } from "../src/storage";
 import type { HttpServeOptions } from "../src/serve/options";
 
 const dirs: string[] = [];
@@ -34,15 +35,12 @@ describe("dashboard static serving", () => {
     writeFileSync(join(dashboardDistDir, "_astro", "client.js"), "console.log('dashboard')");
     writeFileSync(join(dashboardDistDir, "icon.png"), "png");
 
-    const { engine } = testEngine();
-    const app = createHttpServeApp(
-      httpOptions(tempDir("caplets-dashboard-static-state-")),
-      engine,
-      {
-        dashboardDistDir,
-        writeErr: () => {},
-      },
-    );
+    const { engine, storage, stateDir } = await testEngine();
+    const app = createHttpServeApp(httpOptions(stateDir), engine, {
+      authoritativeStorage: storage,
+      dashboardDistDir,
+      writeErr: () => {},
+    });
 
     const overview = await app.request("http://127.0.0.1:5387/dashboard");
     expect(overview.status).toBe(200);
@@ -71,6 +69,7 @@ describe("dashboard static serving", () => {
     expect(session.status).toBe(401);
 
     await engine.close();
+    await storage.close();
   });
 
   it("serves dashboard HTML and immutable assets under a configured base path", async () => {
@@ -88,15 +87,12 @@ describe("dashboard static serving", () => {
     );
     writeFileSync(join(dashboardDistDir, "_astro", "base.js"), "export const base = true;");
 
-    const { engine } = testEngine();
-    const app = createHttpServeApp(
-      { ...httpOptions(tempDir("caplets-dashboard-base-state-")), path: "/caplets" },
-      engine,
-      {
-        dashboardDistDir,
-        writeErr: () => {},
-      },
-    );
+    const { engine, storage, stateDir } = await testEngine();
+    const app = createHttpServeApp({ ...httpOptions(stateDir), path: "/caplets" }, engine, {
+      authoritativeStorage: storage,
+      dashboardDistDir,
+      writeErr: () => {},
+    });
 
     const dashboard = await app.request("http://127.0.0.1:5387/caplets/dashboard");
     expect(dashboard.status).toBe(200);
@@ -114,6 +110,7 @@ describe("dashboard static serving", () => {
     expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
 
     await engine.close();
+    await storage.close();
   });
 
   it("does not serve dashboard paths that escape the static dist directory", () => {
@@ -137,7 +134,7 @@ describe("dashboard static serving", () => {
   });
 });
 
-function testEngine() {
+async function testEngine() {
   const dir = tempDir("caplets-dashboard-static-config-");
   const configPath = join(dir, "config.json");
   writeFileSync(
@@ -154,7 +151,15 @@ function testEngine() {
       },
     }),
   );
-  return { engine: new CapletsEngine({ configPath }) };
+  const storage = await createHostStorage(
+    { type: "sqlite", path: join(dir, "host.sqlite3") },
+    { vaultRoot: join(dir, "vault") },
+  );
+  return {
+    engine: new CapletsEngine({ configPath, hostStorage: storage }),
+    storage,
+    stateDir: dir,
+  };
 }
 
 function httpOptions(stateDir: string): HttpServeOptions {

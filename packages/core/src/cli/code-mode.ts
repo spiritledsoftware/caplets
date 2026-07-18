@@ -144,7 +144,7 @@ export async function codeModeTypesCli(
     | "writeOut"
   >,
 ): Promise<void> {
-  const engine = new CapletsEngine({
+  const engine = await CapletsEngine.create({
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),

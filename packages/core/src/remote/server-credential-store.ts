@@ -12,7 +12,12 @@ import { Buffer } from "node:buffer";
 import { createHash, timingSafeEqual, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { CapletsError } from "../errors";
-import { decryptVaultValue, encryptVaultValue, type VaultEncryptedRecord } from "../vault/crypto";
+import {
+  decryptVaultValue,
+  encryptVaultValue,
+  parseEncryptedRecord,
+  type VaultEncryptedRecord,
+} from "../vault/crypto";
 import { normalizeRemoteProfileHostUrl } from "./options";
 import { createPairingCode, parsePairingCode, randomToken } from "./pairing";
 import type {
@@ -92,7 +97,7 @@ export type CompletePendingLoginInput = PendingLoginPossessionInput & {
   requiredRole?: RemoteClientRole | undefined;
 };
 
-type StoredPairingCode = {
+export type StoredPairingCode = {
   codeId: string;
   hostUrl: string;
   secretHash: string;
@@ -104,7 +109,7 @@ type StoredPairingCode = {
   usedAt?: string | undefined;
 };
 
-type StoredRemoteClient = {
+export type StoredRemoteClient = {
   clientId: string;
   clientLabel: string;
   role: RemoteClientRole;
@@ -121,7 +126,7 @@ type StoredRemoteClient = {
 
 type PendingLoginStatus = RemotePendingLoginState;
 
-type StoredPendingLogin = {
+export type StoredPendingLogin = {
   flowId: string;
   hostUrl: string;
   hostIdentity?: string | undefined;
@@ -147,23 +152,23 @@ type StoredPendingLogin = {
   exchangedAt?: string | undefined;
 };
 
-type SupersededRefreshToken = {
+export type SupersededRefreshToken = {
   hash: string;
   supersededAt: string;
 };
 
-type PendingRefreshReplay = {
+export type PendingRefreshReplay = {
   refreshHash: string;
   expiresAt: string;
   encryptedResponse: VaultEncryptedRecord;
 };
 
-type CompletionReplay = {
+export type CompletionReplay = {
   expiresAt: string;
   encryptedCredentials: VaultEncryptedRecord;
 };
 
-type RemoteServerCredentialState = {
+export type RemoteServerCredentialState = {
   version: 1;
   pairingCodes: StoredPairingCode[];
   pendingLogins: StoredPendingLogin[];
@@ -713,6 +718,26 @@ export class RemoteServerCredentialStore {
     });
   }
 
+  exportForMigration(): {
+    state: RemoteServerCredentialState;
+    sourcePaths: string[];
+  } {
+    const path = this.statePath();
+    if (!existsSync(path)) {
+      return {
+        state: { version: 1, pairingCodes: [], pendingLogins: [], clients: [] },
+        sourcePaths: [],
+      };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    } catch {
+      throw new CapletsError("CONFIG_INVALID", "Legacy remote security state is invalid.");
+    }
+    return { state: parseRemoteServerCredentialState(parsed), sourcePaths: [path] };
+  }
+
   dumpForTest(): RemoteServerCredentialState {
     return this.loadState();
   }
@@ -826,6 +851,291 @@ export class RemoteServerCredentialStore {
     }
     return flow;
   }
+}
+
+export function parseRemoteServerCredentialState(value: unknown): RemoteServerCredentialState {
+  if (
+    !isLegacyRemoteRecord(value) ||
+    value.version !== 1 ||
+    !Array.isArray(value.pairingCodes) ||
+    !Array.isArray(value.pendingLogins) ||
+    !Array.isArray(value.clients)
+  ) {
+    throw invalidLegacyRemoteState();
+  }
+  const pairingCodes = value.pairingCodes.map((entry): StoredPairingCode => {
+    if (
+      !isLegacyRemoteRecord(entry) ||
+      !legacyRemoteStrings(entry, "codeId", "hostUrl", "secretHash", "createdAt", "expiresAt") ||
+      !validLegacyRemoteDate(entry.createdAt) ||
+      !validLegacyRemoteDate(entry.expiresAt) ||
+      !Number.isSafeInteger(entry.attempts) ||
+      (entry.attempts as number) < 0 ||
+      !Number.isSafeInteger(entry.maxAttempts) ||
+      (entry.maxAttempts as number) < 1 ||
+      !optionalLegacyRemoteString(entry.clientLabel) ||
+      !optionalLegacyRemoteString(entry.usedAt) ||
+      (entry.usedAt !== undefined && !validLegacyRemoteDate(entry.usedAt))
+    ) {
+      throw invalidLegacyRemoteState();
+    }
+    return {
+      codeId: entry.codeId as string,
+      hostUrl: normalizeRemoteProfileHostUrl(entry.hostUrl as string),
+      secretHash: entry.secretHash as string,
+      ...(entry.clientLabel === undefined ? {} : { clientLabel: entry.clientLabel as string }),
+      createdAt: entry.createdAt as string,
+      expiresAt: entry.expiresAt as string,
+      attempts: entry.attempts as number,
+      maxAttempts: entry.maxAttempts as number,
+      ...(entry.usedAt === undefined ? {} : { usedAt: entry.usedAt as string }),
+    };
+  });
+  const clients = value.clients.map((entry): StoredRemoteClient => {
+    if (
+      !isLegacyRemoteRecord(entry) ||
+      !legacyRemoteStrings(
+        entry,
+        "clientId",
+        "clientLabel",
+        "hostUrl",
+        "accessTokenHash",
+        "accessExpiresAt",
+        "refreshTokenHash",
+        "refreshFamilyId",
+        "createdAt",
+      ) ||
+      (entry.role !== undefined && entry.role !== "access" && entry.role !== "operator") ||
+      !Array.isArray(entry.supersededRefreshTokenHashes) ||
+      !validLegacyRemoteDate(entry.accessExpiresAt) ||
+      !validLegacyRemoteDate(entry.createdAt) ||
+      !optionalLegacyRemoteString(entry.lastUsedAt) ||
+      !optionalLegacyRemoteString(entry.revokedAt) ||
+      (entry.lastUsedAt !== undefined && !validLegacyRemoteDate(entry.lastUsedAt)) ||
+      (entry.revokedAt !== undefined && !validLegacyRemoteDate(entry.revokedAt))
+    ) {
+      throw invalidLegacyRemoteState();
+    }
+    return {
+      clientId: entry.clientId as string,
+      clientLabel: entry.clientLabel as string,
+      role: entry.role === "operator" ? "operator" : "access",
+      hostUrl: normalizeRemoteProfileHostUrl(entry.hostUrl as string),
+      accessTokenHash: entry.accessTokenHash as string,
+      accessExpiresAt: entry.accessExpiresAt as string,
+      refreshTokenHash: entry.refreshTokenHash as string,
+      supersededRefreshTokenHashes: parseLegacySupersededRefreshTokens(
+        entry.supersededRefreshTokenHashes,
+      ),
+      refreshFamilyId: entry.refreshFamilyId as string,
+      createdAt: entry.createdAt as string,
+      ...(entry.lastUsedAt === undefined ? {} : { lastUsedAt: entry.lastUsedAt as string }),
+      ...(entry.revokedAt === undefined ? {} : { revokedAt: entry.revokedAt as string }),
+    };
+  });
+  const pendingLogins = value.pendingLogins.map((entry): StoredPendingLogin => {
+    if (
+      !isLegacyRemoteRecord(entry) ||
+      !legacyRemoteStrings(
+        entry,
+        "flowId",
+        "hostUrl",
+        "operatorCodeHash",
+        "pendingRefreshHash",
+        "pendingCompletionHash",
+        "clientLabel",
+        "createdAt",
+        "codeExpiresAt",
+        "flowExpiresAt",
+      ) ||
+      !Array.isArray(entry.supersededPendingRefreshHashes) ||
+      (entry.requestedRole !== undefined &&
+        entry.requestedRole !== "access" &&
+        entry.requestedRole !== "operator") ||
+      (entry.grantedRole !== undefined &&
+        entry.grantedRole !== "access" &&
+        entry.grantedRole !== "operator") ||
+      !isLegacyPendingStatus(entry.status) ||
+      !validLegacyRemoteDate(entry.createdAt) ||
+      !validLegacyRemoteDate(entry.codeExpiresAt) ||
+      !validLegacyRemoteDate(entry.flowExpiresAt) ||
+      !optionalLegacyRemoteString(entry.hostIdentity) ||
+      !optionalLegacyRemoteString(entry.clientFingerprint) ||
+      !optionalLegacyRemoteString(entry.sourceHint) ||
+      !optionalLegacyRemoteString(entry.operatorCodeFingerprint) ||
+      !optionalLegacyRemoteDate(entry.approvedAt) ||
+      !optionalLegacyRemoteDate(entry.deniedAt) ||
+      !optionalLegacyRemoteDate(entry.cancelledAt) ||
+      !optionalLegacyRemoteDate(entry.exchangedAt)
+    ) {
+      throw invalidLegacyRemoteState();
+    }
+    return {
+      flowId: entry.flowId as string,
+      hostUrl: normalizeRemoteProfileHostUrl(entry.hostUrl as string),
+      ...(entry.hostIdentity === undefined ? {} : { hostIdentity: entry.hostIdentity as string }),
+      operatorCodeHash: entry.operatorCodeHash as string,
+      pendingRefreshHash: entry.pendingRefreshHash as string,
+      supersededPendingRefreshHashes: parseLegacySupersededRefreshTokens(
+        entry.supersededPendingRefreshHashes,
+      ),
+      ...(entry.pendingRefreshReplay === undefined
+        ? {}
+        : { pendingRefreshReplay: parseLegacyPendingRefreshReplay(entry.pendingRefreshReplay) }),
+      pendingCompletionHash: entry.pendingCompletionHash as string,
+      ...(entry.completionReplay === undefined
+        ? {}
+        : { completionReplay: parseLegacyCompletionReplay(entry.completionReplay) }),
+      clientLabel: entry.clientLabel as string,
+      requestedRole: entry.requestedRole === "operator" ? "operator" : "access",
+      ...(entry.grantedRole === undefined
+        ? {}
+        : { grantedRole: entry.grantedRole as RemoteClientRole }),
+      ...(entry.clientFingerprint === undefined
+        ? {}
+        : { clientFingerprint: entry.clientFingerprint as string }),
+      ...(entry.sourceHint === undefined ? {} : { sourceHint: entry.sourceHint as string }),
+      createdAt: entry.createdAt as string,
+      codeExpiresAt: entry.codeExpiresAt as string,
+      flowExpiresAt: entry.flowExpiresAt as string,
+      status: entry.status,
+      ...(entry.operatorCodeFingerprint === undefined
+        ? {}
+        : { operatorCodeFingerprint: entry.operatorCodeFingerprint as string }),
+      ...(entry.approvedAt === undefined ? {} : { approvedAt: entry.approvedAt as string }),
+      ...(entry.deniedAt === undefined ? {} : { deniedAt: entry.deniedAt as string }),
+      ...(entry.cancelledAt === undefined ? {} : { cancelledAt: entry.cancelledAt as string }),
+      ...(entry.exchangedAt === undefined ? {} : { exchangedAt: entry.exchangedAt as string }),
+    };
+  });
+  const state = { version: 1 as const, pairingCodes, pendingLogins, clients };
+  assertUniqueLegacyRemoteState(state);
+  return state;
+}
+
+function parseLegacySupersededRefreshTokens(value: unknown[]): SupersededRefreshToken[] {
+  return value.map((entry) => {
+    if (typeof entry === "string" && entry.length > 0) {
+      return { hash: entry, supersededAt: new Date(0).toISOString() };
+    }
+    if (
+      !isLegacyRemoteRecord(entry) ||
+      !legacyRemoteStrings(entry, "hash", "supersededAt") ||
+      !validLegacyRemoteDate(entry.supersededAt)
+    ) {
+      throw invalidLegacyRemoteState();
+    }
+    return { hash: entry.hash as string, supersededAt: entry.supersededAt as string };
+  });
+}
+
+function parseLegacyPendingRefreshReplay(value: unknown): PendingRefreshReplay {
+  if (
+    !isLegacyRemoteRecord(value) ||
+    !legacyRemoteStrings(value, "refreshHash", "expiresAt") ||
+    !validLegacyRemoteDate(value.expiresAt)
+  ) {
+    throw invalidLegacyRemoteState();
+  }
+  return {
+    refreshHash: value.refreshHash as string,
+    expiresAt: value.expiresAt as string,
+    encryptedResponse: parseLegacyReplayEnvelope(value.encryptedResponse),
+  };
+}
+
+function parseLegacyCompletionReplay(value: unknown): CompletionReplay {
+  if (
+    !isLegacyRemoteRecord(value) ||
+    !legacyRemoteStrings(value, "expiresAt") ||
+    !validLegacyRemoteDate(value.expiresAt)
+  ) {
+    throw invalidLegacyRemoteState();
+  }
+  return {
+    expiresAt: value.expiresAt as string,
+    encryptedCredentials: parseLegacyReplayEnvelope(value.encryptedCredentials),
+  };
+}
+
+function parseLegacyReplayEnvelope(value: unknown): VaultEncryptedRecord {
+  try {
+    const record = parseEncryptedRecord(value);
+    if (
+      !Number.isSafeInteger(record.valueBytes) ||
+      record.valueBytes < 0 ||
+      !validLegacyRemoteDate(record.createdAt) ||
+      !validLegacyRemoteDate(record.updatedAt)
+    ) {
+      throw invalidLegacyRemoteState();
+    }
+    return record;
+  } catch {
+    throw invalidLegacyRemoteState();
+  }
+}
+
+function assertUniqueLegacyRemoteState(state: RemoteServerCredentialState): void {
+  assertUniqueLegacyRemoteValues(state.pairingCodes.map((entry) => entry.codeId));
+  assertUniqueLegacyRemoteValues(state.clients.map((entry) => entry.clientId));
+  assertUniqueLegacyRemoteValues(state.clients.map((entry) => entry.accessTokenHash));
+  assertUniqueLegacyRemoteValues(state.clients.map((entry) => entry.refreshFamilyId));
+  assertUniqueLegacyRemoteValues([
+    ...state.clients.map((entry) => entry.refreshTokenHash),
+    ...state.clients.flatMap((entry) =>
+      entry.supersededRefreshTokenHashes.map((token) => token.hash),
+    ),
+  ]);
+  assertUniqueLegacyRemoteValues(state.pendingLogins.map((entry) => entry.flowId));
+  assertUniqueLegacyRemoteValues(state.pendingLogins.map((entry) => entry.operatorCodeHash));
+  assertUniqueLegacyRemoteValues(state.pendingLogins.map((entry) => entry.pendingCompletionHash));
+  assertUniqueLegacyRemoteValues([
+    ...state.pendingLogins.map((entry) => entry.pendingRefreshHash),
+    ...state.pendingLogins.flatMap((entry) =>
+      entry.supersededPendingRefreshHashes.map((token) => token.hash),
+    ),
+  ]);
+}
+
+function assertUniqueLegacyRemoteValues(values: string[]): void {
+  if (new Set(values).size !== values.length || values.some((value) => value.length === 0)) {
+    throw invalidLegacyRemoteState();
+  }
+}
+
+function isLegacyPendingStatus(value: unknown): value is RemotePendingLoginState {
+  return (
+    value === "pending" ||
+    value === "approved" ||
+    value === "denied" ||
+    value === "cancelled" ||
+    value === "exchanged" ||
+    value === "expired"
+  );
+}
+
+function optionalLegacyRemoteDate(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && validLegacyRemoteDate(value));
+}
+
+function optionalLegacyRemoteString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function validLegacyRemoteDate(value: unknown): boolean {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function legacyRemoteStrings(value: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.every((key) => typeof value[key] === "string" && value[key] !== "");
+}
+
+function isLegacyRemoteRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function invalidLegacyRemoteState(): CapletsError {
+  return new CapletsError("CONFIG_INVALID", "Legacy remote security state is invalid.");
 }
 
 function sleepSync(ms: number): void {

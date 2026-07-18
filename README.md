@@ -321,6 +321,7 @@ Long-lived docs:
 - [Benchmark methodology](https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md)
 - [Native integrations](https://github.com/spiritledsoftware/caplets/blob/main/docs/native-integrations.md)
 - [Project Binding](https://github.com/spiritledsoftware/caplets/blob/main/docs/project-binding.md)
+- [SQL Authoritative Host State operations](https://github.com/spiritledsoftware/caplets/blob/main/docs/operations/sql-authoritative-host-state.md)
 
 ## License
 

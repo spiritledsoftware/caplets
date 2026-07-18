@@ -8,7 +8,7 @@ import { ServerRegistry } from "../src/registry";
 import { DownstreamManager } from "../src/downstream";
 import { OpenApiManager } from "../src/openapi";
 import { handleServerTool } from "../src/tools";
-import { writeTokenBundle } from "../src/auth";
+import { createHostStorage, type HostStorage } from "../src/storage";
 import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("native OpenAPI Caplets", () => {
@@ -798,20 +798,17 @@ describe("native OpenAPI Caplets", () => {
 
   it("applies stored OAuth tokens to remote specs and OpenAPI requests", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-auth-"));
-    const authDir = join(dir, "auth");
+    const storage = await createTestAuthStorage(dir);
     try {
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "secret-openapi-access-token",
-          authType: "oauth2",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          clientId: "client",
-          protectedResourceOrigin: baseUrl,
-        },
-        authDir,
-      );
+      await storage.backendAuth.writeTokenBundle({
+        server: "remote",
+        accessToken: "secret-openapi-access-token",
+        authType: "oauth2",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      });
       requests.length = 0;
       const endpoint = {
         server: "remote",
@@ -827,6 +824,7 @@ describe("native OpenAPI Caplets", () => {
       };
       const registry = new ServerRegistry({
         version: 1,
+        storage: { type: "sqlite" },
         options: {
           defaultSearchLimit: 20,
           maxSearchLimit: 50,
@@ -849,7 +847,7 @@ describe("native OpenAPI Caplets", () => {
         cliTools: {},
         capletSets: {},
       });
-      const openapi = new OpenApiManager(registry, { authDir });
+      const openapi = new OpenApiManager(registry, { backendAuth: storage.backendAuth });
 
       await openapi.listTools(endpoint);
       await openapi.callTool(endpoint, "GET /users/{id}", {
@@ -863,13 +861,14 @@ describe("native OpenAPI Caplets", () => {
         ),
       ).toBe(true);
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("redacts OpenAPI auth failures without returning downstream error bodies", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-auth-failure-"));
-    const authDir = join(dir, "auth");
+    const storage = await createTestAuthStorage(dir);
     const specPath = join(dir, "openapi.json");
     writeFileSync(
       specPath,
@@ -899,19 +898,16 @@ describe("native OpenAPI Caplets", () => {
       },
     });
     const registry = new ServerRegistry(config);
-    writeTokenBundle(
-      {
-        server: "protectedApi",
-        accessToken: "expired-downstream-token",
-        authType: "oauth2",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        clientId: "client",
-        protectedResourceOrigin: baseUrl,
-      },
-      authDir,
-    );
-    const openapi = new OpenApiManager(registry, { authDir });
+    await storage.backendAuth.writeTokenBundle({
+      server: "protectedApi",
+      accessToken: "expired-downstream-token",
+      authType: "oauth2",
+      tokenType: "Bearer",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      clientId: "client",
+      protectedResourceOrigin: baseUrl,
+    });
+    const openapi = new OpenApiManager(registry, { backendAuth: storage.backendAuth });
 
     try {
       await expect(
@@ -927,6 +923,7 @@ describe("native OpenAPI Caplets", () => {
         },
       });
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1297,4 +1294,8 @@ function localArtifactPath(result: unknown): string {
     return result.structuredContent.path;
   }
   throw new Error("expected a local artifact result");
+}
+
+async function createTestAuthStorage(directory: string): Promise<HostStorage> {
+  return createHostStorage({ type: "sqlite", path: join(directory, "host.sqlite3") });
 }

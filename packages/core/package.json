@@ -89,14 +89,17 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "node ./scripts/build-dashboard-for-core.mjs && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs",
+    "build": "node ./scripts/build-dashboard-for-core.mjs && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs && node ./scripts/copy-storage-migrations.mjs",
     "build:watch": "pnpm run clean && rolldown -c --watch",
     "prepack": "pnpm build",
     "typecheck": "tsgo --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "storage:check": "drizzle-kit check --config=drizzle.sqlite.config.ts && drizzle-kit check --config=drizzle.postgres.config.ts",
+    "storage:generate": "drizzle-kit generate --config=drizzle.sqlite.config.ts && drizzle-kit generate --config=drizzle.postgres.config.ts && node ./scripts/normalize-storage-migrations.mjs"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
+    "@aws-sdk/client-s3": "^3.1089.0",
     "@babel/parser": "^8.0.0",
     "@exodus/bytes": "^1.15.1",
     "@hono/mcp": "^0.3.0",
@@ -106,12 +109,15 @@
     "@ungap/structured-clone": "^1.3.2",
     "add-mcp": "1.13.0",
     "ajv": "^8.20.0",
+    "better-sqlite3": "^12.11.1",
     "commander": "^15.0.0",
+    "drizzle-orm": "^0.45.2",
     "formdata-node": "^6.0.3",
     "graphql": "^17.0.1",
     "headers-polyfill": "^5.0.1",
     "hono": "^4.12.27",
     "jsonc-parser": "^3.3.1",
+    "pg": "^8.22.0",
     "posthog-node": "^5.38.6",
     "quickjs-emscripten": "^0.32.0",
     "semver": "^7.8.5",
@@ -125,10 +131,13 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.18.0",
+    "@types/pg": "^8.20.0",
     "@types/semver": "^7.7.1",
     "@types/ws": "^8.18.1",
     "@typescript/native-preview": "7.0.0-dev.20260628.1",
+    "drizzle-kit": "^0.31.10",
     "rolldown": "^1.1.3",
     "vitest": "^4.1.9"
   },

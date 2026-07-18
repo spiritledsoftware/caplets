@@ -193,8 +193,41 @@ export type NamespaceAliasesConfig = {
   upstreams: Record<string, string>;
 };
 
+export type AssetStorageConfig =
+  | { type: "sql" }
+  | {
+      type: "s3";
+      endpoint?: string | undefined;
+      region: string;
+      bucket: string;
+      prefix?: string | undefined;
+      forcePathStyle?: boolean | undefined;
+      accessKeyId?: string | undefined;
+      secretAccessKey?: string | undefined;
+    };
+
+type HostStorageCommonConfig = {
+  assets?: AssetStorageConfig | undefined;
+  bundleLimits?:
+    | {
+        maxFiles?: number | undefined;
+        maxFileBytes?: number | undefined;
+        maxTotalBytes?: number | undefined;
+      }
+    | undefined;
+};
+
+export type HostStorageConfig =
+  | ({ type: "sqlite"; path?: string | undefined } & HostStorageCommonConfig)
+  | ({
+      type: "postgres";
+      connectionString: string;
+      schema?: string | undefined;
+    } & HostStorageCommonConfig);
+
 export type CapletsConfig = {
   version: 1;
+  storage: HostStorageConfig;
   options: {
     defaultSearchLimit: number;
     maxSearchLimit: number;
@@ -499,9 +532,60 @@ const namespaceAliasesSchema = z
     }
   });
 
+const assetStorageSchema = z
+  .discriminatedUnion("type", [
+    z.object({ type: z.literal("sql") }).strict(),
+    z
+      .object({
+        type: z.literal("s3"),
+        endpoint: z.string().url().optional(),
+        region: z.string().min(1),
+        bucket: z.string().min(1),
+        prefix: z.string().optional(),
+        forcePathStyle: z.boolean().optional(),
+        accessKeyId: z.string().min(1).optional(),
+        secretAccessKey: z.string().min(1).optional(),
+      })
+      .strict(),
+  ])
+  .optional();
+
+const bundleLimitsSchema = z
+  .object({
+    maxFiles: z.number().int().positive().max(100_000).optional(),
+    maxFileBytes: z.number().int().positive().optional(),
+    maxTotalBytes: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 const configSchema = z
   .object({
     version: z.literal(1).default(1),
+    storage: z
+      .discriminatedUnion("type", [
+        z
+          .object({
+            type: z.literal("sqlite"),
+            path: z.string().min(1).optional(),
+            assets: assetStorageSchema,
+            bundleLimits: bundleLimitsSchema,
+          })
+          .strict(),
+        z
+          .object({
+            type: z.literal("postgres"),
+            connectionString: z.string().min(1),
+            schema: z
+              .string()
+              .regex(/^[a-z_][a-z0-9_]{0,62}$/u)
+              .optional(),
+            assets: assetStorageSchema,
+            bundleLimits: bundleLimitsSchema,
+          })
+          .strict(),
+      ])
+      .default({ type: "sqlite" }),
     defaultSearchLimit: z.number().int().positive().default(20),
     maxSearchLimit: z.number().int().positive().max(50).default(50),
     completion: z
@@ -565,6 +649,7 @@ export function parseConfig(input: unknown): CapletsConfig {
   const config = parsed.data;
   return {
     version: 1,
+    storage: config.storage,
     options: {
       defaultSearchLimit: config.defaultSearchLimit,
       maxSearchLimit: config.maxSearchLimit,

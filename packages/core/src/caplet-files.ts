@@ -1,13 +1,20 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { CapletsError } from "./errors";
-export { capletFileSchema, capletJsonSchema, loadCapletFilesFromMap } from "./caplet-files-bundle";
+export {
+  capletFileSchema,
+  capletJsonSchema,
+  loadCapletFilesFromMap,
+  parseCapletFileDocument,
+} from "./caplet-files-bundle";
 export type {
   BestEffortCapletFileLoadResult,
   CapletFileConfig,
   CapletFileLoadResult,
   CapletFileMapInput,
   CapletFileWarning,
+  CapletFileFrontmatter,
+  ParsedCapletFileDocument,
 } from "./caplet-files-bundle";
 import {
   buildCapletFileLoadResultFromEntries,

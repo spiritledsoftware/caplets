@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { genericOAuthHeaders } from "./auth";
 import type { OpenApiEndpointConfig } from "./config";
 import { isAllowedRemoteUrl } from "./config/validation";
+import type { BackendAuthStateStore } from "./storage/backend-auth";
 import {
   compactToolSafetyHints,
   compactToolSchemaHints,
@@ -64,6 +65,7 @@ export class OpenApiManager {
   constructor(
     private registry: ServerRegistry,
     private readonly options: {
+      backendAuth?: BackendAuthStateStore;
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
@@ -124,7 +126,7 @@ export class OpenApiManager {
     args: Record<string, unknown>,
   ): Promise<CompatibilityCallToolResult> {
     const operation = await this.getOperation(endpoint, toolName);
-    const request = await buildRequest(endpoint, operation, args, this.options.authDir);
+    const request = await buildRequest(endpoint, operation, args, this.options.backendAuth);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), endpoint.requestTimeoutMs);
     try {
@@ -264,7 +266,7 @@ export class OpenApiManager {
     }
 
     try {
-      const document = await loadOpenApiDocument(endpoint, this.options.authDir);
+      const document = await loadOpenApiDocument(endpoint, this.options.backendAuth);
       const operations = extractOperations(endpoint, document);
       this.cache.set(endpoint.server, { operations, fetchedAt: Date.now(), cacheKey });
       this.registry.setStatus(endpoint.server, "available");
@@ -300,9 +302,9 @@ export class OpenApiManager {
 
 async function loadOpenApiDocument(
   endpoint: OpenApiEndpointConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<OpenApiDocument> {
-  const source = await loadOpenApiSource(endpoint, authDir);
+  const source = await loadOpenApiSource(endpoint, authStore);
   return (await SwaggerParser.validate(source as any, {
     resolve: {
       external: false,
@@ -313,7 +315,7 @@ async function loadOpenApiDocument(
 
 async function loadOpenApiSource(
   endpoint: OpenApiEndpointConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<string | OpenApiDocument> {
   if (endpoint.specPath) {
     return endpoint.specPath;
@@ -330,7 +332,7 @@ async function loadOpenApiSource(
   const response = await fetchWithLimit(
     endpoint.specUrl,
     endpoint.requestTimeoutMs,
-    shouldSendSpecAuth(endpoint) ? await authHeaders(endpoint, authDir) : {},
+    shouldSendSpecAuth(endpoint) ? await authHeaders(endpoint, authStore) : {},
   );
   return parseOpenApiSourceText(response);
 }
@@ -601,7 +603,7 @@ async function buildRequest(
   endpoint: OpenApiEndpointConfig,
   operation: OpenApiOperation,
   args: Record<string, unknown>,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<{ url: URL; headers: Headers; body?: string }> {
   const base = endpoint.baseUrl ?? operation.baseUrl;
   validateOperationBaseUrl(endpoint, base);
@@ -615,7 +617,7 @@ async function buildRequest(
     }
   }
   const headers = new Headers();
-  await applyAuth(headers, endpoint, authDir);
+  await applyAuth(headers, endpoint, authStore);
   const configuredHeaderNames = configuredAuthHeaderNames(endpoint);
   for (const [key, value] of Object.entries(operation.staticHeaders ?? {})) {
     if (!headers.has(key) && !configuredHeaderNames.has(key.toLowerCase())) {
@@ -696,9 +698,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 async function applyAuth(
   headers: Headers,
   endpoint: OpenApiEndpointConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<void> {
-  for (const [key, value] of Object.entries(await authHeaders(endpoint, authDir))) {
+  for (const [key, value] of Object.entries(await authHeaders(endpoint, authStore))) {
     headers.set(key, value);
   }
 }
@@ -711,7 +713,7 @@ function configuredAuthHeaderNames(endpoint: OpenApiEndpointConfig): Set<string>
 
 async function authHeaders(
   endpoint: OpenApiEndpointConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<Record<string, string>> {
   switch (endpoint.auth.type) {
     case "none":
@@ -722,7 +724,13 @@ async function authHeaders(
       return endpoint.auth.headers;
     case "oauth2":
     case "oidc":
-      return await genericOAuthHeaders(endpoint, authDir);
+      if (!authStore) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Authoritative backend auth storage is unavailable.",
+        );
+      }
+      return await genericOAuthHeaders(endpoint, authStore);
   }
 }
 

@@ -1,9 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import {
-  deleteTokenBundle,
   isTokenBundleExpired,
-  readTokenBundle,
   refreshOAuthTokenBundle,
   runGenericOAuthFlow,
   runOAuthFlow,
@@ -23,6 +21,7 @@ import {
 import { CapletsError, toSafeError } from "../errors";
 import { GoogleDiscoveryManager } from "../google-discovery";
 import { ServerRegistry } from "../registry";
+import type { BackendAuthStateStore } from "../storage/backend-auth";
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
 type AuthListFormat = "plain" | "markdown" | "json";
@@ -44,17 +43,19 @@ export async function loginAuth(
     writeOut: (value: string) => void;
     writeErr: (value: string) => void;
     authDir?: string;
+    authStore: BackendAuthStateStore;
     config?: CapletsConfig;
   },
 ): Promise<void> {
   const config = options.config ?? loadAuthResolvedConfig(options);
-  const server = await resolveAuthTarget(serverId, config, options.authDir);
+  const server = await resolveAuthTarget(serverId, config, options.authStore);
   assertLoginTarget(server, serverId);
 
   try {
     const flowOptions = {
       noOpen: options.noOpen,
-      ...(options.authDir ? { authDir: options.authDir } : {}),
+      authStore: options.authStore,
+      operatorClientId: "local_cli",
       ...(options.noOpen ? { readManualInput: maybeReadManualInput } : {}),
       print: (line: string) => options.writeOut(`${line}\n`),
     };
@@ -70,16 +71,17 @@ export async function loginAuth(
   }
 }
 
-export function logoutAuth(
+export async function logoutAuth(
   serverId: string,
   options: {
     authDir?: string;
+    authStore: BackendAuthStateStore;
     configPath?: string;
     config?: CapletsConfig;
     writeOut: (value: string) => void;
   },
-): void {
-  const result = logoutAuthResult(serverId, options);
+): Promise<void> {
+  const result = await logoutAuthResult(serverId, options);
   if (result.deleted) {
     options.writeOut(`Deleted OAuth credentials for \`${serverId}\`.\n`);
   } else {
@@ -87,23 +89,38 @@ export function logoutAuth(
   }
 }
 
-export function logoutAuthResult(
+export async function logoutAuthResult(
   serverId: string,
-  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
-): { server: string; deleted: boolean } {
+  options: {
+    authStore: BackendAuthStateStore;
+    authDir?: string;
+    configPath?: string;
+    config?: CapletsConfig;
+  },
+): Promise<{ server: string; deleted: boolean }> {
   const target = findAuthTarget(
     serverId,
     options.config ??
       loadConfig(options.configPath, undefined, { vaultResolver: vaultBootstrapResolver }),
   );
   assertLoginTarget(target, serverId);
-  return { server: serverId, deleted: deleteTokenBundle(serverId, options.authDir) };
+  const current = await options.authStore.readTokenBundle(serverId);
+  return {
+    server: serverId,
+    deleted: current
+      ? await options.authStore.deleteTokenBundle(serverId, {
+          expectedGeneration: current.generation,
+          operatorClientId: "local_cli",
+        })
+      : false,
+  };
 }
 
 export async function refreshAuth(
   serverId: string,
   options: {
     authDir?: string;
+    authStore: BackendAuthStateStore;
     configPath?: string;
     config?: CapletsConfig;
     writeOut: (value: string) => void;
@@ -115,25 +132,37 @@ export async function refreshAuth(
 
 export async function refreshAuthResult(
   serverId: string,
-  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
+  options: {
+    authStore: BackendAuthStateStore;
+    authDir?: string;
+    configPath?: string;
+    config?: CapletsConfig;
+  },
 ): Promise<{ server: string }> {
   const target = await resolveAuthTarget(
     serverId,
     options.config ?? loadAuthResolvedConfig(options),
-    options.authDir,
+    options.authStore,
   );
   assertLoginTarget(target, serverId);
-  await refreshOAuthTokenBundle(target, options.authDir);
+  await refreshOAuthTokenBundle(target, options.authStore);
   return { server: serverId };
 }
 
-export function listAuth(options: {
+export async function listAuth(options: {
   authDir?: string;
+  authStore?: BackendAuthStateStore;
   configPath?: string;
   writeOut: (value: string) => void;
   format?: AuthListFormat;
-}): void {
-  const rows = listAuthRows(options);
+}): Promise<void> {
+  if (!options.authStore) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Backend OAuth state requires Authoritative Host State storage.",
+    );
+  }
+  const rows = await listAuthRows({ ...options, authStore: options.authStore });
   const format = options.format ?? "plain";
   if (format === "json") {
     options.writeOut(`${JSON.stringify(rows, null, 2)}\n`);
@@ -142,11 +171,15 @@ export function listAuth(options: {
   options.writeOut(formatAuthRows(rows, format));
 }
 
-export function listAuthRows(options: { authDir?: string; configPath?: string }): AuthStatusRow[] {
+export async function listAuthRows(options: {
+  authStore: BackendAuthStateStore;
+  authDir?: string;
+  configPath?: string;
+}): Promise<AuthStatusRow[]> {
   const config = loadConfig(options.configPath, undefined, {
     vaultResolver: vaultBootstrapResolver,
   });
-  return authRowsForTargets(authTargets(config), options.authDir);
+  return await authRowsForTargets(authTargets(config), options.authStore);
 }
 
 function loadAuthResolvedConfig(options: {
@@ -158,13 +191,14 @@ function loadAuthResolvedConfig(options: {
   });
 }
 
-export function listLocalAuthRows(options: {
+export async function listLocalAuthRows(options: {
+  authStore: BackendAuthStateStore;
   authDir?: string;
   configPath?: string;
   projectConfigPath?: string;
   source?: Exclude<AuthSource, "remote">;
-}): AuthStatusRow[] {
-  return authRowsForTargets(localAuthTargets(options), options.authDir);
+}): Promise<AuthStatusRow[]> {
+  return await authRowsForTargets(localAuthTargets(options), options.authStore);
 }
 
 export function localAuthTargets(options: {
@@ -222,14 +256,17 @@ function loadConfigForSource(
   return loadProjectConfig(options.projectConfigPath, loadOptions);
 }
 
-function authRowsForTargets(
+async function authRowsForTargets(
   targets: (AuthTarget & { source?: AuthSource })[],
-  authDir?: string,
-): AuthStatusRow[] {
+  authStore: BackendAuthStateStore,
+): Promise<AuthStatusRow[]> {
+  const stored = new Map(
+    (await authStore.listTokenBundles()).map((state) => [state.bundle.server, state.bundle]),
+  );
   return targets
     .sort((left, right) => left.server.localeCompare(right.server))
     .map((server) => {
-      const bundle = readTokenBundle(server.server, authDir);
+      const bundle = stored.get(server.server);
       const status = !bundle
         ? "missing"
         : isTokenBundleExpired(bundle)
@@ -291,7 +328,7 @@ export function findAuthTarget(serverId: string, config = loadConfig()): AuthTar
 export async function resolveAuthTarget(
   serverId: string,
   config: CapletsConfig,
-  authDir?: string,
+  authStore?: BackendAuthStateStore,
 ): Promise<AuthTarget | undefined> {
   const target = findAuthTarget(serverId, config);
   if (target?.backend !== "googleDiscovery") return target;
@@ -299,7 +336,7 @@ export async function resolveAuthTarget(
   if (!api || (api.auth.type !== "oauth2" && api.auth.type !== "oidc")) return target;
   const manager = new GoogleDiscoveryManager(
     new ServerRegistry(config),
-    authDir ? { authDir } : {},
+    authStore ? { backendAuth: authStore } : {},
   );
   const baseUrl =
     api.baseUrl ?? (await manager.resolveBaseUrl(api).catch(() => undefined)) ?? api.discoveryUrl;

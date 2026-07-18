@@ -3,10 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
-import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
-import { FileVaultStore } from "../src/vault";
 import type { HttpServeOptions } from "../src/serve/options";
+import { createHostStorage, VaultValueStore } from "../src/storage";
 
 const dirs: string[] = [];
 
@@ -68,14 +67,15 @@ describe("dashboard Vault APIs", () => {
     const activity = await dashboardGet(setup, "/dashboard/api/activity");
     expect(activity.status).toBe(200);
     const activityText = await activity.text();
-    expect(activityText).toContain('"action":"vault_set"');
-    expect(activityText).toContain('"action":"vault_grant_added"');
-    expect(activityText).toContain('"action":"vault_grant_revoked"');
-    expect(activityText).toContain('"action":"vault_deleted"');
     expect(activityText).not.toContain(secret);
+    expect(activityText).toContain('"action":"vault_value_written"');
+    expect(activityText).toContain('"action":"vault.grant"');
+    expect(activityText).toContain('"action":"vault.revoke"');
+    expect(activityText).toContain('"action":"vault_value_deleted"');
     expect(activityText).not.toContain(setup.context.configPath);
 
     await setup.engine.close();
+    await setup.storage.close();
   });
 
   it("reveals exactly one confirmed key and redacts reveal activity", async () => {
@@ -108,6 +108,7 @@ describe("dashboard Vault APIs", () => {
     expect(text).not.toContain("remote_secret");
 
     await setup.engine.close();
+    await setup.storage.close();
   });
   it("maps reveal collaborator faults to internal errors without ending the session", async () => {
     const setup = await authenticatedDashboard();
@@ -115,9 +116,9 @@ describe("dashboard Vault APIs", () => {
       key: "GH_TOKEN",
       value: "remote_secret",
     });
-    vi.spyOn(FileVaultStore.prototype, "resolveValue").mockImplementation(() => {
-      throw new Error("Vault read failed at /tmp/private token=cap_remote_access_sensitive_value");
-    });
+    vi.spyOn(VaultValueStore.prototype, "resolveValue").mockRejectedValue(
+      new Error("Vault read failed at /tmp/private token=cap_remote_access_sensitive_value"),
+    );
 
     const response = await dashboardPost(setup, "/dashboard/api/vault/reveal", {
       key: "GH_TOKEN",
@@ -135,6 +136,7 @@ describe("dashboard Vault APIs", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
 
     await setup.engine.close();
+    await setup.storage.close();
   });
   it("preserves identical opaque Vault bytes through dashboard and bearer adapters", async () => {
     const setup = await authenticatedDashboard();
@@ -146,12 +148,15 @@ describe("dashboard Vault APIs", () => {
     });
     expect(dashboardResponse.status).toBe(200);
 
-    const pending = setup.store.createPendingLogin({
+    const pending = await setup.store.createPendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       requestedRole: "operator",
     });
-    setup.store.approvePendingLogin({ operatorCode: pending.operatorCode });
-    const operator = setup.store.completePendingLogin({
+    await setup.store.approvePendingLogin({
+      operatorClientId: setup.operatorClientId,
+      operatorCode: pending.operatorCode,
+    });
+    const operator = await setup.store.completePendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       flowId: pending.flowId,
       pendingCompletionSecret: pending.pendingCompletionSecret,
@@ -169,24 +174,30 @@ describe("dashboard Vault APIs", () => {
     });
     expect(bearerResponse.status).toBe(200);
 
-    const vault = new FileVaultStore({ root: join(setup.context.authDir, "vault") });
-    expect(vault.resolveValue("DASHBOARD_WHITESPACE")).toBe(value);
-    expect(vault.resolveValue("BEARER_WHITESPACE")).toBe(value);
+    await expect(setup.storage.vaultValues.resolveValue("DASHBOARD_WHITESPACE")).resolves.toBe(
+      value,
+    );
+    await expect(setup.storage.vaultValues.resolveValue("BEARER_WHITESPACE")).resolves.toBe(value);
 
     await setup.engine.close();
+    await setup.storage.close();
   });
 });
 type Setup = Awaited<ReturnType<typeof authenticatedDashboard>>;
 
 async function authenticatedDashboard() {
-  const setup = testApp();
+  const setup = await testApp();
   const started = await appPost(setup, "/dashboard/api/login/start", { clientLabel: "Browser" });
   const startBody = (await started.json()) as {
     flowId: string;
     pendingCompletionSecret: string;
     approvalCommand: string;
   };
-  setup.store.approvePendingLogin({ operatorCode: approvalCode(startBody.approvalCommand) });
+  await setup.store.approvePendingLogin({
+    operatorClientId: "bootstrap_test",
+    operatorCode: approvalCode(startBody.approvalCommand),
+    grantedRole: "operator",
+  });
   const completed = await appPost(setup, "/dashboard/api/login/complete", {
     flowId: startBody.flowId,
     pendingCompletionSecret: startBody.pendingCompletionSecret,
@@ -240,21 +251,26 @@ function approvalCode(command: string): string {
   return code;
 }
 
-function testApp() {
-  const stateDir = tempDir("caplets-dashboard-catalog-state-");
+async function testApp() {
+  const stateDir = tempDir("caplets-dashboard-vault-state-");
   const context = testContext();
+  const storage = await createHostStorage(
+    { type: "sqlite", path: join(stateDir, "host.sqlite3") },
+    { vaultRoot: join(stateDir, "vault") },
+  );
   const engine = new CapletsEngine({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
+    hostStorage: storage,
     watch: false,
   });
-  const store = new RemoteServerCredentialStore({ dir: stateDir });
+  const store = storage.remoteSecurity;
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},
     control: context,
-    remoteCredentialStore: store,
+    authoritativeStorage: storage,
   });
-  return { app, engine, store, stateDir, context };
+  return { app, engine, store, storage, stateDir, context };
 }
 
 function httpOptions(stateDir: string): HttpServeOptions {

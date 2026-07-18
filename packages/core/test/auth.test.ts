@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockMcpAuth = vi.hoisted(() => vi.fn());
 
@@ -18,16 +18,35 @@ import {
   runOAuthFlow,
   runGenericOAuthFlow,
   startGenericOAuthFlow,
-  writeTokenBundle,
 } from "../src/auth";
 import { formatAuthRows, listAuth } from "../src/cli/auth";
 import { runCli } from "../src/cli";
 import { parseConfig } from "../src/config";
 import { DEFAULT_AUTH_DIR } from "../src/config/paths";
+import { createHostStorage, type HostStorage } from "../src/storage";
+import type { BackendAuthStateStore } from "../src/storage/backend-auth";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
+
+let authStorageDir: string;
+let hostStorage: HostStorage;
+let authStore: BackendAuthStateStore;
+
+beforeEach(async () => {
+  authStorageDir = mkdtempSync(join(tmpdir(), "caplets-auth-sql-"));
+  hostStorage = await createHostStorage({
+    type: "sqlite",
+    path: join(authStorageDir, "host.sqlite3"),
+  });
+  authStore = hostStorage.backendAuth;
+});
+
+afterEach(async () => {
+  await hostStorage.close();
+  rmSync(authStorageDir, { recursive: true, force: true });
+});
 
 describe("auth helpers", () => {
   it("extracts callback code and state together", () => {
@@ -71,7 +90,7 @@ describe("auth helpers", () => {
           tokenUrl: "https://auth.example.com/token",
         },
       },
-      { redirectUri: "http://127.0.0.1/callback" },
+      { redirectUri: "http://127.0.0.1/callback", authStore },
     );
 
     await expect(
@@ -97,7 +116,7 @@ describe("auth helpers", () => {
       },
     }).mcpServers.remote!;
 
-    await expect(oauthHeaders(server, "/tmp/does-not-exist")).rejects.toMatchObject({
+    await expect(oauthHeaders(server, authStore)).rejects.toMatchObject({
       code: "AUTH_REQUIRED",
     });
   });
@@ -116,9 +135,9 @@ describe("auth helpers", () => {
           },
         },
       }).mcpServers.remote!;
-      writeTokenBundle({ server: "remote", accessToken: "secret-token" }, dir);
+      await authStore.writeTokenBundle({ server: "remote", accessToken: "secret-token" });
 
-      await expect(oauthHeaders(server, dir)).resolves.toEqual({
+      await expect(oauthHeaders(server, authStore)).resolves.toEqual({
         authorization: "Bearer secret-token",
       });
     } finally {
@@ -170,18 +189,15 @@ describe("auth helpers", () => {
           },
         },
       });
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "old-mcp-access-token",
-          refreshToken: "old-mcp-refresh-token",
-          tokenType: "Bearer",
-          expiresAt: "2000-01-01T00:00:00.000Z",
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "remote",
+        accessToken: "old-mcp-access-token",
+        refreshToken: "old-mcp-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      });
 
-      const headers = await oauthHeaders(config.mcpServers.remote!, dir);
+      const headers = await oauthHeaders(config.mcpServers.remote!, authStore);
 
       expect(headers).toEqual({ authorization: "Bearer new-mcp-access-token" });
       expect(requests).toHaveLength(1);
@@ -190,7 +206,7 @@ describe("auth helpers", () => {
       expect(new URLSearchParams(requests[0]?.body).get("refresh_token")).toBe(
         "old-mcp-refresh-token",
       );
-      expect(readTokenBundle("remote", dir)).toMatchObject({
+      expect((await authStore.readTokenBundle("remote"))?.bundle).toMatchObject({
         accessToken: "new-mcp-access-token",
         refreshToken: "new-mcp-refresh-token",
         clientId: "client",
@@ -246,19 +262,16 @@ describe("auth helpers", () => {
   it("builds generic OAuth headers for OpenAPI and GraphQL auth targets", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     try {
-      writeTokenBundle(
-        {
-          server: "users",
-          accessToken: "secret-access-token",
-          authType: "oidc",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          idToken: "secret-id-token",
-          issuer: "https://issuer.example",
-          subject: "user-123",
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "users",
+        accessToken: "secret-access-token",
+        authType: "oidc",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        idToken: "secret-id-token",
+        issuer: "https://issuer.example",
+        subject: "user-123",
+      });
 
       expect(
         await genericOAuthHeaders(
@@ -267,7 +280,7 @@ describe("auth helpers", () => {
             backend: "openapi",
             auth: { type: "oidc" },
           },
-          dir,
+          authStore,
         ),
       ).toEqual({ authorization: "Bearer secret-access-token" });
     } finally {
@@ -305,20 +318,17 @@ describe("auth helpers", () => {
         throw new Error("test server did not bind");
       }
       const baseUrl = `http://127.0.0.1:${address.port}`;
-      writeTokenBundle(
-        {
-          server: "users",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          tokenType: "Bearer",
-          expiresAt: "2000-01-01T00:00:00.000Z",
-          scope: "api:read",
-          clientId: "client",
-          protectedResourceOrigin: baseUrl,
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "users",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+        scope: "api:read",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      });
 
       const headers = await genericOAuthHeaders(
         {
@@ -331,7 +341,7 @@ describe("auth helpers", () => {
             tokenUrl: `${baseUrl}/token`,
           },
         },
-        dir,
+        authStore,
       );
 
       expect(headers).toEqual({ authorization: "Bearer new-access-token" });
@@ -340,7 +350,7 @@ describe("auth helpers", () => {
       expect(new URLSearchParams(requests[0]?.body).get("grant_type")).toBe("refresh_token");
       expect(new URLSearchParams(requests[0]?.body).get("refresh_token")).toBe("old-refresh-token");
       expect(new URLSearchParams(requests[0]?.body).get("client_id")).toBe("client");
-      expect(readTokenBundle("users", dir)).toMatchObject({
+      expect((await authStore.readTokenBundle("users"))?.bundle).toMatchObject({
         accessToken: "new-access-token",
         refreshToken: "rotated-refresh-token",
         tokenType: "Bearer",
@@ -357,24 +367,21 @@ describe("auth helpers", () => {
   it("rejects token bundles whose granted scopes omit a required scope", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-scope-mismatch-"));
     try {
-      writeTokenBundle(
-        {
-          server: "drive",
-          authType: "oauth2",
-          accessToken: "access-token",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          scope: "https://www.googleapis.com/auth/drive.metadata.readonly",
-          protectedResourceOrigin: "https://www.googleapis.com",
-          metadata: {
-            requestedScopes: [
-              "https://www.googleapis.com/auth/drive",
-              "https://www.googleapis.com/auth/drive.metadata.readonly",
-            ],
-          },
+      await authStore.writeTokenBundle({
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "access-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: "https://www.googleapis.com/auth/drive.metadata.readonly",
+        protectedResourceOrigin: "https://www.googleapis.com",
+        metadata: {
+          requestedScopes: [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+          ],
         },
-        dir,
-      );
+      });
 
       await expect(
         genericOAuthHeaders(
@@ -387,7 +394,7 @@ describe("auth helpers", () => {
               scopes: ["https://www.googleapis.com/auth/drive"],
             },
           },
-          dir,
+          authStore,
         ),
       ).rejects.toMatchObject({
         code: "AUTH_REQUIRED",
@@ -401,21 +408,18 @@ describe("auth helpers", () => {
   it("accepts broader Google Discovery OAuth scope alternatives", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-scope-alternative-"));
     try {
-      writeTokenBundle(
-        {
-          server: "drive",
-          authType: "oauth2",
-          accessToken: "access-token",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          scope: "https://www.googleapis.com/auth/drive",
-          protectedResourceOrigin: "https://www.googleapis.com",
-          metadata: {
-            requestedScopes: ["https://www.googleapis.com/auth/drive"],
-          },
+      await authStore.writeTokenBundle({
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "access-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: "https://www.googleapis.com/auth/drive",
+        protectedResourceOrigin: "https://www.googleapis.com",
+        metadata: {
+          requestedScopes: ["https://www.googleapis.com/auth/drive"],
         },
-        dir,
-      );
+      });
 
       await expect(
         genericOAuthHeaders(
@@ -426,7 +430,7 @@ describe("auth helpers", () => {
             auth: { type: "oauth2" },
             resolvedScopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
           },
-          dir,
+          authStore,
         ),
       ).resolves.toEqual({ authorization: "Bearer access-token" });
     } finally {
@@ -453,18 +457,15 @@ describe("auth helpers", () => {
         throw new Error("test server did not bind");
       }
       const baseUrl = `http://127.0.0.1:${address.port}`;
-      writeTokenBundle(
-        {
-          server: "users",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2000-01-01T00:00:00.000Z",
-          clientId: "client",
-          protectedResourceOrigin: baseUrl,
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "users",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      });
 
       await expect(
         genericOAuthHeaders(
@@ -478,7 +479,7 @@ describe("auth helpers", () => {
               tokenUrl: `${baseUrl}/token`,
             },
           },
-          dir,
+          authStore,
         ),
       ).rejects.toMatchObject({ code: "AUTH_REFRESH_FAILED" });
     } finally {
@@ -506,18 +507,15 @@ describe("auth helpers", () => {
       }
       const baseUrl = `http://127.0.0.1:${address.port}`;
       const expiresAt = "2999-01-01T00:00:00.000Z";
-      writeTokenBundle(
-        {
-          server: "users",
-          authType: "oauth2",
-          accessToken: "",
-          refreshToken: "old-refresh-token",
-          expiresAt,
-          clientId: "client",
-          protectedResourceOrigin: baseUrl,
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "users",
+        authType: "oauth2",
+        accessToken: "",
+        refreshToken: "old-refresh-token",
+        expiresAt,
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      });
 
       await expect(
         genericOAuthHeaders(
@@ -531,11 +529,11 @@ describe("auth helpers", () => {
               tokenUrl: `${baseUrl}/token`,
             },
           },
-          dir,
+          authStore,
         ),
       ).resolves.toEqual({ authorization: "Bearer new-access-token" });
 
-      expect(readTokenBundle("users", dir)).toMatchObject({
+      expect((await authStore.readTokenBundle("users"))?.bundle).toMatchObject({
         accessToken: "new-access-token",
         expiresAt,
       });
@@ -545,7 +543,7 @@ describe("auth helpers", () => {
     }
   });
 
-  it("includes HTTP APIs in OAuth auth target listing", () => {
+  it("includes HTTP APIs in OAuth auth target listing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-config-"));
     try {
       const configPath = join(dir, "config.json");
@@ -565,7 +563,7 @@ describe("auth helpers", () => {
       );
       const output: string[] = [];
 
-      listAuth({ configPath, writeOut: (value) => output.push(value) });
+      await listAuth({ configPath, authStore, writeOut: (value) => output.push(value) });
 
       expect(output.join("")).toContain("status\n  Status: missing");
     } finally {
@@ -866,7 +864,7 @@ describe("auth helpers", () => {
       },
     }).mcpServers.remote!;
 
-    await expect(runOAuthFlow(server, { noOpen: true })).rejects.toBe(sdkError);
+    await expect(runOAuthFlow(server, { noOpen: true, authStore })).rejects.toBe(sdkError);
   });
 
   it.each(["oauth2", "oidc"] as const)(
@@ -900,7 +898,7 @@ describe("auth helpers", () => {
     },
   );
 
-  it("persists dynamically registered MCP OAuth client information with saved tokens", () => {
+  it("persists dynamically registered MCP OAuth client information with saved tokens", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-dynamic-client-"));
     try {
       const server = parseConfig({
@@ -914,20 +912,25 @@ describe("auth helpers", () => {
           },
         },
       }).mcpServers.remote!;
-      const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {}, dir);
+      const provider = new FileOAuthProvider(
+        server,
+        "http://127.0.0.1/callback",
+        () => {},
+        authStore,
+      );
       provider.saveClientInformation({
         client_id: "dynamic-client",
         client_secret: "dynamic-secret",
       });
 
-      provider.saveTokens({
+      await provider.saveTokens({
         access_token: "access-token",
         refresh_token: "refresh-token",
         token_type: "Bearer",
         expires_in: 3600,
       });
 
-      expect(readTokenBundle("remote", dir)).toMatchObject({
+      expect((await authStore.readTokenBundle("remote"))?.bundle).toMatchObject({
         clientId: "dynamic-client",
         clientSecret: "dynamic-secret",
       });
@@ -950,17 +953,20 @@ describe("auth helpers", () => {
           },
         },
       }).mcpServers.remote!;
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "access-token",
-          refreshToken: "refresh-token",
-          clientId: "stored-client",
-          clientSecret: "stored-secret",
-        },
-        dir,
+      await authStore.writeTokenBundle({
+        server: "remote",
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        clientId: "stored-client",
+        clientSecret: "stored-secret",
+      });
+      const provider = new FileOAuthProvider(
+        server,
+        "http://127.0.0.1/callback",
+        () => {},
+        authStore,
+        await authStore.readTokenBundle("remote"),
       );
-      const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {}, dir);
       const headers = new Headers();
       const params = new URLSearchParams();
 
@@ -991,17 +997,14 @@ describe("auth helpers", () => {
           },
         },
       }).mcpServers.remote!;
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "access-token",
-          refreshToken: "refresh-token",
-          expiresAt: "2000-01-01T00:00:00.000Z",
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "remote",
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      });
 
-      await expect(oauthHeaders(server, dir)).rejects.toThrow(
+      await expect(oauthHeaders(server, authStore)).rejects.toThrow(
         "OAuth client information is missing for remote. Re-run caplets auth login remote.",
       );
     } finally {
@@ -1023,22 +1026,19 @@ describe("auth helpers", () => {
           },
         },
       }).mcpServers.remote!;
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2000-01-01T00:00:00.000Z",
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "remote",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      });
       mockMcpAuth.mockClear();
       mockMcpAuth.mockImplementationOnce(async (provider: FileOAuthProvider) => {
         expect(await provider.tokens()).toBeUndefined();
         return "AUTHORIZED";
       });
 
-      await runOAuthFlow(server, { noOpen: true, authDir: dir });
+      await runOAuthFlow(server, { noOpen: true, authStore });
 
       expect(mockMcpAuth).toHaveBeenCalledOnce();
     } finally {
@@ -1153,7 +1153,7 @@ describe("auth helpers", () => {
           auth: { type: "oidc" },
         },
         {
-          authDir: dir,
+          authStore,
           noOpen: true,
           print: (line) => {
             authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
@@ -1173,7 +1173,7 @@ describe("auth helpers", () => {
       );
       const bundle = await genericOAuthHeaders(
         { server: "users", backend: "openapi", auth: { type: "oidc" } },
-        dir,
+        authStore,
       );
       expect(bundle).toEqual({ authorization: "Bearer new-access-token" });
     } finally {
@@ -1261,7 +1261,7 @@ describe("auth helpers", () => {
           ],
         },
         {
-          authDir: dir,
+          authStore,
           noOpen: true,
           print: (line) => {
             authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
@@ -1276,7 +1276,7 @@ describe("auth helpers", () => {
       expect(new URL(authorizationUrl).searchParams.get("scope")).toBe(
         "openid profile email https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.readonly",
       );
-      expect(readTokenBundle("drive", dir)?.metadata).toMatchObject({
+      expect((await authStore.readTokenBundle("drive"))?.bundle.metadata).toMatchObject({
         requestedScopes: [
           "openid",
           "profile",
@@ -1306,6 +1306,7 @@ describe("auth helpers", () => {
           },
         },
         {
+          authStore,
           noOpen: true,
           manualInput: "http://127.0.0.1/callback?code=code",
         },
@@ -1358,7 +1359,7 @@ describe("auth helpers", () => {
             },
           },
           {
-            authDir: dir,
+            authStore,
             noOpen: true,
             print: (line) => {
               authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
@@ -1385,16 +1386,13 @@ describe("auth helpers", () => {
   it("matches generic OAuth token bundles against configured client metadata URLs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     try {
-      writeTokenBundle(
-        {
-          server: "users",
-          authType: "oauth2",
-          accessToken: "metadata-url-token",
-          clientId: "https://client.example.com/caplets/oauth-client-metadata.json",
-          protectedResourceOrigin: "https://api.example.com",
-        },
-        dir,
-      );
+      await authStore.writeTokenBundle({
+        server: "users",
+        authType: "oauth2",
+        accessToken: "metadata-url-token",
+        clientId: "https://client.example.com/caplets/oauth-client-metadata.json",
+        protectedResourceOrigin: "https://api.example.com",
+      });
 
       expect(
         await genericOAuthHeaders(
@@ -1407,7 +1405,7 @@ describe("auth helpers", () => {
               clientMetadataUrl: "https://client.example.com/caplets/oauth-client-metadata.json",
             },
           },
-          dir,
+          authStore,
         ),
       ).toEqual({ authorization: "Bearer metadata-url-token" });
 
@@ -1422,7 +1420,7 @@ describe("auth helpers", () => {
               clientMetadataUrl: "https://client.example.com/other-client.json",
             },
           },
-          dir,
+          authStore,
         ),
       ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
     } finally {
@@ -1444,6 +1442,7 @@ describe("auth helpers", () => {
           },
         },
         {
+          authStore,
           noOpen: true,
           manualInput: "http://127.0.0.1/callback?code=code",
         },
@@ -1520,7 +1519,7 @@ describe("auth helpers", () => {
             auth: { type: "oidc", issuer: `${baseUrl}/realms/acme`, clientId: "client" },
           },
           {
-            authDir: dir,
+            authStore,
             noOpen: true,
             print: (line) => {
               authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
@@ -1605,7 +1604,7 @@ describe("auth helpers", () => {
             auth: { type: "oidc", clientId: "client" },
           },
           {
-            authDir: dir,
+            authStore,
             noOpen: true,
             print: (line) => {
               authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
@@ -1667,7 +1666,7 @@ describe("auth helpers", () => {
             },
           },
           {
-            authDir: dir,
+            authStore,
             noOpen: true,
             print: (line) => {
               authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";

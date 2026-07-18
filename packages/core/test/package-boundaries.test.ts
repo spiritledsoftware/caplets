@@ -45,6 +45,19 @@ describe("package boundaries", () => {
     expect(violations).toEqual([]);
   });
 
+  it("keeps storage independent of CLI modules", () => {
+    const storageRoot = resolve(packagesRoot, "core/src/storage");
+    const violations = scanFiles([storageRoot]).flatMap((filePath) => {
+      const source = readFileSync(filePath, "utf8");
+      return importSpecifiers(source)
+        .filter((specifier) => specifier.startsWith("."))
+        .filter((specifier) => /(?:^|\/)cli(?:\/|$)/.test(specifier))
+        .map((specifier) => `${formatPath(filePath)} imports CLI module ${specifier}`);
+    });
+
+    expect(violations).toEqual([]);
+  });
+
   it("imports workspace packages through declared package exports", () => {
     const exportedCoreSpecifiers = new Set(
       Object.keys(corePackage.exports).map((specifier) =>

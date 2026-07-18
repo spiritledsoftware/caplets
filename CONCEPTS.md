@@ -60,9 +60,9 @@ In v1, Catalog Presentation Metadata is limited to `catalog.icon`, which may ide
 
 ### Caplets Lockfile
 
-A `caplets.lock.json` file that records installed catalog Caplets, their source repository, source path, destination, tracked source channel, resolved revision when available, content hash, and portability status.
+A project-local `.caplets.lock.json` file that records installed project Caplets, their source repository, source path, destination, tracked source channel, resolved revision when available, content hash, and portability status.
 
-Caplets Lockfiles let `caplets install`, no-argument install restore, and `caplets update` manage installed Caplets from recorded provenance rather than from copied files alone. Project installs use `./.caplets.lock.json`; global installs use the target machine's Caplets state directory.
+Caplets Lockfiles let project `caplets install`, no-argument restore, and `caplets update` manage filesystem Caplets from recorded provenance rather than from copied files alone. Global and remote SQL-backed Caplets use Caplet Installations instead.
 
 Caplets Lockfiles are share-safe and integrity-aware. They strip credential-bearing source URLs, prefer project-relative paths where possible, verify recorded content before restore, and fail closed when local-source entries are unavailable or marked non-portable.
 

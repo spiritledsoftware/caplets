@@ -27,7 +27,11 @@ import {
   type CurrentHostOperatorPrincipal,
   type CurrentHostOperations,
 } from "../current-host/operations";
-import type { RemoteCliRequest, RemoteCliResponse } from "./types";
+import type { RemoteCapletBundleFile, RemoteCliRequest, RemoteCliResponse } from "./types";
+import type { BackendAuthStateStore } from "../storage/backend-auth";
+import type { HostStorage } from "../storage/database";
+import { createHostStorageVaultResolver } from "../storage/vault-resolver";
+import type { CapletBundleInputFile } from "../storage/caplet-records";
 
 export type RemoteControlDispatchContext = CapletsEngineOptions & {
   projectCapletsRoot: string;
@@ -35,6 +39,7 @@ export type RemoteControlDispatchContext = CapletsEngineOptions & {
   globalLockfilePath?: string | undefined;
   authFlowStore?: RemoteAuthFlowStore;
   controlCallbackBaseUrl?: string;
+  backendAuthStore?: BackendAuthStateStore;
 };
 
 type AddKind =
@@ -63,9 +68,17 @@ const ENGINE_COMMANDS = new Set<RemoteCliRequest["command"]>([
   "complete",
 ]);
 
+const STORAGE_RECORD_COMMAND_PREFIX = "storage_records_";
+const MAX_REMOTE_BUNDLE_FILES = 2_049;
+const MAX_REMOTE_BUNDLE_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_REMOTE_BUNDLE_TOTAL_BYTES = 256 * 1024 * 1024;
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
 type CurrentHostRemoteAdministration = {
   operations: CurrentHostOperations;
   principal: CurrentHostOperatorPrincipal;
+  storage?: HostStorage | undefined;
+  activateConfig?: (() => Promise<void>) | undefined;
 };
 
 export async function dispatchRemoteCliRequest(
@@ -111,7 +124,7 @@ async function dispatch(
   if (ENGINE_COMMANDS.has(request.command)) {
     const caplet = requiredString(request.arguments, "caplet");
     const toolRequest = requiredEngineRequest(request.arguments, request.command);
-    const engine = new CapletsEngine(context);
+    const engine = await CapletsEngine.create(context);
     try {
       return await engine.execute(caplet, toolRequest);
     } finally {
@@ -167,7 +180,7 @@ async function dispatch(
   if (request.command === "complete_cli") {
     const shell = optionalString(request.arguments, "shell") ?? "bash";
     if (!completionShells.includes(shell as CompletionShell)) return [];
-    const engine = new CapletsEngine(context);
+    const engine = await CapletsEngine.create(context);
     try {
       return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
     } finally {
@@ -177,9 +190,17 @@ async function dispatch(
 
   if (request.command === "auth_list") {
     return listAuthRows({
+      authStore: requireBackendAuthStore(context),
       ...optionalProp("configPath", context.configPath),
       ...optionalProp("authDir", context.authDir),
     });
+  }
+
+  if (request.command.startsWith(STORAGE_RECORD_COMMAND_PREFIX)) {
+    return await dispatchCurrentHostStorage(
+      request,
+      requireCurrentHostAdministration(currentHostAdministration),
+    );
   }
 
   if (request.command.startsWith("vault_")) {
@@ -200,6 +221,7 @@ async function dispatch(
 
   if (request.command === "auth_logout") {
     return logoutAuthResult(requiredString(request.arguments, "server"), {
+      authStore: requireBackendAuthStore(context),
       ...optionalProp("configPath", context.configPath),
       ...optionalProp("authDir", context.authDir),
     });
@@ -207,6 +229,7 @@ async function dispatch(
 
   if (request.command === "auth_refresh") {
     return refreshAuthResult(requiredString(request.arguments, "server"), {
+      authStore: requireBackendAuthStore(context),
       ...optionalProp("configPath", context.configPath),
       ...optionalProp("authDir", context.authDir),
     });
@@ -231,13 +254,20 @@ async function dispatch(
 }
 
 function isCurrentHostAdministrationCommand(command: unknown): boolean {
-  return command === "install" || command === "update" || String(command).startsWith("vault_");
+  return (
+    command === "install" ||
+    command === "update" ||
+    String(command).startsWith("vault_") ||
+    String(command).startsWith(STORAGE_RECORD_COMMAND_PREFIX)
+  );
 }
 
 function requireCurrentHostAdministration(
   administration: CurrentHostRemoteAdministration | undefined,
 ): CurrentHostRemoteAdministration {
-  if (administration) return administration;
+  if (administration?.principal.role === "operator" && administration.principal.clientId.trim()) {
+    return administration;
+  }
   throw new CapletsError(
     "AUTH_FAILED",
     "Current Host administration requires an Operator principal.",
@@ -315,14 +345,236 @@ async function dispatchCurrentHostVault(
   }
 }
 
+async function dispatchCurrentHostStorage(
+  request: RemoteCliRequest,
+  administration: CurrentHostRemoteAdministration,
+) {
+  const storage = administration.storage;
+  if (!storage) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Authoritative Host State storage is unavailable.",
+    );
+  }
+  const operator = {
+    role: "operator" as const,
+    clientId: administration.principal.clientId,
+  };
+  const args = request.arguments;
+  const activate = async (): Promise<void> => {
+    await administration.activateConfig?.();
+  };
+
+  switch (request.command) {
+    case "storage_records_list":
+      assertOnlyKeys(args, []);
+      return await storage.caplets.listStored(operator);
+    case "storage_records_get": {
+      assertOnlyKeys(args, ["id"]);
+      return encodeBundleResult(
+        await storage.caplets.readBundle(requiredString(args, "id"), { operator }),
+      );
+    }
+    case "storage_records_import": {
+      assertOnlyKeys(args, [
+        "id",
+        "files",
+        "historyLimit",
+        "sourceKind",
+        "sourceIdentity",
+        "channel",
+      ]);
+      const sourceKind = optionalString(args, "sourceKind");
+      const sourceIdentity = optionalString(args, "sourceIdentity");
+      const installation =
+        sourceKind === undefined && sourceIdentity === undefined
+          ? undefined
+          : {
+              sourceKind: requirePairedString(
+                sourceKind,
+                "sourceKind",
+                sourceIdentity,
+                "sourceIdentity",
+              ),
+              sourceIdentity: requirePairedString(
+                sourceIdentity,
+                "sourceIdentity",
+                sourceKind,
+                "sourceKind",
+              ),
+              ...optionalProp("channel", optionalString(args, "channel")),
+            };
+      const record = await storage.caplets.importBundle({
+        id: requiredString(args, "id"),
+        files: decodeBundleFiles(args.files),
+        operator,
+        ...optionalProp("historyLimit", optionalNonNegativeInteger(args, "historyLimit")),
+        ...(installation ? { installation } : {}),
+      });
+      await activate();
+      return record;
+    }
+    case "storage_records_update": {
+      assertOnlyKeys(args, ["id", "files", "expectedGeneration", "detachInstallation"]);
+      const record = await storage.caplets.updateBundle({
+        id: requiredString(args, "id"),
+        files: decodeBundleFiles(args.files),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        operator,
+        ...optionalProp("detachInstallation", optionalBoolean(args, "detachInstallation")),
+      });
+      await activate();
+      return record;
+    }
+    case "storage_records_export": {
+      assertOnlyKeys(args, ["id", "revisionKey"]);
+      return encodeBundleResult(
+        await storage.caplets.readBundle(requiredString(args, "id"), {
+          operator,
+          ...optionalProp("revisionKey", optionalString(args, "revisionKey")),
+        }),
+      );
+    }
+    case "storage_records_revisions":
+      assertOnlyKeys(args, ["id"]);
+      return await storage.caplets.listRevisions(requiredString(args, "id"), operator);
+    case "storage_records_restore": {
+      assertOnlyKeys(args, ["id", "revisionKey", "expectedGeneration"]);
+      const record = await storage.caplets.restoreRevision({
+        id: requiredString(args, "id"),
+        revisionKey: requiredString(args, "revisionKey"),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        operator,
+      });
+      await activate();
+      return record;
+    }
+    case "storage_records_delete_revision": {
+      assertOnlyKeys(args, ["id", "revisionKey", "expectedGeneration"]);
+      const record = await storage.caplets.deleteRevision({
+        id: requiredString(args, "id"),
+        revisionKey: requiredString(args, "revisionKey"),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        operator,
+      });
+      await activate();
+      return { deleted: true, record };
+    }
+    case "storage_records_retention": {
+      assertOnlyKeys(args, ["id", "historyLimit", "expectedGeneration"]);
+      const record = await storage.caplets.setRetention({
+        id: requiredString(args, "id"),
+        historyLimit: requiredNullableNonNegativeInteger(args, "historyLimit"),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        operator,
+      });
+      await activate();
+      return record;
+    }
+    case "storage_records_rename": {
+      assertOnlyKeys(args, ["id", "newId", "expectedGeneration"]);
+      const record = await storage.caplets.rename({
+        id: requiredString(args, "id"),
+        newId: requiredString(args, "newId"),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        operator,
+      });
+      await activate();
+      return record;
+    }
+    case "storage_records_delete": {
+      assertOnlyKeys(args, ["id", "expectedGeneration"]);
+      const id = requiredString(args, "id");
+      await storage.caplets.hardDelete({
+        id,
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        operator,
+      });
+      await activate();
+      return { deleted: true, id };
+    }
+    case "storage_records_installation_status": {
+      assertOnlyKeys(args, ["id"]);
+      const id = requiredString(args, "id");
+      return {
+        installations: await storage.installations.list(id),
+        observations: await storage.installations.listObservations(id),
+      };
+    }
+    case "storage_records_installation_detach":
+      assertOnlyKeys(args, ["id", "expectedGeneration"]);
+      return await storage.installations.detach({
+        capletId: requiredString(args, "id"),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        operator,
+      });
+    case "storage_records_installation_observe":
+      assertOnlyKeys(args, [
+        "id",
+        "expectedGeneration",
+        "status",
+        "resolvedRevision",
+        "contentHash",
+        "risk",
+      ]);
+      return await storage.installations.appendObservation({
+        capletId: requiredString(args, "id"),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        status: requiredInstallationObservationStatus(args, "status"),
+        operator,
+        ...optionalProp("resolvedRevision", optionalString(args, "resolvedRevision")),
+        ...optionalProp("contentHash", optionalString(args, "contentHash")),
+        ...optionalProp("risk", optionalRecord(args, "risk")),
+      });
+    case "storage_records_installation_replace":
+      assertOnlyKeys(args, [
+        "id",
+        "expectedGeneration",
+        "sourceKind",
+        "sourceIdentity",
+        "channel",
+        "detachedInstallationKey",
+      ]);
+      return await storage.installations.replaceDetached({
+        capletId: requiredString(args, "id"),
+        expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
+        sourceKind: requiredString(args, "sourceKind"),
+        sourceIdentity: requiredString(args, "sourceIdentity"),
+        operator,
+        ...optionalProp("channel", optionalString(args, "channel")),
+        ...optionalProp("detachedInstallationKey", optionalString(args, "detachedInstallationKey")),
+      });
+    default:
+      throw new CapletsError(
+        "UNKNOWN_OPERATION",
+        `Unsupported remote control command ${request.command}`,
+      );
+  }
+}
+
+function requireBackendAuthStore(context: RemoteControlDispatchContext) {
+  const authStore = context.backendAuthStore ?? context.hostStorage?.backendAuth;
+  if (!authStore) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Authoritative backend auth storage is unavailable.",
+    );
+  }
+  return authStore;
+}
+
 async function startRemoteAuthLogin(serverId: string, context: RemoteControlDispatchContext) {
   if (!context.authFlowStore || !context.controlCallbackBaseUrl) {
     throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
   }
+  const vaultResolver = context.hostStorage
+    ? await createHostStorageVaultResolver(context.hostStorage)
+    : vaultResolverForAuthDir(context.authDir);
   const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
-    vaultResolver: vaultResolverForAuthDir(context.authDir),
+    vaultResolver,
   }).config;
-  const target = await resolveAuthTarget(serverId, config, context.authDir);
+  const authStore = requireBackendAuthStore(context);
+  const target = await resolveAuthTarget(serverId, config, authStore);
   assertLoginTarget(target, serverId);
   const flowId = randomUUID();
   const baseUrl = context.controlCallbackBaseUrl.endsWith("/")
@@ -333,11 +585,13 @@ async function startRemoteAuthLogin(serverId: string, context: RemoteControlDisp
     target.backend === "mcp"
       ? await startOAuthFlow(target, {
           redirectUri,
-          ...optionalProp("authDir", context.authDir),
+          authStore,
+          operatorClientId: "remote_cli",
         })
       : await startGenericOAuthFlow(target, {
           redirectUri,
-          ...optionalProp("authDir", context.authDir),
+          authStore,
+          operatorClientId: "remote_cli",
         });
   if (!started.authorizationUrl) {
     return { server: serverId, authenticated: true };
@@ -471,6 +725,134 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
     throw new CapletsError("REQUEST_INVALID", `${key} must be a string`);
   }
   return value;
+}
+
+function assertOnlyKeys(args: Record<string, unknown>, allowed: readonly string[]): void {
+  for (const key of Object.keys(args)) {
+    if (!allowed.includes(key)) {
+      throw new CapletsError("REQUEST_INVALID", `Unexpected remote storage argument ${key}.`);
+    }
+  }
+}
+
+function requiredPositiveInteger(args: Record<string, unknown>, key: string): number {
+  const value = args[key];
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be a positive integer`);
+  }
+  return value as number;
+}
+
+function optionalNonNegativeInteger(
+  args: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || (value as number) < 0) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be a non-negative integer`);
+  }
+  return value as number;
+}
+
+function requiredNullableNonNegativeInteger(
+  args: Record<string, unknown>,
+  key: string,
+): number | null {
+  if (args[key] === null) return null;
+  const value = optionalNonNegativeInteger(args, key);
+  if (value === undefined) {
+    throw new CapletsError("REQUEST_INVALID", `${key} is required`);
+  }
+  return value;
+}
+
+function optionalRecord(
+  args: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  assertObject(value, key);
+  return value;
+}
+
+function requirePairedString(
+  value: string | undefined,
+  key: string,
+  paired: string | undefined,
+  pairedKey: string,
+): string {
+  if (value !== undefined && paired !== undefined) return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} and ${pairedKey} must be provided together`);
+}
+
+function requiredInstallationObservationStatus(
+  args: Record<string, unknown>,
+  key: string,
+): "current" | "metadata-only" | "source-unavailable" {
+  const value = requiredString(args, key);
+  if (value === "current" || value === "metadata-only" || value === "source-unavailable") {
+    return value;
+  }
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    `${key} must be current, metadata-only, or source-unavailable`,
+  );
+}
+
+function decodeBundleFiles(value: unknown): CapletBundleInputFile[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_REMOTE_BUNDLE_FILES) {
+    throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle file list is invalid.");
+  }
+  const files: CapletBundleInputFile[] = [];
+  let totalBytes = 0;
+  for (const item of value) {
+    assertObject(item, "Remote Caplet bundle file");
+    assertOnlyKeys(item, ["path", "contentBase64", "executable"]);
+    const path = requiredString(item, "path");
+    const contentBase64 = item.contentBase64;
+    if (
+      typeof contentBase64 !== "string" ||
+      contentBase64.length > Math.ceil(MAX_REMOTE_BUNDLE_FILE_BYTES / 3) * 4 ||
+      !BASE64_PATTERN.test(contentBase64)
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle file content is invalid.");
+    }
+    const content = Buffer.from(contentBase64, "base64");
+    if (
+      content.byteLength > MAX_REMOTE_BUNDLE_FILE_BYTES ||
+      content.toString("base64") !== contentBase64
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle file content is invalid.");
+    }
+    totalBytes += content.byteLength;
+    if (totalBytes > MAX_REMOTE_BUNDLE_TOTAL_BYTES) {
+      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle exceeds the byte limit.");
+    }
+    if (typeof item.executable !== "boolean") {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Remote Caplet bundle executable intent must be boolean.",
+      );
+    }
+    files.push({ path, content, executable: item.executable });
+  }
+  return files;
+}
+
+function encodeBundleResult(result: { record: unknown; files: CapletBundleInputFile[] }): {
+  record: unknown;
+  files: RemoteCapletBundleFile[];
+} {
+  return {
+    record: result.record,
+    files: result.files.map((file) => ({
+      path: file.path,
+      contentBase64: file.content.toString("base64"),
+      executable: file.executable,
+    })),
+  };
 }
 
 function optionalObject(args: Record<string, unknown>, key: string): Record<string, unknown> {

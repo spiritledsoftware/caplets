@@ -2,11 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { CapletsEngine } from "../src/engine";
-import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
+import { createHostStorage } from "../src/storage";
 
 const dirs: string[] = [];
 
@@ -17,12 +16,12 @@ afterEach(() => {
 describe("dashboard activity and access actions", () => {
   it("approves and denies pending logins through operator actions and records redacted activity", async () => {
     const setup = await authenticatedDashboard();
-    const approveTarget = setup.store.createPendingLogin({
+    const approveTarget = await setup.store.createPendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       requestedRole: "operator",
       clientLabel: "Tablet",
     });
-    const denyTarget = setup.store.createPendingLogin({
+    const denyTarget = await setup.store.createPendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       requestedRole: "access",
       clientLabel: "Old laptop",
@@ -55,17 +54,20 @@ describe("dashboard activity and access actions", () => {
     const text = await activity.text();
     expect(text).toContain('"action":"pending_login_approved"');
     expect(text).toContain('"action":"pending_login_denied"');
+    expect(text).toContain('"action":"remote_pending_login_approved"');
+    expect(text).toContain('"action":"remote_pending_login_denied"');
     expect(text).toContain('"actorClientId"');
     expect(text).not.toContain(approveTarget.operatorCode);
     expect(text).not.toContain(approveTarget.pendingCompletionSecret);
     expect(text).not.toContain("cap_remote_access_");
 
     await setup.engine.close();
+    await setup.storage.close();
   });
 
   it("rejects flow-id approval after the visible operator code expires", async () => {
     const setup = await authenticatedDashboard();
-    const expired = setup.store.createPendingLogin({
+    const expired = await setup.store.createPendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       requestedRole: "operator",
       clientLabel: "Expired browser",
@@ -86,22 +88,26 @@ describe("dashboard activity and access actions", () => {
         message: expect.stringContaining("code has expired"),
       },
     });
-    expect(setup.store.listPendingLogins()).toContainEqual(
+    await expect(setup.store.listPendingLogins()).resolves.toContainEqual(
       expect.objectContaining({ flowId: expired.flowId, status: "pending" }),
     );
 
     await setup.engine.close();
+    await setup.storage.close();
   });
 
   it("revokes and role-changes clients, terminating current operator authority when applicable", async () => {
     const setup = await authenticatedDashboard();
-    const other = setup.store.createPendingLogin({
+    const other = await setup.store.createPendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       requestedRole: "operator",
       clientLabel: "Second operator",
     });
-    setup.store.approvePendingLogin({ operatorCode: other.operatorCode });
-    const otherCredentials = setup.store.completePendingLogin({
+    await setup.store.approvePendingLogin({
+      operatorClientId: setup.operatorClientId,
+      operatorCode: other.operatorCode,
+    });
+    const otherCredentials = await setup.store.completePendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
       flowId: other.flowId,
       pendingCompletionSecret: other.pendingCompletionSecret,
@@ -138,26 +144,31 @@ describe("dashboard activity and access actions", () => {
     expect(activity.status).toBe(401);
 
     await setup.engine.close();
+    await setup.storage.close();
   });
 
-  it("paginates activity toward older entries and preserves safe valueBytes metadata", () => {
-    const log = new DashboardActivityLog({ dir: tempDir("caplets-dashboard-activity-log-") });
+  it("paginates SQL activity toward older entries and preserves safe valueBytes metadata", async () => {
+    const root = tempDir("caplets-dashboard-activity-log-");
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(root, "host.sqlite3"),
+    });
 
-    log.append({
+    await storage.operatorActivity.append({
       actorClientId: "operator",
       action: "vault_set",
       target: { type: "vault", id: "GH_TOKEN" },
       metadata: { bytesWritten: 42, secretValue: "should-not-log" },
       now: new Date("2026-07-08T10:00:00.000Z"),
     });
-    log.append({
+    await storage.operatorActivity.append({
       actorClientId: "operator",
       action: "catalog_updated",
       target: { type: "catalog", id: "github" },
       now: new Date("2026-07-08T10:01:00.000Z"),
     });
 
-    const firstPage = log.list({ limit: 1 });
+    const firstPage = await storage.operatorActivity.list({ limit: 1 });
     expect(firstPage.entries).toHaveLength(1);
     expect(firstPage.entries[0]).toMatchObject({
       action: "catalog_updated",
@@ -165,7 +176,10 @@ describe("dashboard activity and access actions", () => {
     });
     expect(firstPage.nextCursor).toBe(firstPage.entries[0]?.id);
 
-    const secondPage = log.list({ limit: 1, after: firstPage.nextCursor });
+    const secondPage = await storage.operatorActivity.list({
+      limit: 1,
+      after: firstPage.nextCursor,
+    });
     expect(secondPage.entries).toHaveLength(1);
     expect(secondPage.entries[0]).toMatchObject({
       action: "vault_set",
@@ -173,20 +187,25 @@ describe("dashboard activity and access actions", () => {
       metadata: { bytesWritten: 42 },
     });
     expect(secondPage.entries[0]?.metadata).not.toHaveProperty("secretValue");
+    await storage.close();
   });
 });
 
 type Setup = Awaited<ReturnType<typeof authenticatedDashboard>>;
 
 async function authenticatedDashboard() {
-  const setup = testApp();
+  const setup = await testApp();
   const started = await appPost(setup, "/dashboard/api/login/start", { clientLabel: "Browser" });
   const startBody = (await started.json()) as {
     flowId: string;
     pendingCompletionSecret: string;
     approvalCommand: string;
   };
-  setup.store.approvePendingLogin({ operatorCode: approvalCode(startBody.approvalCommand) });
+  await setup.store.approvePendingLogin({
+    operatorClientId: "bootstrap_test",
+    operatorCode: approvalCode(startBody.approvalCommand),
+    grantedRole: "operator",
+  });
   const completed = await appPost(setup, "/dashboard/api/login/complete", {
     flowId: startBody.flowId,
     pendingCompletionSecret: startBody.pendingCompletionSecret,
@@ -240,21 +259,26 @@ function approvalCode(command: string): string {
   return code;
 }
 
-function testApp() {
+async function testApp() {
   const stateDir = tempDir("caplets-dashboard-activity-state-");
   const context = testContext();
+  const storage = await createHostStorage(
+    { type: "sqlite", path: join(stateDir, "host.sqlite3") },
+    { vaultRoot: join(stateDir, "vault") },
+  );
   const engine = new CapletsEngine({
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
+    hostStorage: storage,
     watch: false,
   });
-  const store = new RemoteServerCredentialStore({ dir: stateDir });
+  const store = storage.remoteSecurity;
   const app = createHttpServeApp(httpOptions(stateDir), engine, {
     writeErr: () => {},
     control: context,
-    remoteCredentialStore: store,
+    authoritativeStorage: storage,
   });
-  return { app, engine, store, stateDir, context };
+  return { app, engine, store, storage, stateDir, context };
 }
 
 function httpOptions(stateDir: string): HttpServeOptions {

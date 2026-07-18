@@ -32,7 +32,28 @@ export type RemoteCliCommand =
   | "vault_delete"
   | "vault_access_grant"
   | "vault_access_revoke"
-  | "vault_access_list";
+  | "vault_access_list"
+  | "storage_records_list"
+  | "storage_records_get"
+  | "storage_records_import"
+  | "storage_records_update"
+  | "storage_records_export"
+  | "storage_records_revisions"
+  | "storage_records_restore"
+  | "storage_records_delete_revision"
+  | "storage_records_retention"
+  | "storage_records_rename"
+  | "storage_records_delete"
+  | "storage_records_installation_status"
+  | "storage_records_installation_detach"
+  | "storage_records_installation_observe"
+  | "storage_records_installation_replace";
+
+export type RemoteCapletBundleFile = {
+  path: string;
+  contentBase64: string;
+  executable: boolean;
+};
 
 /**
  * Parsed wire input. `command` stays open so the adapter can safely envelope

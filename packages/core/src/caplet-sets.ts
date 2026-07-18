@@ -27,6 +27,7 @@ import { OpenApiManager } from "./openapi";
 import { capabilityDescription, ServerRegistry } from "./registry";
 import { generatedToolInputJsonSchema } from "./generated-tool-input-schema";
 import { searchToolList } from "./tool-search";
+import type { BackendAuthStateStore } from "./storage/backend-auth";
 import { handleServerTool } from "./tools";
 
 type ChildRuntime = {
@@ -47,6 +48,7 @@ export class CapletSetManager {
     private registry: ServerRegistry,
     private readonly options: {
       authDir?: string;
+      backendAuth?: BackendAuthStateStore;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
       mediaInlineThresholdBytes?: number;
@@ -219,6 +221,7 @@ export class CapletSetManager {
       const registry = new ServerRegistry(childConfig);
       const sharedOptions = {
         ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
+        ...(this.options.backendAuth ? { backendAuth: this.options.backendAuth } : {}),
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false
           ? { exposeLocalArtifactPaths: false }

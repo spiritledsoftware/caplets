@@ -22,14 +22,65 @@ import {
   readHiddenInputForTest,
   runCli,
 } from "../src/cli";
-import { updateCapletsFromLockfile, type CapletTransactionPhase } from "../src/cli/install";
+import type { StoredOAuthTokenBundle } from "../src/auth/store";
+import { updateCapletsFromLockfile, type CapletTransactionPhase } from "../src/install";
 import { loadConfig, parseConfig, type VaultQuarantineOutcome } from "../src/config";
 import * as configModule from "../src/config";
 import type { CapletsError } from "../src/errors";
-import { readCapletsLockfile } from "../src/cli/lockfile";
-import { readTokenBundle, writeTokenBundle } from "../src/auth";
+import { readCapletsLockfile } from "../src/lockfile";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
-import { FileVaultStore } from "../src/vault";
+import { createHostStorage } from "../src/storage";
+
+async function seedStoredCaplet(
+  storagePath: string,
+  id: string,
+  environment: Record<string, string> = {},
+): Promise<void> {
+  const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+  try {
+    await storage.caplets.importBundle({
+      id,
+      operator: { role: "operator", clientId: "cli_test" },
+      files: [
+        {
+          path: "CAPLET.md",
+          executable: false,
+          content: Buffer.from(
+            [
+              "---",
+              `name: ${id}`,
+              `description: Stored ${id} test Caplet.`,
+              "mcpServer:",
+              "  command: test-mcp",
+              ...(Object.keys(environment).length === 0
+                ? []
+                : [
+                    "  env:",
+                    ...Object.entries(environment).map(
+                      ([name, value]) => `    ${name}: ${JSON.stringify(value)}`,
+                    ),
+                  ]),
+              "---",
+              `# ${id}`,
+              "",
+            ].join("\n"),
+          ),
+        },
+      ],
+    });
+  } finally {
+    await storage.close();
+  }
+}
+
+async function seedBackendAuth(storagePath: string, bundle: StoredOAuthTokenBundle): Promise<void> {
+  const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+  try {
+    await storage.backendAuth.writeTokenBundle(bundle, { operatorClientId: "cli_test" });
+  } finally {
+    await storage.close();
+  }
+}
 
 describe("cli init", () => {
   const originalMode = process.env.CAPLETS_MODE;
@@ -38,11 +89,20 @@ describe("cli init", () => {
   const originalServerUrl = process.env.CAPLETS_SERVER_URL;
   const originalServerUser = process.env.CAPLETS_SERVER_USER;
   const originalServerPassword = process.env.CAPLETS_SERVER_PASSWORD;
+  const originalStateHome = process.env.XDG_STATE_HOME;
+  let testStateRoot: string;
 
   beforeEach(() => {
+    testStateRoot = mkdtempSync(join(tmpdir(), "caplets-cli-state-"));
+    const configPath = join(testStateRoot, "config.json");
     process.env.CAPLETS_MODE = "local";
-    delete process.env.CAPLETS_CONFIG;
+    process.env.CAPLETS_CONFIG = configPath;
+    process.env.XDG_STATE_HOME = testStateRoot;
     delete process.env.CAPLETS_PROJECT_CONFIG;
+    writeFileSync(
+      configPath,
+      JSON.stringify({ storage: { type: "sqlite", path: join(testStateRoot, "host.sqlite3") } }),
+    );
   });
 
   afterEach(() => {
@@ -77,6 +137,12 @@ describe("cli init", () => {
     } else {
       process.env.CAPLETS_SERVER_PASSWORD = originalServerPassword;
     }
+    if (originalStateHome === undefined) {
+      delete process.env.XDG_STATE_HOME;
+    } else {
+      process.env.XDG_STATE_HOME = originalStateHome;
+    }
+    rmSync(testStateRoot, { recursive: true, force: true });
   });
 
   it("writes a valid starter config and creates parent directories", () => {
@@ -248,25 +314,14 @@ describe("cli init", () => {
   it("rolls back a new local Vault value when set-and-grant fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-grant-fail-"));
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const env = {
       ...process.env,
       CAPLETS_CONFIG: configPath,
       XDG_STATE_HOME: join(dir, "state"),
     };
     try {
-      writeFileSync(
-        configPath,
-        JSON.stringify({
-          mcpServers: {
-            github: {
-              name: "GitHub",
-              description: "GitHub access.",
-              command: "github-mcp",
-              env: { GH_TOKEN: "$vault:GH_TOKEN" },
-            },
-          },
-        }),
-      );
+      writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: storagePath } }));
 
       await expect(
         runCli(["vault", "set", "GH_TOKEN", "--grant", "missing-caplet"], {
@@ -274,12 +329,17 @@ describe("cli init", () => {
           readStdin: async () => "orphaned_secret\n",
           writeOut: () => {},
         }),
-      ).rejects.toMatchObject({ code: "SERVER_NOT_FOUND" } satisfies Partial<CapletsError>);
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" } satisfies Partial<CapletsError>);
 
-      expect(new FileVaultStore({ env }).getStatus("GH_TOKEN")).toEqual({
-        key: "GH_TOKEN",
-        present: false,
-      });
+      const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        await expect(storage.vaultValues.getStatus("GH_TOKEN")).resolves.toEqual({
+          key: "GH_TOKEN",
+          present: false,
+        });
+      } finally {
+        await storage.close();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -288,27 +348,22 @@ describe("cli init", () => {
   it("restores the previous local Vault value when force set-and-grant fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-grant-force-fail-"));
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const env = {
       ...process.env,
       CAPLETS_CONFIG: configPath,
       XDG_STATE_HOME: join(dir, "state"),
     };
     try {
-      writeFileSync(
-        configPath,
-        JSON.stringify({
-          mcpServers: {
-            github: {
-              name: "GitHub",
-              description: "GitHub access.",
-              command: "github-mcp",
-              env: { GH_TOKEN: "$vault:GH_TOKEN" },
-            },
-          },
-        }),
-      );
-      const store = new FileVaultStore({ env });
-      store.set("GH_TOKEN", "original_secret");
+      writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: storagePath } }));
+      const seed = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        await seed.vaultValues.set("GH_TOKEN", "original_secret", {
+          operatorClientId: "cli_test",
+        });
+      } finally {
+        await seed.close();
+      }
 
       await expect(
         runCli(["vault", "set", "GH_TOKEN", "--force", "--grant", "missing-caplet"], {
@@ -316,17 +371,23 @@ describe("cli init", () => {
           readStdin: async () => "replacement_secret\n",
           writeOut: () => {},
         }),
-      ).rejects.toMatchObject({ code: "SERVER_NOT_FOUND" } satisfies Partial<CapletsError>);
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" } satisfies Partial<CapletsError>);
 
-      expect(store.resolveValue("GH_TOKEN")).toBe("original_secret");
+      const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        await expect(storage.vaultValues.resolveValue("GH_TOKEN")).resolves.toBe("original_secret");
+      } finally {
+        await storage.close();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("manages local Vault access grants against the active config source", async () => {
+  it("manages SQL Vault access grants for a stored Caplet Record", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-access-"));
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const env = {
       ...process.env,
       CAPLETS_CONFIG: configPath,
@@ -334,20 +395,10 @@ describe("cli init", () => {
     };
     const out: string[] = [];
     try {
-      writeFileSync(
-        configPath,
-        JSON.stringify({
-          mcpServers: {
-            "github-personal": {
-              name: "GitHub Personal",
-              description: "Personal GitHub access.",
-              transport: "http",
-              url: "https://api.githubcopilot.com/mcp",
-              auth: { type: "bearer", token: "$vault:GH_TOKEN" },
-            },
-          },
-        }),
-      );
+      writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: storagePath } }));
+      await seedStoredCaplet(storagePath, "github-personal", {
+        GH_TOKEN: "$vault:GH_TOKEN",
+      });
 
       await runCli(
         ["vault", "set", "GH_TOKEN_PERSONAL", "--grant", "github-personal", "--as", "GH_TOKEN"],
@@ -373,14 +424,15 @@ describe("cli init", () => {
         },
       );
 
-      const store = new FileVaultStore({ env });
-      expect(
-        store.resolveGrantedValue({
-          referenceName: "GH_TOKEN",
-          capletId: "github-personal",
-          origin: { kind: "global-config", path: configPath },
-        }),
-      ).toMatchObject({ reason: "ungranted" });
+      const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        await expect(storage.vaultValues.resolveValue("GH_TOKEN_PERSONAL")).resolves.toBe(
+          "personal_secret",
+        );
+        await expect(storage.vaultGrants.list("github-personal")).resolves.toEqual([]);
+      } finally {
+        await storage.close();
+      }
       expect(out.join("")).toContain(
         "Granted Vault key GH_TOKEN_PERSONAL to github-personal as GH_TOKEN.",
       );
@@ -393,9 +445,10 @@ describe("cli init", () => {
     }
   });
 
-  it("grants Vault access when unrelated missing env refs would quarantine the Caplet", async () => {
+  it("grants SQL Vault access when unrelated missing env refs would quarantine the Caplet", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-access-env-"));
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const missingEnvName = "CAPLETS_TEST_MISSING_GRANT_ENV";
     const env = {
       ...process.env,
@@ -404,37 +457,31 @@ describe("cli init", () => {
       [missingEnvName]: undefined,
     };
     try {
-      writeFileSync(
-        configPath,
-        JSON.stringify({
-          mcpServers: {
-            github: {
-              name: "GitHub",
-              description: "GitHub access with missing runtime env.",
-              command: "github-mcp",
-              env: {
-                GH_TOKEN: "$vault:GH_TOKEN",
-                OTHER: `$env:${missingEnvName}`,
-              },
-            },
-          },
-        }),
-      );
+      writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: storagePath } }));
+      await seedStoredCaplet(storagePath, "github", {
+        GH_TOKEN: "$vault:GH_TOKEN",
+        OTHER: `$env:${missingEnvName}`,
+      });
 
       await runCli(["vault", "access", "grant", "GH_TOKEN", "github"], {
         env,
         writeOut: () => undefined,
       });
 
-      const store = new FileVaultStore({ env });
-      expect(store.listAccess({ storedKey: "GH_TOKEN", capletId: "github" })).toEqual([
-        expect.objectContaining({
-          storedKey: "GH_TOKEN",
-          referenceName: "GH_TOKEN",
-          capletId: "github",
-          origin: { kind: "global-config", path: configPath },
-        }),
-      ]);
+      const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        await expect(storage.vaultGrants.list("github")).resolves.toEqual([
+          expect.objectContaining({
+            subjectKind: "record",
+            capletId: "github",
+            vaultKey: "GH_TOKEN",
+            referenceName: "GH_TOKEN",
+            originKind: "stored-record",
+          }),
+        ]);
+      } finally {
+        await storage.close();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1462,41 +1509,44 @@ describe("cli init", () => {
     }
   });
 
-  it("installs all Caplets globally when requested", async () => {
+  it("installs all Caplets globally as SQL Caplet Records", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-global-"));
     const repo = join(dir, "repo");
     const projectRoot = join(dir, "project");
     const configPath = join(dir, "user", "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     const cwd = process.cwd();
-    const originalXdgStateHome = process.env.XDG_STATE_HOME;
     try {
       writeInstallableRepo(repo);
       mkdirSync(projectRoot, { recursive: true });
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: storagePath } }));
       process.env.CAPLETS_CONFIG = configPath;
-      process.env.XDG_STATE_HOME = join(dir, "state");
       process.chdir(projectRoot);
 
       await runCli(["install", "--global", repo], { writeOut: (value) => out.push(value) });
 
-      expect(readFileSync(join(dir, "user", "filesystem.md"), "utf8")).toContain(
-        "name: Project Files",
-      );
-      expect(readFileSync(join(dir, "user", "github", "CAPLET.md"), "utf8")).toContain(
-        "name: GitHub",
-      );
-      expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
-      expect(existsSync(join(dir, "state", "caplets", "caplets.lock.json"))).toBe(true);
-      expect(out.join("")).toContain(
-        `Installed filesystem to ${join(dir, "user", "filesystem.md")}`,
-      );
-      expect(out.join("")).toContain(`Installed github to ${join(dir, "user", "github")}`);
-    } finally {
-      if (originalXdgStateHome === undefined) {
-        delete process.env.XDG_STATE_HOME;
-      } else {
-        process.env.XDG_STATE_HOME = originalXdgStateHome;
+      const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        const operator = { role: "operator" as const, clientId: "cli_test" };
+        await expect(storage.caplets.getStored("filesystem", operator)).resolves.toMatchObject({
+          id: "filesystem",
+          currentRevision: { name: "Project Files" },
+        });
+        await expect(storage.caplets.getStored("github", operator)).resolves.toMatchObject({
+          id: "github",
+          currentRevision: { name: "GitHub" },
+        });
+      } finally {
+        await storage.close();
       }
+      expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
+      expect(existsSync(join(dir, "user", "filesystem.md"))).toBe(false);
+      expect(existsSync(join(dir, "user", "github"))).toBe(false);
+      expect(out.join("")).toContain("Installed filesystem to sql://caplet-records/filesystem");
+      expect(out.join("")).toContain("Installed github to sql://caplet-records/github");
+    } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }
@@ -4477,13 +4527,14 @@ describe("cli init", () => {
 
   it("lists configured OAuth servers without printing token values", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
-    const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     try {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           mcpServers: {
             remote: {
               name: "Remote",
@@ -4516,26 +4567,20 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "remote",
-          accessToken: "secret-access-token",
-          tokenType: "Bearer",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          scope: "mcp:tools",
-        },
-        authDir,
-      );
-      writeTokenBundle(
-        {
-          server: "expired",
-          accessToken: "expired-secret-access-token",
-          expiresAt: "2000-01-01T00:00:00.000Z",
-        },
-        authDir,
-      );
+      await seedBackendAuth(storagePath, {
+        server: "remote",
+        accessToken: "secret-access-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: "mcp:tools",
+      });
+      await seedBackendAuth(storagePath, {
+        server: "expired",
+        accessToken: "expired-secret-access-token",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      });
 
-      await runCli(["auth", "list"], { writeOut: (value) => out.push(value), authDir });
+      await runCli(["auth", "list"], { writeOut: (value) => out.push(value) });
 
       const text = out.join("");
       expect(text).toContain(
@@ -4556,11 +4601,13 @@ describe("cli init", () => {
   it("lists configured GraphQL OAuth endpoints", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     try {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           graphqlEndpoints: {
             catalog: {
               name: "Catalog",
@@ -4585,11 +4632,13 @@ describe("cli init", () => {
   it("formats OAuth auth targets as JSON when requested", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-format-"));
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     try {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           graphqlEndpoints: {
             catalog: {
               name: "Catalog",
@@ -4616,13 +4665,14 @@ describe("cli init", () => {
 
   it("logs out configured OAuth servers", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
-    const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     try {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           mcpServers: {
             remote: {
               name: "Remote",
@@ -4635,11 +4685,13 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle({ server: "remote", accessToken: "secret-access-token" }, authDir);
+      await seedBackendAuth(storagePath, {
+        server: "remote",
+        accessToken: "secret-access-token",
+      });
 
       await runCli(["auth", "logout", "remote"], {
         writeOut: (value) => out.push(value),
-        authDir,
       });
 
       expect(out.join("")).toBe("Deleted OAuth credentials for `remote`.\n");
@@ -4647,7 +4699,6 @@ describe("cli init", () => {
 
       await runCli(["auth", "logout", "remote"], {
         writeOut: (value) => out.push(value),
-        authDir,
       });
 
       expect(out.join("")).toBe("No OAuth credentials found for `remote`.\n");
@@ -4658,8 +4709,8 @@ describe("cli init", () => {
 
   it("refreshes configured OAuth credentials on demand", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-cli-"));
-    const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
@@ -4673,6 +4724,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           mcpServers: {
             remote: {
               name: "Remote",
@@ -4689,20 +4741,16 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "remote",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-        },
-        authDir,
-      );
+      await seedBackendAuth(storagePath, {
+        server: "remote",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      });
 
       await runCli(["auth", "refresh", "remote"], {
         writeOut: (value) => out.push(value),
-        authDir,
       });
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `remote`.\n");
@@ -4716,11 +4764,18 @@ describe("cli init", () => {
       expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain(
         "refresh_token=old-refresh-token",
       );
-      expect(readTokenBundle("remote", authDir)).toMatchObject({
-        accessToken: "new-access-token",
-        refreshToken: "new-refresh-token",
-        tokenType: "Bearer",
-      });
+      const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        await expect(storage.backendAuth.readTokenBundle("remote")).resolves.toMatchObject({
+          bundle: {
+            accessToken: "new-access-token",
+            refreshToken: "new-refresh-token",
+            tokenType: "Bearer",
+          },
+        });
+      } finally {
+        await storage.close();
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -4728,8 +4783,8 @@ describe("cli init", () => {
 
   it("refreshes Google Discovery OAuth credentials with explicit scopes when discovery is unavailable", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-refresh-cli-"));
-    const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -4746,6 +4801,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           googleDiscoveryApis: {
             drive: {
               name: "Google Drive",
@@ -4762,23 +4818,19 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "drive",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          metadata: {
-            requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
-          },
+      await seedBackendAuth(storagePath, {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        metadata: {
+          requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
         },
-        authDir,
-      );
+      });
 
       await runCli(["auth", "refresh", "drive"], {
         writeOut: (value) => out.push(value),
-        authDir,
       });
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
@@ -4797,8 +4849,8 @@ describe("cli init", () => {
 
   it("uses Discovery-derived base URL for Google Discovery OAuth refresh", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-base-url-cli-"));
-    const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const discoveryPath = join(dir, "drive.discovery.json");
     const out: string[] = [];
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -4832,6 +4884,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           googleDiscoveryApis: {
             drive: {
               name: "Google Drive",
@@ -4847,24 +4900,20 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "drive",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          protectedResourceOrigin: "https://api.example.com",
-          metadata: {
-            requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
-          },
+      await seedBackendAuth(storagePath, {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        protectedResourceOrigin: "https://api.example.com",
+        metadata: {
+          requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
         },
-        authDir,
-      );
+      });
 
       await runCli(["auth", "refresh", "drive"], {
         writeOut: (value) => out.push(value),
-        authDir,
       });
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
@@ -4879,8 +4928,8 @@ describe("cli init", () => {
 
   it("uses Discovery-derived base URL for explicit Google Discovery OAuth scopes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-proxy-cli-"));
-    const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -4914,6 +4963,7 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           googleDiscoveryApis: {
             drive: {
               name: "Google Drive",
@@ -4930,22 +4980,18 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle(
-        {
-          server: "drive",
-          authType: "oauth2",
-          accessToken: "old-access-token",
-          refreshToken: "old-refresh-token",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          protectedResourceOrigin: "https://api.example.com",
-          scope: "https://www.googleapis.com/auth/drive.readonly",
-        },
-        authDir,
-      );
+      await seedBackendAuth(storagePath, {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        protectedResourceOrigin: "https://api.example.com",
+        scope: "https://www.googleapis.com/auth/drive.readonly",
+      });
 
       await runCli(["auth", "refresh", "drive"], {
         writeOut: (value) => out.push(value),
-        authDir,
       });
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
@@ -4966,13 +5012,14 @@ describe("cli init", () => {
 
   it("logs out configured OpenAPI OAuth endpoints", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
-    const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
     const out: string[] = [];
     try {
       writeFileSync(
         configPath,
         JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
           openapiEndpoints: {
             users: {
               name: "Users API",
@@ -4984,11 +5031,13 @@ describe("cli init", () => {
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
-      writeTokenBundle({ server: "users", accessToken: "secret-access-token" }, authDir);
+      await seedBackendAuth(storagePath, {
+        server: "users",
+        accessToken: "secret-access-token",
+      });
 
       await runCli(["auth", "logout", "users"], {
         writeOut: (value) => out.push(value),
-        authDir,
       });
 
       expect(out.join("")).toBe("Deleted OAuth credentials for `users`.\n");
@@ -5696,6 +5745,7 @@ function writeInspectionConfig(path: string): void {
   writeFileSync(
     path,
     JSON.stringify({
+      storage: { type: "sqlite", path: join(dirname(path), "host.sqlite3") },
       mcpServers: {
         filesystem: {
           name: "Project Files",
@@ -5765,6 +5815,7 @@ function writeOpenApiCompletionConfig(path: string): void {
   writeFileSync(
     path,
     JSON.stringify({
+      storage: { type: "sqlite", path: join(dir, "host.sqlite3") },
       openapiEndpoints: {
         users: {
           name: "Users API",
@@ -5800,6 +5851,7 @@ function writeCliOperationConfig(path: string): void {
   writeFileSync(
     path,
     JSON.stringify({
+      storage: { type: "sqlite", path: join(dir, "host.sqlite3") },
       cliTools: {
         local: {
           name: "Local CLI",

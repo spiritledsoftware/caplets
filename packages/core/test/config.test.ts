@@ -187,6 +187,32 @@ describe("config", () => {
     expect(schema).toContain('"upstreams"');
   });
 
+  it("defaults Authoritative Host State to SQLite and validates PostgreSQL configuration", () => {
+    expect(parseConfig({}).storage).toEqual({ type: "sqlite" });
+    expect(
+      parseConfig({
+        storage: {
+          type: "postgres",
+          connectionString: "postgres://caplets@example.com/caplets",
+          schema: "caplets_host",
+        },
+      }).storage,
+    ).toEqual({
+      type: "postgres",
+      connectionString: "postgres://caplets@example.com/caplets",
+      schema: "caplets_host",
+    });
+    expect(() =>
+      parseConfig({
+        storage: {
+          type: "postgres",
+          connectionString: "postgres://caplets@example.com/caplets",
+          schema: "invalid-schema",
+        },
+      }),
+    ).toThrow(CapletsError);
+  });
+
   it("accepts global serve defaults and exposes them in parsed config", () => {
     const config = parseConfig({
       serve: {

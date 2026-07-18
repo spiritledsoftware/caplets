@@ -1,0 +1,7 @@
+# Store Authoritative Host State In One SQL Backend
+
+Caplets will replace correctness-bearing host filesystem stores with one authoritative SQL backend per logical host. New single-node hosts use SQLite by default; multi-node hosts use PostgreSQL, with all Host Nodes for one logical host sharing one database schema. A host never dual-writes, mirrors, or falls back between SQLite, PostgreSQL, and legacy files because doing so would create split-brain state.
+
+Authoritative Host State includes Caplet Records and installation provenance, backend auth state, encrypted Vault values and grants, remote-client and pending-login state, dashboard sessions, setup approvals and attempts, Project Binding coordination metadata, and the Operator Activity Log. Client-owned Remote Profiles, reconstructible caches and telemetry, native service files, live Code Mode heap state, synchronized workspace contents, and node-local artifacts remain outside this boundary.
+
+PostgreSQL clusters use transactional reads for security and coordination state and revisioned in-memory snapshots for Caplet configuration. Caplet snapshots converge across healthy nodes within a bounded interval, while loss of the authoritative database fails closed. SQLite schema upgrades run automatically under an exclusive migration transaction; PostgreSQL schema changes run in a successful pre-start migration job using a separate migrator role.

@@ -5,8 +5,9 @@ import {
   installCaplets,
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
-} from "./../cli/install";
+} from "../install";
 import { CapletsError } from "../errors";
+import { installSqlCatalogCaplets, updateSqlCatalogCaplets } from "../storage/catalog-lifecycle";
 import {
   currentHostCatalogDetail,
   currentHostCatalogIndex,
@@ -93,8 +94,6 @@ async function catalogInstallOutcome(
     );
   }
   try {
-    const control = requireControlContext(dependencies.control, "Catalog actions");
-    const target = globalCatalogTarget(control);
     let repo = operation.repo;
     if (operation.source !== undefined) {
       if (!operation.entryKey) {
@@ -121,15 +120,10 @@ async function catalogInstallOutcome(
       capletIds = [detail.entry.id];
       repo = currentHostCatalogInstallSource(operation.source, detail.entry.resolvedRevision);
     }
-    const installOptions = {
-      ...target,
-      ...(capletIds === undefined ? {} : { capletIds }),
-      ...(operation.force === undefined ? {} : { force: operation.force }),
-    };
-    const installed = repo
-      ? installCaplets(repo, installOptions).installed
-      : restoreCapletsFromLockfile(installOptions).installed;
-    await attachCatalogIndexing(installed, operation.disableCatalogIndexing ?? false);
+    const installed = dependencies.catalogStorage
+      ? await installCatalogRecords(dependencies, principal, repo, capletIds, operation)
+      : await installCatalogFiles(dependencies, repo, capletIds, operation);
+    await dependencies.activateConfig?.();
     for (const entry of installed) {
       dependencies.activityLog.append({
         actorClientId: principal.clientId,
@@ -152,16 +146,23 @@ async function catalogUpdateOutcome(
 ): Promise<CatalogUpdateOutcome> {
   const capletIds = optionalCapletIds(operation.capletIds);
   try {
-    const control = requireControlContext(dependencies.control, "Catalog actions");
-    const installed = updateCapletsFromLockfile({
-      ...globalCatalogTarget(control),
-      ...(capletIds === undefined ? {} : { capletIds }),
-      ...(operation.force === undefined ? {} : { force: operation.force }),
-      ...(operation.allowRiskIncrease === undefined
-        ? {}
-        : { allowRiskIncrease: operation.allowRiskIncrease }),
-    }).installed;
-    await attachCatalogIndexing(installed, operation.disableCatalogIndexing ?? false);
+    const installed = dependencies.catalogStorage
+      ? (
+          await updateSqlCatalogCaplets({
+            storage: dependencies.catalogStorage,
+            operator: operator(principal),
+            ...(capletIds === undefined ? {} : { capletIds }),
+            ...(operation.force === undefined ? {} : { force: operation.force }),
+            ...(operation.allowRiskIncrease === undefined
+              ? {}
+              : { allowRiskIncrease: operation.allowRiskIncrease }),
+            ...(operation.disableCatalogIndexing === undefined
+              ? {}
+              : { disableCatalogIndexing: operation.disableCatalogIndexing }),
+          })
+        ).installed
+      : await updateCatalogFiles(dependencies, capletIds, operation);
+    await dependencies.activateConfig?.();
     for (const entry of installed) {
       dependencies.activityLog.append({
         actorClientId: principal.clientId,
@@ -178,6 +179,74 @@ async function catalogUpdateOutcome(
     appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
     throw error;
   }
+}
+
+async function installCatalogRecords(
+  dependencies: CurrentHostOperationsDependencies,
+  principal: CurrentHostOperatorPrincipal,
+  source: string | undefined,
+  capletIds: string[] | undefined,
+  operation: CatalogInstallOperation,
+) {
+  if (!source) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "SQL catalog install requires a source; tracked SQL installations are updated with catalog update.",
+    );
+  }
+  return (
+    await installSqlCatalogCaplets({
+      storage: dependencies.catalogStorage!,
+      operator: operator(principal),
+      source,
+      ...(capletIds === undefined ? {} : { capletIds }),
+      ...(operation.force === undefined ? {} : { force: operation.force }),
+      ...(operation.disableCatalogIndexing === undefined
+        ? {}
+        : { disableCatalogIndexing: operation.disableCatalogIndexing }),
+    })
+  ).installed;
+}
+
+async function installCatalogFiles(
+  dependencies: CurrentHostOperationsDependencies,
+  repo: string | undefined,
+  capletIds: string[] | undefined,
+  operation: CatalogInstallOperation,
+) {
+  const control = requireControlContext(dependencies.control, "Catalog actions");
+  const installOptions = {
+    ...globalCatalogTarget(control),
+    ...(capletIds === undefined ? {} : { capletIds }),
+    ...(operation.force === undefined ? {} : { force: operation.force }),
+  };
+  const installed = repo
+    ? installCaplets(repo, installOptions).installed
+    : restoreCapletsFromLockfile(installOptions).installed;
+  await attachCatalogIndexing(installed, operation.disableCatalogIndexing ?? false);
+  return installed;
+}
+
+async function updateCatalogFiles(
+  dependencies: CurrentHostOperationsDependencies,
+  capletIds: string[] | undefined,
+  operation: CatalogUpdateOperation,
+) {
+  const control = requireControlContext(dependencies.control, "Catalog actions");
+  const installed = updateCapletsFromLockfile({
+    ...globalCatalogTarget(control),
+    ...(capletIds === undefined ? {} : { capletIds }),
+    ...(operation.force === undefined ? {} : { force: operation.force }),
+    ...(operation.allowRiskIncrease === undefined
+      ? {}
+      : { allowRiskIncrease: operation.allowRiskIncrease }),
+  }).installed;
+  await attachCatalogIndexing(installed, operation.disableCatalogIndexing ?? false);
+  return installed;
+}
+
+function operator(principal: CurrentHostOperatorPrincipal) {
+  return { role: "operator" as const, clientId: principal.clientId };
 }
 
 function appendCatalogFailureActivities(

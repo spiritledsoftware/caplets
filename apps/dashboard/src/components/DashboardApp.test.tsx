@@ -23,7 +23,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/components/ui/sonner", () => ({ Toaster: () => null }));
 vi.mock("sonner", () => ({ toast }));
 
-import { DashboardApp, catalogMutationLabel } from "./DashboardApp";
+import { DashboardApp, catalogMutationLabel, routeFromPath } from "./DashboardApp";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -173,6 +173,12 @@ describe("catalog update presentation", () => {
     );
     expect(catalogMutationLabel({ installed: [{ status: "updated" }] })).toBe("Updated");
     expect(catalogMutationLabel({ installed: [{ status: "noop" }] })).toBe("Already current");
+  });
+});
+
+describe("dashboard routing", () => {
+  it("recognizes the Stored Caplets route", () => {
+    expect(routeFromPath("/dashboard/stored-caplets")).toBe("stored-caplets");
   });
 });
 

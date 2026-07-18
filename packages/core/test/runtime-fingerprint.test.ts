@@ -2,7 +2,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -24,6 +23,7 @@ import { createCloudRuntimeAdapter } from "../src/cloud/runtime-adapter";
 import { loadConfigWithSources } from "../src/config";
 import { LocalSetupStore } from "../src/setup/local-store";
 import { parseConfig } from "../src/config-runtime";
+import { createHostStorage } from "../src/storage";
 
 const tempDirs: string[] = [];
 
@@ -1062,17 +1062,28 @@ ${body}
       const expected = first.runtimeFingerprint?.caplets.tool?.fingerprint;
       expect(expected).toMatch(/^[a-f0-9]{64}$/u);
 
-      const localStoreRoot = join(root, "local-setup");
-      await runCapletSetupCli("tool", {
-        yes: true,
-        configPath,
-        projectConfigPath,
-        baseDir: localStoreRoot,
-        spawn: async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+      const localStorage = await createHostStorage({
+        type: "sqlite",
+        path: join(root, "local-setup.sqlite"),
       });
-      const approvals = JSON.parse(
-        readFileSync(join(localStoreRoot, "approvals.json"), "utf8"),
-      ) as Array<{ contentHash: string }>;
+      let approval;
+      try {
+        await runCapletSetupCli("tool", {
+          yes: true,
+          configPath,
+          projectConfigPath,
+          hostStorage: localStorage,
+          spawn: async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+        });
+        approval = await localStorage.setupState.getApproval(
+          "default",
+          "tool",
+          expected!,
+          "local_host",
+        );
+      } finally {
+        await localStorage.close();
+      }
 
       const hosted = createCloudRuntimeAdapter({
         configPath,
@@ -1088,7 +1099,7 @@ ${body}
       writeFileSync(capletPath, capletFile("# Different README"), "utf8");
       const second = loadConfigWithSources(configPath, projectConfigPath);
 
-      expect(approvals[0]?.contentHash).toBe(expected);
+      expect(approval?.contentHash).toBe(expected);
       expect(hostedPlan.contentHash).toBe(expected);
       expect(hostedPlan.persistenceEligible).toBe(true);
       expect(second.runtimeFingerprint?.caplets.tool?.fingerprint).toBe(expected);
@@ -1102,21 +1113,33 @@ ${body}
       writeFileSync(capletPath, capletFile("# Literal README", "literal-secret"), "utf8");
       const liveOnly = loadConfigWithSources(configPath, projectConfigPath);
       expect(liveOnly.runtimeFingerprint?.caplets.tool?.persistenceEligible).toBe(false);
-      const liveOnlyStoreRoot = join(root, "live-only-setup");
-      await runCapletSetupCli("tool", {
-        yes: true,
-        configPath,
-        projectConfigPath,
-        baseDir: liveOnlyStoreRoot,
-        spawn: async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+      const liveOnlyStorage = await createHostStorage({
+        type: "sqlite",
+        path: join(root, "live-only-setup.sqlite"),
       });
-      expect(existsSync(join(liveOnlyStoreRoot, "approvals.json"))).toBe(false);
-      const liveOnlyAttempt = readFileSync(
-        join(liveOnlyStoreRoot, "projects", "default", "attempts", "tool.jsonl"),
-        "utf8",
-      );
-      expect(liveOnlyAttempt).toContain('"contentHash":"live-only"');
-      expect(liveOnlyAttempt).not.toContain("literal-secret");
+      let liveOnlyAttempts;
+      try {
+        await runCapletSetupCli("tool", {
+          yes: true,
+          configPath,
+          projectConfigPath,
+          hostStorage: liveOnlyStorage,
+          spawn: async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+        });
+        expect(
+          await liveOnlyStorage.setupState.getApproval(
+            "default",
+            "tool",
+            "live-only",
+            "local_host",
+          ),
+        ).toBeUndefined();
+        liveOnlyAttempts = await liveOnlyStorage.setupState.listAttempts("default", "tool");
+      } finally {
+        await liveOnlyStorage.close();
+      }
+      expect(JSON.stringify(liveOnlyAttempts)).toContain('"contentHash":"live-only"');
+      expect(JSON.stringify(liveOnlyAttempts)).not.toContain("literal-secret");
 
       const liveHostedRoot = join(root, "live-only-hosted");
       const liveHosted = createCloudRuntimeAdapter({

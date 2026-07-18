@@ -35,6 +35,7 @@ export const cliCommands = {
   auth: "auth",
   vault: "vault",
   telemetry: "telemetry",
+  storage: "storage",
 } as const;
 
 export const topLevelCommandNames = [
@@ -68,6 +69,7 @@ export const topLevelCommandNames = [
   cliCommands.config,
   cliCommands.auth,
   cliCommands.vault,
+  cliCommands.storage,
   cliCommands.telemetry,
   cliCommands.completion,
 ] as const;
@@ -83,17 +85,37 @@ export const cliSubcommands = {
   [cliCommands.daemon]: ["install", "uninstall", "start", "restart", "stop", "status", "logs"],
   [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
   [cliCommands.telemetry]: ["status", "enable", "disable", "delete-id", "rotate-id", "debug"],
+  [cliCommands.storage]: ["status", "schema-migrate", "migrate-legacy", "records"],
   [cliCommands.vault]: ["set", "get", "list", "delete", "access"],
 } as const satisfies Record<string, readonly string[]>;
 
-export const cliNestedSubcommands = {
+export const cliNestedSubcommands: Readonly<
+  Record<string, Readonly<Record<string, readonly string[]>>>
+> = {
   [cliCommands.remote]: {
     host: ["pair", "clients", "revoke"],
   },
   [cliCommands.vault]: {
     access: ["grant", "list", "revoke"],
   },
-} as const satisfies Record<string, Record<string, readonly string[]>>;
+  [cliCommands.storage]: {
+    records: [
+      "list",
+      "get",
+      "import",
+      "update",
+      "export",
+      "revisions",
+      "restore",
+      "delete-revision",
+      "retention",
+      "rename",
+      "delete",
+      "installation",
+    ],
+    "records installation": ["status", "detach", "observe", "replace"],
+  },
+};
 
 export const capletIdCommands = new Set<string>([
   cliCommands.inspect,

@@ -10,7 +10,7 @@ import {
   GoogleDiscoveryManager,
   googleDiscoveryScopesForOperations,
 } from "../src/google-discovery";
-import { writeTokenBundle } from "../src/auth";
+import { createHostStorage, type HostStorage } from "../src/storage";
 import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
@@ -771,6 +771,7 @@ describe("GoogleDiscoveryManager", () => {
 
   it("fetches public remote Discovery documents before requiring OAuth credentials", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-google-public-discovery-"));
+    const storage = await createTestAuthStorage(dir);
     const config = parseConfig({
       googleDiscoveryApis: {
         drive: {
@@ -786,7 +787,9 @@ describe("GoogleDiscoveryManager", () => {
         },
       },
     });
-    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), {
+      backendAuth: storage.backendAuth,
+    });
 
     try {
       await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
@@ -796,12 +799,14 @@ describe("GoogleDiscoveryManager", () => {
         requests.find((request) => request.url === "/drive.discovery.json")?.headers,
       ).not.toHaveProperty("authorization");
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("sends stored OAuth credentials for private remote Discovery documents without baseUrl", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-google-private-discovery-"));
+    const storage = await createTestAuthStorage(dir);
     const config = parseConfig({
       googleDiscoveryApis: {
         drive: {
@@ -816,19 +821,18 @@ describe("GoogleDiscoveryManager", () => {
         },
       },
     });
-    writeTokenBundle(
-      {
-        server: "drive",
-        authType: "oauth2",
-        accessToken: "private-discovery-token",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        clientId: "client",
-        protectedResourceOrigin: baseUrl,
-      },
-      dir,
-    );
-    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+    await storage.backendAuth.writeTokenBundle({
+      server: "drive",
+      authType: "oauth2",
+      accessToken: "private-discovery-token",
+      tokenType: "Bearer",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      clientId: "client",
+      protectedResourceOrigin: baseUrl,
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), {
+      backendAuth: storage.backendAuth,
+    });
 
     try {
       await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
@@ -838,12 +842,14 @@ describe("GoogleDiscoveryManager", () => {
         requests.find((request) => request.url === "/private.discovery.json")?.headers,
       ).toHaveProperty("authorization", "Bearer private-discovery-token");
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("does not send API OAuth credentials to cross-origin Discovery documents", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-google-cross-origin-discovery-"));
+    const storage = await createTestAuthStorage(dir);
     const config = parseConfig({
       googleDiscoveryApis: {
         drive: {
@@ -859,19 +865,18 @@ describe("GoogleDiscoveryManager", () => {
         },
       },
     });
-    writeTokenBundle(
-      {
-        server: "drive",
-        authType: "oauth2",
-        accessToken: "api-origin-token",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        clientId: "client",
-        protectedResourceOrigin: "https://www.googleapis.com",
-      },
-      dir,
-    );
-    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+    await storage.backendAuth.writeTokenBundle({
+      server: "drive",
+      authType: "oauth2",
+      accessToken: "api-origin-token",
+      tokenType: "Bearer",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      clientId: "client",
+      protectedResourceOrigin: "https://www.googleapis.com",
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), {
+      backendAuth: storage.backendAuth,
+    });
 
     try {
       await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
@@ -881,12 +886,14 @@ describe("GoogleDiscoveryManager", () => {
         requests.find((request) => request.url === "/drive.discovery.json")?.headers,
       ).not.toHaveProperty("authorization");
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("refreshes expired OAuth credentials before protected Discovery document fetches", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-google-private-discovery-refresh-"));
+    const storage = await createTestAuthStorage(dir);
     const config = parseConfig({
       googleDiscoveryApis: {
         drive: {
@@ -901,20 +908,19 @@ describe("GoogleDiscoveryManager", () => {
         },
       },
     });
-    writeTokenBundle(
-      {
-        server: "drive",
-        authType: "oauth2",
-        accessToken: "expired-discovery-token",
-        refreshToken: "old-discovery-refresh-token",
-        tokenType: "Bearer",
-        expiresAt: "2000-01-01T00:00:00.000Z",
-        clientId: "client",
-        protectedResourceOrigin: baseUrl,
-      },
-      dir,
-    );
-    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+    await storage.backendAuth.writeTokenBundle({
+      server: "drive",
+      authType: "oauth2",
+      accessToken: "expired-discovery-token",
+      refreshToken: "old-discovery-refresh-token",
+      tokenType: "Bearer",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+      clientId: "client",
+      protectedResourceOrigin: baseUrl,
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), {
+      backendAuth: storage.backendAuth,
+    });
 
     try {
       await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
@@ -927,6 +933,7 @@ describe("GoogleDiscoveryManager", () => {
       );
       expect(discovery?.headers.authorization).toBe("Bearer refreshed-discovery-token");
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1541,6 +1548,7 @@ describe("GoogleDiscoveryManager", () => {
 
   it("preserves OAuth authorization on resumable upload session requests", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-google-resumable-auth-"));
+    const storage = await createTestAuthStorage(dir);
     const config = parseConfig({
       googleDiscoveryApis: {
         drive: {
@@ -1555,19 +1563,18 @@ describe("GoogleDiscoveryManager", () => {
         },
       },
     });
-    writeTokenBundle(
-      {
-        server: "drive",
-        authType: "oauth2",
-        accessToken: "upload-token",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        clientId: "client",
-        protectedResourceOrigin: baseUrl,
-      },
-      dir,
-    );
-    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+    await storage.backendAuth.writeTokenBundle({
+      server: "drive",
+      authType: "oauth2",
+      accessToken: "upload-token",
+      tokenType: "Bearer",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      clientId: "client",
+      protectedResourceOrigin: baseUrl,
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), {
+      backendAuth: storage.backendAuth,
+    });
 
     try {
       await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
@@ -1580,6 +1587,7 @@ describe("GoogleDiscoveryManager", () => {
       expect(start?.headers.authorization).toBe("Bearer upload-token");
       expect(upload?.headers.authorization).toBe("Bearer upload-token");
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1610,6 +1618,7 @@ describe("GoogleDiscoveryManager", () => {
 
   it("surfaces Google OAuth failures as auth-required errors", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-google-auth-error-"));
+    const storage = await createTestAuthStorage(dir);
     const config = parseConfig({
       googleDiscoveryApis: {
         drive: {
@@ -1624,22 +1633,21 @@ describe("GoogleDiscoveryManager", () => {
         },
       },
     });
-    writeTokenBundle(
-      {
-        server: "drive",
-        authType: "oauth2",
-        accessToken: "expired-access-token",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        clientId: "client",
-        protectedResourceOrigin: baseUrl,
-        metadata: {
-          requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
-        },
+    await storage.backendAuth.writeTokenBundle({
+      server: "drive",
+      authType: "oauth2",
+      accessToken: "expired-access-token",
+      tokenType: "Bearer",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      clientId: "client",
+      protectedResourceOrigin: baseUrl,
+      metadata: {
+        requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
       },
-      dir,
-    );
-    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), {
+      backendAuth: storage.backendAuth,
+    });
 
     try {
       await expect(
@@ -1654,6 +1662,7 @@ describe("GoogleDiscoveryManager", () => {
         },
       });
     } finally {
+      await storage.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1675,4 +1684,8 @@ function artifactByteLength(result: unknown): number {
     return result.structuredContent.byteLength;
   }
   throw new Error("expected an artifact result");
+}
+
+async function createTestAuthStorage(directory: string): Promise<HostStorage> {
+  return createHostStorage({ type: "sqlite", path: join(directory, "host.sqlite3") });
 }
