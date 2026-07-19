@@ -595,6 +595,7 @@ describe("dispatchRemoteCliRequest", () => {
     writeFileSync(
       context.configPath,
       JSON.stringify({
+        storage: { type: "sqlite", path: join(context.tempRoot, "host-state.sqlite3") },
         mcpServers: {
           github: { name: "GitHub", description: "GitHub project automation.", command: "node" },
         },
@@ -1154,6 +1155,7 @@ function testContext(options: { writeConfig?: boolean } = {}) {
     writeFileSync(
       configPath,
       JSON.stringify({
+        storage: { type: "sqlite", path: join(dir, "host-state.sqlite3") },
         httpApis: {
           server_status: {
             name: "Server Status",

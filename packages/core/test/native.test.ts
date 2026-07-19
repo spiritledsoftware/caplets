@@ -1395,9 +1395,13 @@ describe("native Caplets service", () => {
     mkdirSync(projectRoot, { recursive: true });
     const configPath = join(userRoot, "config.json");
     const projectConfigPath = join(projectRoot, "config.json");
+    const contents = options.preserveExposureDefault ? config : progressiveTestConfig(config);
     writeFileSync(
       configPath,
-      JSON.stringify(options.preserveExposureDefault ? config : progressiveTestConfig(config)),
+      JSON.stringify({
+        storage: { type: "sqlite", path: join(dir, "host.sqlite3") },
+        ...(contents as Record<string, unknown>),
+      }),
     );
     return { dir, configPath, projectConfigPath };
   }

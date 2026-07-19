@@ -31,8 +31,8 @@ export function nativeCodeModePromptGuidance(): string[] {
   return [
     `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
     "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
-    "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
-    "Reused sessions preserve successful top-level var bindings, function declarations, and runtime state only while the live session remains available and compatible.",
+    "For REPL reuse, omit sessionId to start fresh, then pass a returned meta.sessionId on later calls that should reuse live state.",
+    "Reused sessions preserve top-level var, let, const, function, class, enum, namespace, and TypeScript type declarations. Completed assignments and object mutations survive ordinary runtime errors; declaration conflicts fail before execution.",
     "Unknown or unavailable sessionId values fail before code execution; use meta.recoveryRef with caplets.debug.readRecovery({ recoveryRef }) for audit and manual reconstruction, not automatic replay.",
     "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
   ];

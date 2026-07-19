@@ -12,6 +12,7 @@ writeFileSync(
   tempConfigPath,
   `${JSON.stringify(
     {
+      storage: { type: "sqlite", path: join(tempCwd, "host.sqlite3") },
       httpApis: {
         status: {
           name: "Status",

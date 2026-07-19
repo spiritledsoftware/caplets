@@ -241,6 +241,229 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
+  it("reuses top-level const bindings across cells", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const first = await session.run({
+        code: "const gmail = caplets.gmail;\nreturn gmail.id;",
+        capletIds: ["gmail"],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const second = await session.run({
+        code: "return gmail.id;",
+        capletIds: ["gmail"],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(first).toMatchObject({ ok: true, value: "gmail" });
+      expect(second).toMatchObject({ ok: true, value: "gmail" });
+    } finally {
+      session.dispose();
+    }
+  });
+  it("preserves lexical semantics and live closures across cells", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const first = await session.run({
+        code: "let count = 1;\nconst step = 2;\nfunction read() { return count + step; }\nclass Box { value() { return read(); } }\nreturn new Box().value();",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const second = await session.run({
+        code: "count = 3;\nreturn { direct: read(), boxed: new Box().value() };",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const reassignedConst = await session.run({
+        code: "step = 4;\nreturn step;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const redeclaredConst = await session.run({
+        code: "const step = 5;\nreturn step;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(first).toMatchObject({ ok: true, value: 3 });
+      expect(second).toMatchObject({ ok: true, value: { direct: 5, boxed: 5 } });
+      expect(reassignedConst).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("constant"),
+      });
+      expect(redeclaredConst).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("already been declared"),
+      });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("keeps awaited const bindings immutable across cells", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const first = await session.run({
+        code: "const value = await Promise.resolve(3);\nreturn value;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const reassigned = await session.run({
+        code: "value = 4;\nreturn value;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const persisted = await session.run({
+        code: "return value;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(first).toMatchObject({ ok: true, value: 3 });
+      expect(reassigned).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("constant"),
+      });
+      expect(persisted).toMatchObject({ ok: true, value: 3 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("retains completed bindings and mutations after ordinary runtime errors", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      await session.run({
+        code: "var counter = 1;\nvar state = { count: 0 };",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const failed = await session.run({
+        code: "let after = 4;\ncounter = 2;\nstate.count = 3;\nthrow new Error('boom');",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const persisted = await session.run({
+        code: "return { after, counter, count: state.count };",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(failed).toMatchObject({ ok: false, error: "boom" });
+      expect(persisted).toMatchObject({
+        ok: true,
+        value: { after: 4, counter: 2, count: 3 },
+      });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("settles failed lexical initializers like Node REPL bindings", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const failed = await session.run({
+        code: "const blocked = await Promise.reject(new Error('nope'));",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const read = await session.run({
+        code: "return typeof blocked;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const assigned = await session.run({
+        code: "blocked = 1;\nreturn blocked;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const redeclared = await session.run({
+        code: "const blocked = 2;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(failed).toMatchObject({ ok: false, error: "nope" });
+      expect(read).toMatchObject({ ok: true, value: "undefined" });
+      expect(assigned).toMatchObject({ ok: true, value: 1 });
+      expect(redeclared).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("already been declared"),
+      });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("reuses destructured lexical bindings with ordered defaults", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const first = await session.run({
+        code: "const { a = 1, b = a + 1 } = {};\nlet [c] = [3];\nreturn { a, b, c };",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const second = await session.run({
+        code: "c += 1;\nreturn { a, b, c };",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(first).toMatchObject({ ok: true, value: { a: 1, b: 2, c: 3 } });
+      expect(second).toMatchObject({ ok: true, value: { a: 1, b: 2, c: 4 } });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("reuses TypeScript enum and namespace values across cells", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const first = await session.run({
+        code: 'enum Status { Ready = "ready" }\nnamespace Values { export let count = 1; }\nreturn `${Status.Ready}:${Values.count}`;',
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const second = await session.run({
+        code: "Values.count += 1;\nreturn `${Status.Ready}:${Values.count}`;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(first).toMatchObject({ ok: true, value: "ready:1" });
+      expect(second).toMatchObject({ ok: true, value: "ready:2" });
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("reuses var bindings across cells in one session", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
@@ -326,7 +549,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("does not snapshot cell-local lexical shadows over persisted vars", async () => {
+  it("rejects lexical redeclarations of persisted var bindings", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -349,7 +572,10 @@ describe("QuickJsCodeModeSandbox sessions", () => {
         invoke,
       });
 
-      expect(shadowed).toMatchObject({ ok: true, value: 2 });
+      expect(shadowed).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("already been declared"),
+      });
       expect(persisted).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
@@ -756,7 +982,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("does not let user code spoof failed cells through Promise then poisoning", async () => {
+  it("restores Promise internals while retaining completed failed-cell mutations", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -780,13 +1006,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(poisoned).toMatchObject({ ok: false });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
   });
 
-  it("does not let user code replace the promise observer by enumeration", async () => {
+  it("blocks promise observer enumeration without changing existing state", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -810,7 +1036,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(poisoned).toMatchObject({ ok: false });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 0 });
     } finally {
       session.dispose();
     }
@@ -1285,10 +1511,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(second).toMatchObject({ ok: false });
-      expect(second.ok === false ? second.error : "").toContain(
-        "Code Mode session state is corrupted",
-      );
+      expect(second).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
     } finally {
       session.dispose();
     }
@@ -1547,8 +1770,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false });
-      expect(next.ok === false ? next.error : "").toContain("Code Mode session state is corrupted");
+      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
     } finally {
       session.dispose();
     }
@@ -1719,7 +1941,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes after failed cells introduce unreadable new var bindings", async () => {
+  it("keeps var declarations introduced before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -1737,7 +1959,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: "number" });
     } finally {
       session.dispose();
     }
@@ -2234,7 +2456,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes after failed cells introduce new var bindings", async () => {
+  it("keeps new var bindings introduced before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2252,13 +2474,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 3 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed cells with existing persistent bindings", async () => {
+  it("keeps assignments completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2282,13 +2504,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false });
-      expect(next).toMatchObject({ ok: true, value: 1 });
+      expect(next).toMatchObject({ ok: true, value: 2 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed cells corrupt persisted global descriptors", async () => {
+  it("rejects persisted global descriptor changes without corrupting state", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2311,14 +2533,14 @@ describe("QuickJsCodeModeSandbox sessions", () => {
         invoke,
       });
 
-      expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(failed).toMatchObject({ ok: false, error: "property is not configurable" });
+      expect(next).toMatchObject({ ok: true, value: 2 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed cells that mutate persisted objects", async () => {
+  it("keeps object mutations completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2342,13 +2564,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed cells mutate persisted objects through methods", async () => {
+  it("keeps method mutations completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2372,13 +2594,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed nested callbacks mutate persisted objects", async () => {
+  it("keeps nested callback mutations completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2402,13 +2624,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed cells mutate persisted objects through computed global access", async () => {
+  it("keeps computed global mutations completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2432,13 +2654,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed cells mutate persisted objects through eval", async () => {
+  it("keeps eval mutations completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2462,13 +2684,13 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after failed cells mutate persisted objects through indirect Function", async () => {
+  it("keeps indirect Function mutations completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2492,7 +2714,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
@@ -2576,7 +2798,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes after successful persistence descriptor poisoning even with descriptor spoofing", async () => {
+  it("rejects persistence descriptor poisoning and disposes the session", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2599,14 +2821,14 @@ describe("QuickJsCodeModeSandbox sessions", () => {
         invoke,
       });
 
-      expect(poisoned).toMatchObject({ ok: true, value: 1 });
+      expect(poisoned).toMatchObject({ ok: false });
       expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
     } finally {
       session.dispose();
     }
   });
 
-  it("disposes after lexical shadows write directly to persisted state", async () => {
+  it("blocks lexical redeclarations before direct persistence writes execute", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2629,8 +2851,11 @@ describe("QuickJsCodeModeSandbox sessions", () => {
         invoke,
       });
 
-      expect(shadowed).toMatchObject({ ok: true, value: "shadow" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(shadowed).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("already been declared"),
+      });
+      expect(next).toMatchObject({ ok: true, value: "persisted" });
     } finally {
       session.dispose();
     }
@@ -2802,7 +3027,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes when drained unawaited Caplet callbacks mutate persisted bindings", async () => {
+  it("keeps mutations from drained unawaited Caplet callbacks", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2823,7 +3048,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(result).toMatchObject({ ok: true, value: 1 });
-      expect(followup).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(followup).toMatchObject({ ok: true, value: 2 });
     } finally {
       session.dispose();
     }
@@ -2856,7 +3081,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes when named callbacks mutate persisted bindings after drained invokes", async () => {
+  it("keeps mutations from named callbacks after drained invokes", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2882,7 +3107,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(result).toMatchObject({ ok: true, value: 1 });
-      expect(followup).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(followup).toMatchObject({ ok: true, value: 2 });
     } finally {
       session.dispose();
     }
@@ -2972,7 +3197,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes after successful cells mutate persistence map descriptors", async () => {
+  it("disposes after rejected persistence map descriptor changes", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -2995,7 +3220,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
         invoke,
       });
 
-      expect(poisoned).toMatchObject({ ok: true, value: 1 });
+      expect(poisoned).toMatchObject({ ok: false });
       expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
     } finally {
       session.dispose();
@@ -3032,7 +3257,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes after failed cells mutate persisted objects through aliases", async () => {
+  it("keeps aliased object mutations completed before an ordinary runtime error", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     try {
@@ -3056,7 +3281,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(failed).toMatchObject({ ok: false, error: "boom" });
-      expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(next).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }
@@ -3241,9 +3466,7 @@ describe("CodeModeDiagnosticsSession", () => {
       code: "function double(value: number) { return value * 2; }\nreturn double(3);",
       session,
     });
-    session.recordSuccessfulCell(
-      "function double(value: number) { return value * 2; }\nreturn double(3);",
-    );
+    session.recordCell("function double(value: number) { return value * 2; }\nreturn double(3);");
     const second = diagnoseCodeModeTypeScript({
       declaration,
       code: "return double(5);",
@@ -3258,7 +3481,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("function id<T>(x: T): T { return x; }\nreturn id(1);");
+    session.recordCell("function id<T>(x: T): T { return x; }\nreturn id(1);");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: 'return id("ok");',
@@ -3272,7 +3495,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("function f(x = 1): number { return x; }\nreturn f();");
+    session.recordCell("function f(x = 1): number { return x; }\nreturn f();");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "return f();",
@@ -3286,7 +3509,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("var workflowRuns = 1;\nreturn workflowRuns;");
+    session.recordCell("var workflowRuns = 1;\nreturn workflowRuns;");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "workflowRuns += 1;\nreturn workflowRuns;",
@@ -3300,7 +3523,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell('var items: string[] = [];\nitems.push("a");\nreturn items;');
+    session.recordCell('var items: string[] = [];\nitems.push("a");\nreturn items;');
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: 'items.push("b");\nreturn items.join(",");',
@@ -3314,9 +3537,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell(
-      'var summary = { count: 1, label: "one" };\nvar numbers = [1, 2, 3];',
-    );
+    session.recordCell('var summary = { count: 1, label: "one" };\nvar numbers = [1, 2, 3];');
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "summary.count += numbers[0] ?? 0;\nreturn `${summary.label}:${summary.count}`;",
@@ -3330,9 +3551,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell(
-      'var { count, label } = { count: 1, label: "ready" };\nreturn label;',
-    );
+    session.recordCell('var { count, label } = { count: 1, label: "ready" };\nreturn label;');
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "count += 1;\nreturn label.toUpperCase();",
@@ -3346,8 +3565,8 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("var mutable = 1;\nreturn mutable;");
-    session.recordSuccessfulCell('var mutable = "ready";\nreturn mutable;');
+    session.recordCell("var mutable = 1;\nreturn mutable;");
+    session.recordCell('var mutable = "ready";\nreturn mutable;');
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "const numeric: number = mutable;\nreturn numeric;",
@@ -3368,8 +3587,8 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("var counter = 1;\nreturn counter;");
-    session.recordSuccessfulCell("var counter;\nreturn counter;");
+    session.recordCell("var counter = 1;\nreturn counter;");
+    session.recordCell("var counter;\nreturn counter;");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "counter += 1;\nreturn counter;",
@@ -3383,8 +3602,8 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("var counter = 1;\nreturn counter;");
-    session.recordSuccessfulCell('var counter: string;\nreturn "ok";');
+    session.recordCell("var counter = 1;\nreturn counter;");
+    session.recordCell('var counter: string;\nreturn "ok";');
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "counter += 1;\nreturn counter;",
@@ -3398,8 +3617,8 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("var counter = 1;\nreturn counter;");
-    session.recordSuccessfulCell('var counter: string;\ncounter = "ready";\nreturn counter;');
+    session.recordCell("var counter = 1;\nreturn counter;");
+    session.recordCell('var counter: string;\ncounter = "ready";\nreturn counter;');
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "return counter.toUpperCase();",
@@ -3413,7 +3632,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("var { value } = await Promise.resolve({ value: 3 });");
+    session.recordCell("var { value } = await Promise.resolve({ value: 3 });");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "return value;",
@@ -3427,8 +3646,8 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("if (true) { var inner = 7; }");
-    session.recordSuccessfulCell("for (var i = 0; i < 3; i += 1) {}");
+    session.recordCell("if (true) { var inner = 7; }");
+    session.recordCell("for (var i = 0; i < 3; i += 1) {}");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "return inner + i;",
@@ -3442,9 +3661,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell(
-      "var unresolved = JSON.parse('{\"value\":1}');\nreturn unresolved;",
-    );
+    session.recordCell("var unresolved = JSON.parse('{\"value\":1}');\nreturn unresolved;");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "return unresolved.value;",
@@ -3465,7 +3682,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("class Local { value = 1; }\nvar saved = new Local();");
+    session.recordCell("class Local { value = 1; }\nvar saved = new Local();");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "return saved.value;",
@@ -3486,7 +3703,7 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell(
+    session.recordCell(
       `var large = { ${Array.from({ length: 60 }, (_, index) => `p${index}: ${index}`).join(", ")} };`,
     );
     const diagnostics = diagnoseCodeModeTypeScript({
@@ -3505,23 +3722,130 @@ describe("CodeModeDiagnosticsSession", () => {
     );
   });
 
-  it("does not emit block-scoped let or const bindings into session diagnostics", () => {
+  it("preserves top-level let and const types for later diagnostics", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration =
+      'declare const caplets: { gmail: { readonly id: "gmail"; searchTools(query: string): Promise<string[]> } };';
+
+    session.recordCell("const gmail = caplets.gmail;\nlet count = 1;", declaration);
+    const valid = diagnoseCodeModeTypeScript({
+      declaration,
+      code: 'count += 1;\nreturn gmail.searchTools("inbox");',
+      session,
+    });
+    const invalid = diagnoseCodeModeTypeScript({
+      declaration,
+      code: 'count = "wrong";\nreturn count;',
+      session,
+    });
+    const redeclared = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "const gmail = caplets.gmail;",
+      session,
+    });
+
+    expect(valid).toEqual([]);
+    expect(invalid).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "2322",
+          message: expect.stringContaining("not assignable to type 'number'"),
+        }),
+      ]),
+    );
+    expect(redeclared).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "2451",
+          message: expect.stringContaining("Cannot redeclare"),
+        }),
+      ]),
+    );
+  });
+
+  it("preserves runtime and type-only TypeScript declarations", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell(
-      "let localLet = 1;\nconst localConst = 2;\nreturn localLet + localConst;",
+    session.recordCell(
+      'type Item = { id: string };\ninterface Named { name: string }\nclass Box { constructor(readonly item: Item) {} }\nenum Mode { Ready }\nnamespace Helpers { export const value = 1; }\nreturn "ready";',
     );
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
-      code: "return localLet + localConst;",
+      code: 'const item: Item = { id: "x" };\nconst named: Named = { name: "n" };\nconst box = new Box(item);\nconst mode: Mode = Mode.Ready;\nreturn Helpers.value + box.item.id.length + named.name.length + mode;',
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("blocks duplicate type aliases while allowing interface merging", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordCell("type Item = { id: string };\ninterface Named { name: string }");
+    const duplicateType = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "type Item = { value: number };",
+      session,
+    });
+    const sameCellDuplicate = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "type Other = string;\ntype Other = number;",
+      session,
+    });
+    const mergedInterface = diagnoseCodeModeTypeScript({
+      declaration,
+      code: 'interface Named { id: string }\nreturn "ok";',
+      session,
+    });
+    session.recordCell("interface Named { id: string }");
+    const mergedUsage = diagnoseCodeModeTypeScript({
+      declaration,
+      code: 'const named: Named = { id: "1", name: "one" };\nreturn named;',
+      session,
+    });
+
+    expect(duplicateType).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "2300",
+          severity: "error",
+          message: expect.stringContaining("Duplicate identifier 'Item'"),
+        }),
+      ]),
+    );
+    expect(sameCellDuplicate).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "2300",
+          severity: "error",
+          message: expect.stringContaining("Duplicate identifier 'Other'"),
+        }),
+      ]),
+    );
+    expect(mergedInterface).toEqual([]);
+    expect(mergedUsage).toEqual([]);
+  });
+
+  it("does not carry control-flow narrowing across cell boundaries", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordCell("let value: string | undefined;");
+    session.recordCell('value = "ready";');
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "return value.toUpperCase();",
       session,
     });
 
     expect(diagnostics).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "2304", message: expect.stringContaining("localLet") }),
-        expect.objectContaining({ code: "2304", message: expect.stringContaining("localConst") }),
+        expect.objectContaining({
+          code: "18048",
+          message: expect.stringContaining("possibly 'undefined'"),
+        }),
       ]),
     );
   });
@@ -3530,8 +3854,8 @@ describe("CodeModeDiagnosticsSession", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
 
-    session.recordSuccessfulCell("function f(x: number): number { return x; }");
-    session.recordSuccessfulCell("function f(x: string): string { return x; }");
+    session.recordCell("function f(x: number): number { return x; }");
+    session.recordCell("function f(x: string): string { return x; }");
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: "const value: number = f('ok');\nreturn value;",
