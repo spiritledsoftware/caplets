@@ -124,6 +124,7 @@ function schemaPage({
 
   const majorSections = rows.filter(({ name }) =>
     [
+      "storage",
       "serve",
       "completion",
       "options",
@@ -171,6 +172,9 @@ ${majorSections.map((row) => sectionDetails(row.name, schema.properties?.[row.na
 
 function sectionDetails(name: string, schema: JsonSchema | undefined, sourcePath: string): string {
   if (!schema) return `### \`${name}\`\n\nNo generated details are available.`;
+  if (sourcePath === "schemas/caplets-config.schema.json" && name === "storage") {
+    return storageConfigSection(schema);
+  }
   if (sourcePath === "schemas/caplet.schema.json" && name === "cliTools") {
     return cliToolsCapletFileSection(schema);
   }
@@ -206,6 +210,40 @@ ${schema.description ?? "Nested fields from the canonical schema."}
 | Field | Status | Type | Description |
 | --- | --- | --- | --- |
 ${rows.join("\n")}`;
+}
+
+function storageConfigSection(schema: JsonSchema): string {
+  return `### \`storage\`
+
+${schema.description ?? "Authoritative Host State backend configuration."}
+
+#### SQLite
+
+| Field | Status | Type | Description |
+| --- | --- | --- | --- |
+| \`type\` | Required | "sqlite" | Select SQLite Authoritative Host State. |
+| \`path\` | Optional | string | SQLite database path. The platform state directory is used when omitted. |
+| \`assets\` | Optional | object | SQL or S3-compatible Caplet bundle asset storage. |
+| \`bundleLimits\` | Optional | object | Per-bundle auxiliary file count and byte limits. |
+
+#### PostgreSQL
+
+| Field | Status | Type | Description |
+| --- | --- | --- | --- |
+| \`type\` | Required | "postgres" | Select PostgreSQL Authoritative Host State. |
+| \`connectionString\` | Required | string | PostgreSQL bootstrap connection URL. |
+| \`schema\` | Optional | string | Logical-host schema; defaults to \`caplets\`. |
+| \`assets\` | Optional | object | SQL or S3-compatible Caplet bundle asset storage. |
+| \`bundleLimits\` | Optional | object | Per-bundle auxiliary file count and byte limits. |
+
+\`assets.type\` is \`sql\` or \`s3\`. S3 requires \`region\` and \`bucket\`; optional fields are
+\`endpoint\`, \`prefix\`, \`forcePathStyle\`, \`accessKeyId\`, and \`secretAccessKey\`. Static access
+keys must be configured together. Prefer workload identity or the AWS SDK credential chain.
+
+\`bundleLimits.maxFiles\` accepts integers from 1 through 100,000. \`maxFileBytes\` and
+\`maxTotalBytes\` accept positive integers.
+See [Authoritative Host State](/storage/) before PostgreSQL schema migration, S3 setup, backup, or
+legacy migration.`;
 }
 
 function cliToolsCapletFileSection(schema: JsonSchema): string {

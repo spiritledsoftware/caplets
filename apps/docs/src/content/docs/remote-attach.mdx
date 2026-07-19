@@ -14,7 +14,7 @@ upstream Caplets host.
 
 ## Modes
 
-Caplets native integrations use the same mode names as `caplets attach`:
+Caplets native integrations use these shared runtime selection modes:
 
 | Mode     | Use it when                                                                                                                                      |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -72,8 +72,8 @@ caplets remote host logins
 caplets remote host approve <code> --yes
 ```
 
-If the server uses a non-default credential state directory, pass the same directory
-with `--state-path` that the server uses for `caplets serve --remote-state-path`.
+Host approval commands use the Authoritative Host State backend from the host's user
+config. The deprecated `--state-path` option no longer selects credential state.
 The visible approval code is not an attach credential, but do not put Caplets access
 or refresh credentials in shell history, agent configs, or environment variables.
 

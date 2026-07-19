@@ -20,6 +20,27 @@ configured integrations. Fix the first failed check, then rerun the same command
 
 ## Symptom map
 
+### Auth, Vault values, or remote clients disappeared after upgrading
+
+Expected symptom: after upgrading from `caplets@0.25.x` or earlier to `caplets@0.26.0`
+or later, previously configured credentials, Vault values or grants, remote clients,
+setup history, activity, or tracked global Caplets appear missing.
+
+Do not recreate or overwrite the missing state. Caplets 0.26.0 and later use SQL as the
+authority and do not fall back to the legacy files. Stop every Caplets Host Node, then run
+the required one-time migration:
+
+```sh
+caplets storage migrate-legacy --dry-run
+caplets storage migrate-legacy
+caplets storage status --json
+```
+
+Resolve dry-run failures before the write migration and restart only after storage status
+reports ready. If a tracked Caplet is missing, restore the exact path named in the error or
+remove its stale lockfile entry, then rerun the dry run. See
+[Authoritative Host State](/storage/#upgrade-from-025x-or-earlier).
+
 ### Agent cannot see Caplets
 
 Expected symptom: the agent has no `caplets__code_mode` tool, or no Caplets MCP server is
@@ -242,19 +263,20 @@ Keep MCP client configs on `caplets attach <url>`.
 
 ### Attach URL or workspace is wrong
 
-Expected symptom: the agent connects to a stale workspace, or the runtime reports that the
-attach manifest is missing or stale.
+Expected symptom: the agent connects to an unintended runtime or workspace.
 
-Rerun the attach command from the current workspace and copy the fresh values into the
-agent environment:
+Inspect the effective runtime selection rather than copying tokens or endpoint internals into
+agent configuration:
 
 ```sh
-caplets attach
+caplets remote status
+caplets doctor --json
+caplets attach <remote-url> --once
 ```
 
-Use the versioned attach URL printed by the runtime. Attach connects to `/v1/attach`.
-Ordinary MCP clients that are not using attach connect to `/v1/mcp`. Do not reuse an older
-`/ws/...` path from shell history or a previous docs page.
+Correct `CAPLETS_MODE`, `CAPLETS_REMOTE_URL`, or `CAPLETS_REMOTE_WORKSPACE`, then restart the
+agent. Attach uses the runtime's `/v1/attach` API. Ordinary MCP clients that bypass attach use
+`/v1/mcp`; do not substitute one path for the other.
 
 ### Project Binding smoke check fails
 
@@ -269,13 +291,15 @@ ls .caplets/config.json
 caplets doctor
 ```
 
-Run the agent from the project root, then retry the smallest Code Mode script that uses the
-project Caplet. If the capability needs setup commands, run the commands listed in the
-Caplet's `setup` metadata before asking the agent to call it.
+Run the agent from the project root. Managed Project Binding currently runs through native Cloud
+sessions and native loopback daemon sessions that provide project context; ordinary CLI
+`caplets attach <url>` is only a thin MCP adapter, and self-hosted HTTPS native remotes do not
+currently establish a managed binding. Use `caplets attach <url> --once` only to validate the
+manifest policy and WebSocket endpoint. If the capability needs setup commands, run those listed
+in its `setup` metadata before asking the agent to call it.
 
-For stacked runtimes, project-local Caplets come from the attach or native session's project
-root. The long-running HTTP server startup directory is not used as the active project for
-every client.
+See [Project Binding](/project-binding/) for exclusion rules, size limits, leases, and
+node-loss recovery.
 
 ## OSV no-auth smoke test
 

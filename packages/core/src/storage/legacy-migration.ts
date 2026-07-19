@@ -1,6 +1,8 @@
 import { createHash, type Hash } from "node:crypto";
 import {
+  constants as fsConstants,
   closeSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -28,7 +30,7 @@ import { FileVaultStore, type LegacyVaultMigrationSnapshot } from "../vault";
 import type { ImportCapletBundleInput } from "./caplet-records";
 import type { OperatorPrincipal } from "./installations";
 import { createHostStorage, type HostStorage } from "./database";
-import type { LegacyRecordVaultGrantImport } from "./vault-grants";
+import type { LegacyVaultGrantImport } from "./vault-grants";
 import type {
   HostDatabaseTransaction,
   HostStorageConfig,
@@ -86,13 +88,14 @@ type PlannedArtifact = {
 type BackupMove = {
   source: string;
   target: string;
+  preserveSource?: boolean | undefined;
 };
 
 type PlannedLegacyState = {
   artifacts: PlannedArtifact[];
   backendAuth: LegacyOAuthTokenBundleSnapshot;
   vault: LegacyVaultMigrationSnapshot;
-  vaultGrants: LegacyRecordVaultGrantImport[];
+  vaultGrants: LegacyVaultGrantImport[];
   remoteSecurity: RemoteServerCredentialState;
   setup: LegacySetupMigrationSnapshot;
   operatorActivity: DashboardActivityEntry[];
@@ -141,6 +144,7 @@ export async function migrateLegacyHostState(
     );
     if (
       options.legacyVaultRoot !== undefined &&
+      options.targetVaultRoot === undefined &&
       resolve(storage.vaultValues.root) === resolve(options.legacyVaultRoot)
     ) {
       throw new CapletsError(
@@ -183,12 +187,10 @@ export async function migrateLegacyHostState(
     await storage.remoteSecurity.assertLegacySnapshotImportable(plan.remoteSecurity);
     await storage.setupState.assertLegacySnapshotImportable(plan.setup);
     await storage.operatorActivity.assertLegacyEntriesImportable(plan.operatorActivity);
-    const existingVaultGrants = await assertRequiredVaultRecords(
-      storage,
-      plan.vaultGrants,
-      plan.artifacts,
+    await storage.vaultGrants.assertLegacyGrantsImportable(
+      await vaultGrantsAvailableBeforeImport(storage, plan.vaultGrants),
+      operator,
     );
-    await storage.vaultGrants.assertLegacyRecordGrantsImportable(existingVaultGrants, operator);
 
     if (options.dryRun) {
       return reportForPlan("verified", null, plan);
@@ -255,7 +257,7 @@ function importAndVerifyLegacySqlite(
   );
   runSynchronous(storage.vaultValues.importLegacyValuesInTransaction(plan.vault.values, adapter));
   runSynchronous(
-    storage.vaultGrants.importLegacyRecordGrantsInTransaction(plan.vaultGrants, operator, adapter),
+    storage.vaultGrants.importLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter),
   );
   runSynchronous(
     storage.remoteSecurity.importLegacySnapshotInTransaction(plan.remoteSecurity, adapter),
@@ -271,7 +273,7 @@ function importAndVerifyLegacySqlite(
   );
   runSynchronous(storage.vaultValues.verifyLegacyValuesInTransaction(plan.vault.values, adapter));
   runSynchronous(
-    storage.vaultGrants.verifyLegacyRecordGrantsInTransaction(plan.vaultGrants, operator, adapter),
+    storage.vaultGrants.verifyLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter),
   );
   runSynchronous(
     storage.remoteSecurity.verifyLegacySnapshotInTransaction(plan.remoteSecurity, adapter),
@@ -293,11 +295,7 @@ async function importAndVerifyLegacyPostgres(
   await storage.caplets.importBundlesInTransaction(pendingBundles, adapter);
   await storage.backendAuth.importLegacyBundlesInTransaction(plan.backendAuth.bundles, adapter);
   await storage.vaultValues.importLegacyValuesInTransaction(plan.vault.values, adapter);
-  await storage.vaultGrants.importLegacyRecordGrantsInTransaction(
-    plan.vaultGrants,
-    operator,
-    adapter,
-  );
+  await storage.vaultGrants.importLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter);
   await storage.remoteSecurity.importLegacySnapshotInTransaction(plan.remoteSecurity, adapter);
   await storage.setupState.importLegacySnapshotInTransaction(plan.setup, adapter);
   await storage.operatorActivity.importLegacyEntriesInTransaction(plan.operatorActivity, adapter);
@@ -305,11 +303,7 @@ async function importAndVerifyLegacyPostgres(
   await verifyImportedArtifactsPostgres(storage, plan.artifacts, adapter);
   await storage.backendAuth.verifyLegacyBundlesInTransaction(plan.backendAuth.bundles, adapter);
   await storage.vaultValues.verifyLegacyValuesInTransaction(plan.vault.values, adapter);
-  await storage.vaultGrants.verifyLegacyRecordGrantsInTransaction(
-    plan.vaultGrants,
-    operator,
-    adapter,
-  );
+  await storage.vaultGrants.verifyLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter);
   await storage.remoteSecurity.verifyLegacySnapshotInTransaction(plan.remoteSecurity, adapter);
   await storage.setupState.verifyLegacySnapshotInTransaction(plan.setup, adapter);
   await storage.operatorActivity.verifyLegacyEntriesInTransaction(plan.operatorActivity, adapter);
@@ -384,9 +378,12 @@ function planLegacyState(options: LegacyMigrationOptions, backupPath: string): P
       vault.snapshot.sourcePaths,
       options.legacyVaultRoot,
       join(backupPath, "vault"),
+      resolve(options.targetVaultRoot ?? "") === resolve(options.legacyVaultRoot)
+        ? resolve(join(options.legacyVaultRoot, "vault-key"))
+        : undefined,
     );
   }
-  const vaultGrants = plannedVaultGrants(vault.snapshot);
+  const vaultGrants = plannedVaultGrants(vault.snapshot, artifacts);
 
   const remoteSecurity = options.remoteSecurityDir
     ? snapshotWithBackupFallback(
@@ -487,56 +484,59 @@ function appendFileBackupMoves(
   sourcePaths: string[],
   sourceRoot: string,
   backupRoot: string,
+  preservedSource?: string,
 ): void {
   const resolvedRoot = resolve(sourceRoot);
   for (const source of sourcePaths) {
+    const resolvedSource = resolve(source);
     moves.push({
       source,
-      target: join(backupRoot, portableRelative(resolvedRoot, resolve(source))),
+      target: join(backupRoot, portableRelative(resolvedRoot, resolvedSource)),
+      ...(preservedSource === resolvedSource ? { preserveSource: true } : {}),
     });
   }
 }
 
 function plannedVaultGrants(
   snapshot: LegacyVaultMigrationSnapshot,
-): LegacyRecordVaultGrantImport[] {
+  artifacts: PlannedArtifact[],
+): LegacyVaultGrantImport[] {
+  const trackedGlobalIds = new Set(artifacts.map((artifact) => artifact.id));
   const identities = new Set<string>();
   return snapshot.grants.map((grant) => {
-    const identity = JSON.stringify([grant.capletId, grant.referenceName]);
+    const storedRecord =
+      grant.origin.kind === "global-file" && trackedGlobalIds.has(grant.capletId);
+    const originKind = storedRecord ? "stored-record" : grant.origin.kind;
+    const originPath = storedRecord ? null : grant.origin.path;
+    const identity = JSON.stringify([grant.capletId, originKind, originPath, grant.referenceName]);
     if (identities.has(identity)) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        "Legacy Vault grants cannot be bound uniquely to immutable Caplet Records.",
-      );
+      throw new CapletsError("CONFIG_INVALID", "Legacy Vault grants contain duplicate subjects.");
     }
     identities.add(identity);
     return {
       capletId: grant.capletId,
       vaultKey: grant.storedKey,
       referenceName: grant.referenceName,
+      originKind,
+      originPath,
       createdAt: grant.createdAt,
     };
   });
 }
 
-async function assertRequiredVaultRecords(
+async function vaultGrantsAvailableBeforeImport(
   storage: HostStorage,
-  grants: LegacyRecordVaultGrantImport[],
-  artifacts: PlannedArtifact[],
-): Promise<LegacyRecordVaultGrantImport[]> {
-  const plannedIds = new Set(artifacts.map((artifact) => artifact.id));
-  const existing: LegacyRecordVaultGrantImport[] = [];
+  grants: LegacyVaultGrantImport[],
+): Promise<LegacyVaultGrantImport[]> {
+  // Stored-record grants for records in this migration become importable only after those
+  // records are inserted in the transaction.
+  const available: LegacyVaultGrantImport[] = [];
   for (const grant of grants) {
-    const record = await storage.caplets.get(grant.capletId);
-    if (!record && !plannedIds.has(grant.capletId)) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        `Caplet Record ${grant.capletId} required by a legacy Vault grant was not found.`,
-      );
+    if (grant.originKind !== "stored-record" || (await storage.caplets.get(grant.capletId))) {
+      available.push(grant);
     }
-    if (record) existing.push(grant);
   }
-  return existing;
+  return available;
 }
 
 function reportForPlan(
@@ -573,7 +573,10 @@ function planArtifacts(capletsRoot: string, lockfilePath: string): PlannedArtifa
   return lockfile.entries.map((entry) => {
     const destination = validateLockfileDestination(capletsRoot, entry.destination);
     if (!existsSync(destination)) {
-      throw new CapletsError("CONFIG_NOT_FOUND", `Tracked Caplet ${entry.id} is missing.`);
+      throw new CapletsError(
+        "CONFIG_NOT_FOUND",
+        `Tracked Caplet ${entry.id} is missing at ${destination}. Restore it or remove its stale entry from ${lockfilePath} before migration.`,
+      );
     }
     const stats = lstatSync(destination);
     if (
@@ -747,18 +750,26 @@ function moveLegacyArtifactsToBackup(moves: BackupMove[]): void {
     uniqueTargets.add(target);
   }
 
-  const moved: BackupMove[] = [];
+  const completed: BackupMove[] = [];
   try {
     for (const move of moves) {
       mkdirSync(dirname(move.target), { recursive: true, mode: 0o700 });
-      renameSync(move.source, move.target);
-      moved.push(move);
+      if (move.preserveSource) {
+        copyFileSync(move.source, move.target, fsConstants.COPYFILE_EXCL);
+      } else {
+        renameSync(move.source, move.target);
+      }
+      completed.push(move);
     }
   } catch (error) {
-    for (const entry of moved.reverse()) {
+    for (const entry of completed.reverse()) {
       if (!existsSync(entry.target)) continue;
-      mkdirSync(dirname(entry.source), { recursive: true, mode: 0o700 });
-      renameSync(entry.target, entry.source);
+      if (entry.preserveSource) {
+        rmSync(entry.target, { force: true });
+      } else {
+        mkdirSync(dirname(entry.source), { recursive: true, mode: 0o700 });
+        renameSync(entry.target, entry.source);
+      }
     }
     throw error;
   }

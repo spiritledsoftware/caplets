@@ -5,9 +5,36 @@ description: Install Caplets and wire it into your agent.
 
 Caplets is pre-1.0. Use the latest CLI and latest docs together.
 
+## Required migration when upgrading to 0.26.0 or later
+
+> **Do not start the upgraded host first.** If this host ran `caplets@0.25.x` or earlier,
+> the one-time legacy-state migration is required after installing `caplets@0.26.0` or
+> later and before restarting the daemon, running `caplets setup`, or serving requests.
+
+Caplets 0.26.0 moved Authoritative Host State into SQL. It does not automatically migrate
+or fall back to the old backend auth, Vault, remote-security, setup, Operator Activity, or
+tracked-Caplet stores. Skipping migration can therefore make existing credentials, Vault
+values and grants, remote clients, setup history, activity, and tracked Caplets appear
+missing.
+
+Stop every Caplets Host Node, back up the legacy state roots and configured SQL database,
+then verify and run the migration:
+
+```sh
+caplets storage migrate-legacy --dry-run
+caplets storage migrate-legacy
+caplets storage status --json
+```
+
+Resolve every dry-run error before running the write migration. Record the backup path
+printed by the migration, and restart the host only after storage status reports ready.
+Fresh hosts that never ran a version before 0.26.0 do not need this migration. See
+[Authoritative Host State](/storage/#upgrade-from-025x-or-earlier) for default paths,
+custom-path guidance, backup requirements, and recovery behavior.
+
 ## Requirements
 
-- Node.js 24 or newer for published packages.
+- Node.js 22 or newer for published packages.
 - An agent that can use MCP, such as Codex or Claude, or a native integration such as
   OpenCode or Pi.
 
@@ -72,11 +99,12 @@ caplets update sentry github
 Install, restore, and update refuse to overwrite local edits unless you pass `--force`.
 Use `--json` when a script needs per-entry statuses and machine-readable errors.
 
-For public external sources, install, restore, and update also attempt best-effort catalog
-indexing after the local mutation succeeds. Human output prints a short notice when a
-public Caplet source may be indexed. JSON output includes per-entry `catalogIndexing`
-status values. Indexing failures never block install/update/restore, and private or local
-sources are skipped with redacted categorical statuses.
+For eligible GitHub-shaped external sources, install, restore, and update also attempt
+best-effort catalog indexing after the local mutation succeeds. Human output prints a short
+notice when a source may be indexed. JSON output includes per-entry `catalogIndexing` status
+values. Eligibility does not verify GitHub repository visibility, and the payload includes
+the installed `CAPLET.md`; disable indexing for private repositories or non-public content.
+Indexing failures never block install/update/restore.
 
 Set `CAPLETS_DISABLE_CATALOG_INDEXING=1` to skip catalog indexing network requests
 entirely.

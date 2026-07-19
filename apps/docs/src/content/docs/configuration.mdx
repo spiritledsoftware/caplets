@@ -58,6 +58,13 @@ particular, `serve.path` changes the dashboard URL prefix, and `serve.publicOrig
 public dashboard origin used for browser-facing request identity and session/cookie behavior. See
 [Dashboard](/dashboard/) if you are exposing host administration through the browser.
 
+### Authoritative Host State
+
+The user config may select the host's SQLite or PostgreSQL `storage` backend and optional
+S3-compatible bundle asset store. Project config cannot override host storage. See
+[Authoritative Host State](/storage/) for schema migration, bootstrap-secret, backup, and
+legacy-upgrade requirements.
+
 ## Project config
 
 Project config lives at:

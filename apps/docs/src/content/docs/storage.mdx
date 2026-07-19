@@ -1,0 +1,186 @@
+---
+title: Authoritative Host State
+description: Configure, migrate, back up, and operate Caplets host state in SQLite or PostgreSQL.
+---
+
+Authoritative Host State is the correctness-bearing state owned by a Caplets host. It includes
+stored Caplet records and revisions, installation provenance, backend OAuth state, encrypted Vault
+values and access grants, remote clients and pending logins, setup state, dashboard sessions,
+Project Binding coordination, Operator Activity, host identity, and schema metadata.
+
+One host uses exactly one SQL backend. Caplets does not dual-write, fall back to a legacy file store,
+or copy between SQLite and PostgreSQL automatically.
+
+## SQLite: the default
+
+When `storage` is omitted, Caplets opens SQLite at:
+
+| Platform        | Default database                                                                                   |
+| --------------- | -------------------------------------------------------------------------------------------------- |
+| Linux and macOS | Absolute `$XDG_STATE_HOME/caplets.sqlite3`; otherwise `$HOME/.local/state/caplets.sqlite3`         |
+| Windows         | Absolute `%LOCALAPPDATA%\caplets.sqlite3`; otherwise `%USERPROFILE%\AppData\Local\caplets.sqlite3` |
+
+Override the path in the user config when the host needs a mounted or separately backed-up volume:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "storage": {
+    "type": "sqlite",
+    "path": "/srv/caplets/state/host.sqlite3"
+  }
+}
+```
+
+`storage` is host-owned user configuration. Project config cannot override it. SQLite enables
+foreign keys, WAL journaling, full synchronous writes, and a busy timeout. Ordered schema
+migrations run before SQLite serves; a failed migration or a newer unknown schema fails closed.
+
+SQLite is the boring choice for one Host Node. Stop every process using the database before an
+offline backup or restore. Include the configured S3 asset prefix in the same recovery point when
+S3 asset storage is enabled.
+
+## PostgreSQL: multiple Host Nodes
+
+Use PostgreSQL when several Host Nodes must coordinate one logical host:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "storage": {
+    "type": "postgres",
+    "connectionString": "postgresql://caplets_runtime:<injected-password>@db.example:5432/caplets",
+    "schema": "caplets_prod"
+  }
+}
+```
+
+One PostgreSQL schema is one logical Caplets host. Every node for that host must use the same
+schema, configuration, global Caplet Files, Vault encryption key, and asset backend. The schema name
+defaults to `caplets` and must match `^[a-z_][a-z0-9_]{0,62}$`.
+
+The connection URL is a bootstrap secret: SQL must open before Caplets Vault is available. Render
+the user config from a deployment secret or mount a secret-generated config file. Do not put the
+URL in Caplets Vault. Caplets does not define a `CAPLETS_STORAGE_*` environment mapping.
+
+PostgreSQL runtime startup never applies DDL. Run migrations as a one-shot job with a
+DDL-capable connection before starting DML-only runtime nodes:
+
+```sh
+caplets storage schema-migrate
+caplets storage status --json
+```
+
+A host that cannot read the released schema version, sees the wrong version, or cannot reach its
+asset backend is not ready. Do not replace the Caplets readiness check with a TCP-only database
+check.
+
+## Bundle asset storage
+
+Stored Caplet bundle assets are content-addressed in SQL by default. An S3-compatible backend is
+optional for assets that must survive node loss or be readable from any node:
+
+```json
+{
+  "storage": {
+    "type": "postgres",
+    "connectionString": "postgresql://caplets_runtime:<injected-password>@db.example:5432/caplets",
+    "schema": "caplets_prod",
+    "assets": {
+      "type": "s3",
+      "endpoint": "https://objects.example.com",
+      "region": "us-east-1",
+      "bucket": "caplets-production",
+      "prefix": "host-a",
+      "forcePathStyle": false
+    }
+  }
+}
+```
+
+`region` and `bucket` are required. `endpoint`, `prefix`, and `forcePathStyle` are optional. Prefer
+workload identity or the AWS SDK credential chain. If static credentials are unavoidable,
+`accessKeyId` and `secretAccessKey` must be configured together and injected as deployment
+secrets; they cannot come from Caplets Vault.
+
+Object uploads are read-back and hash-verified before SQL references them. If a current record
+needs an unavailable object, storage becomes unhealthy rather than substituting empty content.
+Back up SQL and the matching object version set as one recovery point.
+
+## Inspect and administer storage
+
+Check backend readiness, schema version, domain counts, and asset health:
+
+```sh
+caplets storage status --json
+```
+
+Stored Caplet records are revisioned operator-managed bundles. Start with:
+
+```sh
+caplets storage records list --stored
+caplets storage records get <id> --stored
+caplets storage records revisions <id>
+```
+
+Import and export complete bundles:
+
+```sh
+caplets storage records import ./my-caplet
+caplets storage records export <id> ./exported-caplet
+```
+
+Mutating record commands use observed generations to reject stale writes. Run
+`caplets storage records --help` and the selected subcommand's `--help` before update, restore,
+rename, retention, revision deletion, installation-lifecycle, or hard-delete operations.
+
+## Upgrade from 0.25.x or earlier
+
+Caplets 0.26.0 moved Authoritative Host State from legacy files into SQL. Migration is an explicit,
+offline, one-time upgrade step. Fresh hosts that never ran 0.25.x or earlier do not need it.
+
+The migration imports tracked global Caplets and their installation provenance from the old
+lockfile, plus backend auth, Vault values and grants, remote-client security state, setup state, and
+Operator Activity. It moves the old global lockfile into the timestamped backup after commit.
+Untracked global Caplet Files remain in place as authoritative overlays.
+
+1. Install the new CLI, but do not start an upgraded Host Node.
+2. Stop every old Host Node and back up all legacy state roots, the target SQL backend, and any
+   object-store prefix.
+3. Run the dry run in the same user and environment that own the host:
+
+   ```sh
+   caplets storage migrate-legacy --dry-run
+   ```
+
+4. Resolve every missing artifact, lockfile hash or provenance mismatch, ID collision, malformed
+   legacy record, Vault key problem, and target conflict.
+5. Run the write migration, then check readiness:
+
+   ```sh
+   caplets storage migrate-legacy
+   caplets storage status --json
+   ```
+
+The platform global Caplets root and lockfile are defaults. Use `--caplets-root` or `--lockfile`
+only when those two paths are nonstandard. If an error says a tracked Caplet is missing, the message
+names both the expected artifact path and lockfile; restore the artifact or remove the stale
+lockfile entry before rerunning the dry run.
+
+The write command acquires an exclusive migration lock, imports applicable domains in one SQL
+transaction, verifies counts and content hashes, and only then moves migrated source files into a
+timestamped backup. It copies the still-active file-layer Vault key into that backup. Record the
+printed backup path. After cutover, legacy files are not a fallback.
+
+## Backup and recovery boundaries
+
+- Back up SQLite with a consistent SQLite backup while every Host Node is stopped. Preserve WAL and
+  SHM sidecars for diagnosis until the restore decision is final.
+- Back up PostgreSQL with the deployment's tested database backup process and include schema,
+  migration metadata, and matching object versions.
+- Never restore a database schema newer than the running Caplets release.
+- Live Code Mode heaps, Project Binding workspace bytes, and node-local media artifacts are not
+  reconstructed from SQL. Clustered deployments need affinity or explicit rebind/recovery for
+  those node-local resources.
+- Caplets has no built-in SQLite-to-PostgreSQL copier. Rehearse any external transfer against a
+  disposable target, migrate the target schema first, and verify all domains before cutover.

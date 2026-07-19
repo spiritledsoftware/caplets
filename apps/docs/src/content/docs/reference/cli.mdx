@@ -1,0 +1,214 @@
+---
+title: CLI Reference
+description: Find Caplets command families, subcommands, output modes, and environment selectors.
+---
+
+The running CLI is the final authority for options in your installed release:
+
+```sh
+caplets --help
+caplets <command> --help
+caplets <command> <subcommand> --help
+```
+
+This page maps the command surface by job. It intentionally does not duplicate every flag from
+Commander help.
+
+## Setup and lifecycle
+
+| Command                               | Purpose                                                                                |
+| ------------------------------------- | -------------------------------------------------------------------------------------- |
+| `caplets init`                        | Create a starter user, project, or remote config.                                      |
+| `caplets setup [integration]`         | Configure Codex, Claude Code, OpenCode, Pi, or a cataloged MCP client.                 |
+| `caplets doctor`                      | Diagnose local config, remote selection, daemon state, auth, and Project Binding.      |
+| `caplets list`                        | List configured Caplets; use `--all` to include disabled entries.                      |
+| `caplets install [repo] [caplets...]` | Install from a repository or restore the selected lockfile when the source is omitted. |
+| `caplets update [caplets...]`         | Update all or selected tracked Caplets.                                                |
+| `caplets inspect <caplet>`            | Print one configured Caplet card.                                                      |
+| `caplets check-backend <caplet>`      | Check backend availability and auth readiness.                                         |
+
+`install` and `update` select project, user/global, or remote lifecycle targets through their flags.
+Run help before using `--force`; normal operation refuses to overwrite divergent local content.
+
+## Add capability files
+
+`caplets add` writes Markdown Caplet files for local configuration:
+
+```sh
+caplets add mcp <id> ...
+caplets add openapi <id> ...
+caplets add google-discovery <id> ...
+caplets add graphql <id> ...
+caplets add http <id> ...
+caplets add cli <id> ...
+```
+
+Use [Caplet files](/reference/caplet-files/) for the resulting frontmatter and
+[Configuration schema](/reference/config/) for JSON configuration.
+
+## Discover and call backends
+
+| Commands                                                                         | Backend surface                                        |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `list-tools`, `search-tools`, `get-tool`, `call-tool`                            | Downstream tools and actions for every backend family. |
+| `list-resources`, `search-resources`, `list-resource-templates`, `read-resource` | MCP resources and templates.                           |
+| `list-prompts`, `search-prompts`, `get-prompt`, `complete`                       | MCP prompts and prompt/resource-template completion.   |
+
+Qualified tool and prompt targets can use `<caplet>.<name>` where command help accepts a
+`<caplet-or-target>` argument. Prefer `--json` or `--format json` for scripts when supported.
+
+## Code Mode
+
+Run inline TypeScript or read it from a file:
+
+```sh
+caplets code-mode 'return Object.keys(caplets)'
+caplets code-mode --file ./query.ts
+caplets code-mode types
+```
+
+The CLI invocation is one-shot. Live `sessionId` reuse belongs to a long-running MCP or native Code
+Mode service; separate CLI processes do not share a QuickJS heap.
+
+## Serve, daemon, and attach
+
+| Command                                     | Purpose                                                                               |
+| ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `caplets serve`                             | Run configured Caplets as a foreground MCP stdio or HTTP server.                      |
+| `caplets daemon install`                    | Install or update the managed local daemon.                                           |
+| `caplets daemon start` / `restart` / `stop` | Control the managed daemon.                                                           |
+| `caplets daemon status`                     | Inspect daemon configuration and health.                                              |
+| `caplets daemon logs`                       | Read or follow daemon stdout/stderr.                                                  |
+| `caplets daemon uninstall`                  | Remove the daemon; `--purge` also removes its config, state, and logs.                |
+| `caplets attach [url]`                      | Run a thin stdio MCP adapter backed by a local daemon, remote host, or Cloud runtime. |
+
+`attach` is stdio-only and does not open an HTTP listener. Use `serve --transport http
+--upstream-url <url>` for a long-running stacked HTTP runtime.
+
+## Remote Login and Cloud
+
+Self-hosted Remote Login:
+
+```text
+caplets remote login <url>
+caplets remote status [url]
+caplets remote logout <url>
+caplets remote host clients
+caplets remote host logins
+caplets remote host approve <code> --yes
+caplets remote host deny <code>
+caplets remote host revoke <client-id>
+```
+
+Host administration uses the SQL Authoritative Host State selected by user config. The deprecated
+`--state-path` option is rejected.
+
+Hosted Cloud commands:
+
+```text
+caplets cloud auth login
+caplets cloud auth status
+caplets cloud auth logout
+caplets cloud auth workspaces
+caplets cloud auth switch <workspace>
+caplets cloud add [path]
+```
+
+Saved Remote Profiles and Cloud credentials belong in Caplets client state, not agent config.
+
+## Vault and backend OAuth
+
+Vault commands:
+
+```text
+caplets vault set <name>
+caplets vault get <name>
+caplets vault list
+caplets vault delete <name>
+caplets vault access grant <name> <caplet-id>
+caplets vault access list [name] [caplet-id]
+caplets vault access revoke <name> <caplet-id>
+```
+
+Backend OAuth commands:
+
+```text
+caplets auth login <server>
+caplets auth refresh <caplet-id>
+caplets auth list
+caplets auth logout <server>
+```
+
+Vault reveal is explicit (`vault get --show`). Metadata and access-list operations do not print raw
+values.
+
+## Authoritative Host State
+
+```text
+caplets storage status
+caplets storage schema-migrate
+caplets storage migrate-legacy
+caplets storage records list --stored
+caplets storage records get <id> --stored
+caplets storage records import <bundle-path>
+caplets storage records update <id> <bundle-path>
+caplets storage records export <id> <destination>
+caplets storage records revisions <id>
+caplets storage records restore <id> <revision>
+caplets storage records delete-revision <id> <revision>
+caplets storage records retention <id> <limit|inherit>
+caplets storage records rename <id> <new-id>
+caplets storage records delete <id>
+caplets storage records installation status <id>
+caplets storage records installation detach <id>
+caplets storage records installation observe <id>
+caplets storage records installation replace <id>
+```
+
+Record mutations use required generation checks where command help shows `--generation`. Read
+[Authoritative Host State](/storage/) before schema migration, legacy migration, or destructive
+record administration.
+
+## Config, telemetry, and completion
+
+```text
+caplets config path
+caplets config paths
+caplets telemetry status
+caplets telemetry enable
+caplets telemetry disable
+caplets telemetry rotate-id
+caplets telemetry delete-id
+caplets telemetry debug -- <command...>
+caplets completion <bash|zsh|fish|powershell|cmd>
+```
+
+Load completion for the current shell session:
+
+```sh
+source <(caplets completion bash)
+source <(caplets completion zsh)
+caplets completion fish | source
+```
+
+For PowerShell, run `caplets completion powershell | Invoke-Expression`. The `cmd` output defines a
+DOSKEY completion macro. Persist the generated script using your shell's normal completion setup.
+
+## Environment selectors and controls
+
+| Variable                             | Effect                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------- |
+| `CAPLETS_CONFIG`                     | Override the user config path.                                                  |
+| `CAPLETS_PROJECT_CONFIG`             | Override the project config path.                                               |
+| `CAPLETS_MODE`                       | Select `auto`, `local`, `daemon`, `remote`, or `cloud` for native integrations. |
+| `CAPLETS_DAEMON_URL`                 | Select the local loopback daemon for native mode.                               |
+| `CAPLETS_REMOTE_URL`                 | Select a self-hosted or Cloud remote base URL.                                  |
+| `CAPLETS_REMOTE_WORKSPACE`           | Select a workspace for a saved remote profile.                                  |
+| `CAPLETS_DISABLE_TELEMETRY=1`        | Disable anonymous telemetry for the process.                                    |
+| `CAPLETS_DISABLE_UPDATE_CHECK=1`     | Disable passive update metadata and notices.                                    |
+| `CAPLETS_DISABLE_CATALOG_INDEXING=1` | Disable best-effort public catalog indexing requests.                           |
+| `CAPLETS_ENCRYPTION_KEY`             | Supply the 32-byte base64url Vault encryption key.                              |
+
+User-config fields, command flags, and environment variables have command-specific precedence. See
+[Configuration](/configuration/) and the selected command's help rather than assuming every flag has
+an environment equivalent.

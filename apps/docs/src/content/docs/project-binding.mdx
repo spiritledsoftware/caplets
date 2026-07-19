@@ -1,0 +1,120 @@
+---
+title: Project Binding
+description: Bind a local project to remote Caplets that need repository context.
+---
+
+Project Binding lets a supported Access Client keep a local repository synchronized with a remote
+Caplets runtime. Required Caplets stay hidden unless the session supplies a ready binding context;
+Caplets never silently runs them in the server startup directory.
+
+A Caplet opts into this requirement explicitly:
+
+```json
+{
+  "cliTools": {
+    "repo-checks": {
+      "name": "Repository checks",
+      "description": "Run approved checks in the attached project.",
+      "projectBinding": { "required": true },
+      "actions": {
+        "test": { "command": "pnpm", "args": ["test"] }
+      }
+    }
+  }
+}
+```
+
+The released managed session path is wired for native Caplets Cloud sessions and native loopback
+daemon sessions that provide a project root. A self-hosted HTTPS native remote does not currently
+establish a managed Project Binding session.
+
+## How a binding starts
+
+Native OpenCode and Pi integrations can pass project context in Cloud and loopback daemon modes.
+The binding session establishes or renews a lease and waits for managed project sync before
+required Caplets are exposed.
+
+The ordinary `caplets attach <url>` command is a thin stdio MCP adapter; it does not itself run
+managed project synchronization. Its `--once` mode is the CLI preflight for a remote binding
+endpoint:
+
+```sh
+cd /path/to/project
+caplets remote login https://caplets.example.com/caplets
+caplets attach https://caplets.example.com/caplets --once
+```
+
+A stacked runtime also attempts upstream Project Binding when a client supplies project context and
+the upstream supports it. If the upstream binding path is unavailable, local project Caplets and
+non-project upstream Caplets remain available; required upstream project Caplets stay unavailable
+with a diagnostic.
+
+## Preflight the binding path
+
+Use the finite smoke path with an explicit remote selector before editing agent configuration:
+
+```sh
+caplets attach https://caplets.example.com/caplets --once
+```
+
+This builds the local sync manifest, enforces preflight size policy, probes the selected Project
+Binding WebSocket endpoint, and exits. It does not start a sync session and is not a generic MCP
+health check.
+
+`caplets doctor` and `caplets doctor --json` report the resolved project root, fingerprint,
+workspace path, remote auth mode, WebSocket URL, and recovery command. The standalone CLI does not
+receive a live sync snapshot, so its sync fields remain `idle` with default Mutagen diagnostics.
+
+## What is synchronized
+
+Caplets builds a manifest before synchronization. It applies:
+
+1. a hard denylist for VCS internals, dependency/build caches, common secret files, private keys,
+   archives, and local environment files;
+2. supported rules from the project's `.gitignore` and `.git/info/exclude`; and
+3. supported rules from optional `.capletsignore`.
+
+The current matcher supports exact file or directory names, trailing-slash directory rules,
+leading `*.` suffix rules, leading-slash root anchoring, and `!` negation. Other glob syntax such
+as `**`, embedded `*`, `?`, and character classes is treated literally; do not rely on it to
+protect a sync.
+
+Safe environment templates named `.env.example`, `.env.sample`, or `.env.template` bypass the hard
+denylist and `.capletsignore`, but an explicit `.gitignore` rule still excludes them. Keep real
+credentials out of templates, and use `.gitignore` or rename the file when one must not sync.
+Symbolic links are always skipped.
+
+Caplets creates `.caplets/.gitignore` with the contents needed to keep binding-local state out of
+the repository. It does not use that directory as a source of runtime secrets.
+
+The CLI sync preflight enforces both total-project and single-file limits. It uses the `free` policy
+by default: 25 MiB per file and 250 MiB for the selected project after exclusions. Hosted contexts
+may supply `plus` (100 MiB/1 GiB), `pro` (250 MiB/5 GiB), or `enterprise` (250 MiB/5 GiB) policy.
+A limit failure returns `sync_size_limit_exceeded`; exclude unnecessary content or change the
+applicable workspace plan before retrying.
+
+## Runtime safety
+
+- Project-bound working directories are resolved under the synchronized root. A configured `cwd`
+  that escapes through `..` or a symbolic link is rejected.
+- Binding leases and readiness metadata are authoritative host state. Workspace bytes remain on the
+  owning Host Node.
+- If an owning node is lost, required Caplets are quarantined until the client rebinds to a healthy
+  node and fully resynchronizes. PostgreSQL does not reconstruct workspace bytes.
+- A missing binding context hides only Caplets that declare `projectBinding.required`; unrelated
+  local and upstream Caplets remain usable.
+
+## Common failures
+
+| Diagnostic                          | Meaning                                                             | Repair                                                 |
+| ----------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------ |
+| `remote_credentials_required`       | The selected self-hosted remote has no valid Remote Profile.        | Run `caplets remote login <url>`.                      |
+| `cloud_auth_required`               | Cloud credentials or required scopes are missing.                   | Log in again to the Cloud URL.                         |
+| `workspace_switch_required`         | The requested workspace differs from the saved selection.           | Select the intended workspace, then reconnect.         |
+| `websocket_upgrade_required`        | A proxy did not pass the WebSocket upgrade.                         | Enable WebSocket forwarding for the Caplets base path. |
+| `sync_size_limit_exceeded`          | The post-exclusion project is too large.                            | Add a supported ignore rule or change the plan limit.  |
+| `lease_conflict` or `lease_expired` | Another owner holds the binding or the client stopped heartbeating. | End the stale session or reconnect and resynchronize.  |
+
+Start with `caplets doctor --json`; its Project Binding section carries resolved selection and
+recovery fields without exposing credentials. Use the active session's own diagnostics for live
+lease and managed-sync state.

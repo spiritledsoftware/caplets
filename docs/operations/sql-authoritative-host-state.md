@@ -7,6 +7,12 @@ SQLite fallback, SQLite write buffer, dual write, or built-in backend copier.
 Run storage administration as a server-local operator and keep every Host Node stopped whenever a
 procedure below says the operation is offline.
 
+> **Required for upgrades to `caplets@0.26.0` or later:** If the host ran
+> `caplets@0.25.x` or earlier, complete the
+> [offline legacy filesystem migration](#offline-legacy-filesystem-migration) before
+> restarting the daemon, running `caplets setup`, or serving requests. Caplets does not
+> automatically migrate or fall back to legacy Authoritative Host State.
+
 ## SQLite
 
 ### Location and configuration
@@ -306,32 +312,35 @@ storage can be degraded independently only when a configured local fallback is v
 
 ## Offline legacy filesystem migration
 
-This migration moves tracked global Caplets and the old global lockfile into the selected SQL
-backend. Untracked global Caplet Files remain in place as authoritative overlays. There is no dual
-write and no destructive migration at first startup.
+This migration moves tracked global Caplets, backend auth tokens, Vault values and grants,
+remote-client security state, setup state, Operator Activity Log entries, and the old global
+lockfile into the selected SQL backend. Untracked global Caplet Files remain in place as
+authoritative overlays. There is no dual write and no destructive migration at first startup.
+
+> **This is a required, one-time upgrade step.** Skipping it can make existing backend
+> credentials, Vault values and grants, remote clients, setup history, Operator Activity,
+> and tracked global Caplets appear missing. Fresh hosts that never ran a version before
+> 0.26.0 do not need it.
 
 1. Stop every Host Node (or enter exclusive maintenance).
-2. Back up the global Caplets root, old lockfile, selected SQL database, and object prefix.
-3. Verify with a dry run using explicit paths:
+2. Back up every legacy state root, the selected SQL database, and the object prefix.
+3. Verify with a dry run. The command uses the platform global-config directory and global
+   lockfile path by default; use `--caplets-root` or `--lockfile` only for nonstandard paths:
 
    ```sh
-   caplets storage migrate-legacy \
-     --caplets-root /srv/caplets/global \
-     --lockfile /srv/caplets/caplets.lock.json \
-     --dry-run
+   caplets storage migrate-legacy --dry-run
    ```
 
 4. Resolve every missing artifact, hash/provenance mismatch, ID collision, or validation failure.
 5. Run the same command without `--dry-run`:
 
    ```sh
-   caplets storage migrate-legacy \
-     --caplets-root /srv/caplets/global \
-     --lockfile /srv/caplets/caplets.lock.json
+   caplets storage migrate-legacy
    ```
 
-The command takes an exclusive migration lock, imports transactionally, compares counts/content
-hashes, and only after commit moves migrated files and the old lockfile into a timestamped backup.
+The command takes an exclusive migration lock, imports all applicable domains transactionally,
+compares counts/content hashes, and only after commit moves migrated files and the old lockfile into
+a timestamped backup. A shared Vault encryption key remains active and is copied into the backup.
 Record the printed backup path. Restart only after `caplets storage status --json` is ready. After
 cutover the legacy stores are not a fallback.
 

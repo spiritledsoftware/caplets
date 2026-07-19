@@ -1,0 +1,111 @@
+---
+title: Privacy and Network Activity
+description: Understand and control telemetry, update checks, and catalog indexing.
+---
+
+Caplets has three independent outbound product services: anonymous telemetry, passive npm update
+metadata checks, and best-effort public catalog indexing after eligible lifecycle operations. Each
+has a separate control. Disabling one does not disable the others.
+
+Remote Caplets, downstream APIs, OAuth providers, and user-configured catalog sources naturally add
+the network calls required by those capabilities; those are not product telemetry.
+
+## Anonymous telemetry
+
+Telemetry is opt-out and reports bounded product-usage and reliability categories. The first
+eligible interactive CLI run prints a notice to stderr. Non-CI telemetry remains suppressed until
+that notice has been recorded, so a native-first run does not silently activate collection.
+
+Disable telemetry for one process:
+
+```sh
+CAPLETS_DISABLE_TELEMETRY=1 caplets serve
+```
+
+Disable it in user config and inspect the effective state:
+
+```sh
+caplets telemetry disable
+caplets telemetry status
+```
+
+Re-enable it with `caplets telemetry enable`. The environment variable wins over user config.
+Tests disable telemetry automatically.
+
+Telemetry properties are allowlisted categorical values, integer counts, booleans, duration/timeout
+buckets, package/version metadata, and coarse runtime information such as OS family, architecture,
+and Node major version. Reliability exceptions keep only sanitized package/workspace-relative stack
+frames and an error type.
+
+Caplets telemetry does **not** collect raw config, prompts, Code Mode source, tool arguments, tool
+outputs, resource or prompt contents, logs, raw or absolute local paths, URLs, hostnames, Caplet IDs,
+credentials, tokens, raw environment variables, raw error messages, or unsanitized stack traces.
+Reliability stack frames may retain the sanitized package/workspace-relative paths or safe basenames
+described above.
+
+Inspect the sanitized events a command would produce without delivering them:
+
+```sh
+caplets telemetry debug -- doctor
+caplets telemetry debug -- code-mode 'return 1'
+```
+
+Telemetry debug mode also disables the update check for that invocation. Manage the anonymous local
+identity separately:
+
+```sh
+caplets telemetry rotate-id
+caplets telemetry delete-id
+```
+
+## Passive update checks
+
+Eligible CLI commands may fetch public package metadata from
+`https://registry.npmjs.org/caplets`. The lookup requests only npm's install metadata, has a 250 ms
+fetch timeout and 1 MiB response limit, and keeps successful metadata fresh for 24 hours. If later
+refreshes fail, that metadata may remain usable for a further seven days. An update notice is
+written to stderr at most once per version every seven days.
+
+Update notices avoid help, version, completion, JSON/output-product commands, Code Mode, daemon
+commands, CI, and non-interactive output. Stdio `serve` and `attach` stay quiet by default so MCP
+protocol output is not polluted. Set `CAPLETS_UPDATE_NOTICE_STDERR=1` only for a foreground stdio
+process whose stderr is visible and separate from protocol stdout.
+
+Disable both update notices and metadata lookups:
+
+```sh
+CAPLETS_DISABLE_UPDATE_CHECK=1 caplets doctor
+```
+
+This switch is independent from telemetry.
+
+## Public catalog indexing
+
+After a successful install, restore, or update of an eligible GitHub-shaped external Caplet,
+Caplets may submit normalized source identity, revisions and hashes, the full installed
+`CAPLET.md`, and derived catalog/child metadata to the public catalog. Eligibility checks source
+syntax but do not verify GitHub repository visibility. Disable indexing before operating on a
+private GitHub repository or any Caplet file whose contents must not become public. Indexing is
+best effort and never changes the local lifecycle result.
+
+Disable catalog indexing network requests:
+
+```sh
+CAPLETS_DISABLE_CATALOG_INDEXING=1 caplets install spiritledsoftware/caplets osv
+```
+
+The envelope does not separately add installer identity, local filesystem paths, Vault values,
+agent prompts, tool arguments, tool outputs, or raw environment values. Because it includes the
+full Caplet file, anything authored in that file can be submitted. See
+[Catalog indexing privacy](/privacy/indexing/) for the exact boundary.
+
+## Control matrix
+
+| Activity                | Default                                               | Disable                                                      |
+| ----------------------- | ----------------------------------------------------- | ------------------------------------------------------------ |
+| Anonymous telemetry     | Opt-out after the visible notice gate                 | `CAPLETS_DISABLE_TELEMETRY=1` or `caplets telemetry disable` |
+| Passive update metadata | Eligible foreground CLI commands                      | `CAPLETS_DISABLE_UPDATE_CHECK=1`                             |
+| Public catalog indexing | Eligible GitHub-shaped install/restore/update results | `CAPLETS_DISABLE_CATALOG_INDEXING=1`                         |
+
+For machine-readable automation, prefer `--json` where supported. Caplets keeps update notices and
+telemetry notices on stderr and suppresses them for structured output paths.

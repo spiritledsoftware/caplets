@@ -292,6 +292,36 @@ describe("legacy host-state migration", () => {
     }
   });
 
+  it("identifies the missing tracked path and stale lockfile during migration", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-legacy-migration-missing-"));
+    directories.push(root);
+    const repository = join(root, "repository");
+    const source = join(repository, "caplets", "sample");
+    const capletsRoot = join(root, "host", "caplets");
+    const lockfilePath = join(root, "host", "caplets.lock.json");
+    const destination = join(capletsRoot, "sample");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "CAPLET.md"), document());
+    installCaplets(repository, {
+      capletIds: ["sample"],
+      destinationRoot: capletsRoot,
+      lockfilePath,
+    });
+    rmSync(destination, { recursive: true, force: true });
+
+    await expect(
+      migrateLegacyHostState({
+        storage: { type: "sqlite", path: join(root, "host", "caplets.sqlite3") },
+        capletsRoot,
+        lockfilePath,
+        operatorClientId: "operator_migration",
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFIG_NOT_FOUND",
+      message: `Tracked Caplet sample is missing at ${destination}. Restore it or remove its stale entry from ${lockfilePath} before migration.`,
+    });
+  });
+
   it("dry-runs every applicable legacy domain without SQL state writes or source moves", async () => {
     const fixture = await createFullLegacyFixture();
     const report = await migrateLegacyHostState({ ...fixture.options, dryRun: true });
