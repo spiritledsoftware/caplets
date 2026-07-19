@@ -489,8 +489,7 @@ import { writeMediaArtifact } from "../media";
 import { parseHttpBody, readLimitedText } from "./utils";
 
 export type HttpLikeResponseBody =
-  | { body?: unknown; artifact?: never }
-  | { body: { artifact: MediaArtifact } };
+  { body?: unknown; artifact?: never } | { body: { artifact: MediaArtifact } };
 
 export type ReadHttpLikeResponseOptions = {
   capletId: string;

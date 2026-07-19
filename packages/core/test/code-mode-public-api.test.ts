@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import ts from "typescript";
+import ts from "typescript-compiler-api";
 import { describe, expect, it } from "vitest";
 import {
   codeModeDeclarationHash,

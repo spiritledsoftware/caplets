@@ -1,4 +1,4 @@
-import ts from "typescript";
+import ts from "typescript-compiler-api";
 import { CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION } from "./diagnostics-builtins.generated";
 import { hasDirectFetchCall, hasExecutableImport } from "./static-analysis";
 import type { CodeModeDiagnostic } from "./types";
