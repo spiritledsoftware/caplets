@@ -1,5 +1,12 @@
 # @caplets/core
 
+## 0.36.2
+
+### Patch Changes
+
+- 10bb0c2: Persist top-level `let`, `const`, class, enum, namespace, and TypeScript declarations across reused Code Mode sessions with REPL-style redeclaration and failed-cell behavior.
+- b57e0e4: Keep Code Mode diagnostics and sandbox transpilation working while the workspace compiles with TypeScript 7.
+
 ## 0.36.1
 
 ### Patch Changes
