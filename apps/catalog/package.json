@@ -9,10 +9,9 @@
     "dev": "astro dev",
     "preview": "astro preview",
     "test": "vitest run test",
-    "typecheck": "astro check"
+    "typecheck": "astro sync && node ../../tools/astro-check/index.mjs"
   },
   "dependencies": {
-    "@astrojs/check": "^0.9.9",
     "@astrojs/cloudflare": "^14.1.3",
     "@caplets/core": "workspace:*",
     "@caplets/web-observability": "workspace:*",
@@ -35,10 +34,10 @@
     "unified": "^11.0.5"
   },
   "devDependencies": {
-    "happy-dom": "^20.10.6",
-    "vite": "^8.1.0",
-    "vitest": "^4.1.9",
-    "wrangler": "^4.105.0"
+    "happy-dom": "^20.11.0",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.112.0"
   },
   "packageManager": "pnpm@11.9.0"
 }

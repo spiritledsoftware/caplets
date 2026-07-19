@@ -8,7 +8,7 @@
     "benchmark:live": "tsx run-live.ts",
     "benchmark:live:opencode": "tsx run-live.ts --agent opencode",
     "benchmark:live:pi": "tsx run-live.ts --agent pi",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "benchmark:live:pi-eval": "tsx run-pi-eval.ts",
     "benchmark:live:pi-eval:competitors": "tsx run-pi-eval.ts --mode caplets-code-mode,caplets-direct-code-mode,caplets-progressive-code-mode,vanilla-mcp,executor-mcp"
@@ -19,10 +19,9 @@
     "js-tiktoken": "^1.0.21"
   },
   "devDependencies": {
-    "@types/node": "^22.18.0",
-    "@typescript/native-preview": "7.0.0-dev.20260628.1",
+    "@types/node": "^26.1.1",
     "caplets": "workspace:*",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }

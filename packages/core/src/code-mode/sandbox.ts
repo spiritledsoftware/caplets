@@ -7,7 +7,7 @@ import {
   type QuickJSRuntime,
 } from "quickjs-emscripten";
 import { randomUUID } from "node:crypto";
-import ts from "typescript";
+import ts from "typescript-compiler-api";
 import { installCodeModePlatformHost } from "./platform-host";
 import { CODE_MODE_PLATFORM_RUNTIME_SOURCE } from "./platform-runtime.generated";
 import type { CodeModeLogEntry } from "./types";

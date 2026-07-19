@@ -14,3 +14,9 @@ allowBuilds:
   protobufjs: true
   sharp: true
   workerd: true
+
+minimumReleaseAgeExclude:
+  - "@cloudflare/workers-types@5.20260719.1"
+  - happy-dom@20.11.0
+  - hono@4.12.31
+  - lint-staged@17.1.0

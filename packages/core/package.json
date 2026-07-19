@@ -92,7 +92,7 @@
     "build": "node ./scripts/build-dashboard-for-core.mjs && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs && node ./scripts/copy-storage-migrations.mjs",
     "build:watch": "pnpm run clean && rolldown -c --watch",
     "prepack": "pnpm build",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "storage:check": "drizzle-kit check --config=drizzle.sqlite.config.ts && drizzle-kit check --config=drizzle.postgres.config.ts",
     "storage:generate": "drizzle-kit generate --config=drizzle.sqlite.config.ts && drizzle-kit generate --config=drizzle.postgres.config.ts && node ./scripts/normalize-storage-migrations.mjs"
@@ -107,7 +107,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@sentry/node": "^10.66.0",
     "@ungap/structured-clone": "^1.3.3",
-    "add-mcp": "1.14.0",
+    "add-mcp": "1.13.0",
     "ajv": "^8.20.0",
     "better-sqlite3": "^12.11.1",
     "commander": "^15.0.0",
@@ -122,6 +122,7 @@
     "quickjs-emscripten": "^0.32.0",
     "semver": "^7.8.5",
     "typescript": "^7.0.2",
+    "typescript-compiler-api": "npm:typescript@6.0.3",
     "vfile": "^6.0.3",
     "vfile-matter": "^5.0.1",
     "web-streams-polyfill": "^4.3.0",
@@ -132,14 +133,13 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.18.0",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "@types/semver": "^7.7.1",
     "@types/ws": "^8.18.1",
-    "@typescript/native-preview": "7.0.0-dev.20260628.1",
     "drizzle-kit": "^0.31.10",
-    "rolldown": "^1.1.3",
-    "vitest": "^4.1.9"
+    "rolldown": "^1.2.0",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "bun": ">=1",

@@ -8,11 +8,10 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@typescript/native-preview": "7.0.0-dev.20260628.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }

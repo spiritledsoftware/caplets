@@ -17,7 +17,13 @@ export default defineConfig([
       sourcemap: sentryConfigured(),
     },
     plugins: runtimeSentryPlugins("core"),
-    external: ["better-sqlite3", "jsonc-parser", "quickjs-emscripten", "typescript"],
+    external: [
+      "better-sqlite3",
+      "jsonc-parser",
+      "quickjs-emscripten",
+      "typescript",
+      "typescript-compiler-api",
+    ],
     platform: "node",
   },
   {

@@ -3,9 +3,8 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "types": ["astro/client"],
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     },
     "ignoreDeprecations": "6.0"
   },
