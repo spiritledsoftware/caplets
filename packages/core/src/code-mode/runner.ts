@@ -224,8 +224,13 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
         ...sandboxInput,
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
         compatibility: sessionCompatibility,
-        onSuccessfulCell: (sessionId, code) => {
-          input.sessionManager?.recordSuccessfulCell(sessionId, code, declaration);
+        onExecutedCell: (sessionId, code, settledBindingNames) => {
+          input.sessionManager?.recordExecutedCell(
+            sessionId,
+            code,
+            declaration,
+            settledBindingNames,
+          );
         },
       })
     : undefined;

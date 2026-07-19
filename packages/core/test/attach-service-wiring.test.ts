@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AttachServeOptions } from "../src/attach/options";
 import type { ResolvedRemoteSelection } from "../src/remote/selection";
+import { createAttachNativeServiceForTests } from "../src/attach/server";
 
 const { createNativeCapletsService } = vi.hoisted(() => ({
   createNativeCapletsService: vi.fn((options: unknown) => ({ options })),
@@ -11,8 +12,7 @@ vi.mock("../src/native/service", () => ({
 }));
 
 describe("attach native service wiring", () => {
-  it("forwards the resolved Cloud workspace into profile-backed native remotes", async () => {
-    const { createAttachNativeServiceForTests } = await import("../src/attach/server");
+  it("forwards the resolved Cloud workspace into profile-backed native remotes", () => {
     const selection: ResolvedRemoteSelection = {
       kind: "hosted_cloud",
       remote: {
@@ -69,8 +69,7 @@ describe("attach native service wiring", () => {
       }),
     );
   });
-  it("wires local daemon selections without Cloud workspace or Remote Profile fields", async () => {
-    const { createAttachNativeServiceForTests } = await import("../src/attach/server");
+  it("wires local daemon selections without Cloud workspace or Remote Profile fields", () => {
     const selection: ResolvedRemoteSelection = {
       kind: "local_daemon",
       remote: {

@@ -66,8 +66,14 @@ const CODE_MODE_DEBUG_METHODS = new Set<CodeModeSandboxInvokeInput["method"]>([
 ]);
 
 export type CodeModeSandboxResult =
-  | { ok: true; value: unknown; logs: CodeModeLogEntry[] }
-  | { ok: false; error: string; logs: CodeModeLogEntry[]; stack?: string };
+  | { ok: true; value: unknown; logs: CodeModeLogEntry[]; settledBindingNames?: string[] }
+  | {
+      ok: false;
+      error: string;
+      logs: CodeModeLogEntry[];
+      stack?: string;
+      settledBindingNames?: string[];
+    };
 
 export interface CodeModeSandbox {
   run(input: CodeModeSandboxInput): Promise<CodeModeSandboxResult>;
@@ -177,8 +183,6 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       resetResult.value.dispose();
       this.#snapshotGlobalNames();
       this.#snapshotPersistDescriptors();
-      this.#snapshotPersistentNames([...this.#persistentNames]);
-      let pendingInvokePersistentValuesChanged = false;
       const result = await evaluateCellInContext({
         code: input.code,
         compiledSource: cell.source,
@@ -190,57 +194,39 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
         timeoutMs,
         logs: this.#logs,
         session: true,
-        afterPendingInvokesDrained: () => {
-          pendingInvokePersistentValuesChanged = this.#persistentValuesDivergedFromPersist(
-            cell.persistentNames,
-          );
-          this.#snapshotPersistentNames(cell.persistentNames);
-        },
       });
-      if (result.ok) {
-        for (const name of cell.persistentNames) {
-          this.#persistentNames.add(name);
-        }
-        this.#snapshotPersistentNames(cell.persistentNames);
-      } else {
-        this.#restorePersistentNames([...this.#persistentNames]);
-        this.#rollbackNewPersistentNames(cell.newNames);
+      if (!result.ok && isTimeoutMessage(result.error, timeoutMs)) {
+        shouldDispose = true;
+        return result;
       }
-      const platformRestored = result.ok ? this.#restorePlatformAfterRun() : true;
-      const persistenceDescriptorsOk =
-        result.ok && platformRestored ? this.#persistentDescriptorsOk(cell.persistentNames) : true;
-      const persistentGlobalDescriptorsOk = this.#persistentGlobalDescriptorsOk(
-        result.ok ? cell.persistentNames : [...this.#persistentNames],
-      );
-      const hasGlobalNameAdditions = this.#hasGlobalNameAdditions(
-        result.ok ? cell.persistentNames : [],
-      );
+      const persistentNames = this.#existingPersistentNames(cell.persistentNames);
+      for (const name of persistentNames) {
+        this.#persistentNames.add(name);
+      }
+      const platformRestored = this.#restorePlatformAfterRun();
+      const persistenceDescriptorsOk = this.#persistentDescriptorsOk(persistentNames);
+      const persistentGlobalDescriptorsOk = this.#persistentGlobalDescriptorsOk(persistentNames);
+      const hasGlobalNameAdditions = this.#hasGlobalNameAdditions(persistentNames);
       const directPersistAccess = this.#isPersistTainted();
-      const persistDescriptorsChanged = this.#persistDescriptorsChanged(
-        result.ok ? cell.snapshotNames : [],
-      );
-      const hasObjectLikePersistentState = this.#hasObjectLikePersistentState();
-      shouldDispose = result.ok
-        ? pendingInvokePersistentValuesChanged ||
-          this.#pendingDeferreds.size > 0 ||
-          hasGlobalNameAdditions ||
-          directPersistAccess ||
-          persistDescriptorsChanged ||
-          !this.#isGlobalExtensible() ||
-          !persistentGlobalDescriptorsOk ||
-          !persistenceDescriptorsOk ||
-          !platformRestored
-        : isTimeoutMessage(result.error, timeoutMs) ||
-          this.#pendingDeferreds.size > 0 ||
-          cell.newNames.length > 0 ||
-          hasGlobalNameAdditions ||
-          directPersistAccess ||
-          persistDescriptorsChanged ||
-          hasObjectLikePersistentState ||
-          !persistentGlobalDescriptorsOk ||
-          !this.#isGlobalExtensible();
+      const persistDescriptorsChanged = this.#persistDescriptorsChanged(persistentNames);
+      shouldDispose =
+        this.#pendingDeferreds.size > 0 ||
+        hasGlobalNameAdditions ||
+        directPersistAccess ||
+        persistDescriptorsChanged ||
+        !this.#isGlobalExtensible() ||
+        !persistentGlobalDescriptorsOk ||
+        !persistenceDescriptorsOk ||
+        !platformRestored;
       if (!shouldDispose) {
         this.#clearPendingDeferreds();
+      }
+      if (!shouldDispose && !result.ok) {
+        const settledBindingNames = this.#settleFailedDeclarations(cell.newNames);
+        shouldDispose = settledBindingNames === undefined;
+        if (settledBindingNames && settledBindingNames.length > 0) {
+          result.settledBindingNames = settledBindingNames;
+        }
       }
       return result;
     } catch (error) {
@@ -361,18 +347,19 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
     this.#timeoutMs = timeoutMs;
   }
 
-  #rollbackNewPersistentNames(names: string[]): void {
-    if (names.length === 0 || this.#disposed) {
-      return;
-    }
+  #existingPersistentNames(names: string[]): string[] {
+    if (names.length === 0 || this.#disposed) return [];
     const result = this.#context.evalCode(
-      names.map((name) => `(0, eval)(${JSON.stringify(`${name} = undefined;`)});`).join("\n"),
+      `globalThis.__caplets_existing_persist_names(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify(names)})`,
     );
     if (result.error) {
+      const error = this.#context.dump(result.error);
       result.error.dispose();
-      return;
+      throw new Error(errorMessage(error));
     }
+    const existing = this.#context.dump(result.value) as string[];
     result.value.dispose();
+    return existing;
   }
 
   #clearPendingDeferreds(): void {
@@ -494,6 +481,25 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
     return ok;
   }
 
+  #settleFailedDeclarations(names: string[]): string[] | undefined {
+    if (names.length === 0 || this.#disposed) {
+      return [];
+    }
+    const result = this.#context.evalCode(
+      `__caplets_settle_failed_declarations(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify(names)})`,
+    );
+    if (result.error) {
+      result.error.dispose();
+      return undefined;
+    }
+    const settledBindingNames = this.#context.dump(result.value);
+    result.value.dispose();
+    return Array.isArray(settledBindingNames) &&
+      settledBindingNames.every((name) => typeof name === "string")
+      ? settledBindingNames
+      : undefined;
+  }
+
   #isPersistTainted(): boolean {
     if (this.#disposed) {
       return false;
@@ -508,22 +514,6 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
     const tainted = this.#context.dump(result.value) === true;
     result.value.dispose();
     return tainted;
-  }
-
-  #hasObjectLikePersistentState(): boolean {
-    if (this.#disposed || this.#persistentNames.size === 0) {
-      return false;
-    }
-    const result = this.#context.evalCode(
-      `__caplets_persist_has_object_like_values(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify([...this.#persistentNames])})`,
-    );
-    if (result.error) {
-      result.error.dispose();
-      return true;
-    }
-    const hasObjectLike = this.#context.dump(result.value) === true;
-    result.value.dispose();
-    return hasObjectLike;
   }
 
   #persistentGlobalDescriptorsOk(names: string[]): boolean {
@@ -552,10 +542,16 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       name === "string:__caplets_assert_active_id" ||
       name === "string:__caplets_handle" ||
       name === "string:__caplets_persist" ||
+      name === "string:__caplets_get_session_scope" ||
+      name === "string:__caplets_predeclare" ||
+      name === "string:__caplets_initialize_binding" ||
+      name === "string:__caplets_initialization_target" ||
+      name === "string:__caplets_settle_failed_declarations" ||
+      name === "string:__caplets_set_cell_caplets" ||
+      name === "string:__caplets_existing_persist_names" ||
       name === "string:__caplets_persist_descriptor_fingerprint" ||
       name === "string:__caplets_persist_descriptors_ok" ||
       name === "string:__caplets_persist_is_tainted" ||
-      name === "string:__caplets_persist_has_object_like_values" ||
       name === "string:__caplets_persist_global_descriptors_ok" ||
       name === "string:__caplets_get_persist" ||
       name === "string:__caplets_set_persist" ||
@@ -564,59 +560,6 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       name === "string:__caplets_observe_promise" ||
       name === "string:__caplets_json_parse"
     );
-  }
-
-  #snapshotPersistentNames(names: string[]): void {
-    if (names.length === 0 || this.#disposed) {
-      return;
-    }
-    const result = this.#context.evalCode(
-      `globalThis.__caplets_snapshot_persist(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify(names)});`,
-    );
-    if (result.error) {
-      result.error.dispose();
-      return;
-    }
-    result.value.dispose();
-  }
-
-  #persistentValuesDivergedFromPersist(names: string[]): boolean {
-    if (this.#disposed || names.length === 0) {
-      return false;
-    }
-    const result = this.#context.evalCode(
-      `(${JSON.stringify(names)}).some((name) => !Object.is((0, eval)(name), globalThis.__caplets_get_persist(${JSON.stringify(this.#checkpointToken)}, name)))`,
-    );
-    if (result.error) {
-      result.error.dispose();
-      return true;
-    }
-    try {
-      return this.#context.dump(result.value) === true;
-    } finally {
-      result.value.dispose();
-    }
-  }
-
-  #restorePersistentNames(names: string[]): void {
-    if (names.length === 0 || this.#disposed) {
-      return;
-    }
-    const result = this.#context.evalCode(
-      names
-        .map((name) =>
-          [
-            `globalThis.__caplets_set_persist(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify(name)}, globalThis.__caplets_checkpoint_value(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify(name)}));`,
-            `(0, eval)(${JSON.stringify(`${name} = globalThis.__caplets_checkpoint_value(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify(name)});`)});`,
-          ].join("\n"),
-        )
-        .join("\n"),
-    );
-    if (result.error) {
-      result.error.dispose();
-      return;
-    }
-    result.value.dispose();
   }
 }
 
@@ -1239,6 +1182,9 @@ function buildSessionInitSource(checkpointToken: string): string {
     "  const hasOwn = Function.prototype.call.bind(Object.prototype.hasOwnProperty);",
     "  const objectIds = new WeakMap();",
     "  let nextObjectId = 1;",
+    "  const platformBindings = Object.create(null);",
+    "  platformBindings.caplets = undefined;",
+    "  const isVarLike = (kind) => kind === 'var' || kind === 'function';",
     "  const keyToken = (key) => typeof key === 'symbol' ? `symbol:${String(key)}` : `string:${key}`;",
     "  const valueToken = (value) => {",
     "    const type = typeof value;",
@@ -1262,6 +1208,82 @@ function buildSessionInitSource(checkpointToken: string): string {
     "  const assertToken = (token) => {",
     "    if (token !== checkpointToken) throw new Error('Code Mode persistence checkpoint token is invalid.');",
     "  };",
+    "  const readBinding = (name) => {",
+    "    if (hasOwn(platformBindings, name)) return platformBindings[name];",
+    "    const record = persistBacking[name];",
+    "    if (!record || !record.initialized) throw new ReferenceError(`Cannot access '${name}' before initialization`);",
+    "    return record.value;",
+    "  };",
+    "  const writeBinding = (name, value) => {",
+    "    if (hasOwn(platformBindings, name)) throw new TypeError(`Cannot assign to read-only binding '${name}'`);",
+    "    const record = persistBacking[name];",
+    "    if (!record || !record.initialized) throw new ReferenceError(`Cannot access '${name}' before initialization`);",
+    "    if (record.kind === 'const') throw new TypeError('Assignment to constant variable.');",
+    "    record.value = value;",
+    "    return true;",
+    "  };",
+    "  const initializeBinding = (name, value, kind) => {",
+    "    const record = persistBacking[name];",
+    "    if (!record) throw new ReferenceError(`${name} is not defined`);",
+    "    if (kind === 'function' && isVarLike(record.kind)) {",
+    "      record.value = value;",
+    "      record.initialized = true;",
+    "      return value;",
+    "    }",
+    "    if (record.kind !== kind || record.initialized) throw new SyntaxError(`Identifier '${name}' has already been declared`);",
+    "    record.value = value;",
+    "    record.initialized = true;",
+    "    return value;",
+    "  };",
+    "  const exposeBinding = (name, record) => {",
+    "    if (hasOwn(globalThis, name)) return;",
+    "    const getter = () => readBinding(name);",
+    "    const setter = (value) => { writeBinding(name, value); };",
+    "    defineProperty(globalThis, name, { configurable: false, enumerable: true, get: getter, set: setter });",
+    "    record.globalGetter = getter;",
+    "    record.globalSetter = setter;",
+    "  };",
+    "  const predeclare = (entries) => {",
+    "    const planned = new Map();",
+    "    for (const entry of entries) {",
+    "      if (entry.name === 'caplets' || entry.name === 'globalThis') throw new SyntaxError(`Identifier '${entry.name}' is reserved by Code Mode`);",
+    "      const prior = planned.get(entry.name) ?? persistBacking[entry.name];",
+    "      if (prior && !(isVarLike(prior.kind) && isVarLike(entry.kind))) {",
+    "        throw new SyntaxError(`Identifier '${entry.name}' has already been declared`);",
+    "      }",
+    "      if (!prior) planned.set(entry.name, { kind: entry.kind });",
+    "    }",
+    "    for (const entry of entries) {",
+    "      if (hasOwn(persistBacking, entry.name)) continue;",
+    "      const record = {",
+    "        kind: entry.kind,",
+    "        initialized: isVarLike(entry.kind),",
+    "        value: undefined,",
+    "        globalGetter: undefined,",
+    "        globalSetter: undefined,",
+    "      };",
+    "      defineProperty(persistBacking, entry.name, { value: record, writable: true, configurable: true, enumerable: true });",
+    "      exposeBinding(entry.name, record);",
+    "    }",
+    "  };",
+    "  const scopeProxy = new Proxy(Object.create(null), {",
+    "    has(_target, key) {",
+    "      if (key === Symbol.unscopables) return false;",
+    "      if (typeof key !== 'string') return false;",
+    "      if (hasOwn(platformBindings, key)) return true;",
+    "      const record = persistBacking[key];",
+    "      return Boolean(record && !record.globalGetter);",
+    "    },",
+    "    get(_target, key) {",
+    "      if (key === Symbol.unscopables) return undefined;",
+    "      if (typeof key !== 'string') return undefined;",
+    "      return readBinding(key);",
+    "    },",
+    "    set(_target, key, value) {",
+    "      if (typeof key !== 'string') return false;",
+    "      return writeBinding(key, value);",
+    "    },",
+    "  });",
     "  const persistProxy = new Proxy(persistBacking, {",
     "    get(target, key, receiver) { persistTainted = true; return reflectGet(target, key, receiver); },",
     "    set(target, key, value, receiver) { persistTainted = true; return reflectSet(target, key, value, receiver); },",
@@ -1274,33 +1296,38 @@ function buildSessionInitSource(checkpointToken: string): string {
     "    getPrototypeOf(target) { persistTainted = true; return getPrototypeOf(target); },",
     "  });",
     "  Object.defineProperty(globalThis, '__caplets_persist', { configurable: false, writable: false, value: persistProxy });",
-    "  Object.defineProperty(globalThis, '__caplets_get_persist', { configurable: false, writable: false, value: (token, name) => {",
+    "  Object.defineProperty(globalThis, '__caplets_get_session_scope', { configurable: false, writable: false, value: (token) => { assertToken(token); return scopeProxy; } });",
+    "  Object.defineProperty(globalThis, '__caplets_predeclare', { configurable: false, writable: false, value: (token, entries) => { assertToken(token); predeclare(entries); } });",
+    "  Object.defineProperty(globalThis, '__caplets_initialize_binding', { configurable: false, writable: false, value: (token, name, value, kind) => { assertToken(token); return initializeBinding(name, value, kind); } });",
+    "  Object.defineProperty(globalThis, '__caplets_initialization_target', { configurable: false, writable: false, value: (token, kind) => {",
     "    assertToken(token);",
-    "    return hasOwn(persistBacking, name) ? persistBacking[name] : undefined;",
+    "    return new Proxy(Object.create(null), { set(_target, name, value) { if (typeof name !== 'string') return false; initializeBinding(name, value, kind); return true; } });",
     "  } });",
-    "  Object.defineProperty(globalThis, '__caplets_set_persist', { configurable: false, writable: false, value: (token, name, value) => {",
+    "  Object.defineProperty(globalThis, '__caplets_settle_failed_declarations', { configurable: false, writable: false, value: (token, names) => {",
     "    assertToken(token);",
-    "    defineProperty(persistBacking, name, { value, writable: true, configurable: true, enumerable: true });",
-    "    return value;",
-    "  } });",
-    "  Object.defineProperty(globalThis, '__caplets_persist_is_tainted', { configurable: false, writable: false, value: (token) => {",
-    "    assertToken(token);",
-    "    return persistTainted;",
-    "  } });",
-    "  Object.defineProperty(globalThis, '__caplets_persist_has_object_like_values', { configurable: false, writable: false, value: (token, names) => {",
-    "    assertToken(token);",
+    "    const settled = [];",
     "    for (const name of names) {",
-    "      if (!hasOwn(persistBacking, name)) continue;",
-    "      const value = persistBacking[name];",
-    "      if ((typeof value === 'object' && value !== null) || typeof value === 'function') return true;",
+    "      const record = persistBacking[name];",
+    "      if (!record || record.initialized) continue;",
+    "      record.initialized = true;",
+    "      record.value = undefined;",
+    "      if (record.kind === 'const' || record.kind === 'class') record.kind = 'let';",
+    "      settled.push(name);",
     "    }",
-    "    return false;",
+    "    return settled;",
     "  } });",
+    "  Object.defineProperty(globalThis, '__caplets_set_cell_caplets', { configurable: false, writable: false, value: (token, value) => { assertToken(token); platformBindings.caplets = value; } });",
+    "  Object.defineProperty(globalThis, '__caplets_existing_persist_names', { configurable: false, writable: false, value: (token, names) => { assertToken(token); return names.filter((name) => hasOwn(persistBacking, name)); } });",
+    "  Object.defineProperty(globalThis, '__caplets_get_persist', { configurable: false, writable: false, value: (token, name) => { assertToken(token); return readBinding(name); } });",
+    "  Object.defineProperty(globalThis, '__caplets_set_persist', { configurable: false, writable: false, value: (token, name, value) => { assertToken(token); const record = persistBacking[name]; if (!record) throw new ReferenceError(`${name} is not defined`); record.value = value; record.initialized = true; return value; } });",
+    "  Object.defineProperty(globalThis, '__caplets_persist_is_tainted', { configurable: false, writable: false, value: (token) => { assertToken(token); return persistTainted; } });",
     "  Object.defineProperty(globalThis, '__caplets_persist_global_descriptors_ok', { configurable: false, writable: false, value: (token, names) => {",
     "    assertToken(token);",
     "    for (const name of names) {",
+    "      const record = persistBacking[name];",
+    "      if (!record || !record.globalGetter) continue;",
     "      const descriptor = getOwnPropertyDescriptor(globalThis, name);",
-    "      if (!descriptor || !hasOwn(descriptor, 'value') || descriptor.writable !== true) return false;",
+    "      if (!descriptor || descriptor.get !== record.globalGetter || descriptor.set !== record.globalSetter || descriptor.configurable !== false) return false;",
     "    }",
     "    return true;",
     "  } });",
@@ -1329,8 +1356,8 @@ function buildSessionInitSource(checkpointToken: string): string {
     "    assertToken(token);",
     "    const next = Object.create(null);",
     "    for (const name of names) {",
-    "      try { next[name] = (0, eval)(name); }",
-    "      catch { next[name] = hasOwn(globalThis, name) ? globalThis[name] : hasOwn(persistBacking, name) ? persistBacking[name] : undefined; }",
+    "      try { next[name] = readBinding(name); }",
+    "      catch { next[name] = undefined; }",
     "    }",
     "    checkpointState.current = next;",
     "  } });",
@@ -1347,6 +1374,19 @@ function buildBridgeRefreshSource(_capletIds: string[], _previousCapletIds: stri
   return "";
 }
 
+type PersistentBindingKind = "var" | "let" | "const" | "function" | "class";
+
+type PersistentBindingDeclaration = {
+  name: string;
+  kind: PersistentBindingKind;
+};
+
+type PersistentRewriteRange = {
+  start: number;
+  end: number;
+  body: string;
+};
+
 function buildSessionCellSource(
   code: string,
   capletIds: string[],
@@ -1360,22 +1400,26 @@ function buildSessionCellSource(
       importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove,
     },
   }).outputText;
-  const split = splitPersistentPrelude(javascript, existingNames, checkpointToken);
+  const split = splitPersistentDeclarations(javascript, existingNames, checkpointToken);
+  const serializedToken = JSON.stringify(checkpointToken);
   return {
     source: [
-      split.prelude,
-      "(async () => {",
+      `globalThis.__caplets_predeclare(${serializedToken}, ${JSON.stringify(split.declarations)});`,
+      "(function (__caplets_scope) {",
+      "  with (__caplets_scope) {",
+      "    return (async () => {",
       '"use strict";',
       buildPlatformResetSource(),
-      buildPlatformShadowRestoreSource(existingNames, checkpointToken),
-      buildCellCapletsSource(capletIds),
+      buildSessionCapletsSource(capletIds, checkpointToken),
+      split.prelude,
       split.body,
-      split.postlude,
-      "})()",
+      "    })();",
+      "  }",
+      `})(globalThis.__caplets_get_session_scope(${serializedToken}))`,
     ].join("\n"),
     persistentNames: split.persistentNames,
     newNames: split.newNames,
-    snapshotNames: split.snapshotNames,
+    snapshotNames: split.persistentNames,
   };
 }
 
@@ -1383,42 +1427,32 @@ function buildPlatformResetSource(): string {
   return "globalThis.__caplets_restore_platform();";
 }
 
-function buildPlatformShadowRestoreSource(
-  existingNames: string[],
-  checkpointToken: string,
-): string {
-  return existingNames
-    .map(
-      (name) =>
-        `(0, eval)(${JSON.stringify(`${name} = globalThis.__caplets_get_persist(${JSON.stringify(checkpointToken)}, ${JSON.stringify(name)});`)});`,
-    )
-    .join("\n");
-}
-
-function buildCellCapletsSource(capletIds: string[]): string {
+function buildSessionCapletsSource(capletIds: string[], checkpointToken: string): string {
   return [
-    "const caplets = {};",
+    `globalThis.__caplets_set_cell_caplets(${JSON.stringify(checkpointToken)}, (() => {`,
+    "  const handles = {};",
     ...capletIds.map(
       (capletId) =>
-        `caplets[${JSON.stringify(capletId)}] = __caplets_handle(${JSON.stringify(capletId)});`,
+        `  handles[${JSON.stringify(capletId)}] = globalThis.__caplets_handle(${JSON.stringify(capletId)});`,
     ),
-    "caplets.debug = caplets.debug ?? {};",
-    "caplets.debug.readLogs = (input) => __caplets_invoke_json('debug', 'readLogs', [input]);",
-    "caplets.debug.readRecovery = (input) => __caplets_invoke_json('debug', 'readRecovery', [input]);",
+    "  handles.debug = handles.debug ?? {};",
+    "  handles.debug.readLogs = (input) => globalThis.__caplets_invoke_json('debug', 'readLogs', [input]);",
+    "  handles.debug.readRecovery = (input) => globalThis.__caplets_invoke_json('debug', 'readRecovery', [input]);",
+    "  return handles;",
+    "})());",
   ].join("\n");
 }
 
-function splitPersistentPrelude(
+function splitPersistentDeclarations(
   javascript: string,
   existingNames: string[] = [],
   checkpointToken = "",
 ): {
   prelude: string;
   body: string;
-  postlude: string;
+  declarations: PersistentBindingDeclaration[];
   persistentNames: string[];
   newNames: string[];
-  snapshotNames: string[];
 } {
   const source = ts.createSourceFile(
     "/caplets-code-mode/session-cell.js",
@@ -1426,37 +1460,60 @@ function splitPersistentPrelude(
     ts.ScriptTarget.ES2022,
     true,
   );
-  const ranges: Array<{ start: number; end: number; prelude: string; body: string }> = [];
-  const names = collectPersistentBindingNames(source);
-  const lexicalNames = collectTopLevelLexicalBindingNames(source);
-  const allNames = [...new Set([...existingNames, ...names])];
-  const snapshotNames = allNames.filter((name) => !lexicalNames.has(name));
-  const returnTempName = uniqueInternalName("__caplets_return", allNames);
-  const postlude = snapshotNames
-    .map((name) => persistentBindingPostlude(name, checkpointToken))
-    .join("\n");
+  const declarations: PersistentBindingDeclaration[] = [];
+  const ranges: PersistentRewriteRange[] = [];
+  const functionInitializers: string[] = [];
   for (const statement of source.statements) {
-    collectPersistentVarRewriteRanges(statement, source, lexicalNames, ranges);
-    collectPersistentReturnRanges(
-      statement,
-      source,
-      snapshotNames,
-      ranges,
-      returnTempName,
-      checkpointToken,
-    );
-    collectPersistentFinallyRanges(statement, snapshotNames, ranges, checkpointToken);
+    if (ts.isVariableStatement(statement)) {
+      const kind = declarationKind(statement.declarationList);
+      for (const name of declarationListBindingNames(statement.declarationList)) {
+        declarations.push({ name, kind });
+      }
+      ranges.push({
+        start: statement.getFullStart(),
+        end: statement.end,
+        body:
+          kind === "var"
+            ? varStatementAssignments(statement.declarationList, source)
+            : lexicalDeclarationInitializers(
+                statement.declarationList,
+                source,
+                kind,
+                checkpointToken,
+              ),
+      });
+      continue;
+    }
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      declarations.push({ name: statement.name.text, kind: "function" });
+      functionInitializers.push(
+        persistentBindingInitializer(
+          statement.name.text,
+          `(${statement.getText(source)})`,
+          "function",
+          checkpointToken,
+        ),
+      );
+      ranges.push({ start: statement.getFullStart(), end: statement.end, body: "" });
+      continue;
+    }
+    if (ts.isClassDeclaration(statement) && statement.name) {
+      declarations.push({ name: statement.name.text, kind: "class" });
+      ranges.push({
+        start: statement.getFullStart(),
+        end: statement.end,
+        body: persistentBindingInitializer(
+          statement.name.text,
+          `(${statement.getText(source)})`,
+          "class",
+          checkpointToken,
+        ),
+      });
+      continue;
+    }
+    collectPersistentVarRewrites(statement, source, declarations, ranges);
   }
   ranges.sort((left, right) => left.start - right.start);
-  const prelude = [
-    ...allNames.map(
-      (name) =>
-        `var ${name} = globalThis.__caplets_get_persist(${JSON.stringify(checkpointToken)}, ${JSON.stringify(name)});`,
-    ),
-    ...ranges.map((range) => range.prelude),
-  ]
-    .filter(Boolean)
-    .join("\n");
   let body = "";
   let cursor = 0;
   for (const range of ranges) {
@@ -1465,160 +1522,99 @@ function splitPersistentPrelude(
     cursor = range.end;
   }
   body += javascript.slice(cursor);
-  if (postlude) {
-    body += `\n${postlude}`;
-  }
+  const declaredNames = declarations.map(({ name }) => name);
+  const persistentNames = [...new Set([...existingNames, ...declaredNames])];
   return {
-    prelude,
+    prelude: functionInitializers.join("\n"),
     body,
-    postlude,
-    persistentNames: allNames,
-    newNames: names.filter((name) => !existingNames.includes(name)),
-    snapshotNames,
+    declarations,
+    persistentNames,
+    newNames: declaredNames.filter((name) => !existingNames.includes(name)),
   };
 }
 
-function collectPersistentReturnRanges(
+function declarationKind(declarationList: ts.VariableDeclarationList): "var" | "let" | "const" {
+  if (isVarDeclarationList(declarationList)) return "var";
+  return (ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.Const) !== 0 ? "const" : "let";
+}
+
+function lexicalDeclarationInitializers(
+  declarationList: ts.VariableDeclarationList,
+  source: ts.SourceFile,
+  kind: "let" | "const",
+  checkpointToken: string,
+): string {
+  return declarationList.declarations
+    .map((declaration) => {
+      const initializer = declaration.initializer?.getText(source) ?? "void 0";
+      if (ts.isIdentifier(declaration.name)) {
+        return persistentBindingInitializer(
+          declaration.name.text,
+          initializer,
+          kind,
+          checkpointToken,
+        );
+      }
+      return `(${initializationAssignmentTarget(declaration.name, source, kind, checkpointToken)} = ${initializer});`;
+    })
+    .join("\n");
+}
+
+function persistentBindingInitializer(
+  name: string,
+  initializer: string,
+  kind: Exclude<PersistentBindingKind, "var">,
+  checkpointToken: string,
+): string {
+  return `globalThis.__caplets_initialize_binding(${JSON.stringify(checkpointToken)}, ${JSON.stringify(name)}, ${initializer}, ${JSON.stringify(kind)});`;
+}
+
+function initializationAssignmentTarget(
+  name: ts.BindingName,
+  source: ts.SourceFile,
+  kind: "let" | "const",
+  checkpointToken: string,
+): string {
+  if (ts.isIdentifier(name)) {
+    return `globalThis.__caplets_initialization_target(${JSON.stringify(checkpointToken)}, ${JSON.stringify(kind)})[${JSON.stringify(name.text)}]`;
+  }
+  if (ts.isObjectBindingPattern(name)) {
+    return `{ ${name.elements
+      .map((element) => {
+        const target = initializationAssignmentTarget(element.name, source, kind, checkpointToken);
+        if (element.dotDotDotToken) return `...${target}`;
+        const propertyName = element.propertyName?.getText(source) ?? bindingNames(element.name)[0];
+        const initializer = element.initializer ? ` = ${element.initializer.getText(source)}` : "";
+        return `${propertyName}: ${target}${initializer}`;
+      })
+      .join(", ")} }`;
+  }
+  return `[${name.elements
+    .map((element) => {
+      if (ts.isOmittedExpression(element)) return "";
+      const target = initializationAssignmentTarget(element.name, source, kind, checkpointToken);
+      const initializer = element.initializer ? ` = ${element.initializer.getText(source)}` : "";
+      return `${element.dotDotDotToken ? "..." : ""}${target}${initializer}`;
+    })
+    .join(", ")}]`;
+}
+
+function collectPersistentVarRewrites(
   node: ts.Node,
   source: ts.SourceFile,
-  snapshotNames: string[],
-  ranges: Array<{ start: number; end: number; prelude: string; body: string }>,
-  returnTempName: string,
-  checkpointToken: string,
-  shadowedNames: ReadonlySet<string> = new Set(),
+  declarations: PersistentBindingDeclaration[],
+  ranges: PersistentRewriteRange[],
 ): void {
-  if (snapshotNames.length === 0) {
-    return;
-  }
-  if (ts.isFunctionLike(node) || ts.isClassLike(node)) {
-    return;
-  }
-  const declared = lexicalNamesDeclaredByNode(node);
-  const activeShadowedNames =
-    declared.size === 0 ? shadowedNames : new Set([...shadowedNames, ...declared]);
-  if (ts.isReturnStatement(node)) {
-    const expression = node.expression?.getText(source);
-    const postludeExpression = snapshotNames
-      .filter((name) => !activeShadowedNames.has(name))
-      .map((name) => persistentBindingExpression(name, checkpointToken))
-      .join(", ");
+  if (ts.isFunctionLike(node) || ts.isClassLike(node)) return;
+  if (ts.isVariableStatement(node) && isVarDeclarationList(node.declarationList)) {
+    for (const name of declarationListBindingNames(node.declarationList)) {
+      declarations.push({ name, kind: "var" });
+    }
     ranges.push({
       start: node.getFullStart(),
       end: node.end,
-      prelude: "",
-      body: returnWithPersistenceExpression(expression, postludeExpression, returnTempName),
+      body: varStatementAssignments(node.declarationList, source),
     });
-    return;
-  }
-  ts.forEachChild(node, (child) =>
-    collectPersistentReturnRanges(
-      child,
-      source,
-      snapshotNames,
-      ranges,
-      returnTempName,
-      checkpointToken,
-      activeShadowedNames,
-    ),
-  );
-}
-
-function lexicalNamesDeclaredByNode(node: ts.Node): Set<string> {
-  const names = new Set<string>();
-  if (ts.isBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node)) {
-    for (const statement of node.statements) {
-      if (ts.isVariableStatement(statement) && !isVarDeclarationList(statement.declarationList)) {
-        for (const name of declarationListBindingNames(statement.declarationList)) {
-          names.add(name);
-        }
-      }
-      if ((ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name) {
-        names.add(statement.name.text);
-      }
-      if (ts.isFunctionDeclaration(statement) && statement.name) {
-        names.add(statement.name.text);
-      }
-    }
-  }
-  if (ts.isSwitchStatement(node)) {
-    for (const clause of node.caseBlock.clauses) {
-      for (const statement of clause.statements) {
-        if (ts.isVariableStatement(statement) && !isVarDeclarationList(statement.declarationList)) {
-          for (const name of declarationListBindingNames(statement.declarationList)) {
-            names.add(name);
-          }
-        }
-        if (
-          (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) &&
-          statement.name
-        ) {
-          names.add(statement.name.text);
-        }
-        if (ts.isFunctionDeclaration(statement) && statement.name) {
-          names.add(statement.name.text);
-        }
-      }
-    }
-  }
-  if (ts.isCatchClause(node) && node.variableDeclaration) {
-    for (const name of bindingNames(node.variableDeclaration.name)) {
-      names.add(name);
-    }
-  }
-  if (
-    (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
-    node.initializer &&
-    ts.isVariableDeclarationList(node.initializer) &&
-    !isVarDeclarationList(node.initializer)
-  ) {
-    for (const name of declarationListBindingNames(node.initializer)) {
-      names.add(name);
-    }
-  }
-  return names;
-}
-
-function returnWithPersistenceExpression(
-  expression: string | undefined,
-  postludeExpression: string,
-  returnTempName: string,
-): string {
-  if (!postludeExpression) {
-    return expression ? `return ${expression};` : "return;";
-  }
-  return expression
-    ? `return (async (${returnTempName}) => { await Promise.resolve(); ${postludeExpression}; return ${returnTempName}; })((${expression}));`
-    : `await Promise.resolve();\nreturn void (${postludeExpression});`;
-}
-
-function uniqueInternalName(baseName: string, unavailableNames: string[]): string {
-  const unavailable = new Set(unavailableNames);
-  let name = baseName;
-  while (unavailable.has(name)) {
-    name = `_${name}`;
-  }
-  return name;
-}
-
-function collectPersistentVarRewriteRanges(
-  node: ts.Node,
-  source: ts.SourceFile,
-  lexicalNames: ReadonlySet<string>,
-  ranges: Array<{ start: number; end: number; prelude: string; body: string }>,
-): void {
-  if (ts.isFunctionLike(node) || ts.isClassLike(node)) {
-    return;
-  }
-  if (ts.isVariableStatement(node) && isVarDeclarationList(node.declarationList)) {
-    const names = declarationListBindingNames(node.declarationList);
-    if (!names.some((name) => lexicalNames.has(name))) {
-      ranges.push({
-        start: node.getFullStart(),
-        end: node.end,
-        prelude: "",
-        body: varStatementAssignments(node.declarationList, source),
-      });
-    }
     return;
   }
   if (
@@ -1627,120 +1623,18 @@ function collectPersistentVarRewriteRanges(
     ts.isVariableDeclarationList(node.initializer) &&
     isVarDeclarationList(node.initializer)
   ) {
-    const names = declarationListBindingNames(node.initializer);
-    if (!names.some((name) => lexicalNames.has(name))) {
-      ranges.push({
-        start: node.initializer.getStart(source),
-        end: node.initializer.end,
-        prelude: "",
-        body: forInitializerAssignment(node.initializer, source),
-      });
+    for (const name of declarationListBindingNames(node.initializer)) {
+      declarations.push({ name, kind: "var" });
     }
+    ranges.push({
+      start: node.initializer.getStart(source),
+      end: node.initializer.end,
+      body: forInitializerAssignment(node.initializer, source),
+    });
   }
   ts.forEachChild(node, (child) =>
-    collectPersistentVarRewriteRanges(child, source, lexicalNames, ranges),
+    collectPersistentVarRewrites(child, source, declarations, ranges),
   );
-}
-
-function collectPersistentFinallyRanges(
-  node: ts.Node,
-  snapshotNames: string[],
-  ranges: Array<{ start: number; end: number; prelude: string; body: string }>,
-  checkpointToken: string,
-  shadowedNames: ReadonlySet<string> = new Set(),
-): void {
-  if (snapshotNames.length === 0) {
-    return;
-  }
-  if (ts.isFunctionLike(node) || ts.isClassLike(node)) {
-    return;
-  }
-  const declared = lexicalNamesDeclaredByNode(node);
-  const activeShadowedNames =
-    declared.size === 0 ? shadowedNames : new Set([...shadowedNames, ...declared]);
-  if (ts.isTryStatement(node) && node.finallyBlock) {
-    const finallyDeclared = lexicalNamesDeclaredByNode(node.finallyBlock);
-    const finallyShadowedNames =
-      finallyDeclared.size === 0
-        ? activeShadowedNames
-        : new Set([...activeShadowedNames, ...finallyDeclared]);
-    const postlude = snapshotNames
-      .filter((name) => !finallyShadowedNames.has(name))
-      .map((name) => persistentBindingPostlude(name, checkpointToken))
-      .join("\n");
-    if (postlude) {
-      ranges.push({
-        start: node.finallyBlock.end - 1,
-        end: node.finallyBlock.end - 1,
-        prelude: "",
-        body: `\n${postlude}\n`,
-      });
-    }
-  }
-  ts.forEachChild(node, (child) =>
-    collectPersistentFinallyRanges(
-      child,
-      snapshotNames,
-      ranges,
-      checkpointToken,
-      activeShadowedNames,
-    ),
-  );
-}
-
-function collectPersistentBindingNames(source: ts.SourceFile): string[] {
-  const names = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (ts.isFunctionDeclaration(node) && node.name && node.parent === source) {
-      names.add(node.name.text);
-    }
-    if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) {
-      return;
-    }
-    if (ts.isVariableStatement(node)) {
-      collectVarDeclarationListNames(node.declarationList, names);
-    }
-    if (
-      (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
-      node.initializer &&
-      ts.isVariableDeclarationList(node.initializer)
-    ) {
-      collectVarDeclarationListNames(node.initializer, names);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return [...names];
-}
-
-function collectTopLevelLexicalBindingNames(source: ts.SourceFile): Set<string> {
-  const names = new Set<string>();
-  for (const statement of source.statements) {
-    if (ts.isVariableStatement(statement) && !isVarDeclarationList(statement.declarationList)) {
-      for (const name of declarationListBindingNames(statement.declarationList)) {
-        names.add(name);
-      }
-    }
-    if ((ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name) {
-      names.add(statement.name.text);
-    }
-  }
-  return names;
-}
-
-function collectVarDeclarationListNames(
-  declarationList: ts.VariableDeclarationList,
-  names: Set<string>,
-): void {
-  const isVar = (ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.BlockScoped) === 0;
-  if (!isVar) {
-    return;
-  }
-  for (const declaration of declarationList.declarations) {
-    for (const name of bindingNames(declaration.name)) {
-      names.add(name);
-    }
-  }
 }
 
 function isVarDeclarationList(declarationList: ts.VariableDeclarationList): boolean {
@@ -1775,20 +1669,6 @@ function forInitializerAssignment(
       : declaration.name.getText(source),
   );
   return assignments.join(", ");
-}
-
-function persistentBindingPostlude(name: string, checkpointToken: string): string {
-  return [
-    `globalThis.__caplets_set_persist(${JSON.stringify(checkpointToken)}, ${JSON.stringify(name)}, ${name});`,
-    `(0, eval)(${JSON.stringify(`${name} = globalThis.__caplets_get_persist(${JSON.stringify(checkpointToken)}, ${JSON.stringify(name)});`)});`,
-  ].join("\n");
-}
-
-function persistentBindingExpression(name: string, checkpointToken: string): string {
-  return [
-    `globalThis.__caplets_set_persist(${JSON.stringify(checkpointToken)}, ${JSON.stringify(name)}, ${name})`,
-    `(0, eval)(${JSON.stringify(`${name} = globalThis.__caplets_get_persist(${JSON.stringify(checkpointToken)}, ${JSON.stringify(name)});`)})`,
-  ].join(", ");
 }
 
 function bindingNames(name: ts.BindingName): string[] {
@@ -1925,7 +1805,16 @@ function normalizeError(error: unknown, deadlineMs: number, timeoutMs: number): 
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return String(error);
 }
 
 function stackFromError(error: unknown): string | undefined {

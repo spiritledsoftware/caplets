@@ -22,7 +22,7 @@ export type CodeModeSessionCompatibility = {
 export type CodeModeSessionRunInput = CodeModeSandboxInput & {
   sessionId?: string;
   compatibility: CodeModeSessionCompatibility;
-  onSuccessfulCell?: (sessionId: string, code: string) => void;
+  onExecutedCell?: (sessionId: string, code: string, settledBindingNames: string[]) => void;
 };
 
 export type CodeModeSessionRunResult =
@@ -146,8 +146,8 @@ export class CodeModeSessionManager {
       const sessionDisposedAfterRun = record.session.isDisposed();
       if (sessionDisposedAfterRun) {
         this.#sessions.delete(record.id);
-      } else if (result.ok) {
-        input.onSuccessfulCell?.(record.id, input.code);
+      } else {
+        input.onExecutedCell?.(record.id, input.code, result.settledBindingNames ?? []);
       }
       return {
         ok: true,
@@ -205,8 +205,15 @@ export class CodeModeSessionManager {
     return record.busy;
   }
 
-  recordSuccessfulCell(sessionId: string, code: string, declaration = ""): void {
-    this.#sessions.get(sessionId)?.diagnosticsSession.recordSuccessfulCell(code, declaration);
+  recordExecutedCell(
+    sessionId: string,
+    code: string,
+    declaration = "",
+    settledBindingNames: string[] = [],
+  ): void {
+    this.#sessions
+      .get(sessionId)
+      ?.diagnosticsSession.recordCell(code, declaration, settledBindingNames);
   }
 
   async #createRecord(id: string, compatibilityKey: string): Promise<SessionRecord | undefined> {

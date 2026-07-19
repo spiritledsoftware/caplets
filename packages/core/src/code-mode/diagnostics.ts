@@ -18,14 +18,23 @@ const AMBIENT_FILE = "/caplets-code-mode/ambient.d.ts";
 const TS_NOCHECK_PATTERN =
   /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*?(?:(?:\/\/\s*@ts-nocheck\b[^\n]*)|(?:\/\*\s*@ts-nocheck\b[\s\S]*?\*\/))/u;
 const BAD_CALL_METHOD_PATTERN = /\bcaplets(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\.call\s*\(/u;
+const TYPE_DECLARATION_CONFLICT_CODES: Record<number, true> = {
+  2300: true,
+  2395: true,
+  2432: true,
+  2567: true,
+  2813: true,
+};
 
 export function diagnoseCodeModeTypeScript(
   input: DiagnoseCodeModeTypeScriptInput,
 ): CodeModeDiagnostic[] {
   const maxDiagnostics = input.maxDiagnostics ?? 50;
   const startedAt = Date.now();
-  const preflight = preflightDiagnostics(input.code);
-  const diagnostics: CodeModeDiagnostic[] = [...preflight];
+  const diagnostics: CodeModeDiagnostic[] = [
+    ...preflightDiagnostics(input.code),
+    ...(input.session?.declarationDiagnostics(input.code) ?? []),
+  ];
   if (diagnostics.length >= maxDiagnostics) {
     return diagnostics.slice(0, maxDiagnostics);
   }
@@ -95,19 +104,50 @@ function codeModeCompilerOptions(): ts.CompilerOptions {
 }
 
 export class CodeModeDiagnosticsSession {
-  #declarations = new Map<string, string>();
+  #valueDeclarations = new Map<string, string>();
+  #typeDeclarations = new Map<string, string>();
+  #runtimeKinds = new Map<string, RuntimeBindingKind>();
 
   declaration(): string {
-    return [...this.#declarations.values()].join("\n");
+    return [...this.#valueDeclarations.values(), ...this.#typeDeclarations.values()].join("\n");
   }
 
-  recordSuccessfulCell(code: string, declaration = ""): void {
+  declarationDiagnostics(code: string): CodeModeDiagnostic[] {
     const source = ts.createSourceFile(
       "/caplets-code-mode/session-cell.ts",
       code,
       ts.ScriptTarget.ES2022,
       true,
     );
+    const diagnostics: CodeModeDiagnostic[] = [];
+    for (const binding of collectRuntimeBindings(source)) {
+      const prior = this.#runtimeKinds.get(binding.name);
+      if (
+        prior !== undefined &&
+        !(isVarLikeRuntimeBinding(prior) && isVarLikeRuntimeBinding(binding.kind))
+      ) {
+        const position = source.getLineAndCharacterOfPosition(binding.node.getStart(source));
+        diagnostics.push({
+          code: "2451",
+          severity: "error",
+          message: `Cannot redeclare block-scoped variable '${binding.name}'.`,
+          line: position.line + 1,
+          column: position.character + 1,
+        });
+      }
+    }
+    diagnostics.push(...typeDeclarationDiagnostics(code, [...this.#typeDeclarations.values()]));
+    return diagnostics;
+  }
+
+  recordCell(code: string, declaration = "", settledBindingNames: string[] = []): void {
+    const source = ts.createSourceFile(
+      "/caplets-code-mode/session-cell.ts",
+      code,
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+    const settledBindings = new Set(settledBindingNames);
     const compilerOptions = codeModeCompilerOptions();
     const ambientDeclarations = [
       CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
@@ -140,15 +180,15 @@ export class CodeModeDiagnosticsSession {
         const returnType = statement.type
           ? statement.type.getText(programSource)
           : inferredReturnType;
-        this.#declarations.set(
+        this.#valueDeclarations.set(
           statement.name.text,
           `declare function ${statement.name.text}${typeParameters}(${params.join(", ")}): ${returnType};`,
         );
       }
     }
-    const previousBindingNames = new Set(this.#declarations.keys());
+    const previousBindingNames = new Set(this.#valueDeclarations.keys());
     const assignedNames = collectFunctionScopedAssignedNames(programSource);
-    for (const binding of collectFunctionScopedVarBindings(programSource, checker, {
+    for (const binding of collectSessionValueBindings(programSource, checker, {
       ambientDeclarationFor: (name) =>
         [CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION, declaration, this.declarationExcluding(name)]
           .filter(Boolean)
@@ -156,72 +196,166 @@ export class CodeModeDiagnosticsSession {
       assignedNames,
       previousBindingNames,
     })) {
-      this.#declarations.set(binding.name, `declare var ${binding.name}: ${binding.type};`);
+      this.#valueDeclarations.set(
+        binding.name,
+        `declare ${settledBindings.has(binding.name) ? "let" : binding.kind} ${binding.name}: ${binding.type};`,
+      );
+    }
+    for (const binding of collectRuntimeBindings(programSource)) {
+      const settled = settledBindings.has(binding.name);
+      if (settled && binding.kind === "class") {
+        this.#valueDeclarations.set(binding.name, `declare let ${binding.name}: unknown;`);
+      }
+      const prior = this.#runtimeKinds.get(binding.name);
+      if (settled || prior === undefined || !isVarLikeRuntimeBinding(binding.kind)) {
+        this.#runtimeKinds.set(binding.name, settled ? "let" : binding.kind);
+      }
+    }
+    for (const projected of projectedTypeDeclarations(code)) {
+      if (projected.kind === "class" && settledBindings.has(projected.name)) continue;
+      const existing = this.#typeDeclarations.get(projected.key);
+      this.#typeDeclarations.set(
+        projected.key,
+        existing === undefined ? projected.declaration : `${existing}\n${projected.declaration}`,
+      );
     }
   }
 
   clear(): void {
-    this.#declarations.clear();
+    this.#valueDeclarations.clear();
+    this.#typeDeclarations.clear();
+    this.#runtimeKinds.clear();
   }
 
   private declarationExcluding(name: string): string {
     const declarations: string[] = [CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION];
-    for (const [declarationName, declaration] of this.#declarations) {
-      if (declarationName !== name) {
-        declarations.push(declaration);
-      }
+    for (const [declarationName, declaration] of this.#valueDeclarations) {
+      if (declarationName !== name) declarations.push(declaration);
     }
+    declarations.push(...this.#typeDeclarations.values());
     return declarations.join("\n");
   }
 }
 
-type AmbientVarBinding = {
+type AmbientValueBinding = {
   name: string;
   type: string;
+  kind: "var" | "let" | "const";
 };
 
-type AmbientVarBindingOptions = {
+type AmbientValueBindingOptions = {
   ambientDeclarationFor: (name: string) => string;
   assignedNames: ReadonlySet<string>;
   previousBindingNames: ReadonlySet<string>;
 };
 
-function collectFunctionScopedVarBindings(
-  source: ts.SourceFile,
-  checker: ts.TypeChecker,
-  options: AmbientVarBindingOptions,
-): AmbientVarBinding[] {
-  const bindings = new Map<string, string>();
-  const visit = (node: ts.Node): void => {
-    if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) {
-      return;
+type RuntimeBindingKind = "var" | "function" | "let" | "const" | "class";
+
+type RuntimeBinding = {
+  name: string;
+  kind: RuntimeBindingKind;
+  node: ts.Node;
+};
+
+type ProjectedTypeDeclaration = {
+  key: string;
+  name: string;
+  kind: "class" | "enum" | "interface" | "type" | "namespace";
+  declaration: string;
+};
+
+function isVarLikeRuntimeBinding(kind: RuntimeBindingKind): boolean {
+  return kind === "var" || kind === "function";
+}
+
+function collectRuntimeBindings(source: ts.SourceFile): RuntimeBinding[] {
+  const bindings = new Map<string, RuntimeBinding>();
+  const addDeclarationList = (declarationList: ts.VariableDeclarationList, node: ts.Node): void => {
+    const kind = declarationListKind(declarationList);
+    for (const declaration of declarationList.declarations) {
+      for (const name of bindingNames(declaration.name)) {
+        bindings.set(name.text, { name: name.text, kind, node });
+      }
     }
+  };
+  const visit = (node: ts.Node): void => {
+    if (node.parent === source) {
+      if (ts.isFunctionDeclaration(node) && node.name) {
+        bindings.set(node.name.text, { name: node.name.text, kind: "function", node });
+        return;
+      }
+      if (ts.isClassDeclaration(node) && node.name) {
+        bindings.set(node.name.text, { name: node.name.text, kind: "class", node });
+        return;
+      }
+      if (
+        (ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) &&
+        node.name &&
+        !hasDeclareModifier(node)
+      ) {
+        const name = node.name.text;
+        bindings.set(name, { name, kind: "var", node });
+        return;
+      }
+    }
+    if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) return;
     if (ts.isVariableStatement(node)) {
-      collectVarDeclarationListBindings(node.declarationList, checker, bindings, options);
+      const kind = declarationListKind(node.declarationList);
+      if (kind === "var" || node.parent === source) {
+        addDeclarationList(node.declarationList, node);
+      }
+      return;
     }
     if (
       (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
       node.initializer &&
-      ts.isVariableDeclarationList(node.initializer)
+      ts.isVariableDeclarationList(node.initializer) &&
+      declarationListKind(node.initializer) === "var"
     ) {
-      collectVarDeclarationListBindings(node.initializer, checker, bindings, options);
+      addDeclarationList(node.initializer, node.initializer);
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return [...bindings.entries()].map(([name, type]) => ({ name, type }));
+  return [...bindings.values()];
 }
 
-function collectVarDeclarationListBindings(
+function collectSessionValueBindings(
+  source: ts.SourceFile,
+  checker: ts.TypeChecker,
+  options: AmbientValueBindingOptions,
+): AmbientValueBinding[] {
+  const bindings = new Map<string, AmbientValueBinding>();
+  const visit = (node: ts.Node): void => {
+    if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) return;
+    if (ts.isVariableStatement(node)) {
+      const kind = declarationListKind(node.declarationList);
+      if (kind === "var" || node.parent === source) {
+        collectDeclarationListBindings(node.declarationList, checker, bindings, options);
+      }
+      return;
+    }
+    if (
+      (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
+      node.initializer &&
+      ts.isVariableDeclarationList(node.initializer) &&
+      declarationListKind(node.initializer) === "var"
+    ) {
+      collectDeclarationListBindings(node.initializer, checker, bindings, options);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...bindings.values()];
+}
+
+function collectDeclarationListBindings(
   declarationList: ts.VariableDeclarationList,
   checker: ts.TypeChecker,
-  bindings: Map<string, string>,
-  options: AmbientVarBindingOptions,
+  bindings: Map<string, AmbientValueBinding>,
+  options: AmbientValueBindingOptions,
 ): void {
-  const isVar = (ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.BlockScoped) === 0;
-  if (!isVar) {
-    return;
-  }
+  const kind = declarationListKind(declarationList);
   for (const declaration of declarationList.declarations) {
     for (const name of bindingNames(declaration.name)) {
       const type = ambientTypeForBindingName(
@@ -230,15 +364,111 @@ function collectVarDeclarationListBindings(
         options.ambientDeclarationFor(name.text),
       );
       if (
+        kind === "var" &&
         options.previousBindingNames.has(name.text) &&
         declaration.initializer === undefined &&
         !options.assignedNames.has(name.text)
       ) {
         continue;
       }
-      bindings.set(name.text, type);
+      bindings.set(name.text, { name: name.text, type, kind });
     }
   }
+}
+
+function declarationListKind(declarationList: ts.VariableDeclarationList): "var" | "let" | "const" {
+  if ((ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.BlockScoped) === 0) {
+    return "var";
+  }
+  return (ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.Const) !== 0 ? "const" : "let";
+}
+
+function hasDeclareModifier(node: ts.Declaration): boolean {
+  return (ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Ambient) !== 0;
+}
+
+function projectedTypeDeclarations(code: string): ProjectedTypeDeclaration[] {
+  const result = ts.transpileDeclaration(code, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      strict: true,
+    },
+    fileName: "/caplets-code-mode/session-cell.ts",
+  });
+  const source = ts.createSourceFile(
+    "/caplets-code-mode/session-cell.d.ts",
+    result.outputText,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const declarations: ProjectedTypeDeclaration[] = [];
+  for (const statement of source.statements) {
+    if (
+      !ts.isClassDeclaration(statement) &&
+      !ts.isEnumDeclaration(statement) &&
+      !ts.isInterfaceDeclaration(statement) &&
+      !ts.isTypeAliasDeclaration(statement) &&
+      !ts.isModuleDeclaration(statement)
+    ) {
+      continue;
+    }
+    if (statement.name === undefined) continue;
+    const name = statement.name.text;
+    declarations.push({
+      key: `type:${name}`,
+      name,
+      kind: projectedTypeDeclarationKind(statement),
+      declaration: statement.getText(source),
+    });
+  }
+  return declarations;
+}
+
+function projectedTypeDeclarationKind(
+  statement:
+    | ts.ClassDeclaration
+    | ts.EnumDeclaration
+    | ts.InterfaceDeclaration
+    | ts.TypeAliasDeclaration
+    | ts.ModuleDeclaration,
+): ProjectedTypeDeclaration["kind"] {
+  if (ts.isClassDeclaration(statement)) return "class";
+  if (ts.isEnumDeclaration(statement)) return "enum";
+  if (ts.isInterfaceDeclaration(statement)) return "interface";
+  if (ts.isTypeAliasDeclaration(statement)) return "type";
+  return "namespace";
+}
+
+function typeDeclarationDiagnostics(
+  code: string,
+  previousDeclarations: string[],
+): CodeModeDiagnostic[] {
+  const currentDeclarations = projectedTypeDeclarations(code).map(({ declaration }) => declaration);
+  if (currentDeclarations.length === 0) return [];
+  const sourceText = [...previousDeclarations, ...currentDeclarations].join("\n");
+  const compilerOptions = codeModeCompilerOptions();
+  const host = createVirtualCompilerHost(compilerOptions, {
+    [CODE_FILE]: sourceText,
+  });
+  const program = ts.createProgram([CODE_FILE], compilerOptions, host);
+  const source = program.getSourceFile(CODE_FILE);
+  const seen = new Set<string>();
+  const diagnostics: CodeModeDiagnostic[] = [];
+  for (const diagnostic of program.getSemanticDiagnostics(source)) {
+    if (TYPE_DECLARATION_CONFLICT_CODES[diagnostic.code] !== true) continue;
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    const key = `${diagnostic.code}:${message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    diagnostics.push({
+      code: String(diagnostic.code),
+      severity: "error",
+      message,
+    });
+  }
+  return diagnostics;
 }
 
 function bindingNames(name: ts.BindingName): ts.Identifier[] {

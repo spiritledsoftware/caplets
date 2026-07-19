@@ -159,11 +159,11 @@ describe("CodeModeSessionManager", () => {
     }
   });
 
-  it("records generated Caplet handle declarations for persisted session vars", async () => {
-    const manager = new CodeModeSessionManager({ idGenerator: () => "session-handle-var" });
+  it("records generated Caplet handle declarations for persisted session consts", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-handle-const" });
     try {
       const first = await runCodeMode({
-        code: "var gh = caplets.github;\nreturn gh.id;",
+        code: "const gh = caplets.github;\nreturn gh.id;",
         service: service(),
         sessionManager: manager,
         runtimeScope: "test",
@@ -172,12 +172,107 @@ describe("CodeModeSessionManager", () => {
         code: "return await gh.inspect();",
         service: service(),
         sessionManager: manager,
-        sessionId: "session-handle-var",
+        sessionId: "session-handle-const",
         runtimeScope: "test",
       });
 
       expect(first).toMatchObject({ ok: true, value: "github" });
       expect(second).toMatchObject({ ok: true, diagnostics: [] });
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("keeps compiled type declarations after ordinary runtime errors", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-failed-types" });
+    try {
+      const first = await runCodeMode({
+        code: "type Result = { value: number };\nlet value = 1;\nthrow new Error('boom');",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const second = await runCodeMode({
+        code: "const result: Result = { value };\nreturn result.value;",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-failed-types",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({
+        ok: false,
+        error: { code: "sandbox_error", message: "boom" },
+        meta: { sessionId: "session-failed-types", sessionStatus: "created" },
+      });
+      expect(second).toMatchObject({ ok: true, value: 1, diagnostics: [] });
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("aligns settled failed lexical bindings with reused-session diagnostics", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-settled-lexical" });
+    try {
+      const failed = await runCodeMode({
+        code: "const blocked = await Promise.reject(new Error('nope'));\nclass Pending {}",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const assigned = await runCodeMode({
+        code: "blocked = 1;\nPending = 2;\nreturn { blocked, Pending };",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-settled-lexical",
+        runtimeScope: "test",
+      });
+
+      expect(failed).toMatchObject({
+        ok: false,
+        error: { code: "sandbox_error", message: "nope" },
+      });
+      expect(assigned).toMatchObject({
+        ok: true,
+        value: { blocked: 1, Pending: 2 },
+        diagnostics: [],
+      });
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("blocks duplicate lexical declarations without changing session state", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-duplicate-const" });
+    try {
+      const first = await runCodeMode({
+        code: "const value = 1;\nreturn value;",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const duplicate = await runCodeMode({
+        code: "const value = 2;\nreturn value;",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-duplicate-const",
+        runtimeScope: "test",
+      });
+      const persisted = await runCodeMode({
+        code: "return value;",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-duplicate-const",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({ ok: true, value: 1 });
+      expect(duplicate).toMatchObject({
+        ok: false,
+        error: { code: "diagnostic_blocked" },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: "2451" })]),
+      });
+      expect(persisted).toMatchObject({ ok: true, value: 1 });
     } finally {
       manager.close();
     }
@@ -812,7 +907,7 @@ describe("CodeModeSessionManager", () => {
         runtimeScope: "test",
       });
 
-      expect(tainted).toMatchObject({ ok: true, value: "persisted" });
+      expect(tainted).toMatchObject({ ok: false });
       expect(next).toMatchObject({
         ok: false,
         error: { code: "SESSION_NOT_FOUND" },

@@ -330,22 +330,25 @@ describe("Code Mode CLI", () => {
 
 function writeConfig(dir: string, config: Record<string, unknown>): string {
   const path = join(dir, "config.json");
-  writeFileSync(
-    path,
-    JSON.stringify(
-      Object.keys(config).length > 0
-        ? config
-        : {
-            mcpServers: {
-              placeholder: {
-                name: "Placeholder",
-                description: "Disabled placeholder.",
-                command: "node",
-                disabled: true,
-              },
+  const contents =
+    Object.keys(config).length > 0
+      ? config
+      : {
+          mcpServers: {
+            placeholder: {
+              name: "Placeholder",
+              description: "Disabled placeholder.",
+              command: "node",
+              disabled: true,
             },
           },
-    ),
+        };
+  writeFileSync(
+    path,
+    JSON.stringify({
+      storage: { type: "sqlite", path: join(dir, "host.sqlite3") },
+      ...contents,
+    }),
   );
   return path;
 }
