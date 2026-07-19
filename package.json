@@ -22,6 +22,8 @@
     "clean-install": "rm -rf **/node_modules pnpm-lock.yaml && pnpm install",
     "code-mode:check-api": "node scripts/generate-code-mode-runtime-api.mjs --check && node scripts/generate-code-mode-platform-runtime.mjs --check",
     "code-mode:generate-api": "node scripts/generate-code-mode-runtime-api.mjs && node scripts/generate-code-mode-platform-runtime.mjs",
+    "compose:check": "node scripts/sync-compose-image-version.mjs --check",
+    "compose:smoke": "node scripts/smoke-compose-deployments.mjs",
     "dev": "tsx ./scripts/dev.ts",
     "docs:check": "tsx ./scripts/generate-docs-reference.ts --check && tsx ./scripts/check-public-docs.ts",
     "docs:generate": "tsx ./scripts/generate-docs-reference.ts",
@@ -42,8 +44,8 @@
     "telemetry:check-web-env": "tsx ./scripts/check-web-observability-env.ts",
     "telemetry:prepare-release-env": "tsx ./scripts/check-telemetry-release-env.ts --write-bundled-intake",
     "typecheck": "tsgo --noEmit && turbo typecheck",
-    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm storage:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
-    "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."
+    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm storage:check && pnpm compose:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
+    "version-packages": "changeset version && node scripts/sync-compose-image-version.mjs --write && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

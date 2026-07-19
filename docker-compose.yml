@@ -1,15 +1,10 @@
 services:
   caplets:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: caplets:local
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:latest}
     restart: unless-stopped
     environment:
       CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
       CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server
-      CAPLETS_SENTRY_RELEASE: ${CAPLETS_SENTRY_RELEASE:-caplets-docker-local}
-      CAPLETS_SENTRY_ENVIRONMENT: ${CAPLETS_SENTRY_ENVIRONMENT:-development}
       XDG_CONFIG_HOME: /data/config
       XDG_STATE_HOME: /data/state
     env_file:

@@ -128,9 +128,9 @@ caplets storage schema-migrate
 ```
 
 Use a DDL-capable migrator URL for that job. Runtime nodes use a different DML-only URL and start
-only after the job exits successfully. The following is the concrete privilege boundary used by
-`deploy/postgres/init-caplets-roles.sh`; substitute identifiers through your provisioning tool
-rather than interpolating untrusted strings into SQL:
+only after the job exits successfully. The hardened Compose reference reconciles this boundary with
+the packaged `deploy/postgres/provision-roles.mjs` helper; substitute identifiers through your
+provisioning tool rather than interpolating untrusted strings into SQL:
 
 ```sql
 REVOKE ALL ON DATABASE caplets FROM PUBLIC;
@@ -169,9 +169,9 @@ FROM caplets_runtime;
 GRANT SELECT ON TABLE caplets_prod.caplets_schema TO caplets_runtime;
 ```
 
-Default privileges apply again when future migration objects are created, so this is part of the
-one-shot migration job, not a one-time bootstrap. The Compose overlay runs
-`deploy/postgres/finalize-runtime-grants.mjs` after `schema-migrate`.
+Default privileges apply again when future migration objects are created, so finalizing runtime
+grants is part of every one-shot migration job. The hardened Compose deployment runs the packaged
+`finalize-runtime-grants.mjs` helper after `schema-migrate`.
 
 `LISTEN`/`NOTIFY` and advisory-lock functions do not require table ownership. Do not grant the
 runtime role `CREATE`, `TRUNCATE`, schema ownership, role administration, or migration credentials.
@@ -184,40 +184,154 @@ The PostgreSQL documentation defines the relevant
 [`ALTER DEFAULT PRIVILEGES`](https://www.postgresql.org/docs/17/sql-alterdefaultprivileges.html),
 and [schema/search-path](https://www.postgresql.org/docs/17/ddl-schemas.html) behavior.
 
-### Docker Compose overlay
+### Standalone Docker Compose deployments
 
-`docker-compose.yml` remains the default SQLite, single-node deployment. The additive
-`docker-compose.postgres.yml` provides:
-
-- a PostgreSQL 17.6 service with `pg_isready` health;
-- initialization of separate administrator, migrator, and runtime roles;
-- a one-shot `caplets-postgres-migrate` service;
-- `service_completed_successfully` gating before the runtime service starts; and
-- ephemeral, mode-`0600` config rendering so URLs are not committed.
-
-Put three distinct, randomly generated passwords in an owner-only `.env` file:
-
-```dotenv
-CAPLETS_POSTGRES_ADMIN_PASSWORD=<deployment-secret>
-CAPLETS_POSTGRES_MIGRATOR_PASSWORD=<different-deployment-secret>
-CAPLETS_POSTGRES_RUNTIME_PASSWORD=<different-deployment-secret>
-CAPLETS_POSTGRES_SCHEMA=caplets
-```
-
-Then validate and start the merged deployment:
+The release publishes three alternative, standalone deployment descriptors. Download and run
+exactly one; do not combine them as overlays:
 
 ```sh
-chmod 600 .env
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -d
+curl -fLO https://github.com/spiritledsoftware/caplets/releases/latest/download/docker-compose.yml
+curl -fLO https://github.com/spiritledsoftware/caplets/releases/latest/download/docker-compose.postgres.yml
+curl -fLO https://github.com/spiritledsoftware/caplets/releases/latest/download/docker-compose.postgres-hardened.yml
 ```
 
-The role initializer runs only when the PostgreSQL data volume is first created. Editing `.env` does
-not rotate roles in an existing database. Use `ALTER ROLE ... PASSWORD` through a protected
-administrator session, update the deployment secret, and restart the affected job/nodes.
+The release assets use published Caplets images and contain no local build context or checkout bind
+mount. Set `CAPLETS_IMAGE` to use a version, digest, or explicitly built local image.
 
-The overlay mounts the same `caplets-data` volume into runtime replicas, so its global Caplet File
-manifest is shared on one Docker host. Do not treat a local Docker volume as cross-host storage.
+#### SQLite convenience deployment
+
+`docker-compose.yml` needs no required environment variables:
+
+```sh
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml up -d --wait
+```
+
+It binds `127.0.0.1:5387` and persists config, state, and SQLite data in `caplets-data`.
+
+#### PostgreSQL convenience deployment
+
+`docker-compose.postgres.yml` is for fresh deployments. It deliberately uses one `caplets` owner
+role for initialization, migration, and runtime access. The runtime credential can therefore apply
+DDL and modify migration metadata; use the hardened deployment when that boundary is unacceptable.
+The one-shot provisioning helper creates that non-superuser owner, then replaces the bootstrap
+`postgres` password with a discarded random value so the runtime credential cannot authenticate as
+the cluster superuser.
+
+Create one owner-only password file for Compose interpolation, then start the standalone topology:
+
+```sh
+umask 077
+printf 'CAPLETS_POSTGRES_PASSWORD=%s\n' "$(openssl rand -base64 32)" > .env
+chmod 600 .env
+docker compose -f docker-compose.postgres.yml config --quiet
+docker compose -f docker-compose.postgres.yml up -d --wait
+```
+
+The PostgreSQL image defaults to `postgres:17-bookworm`. Set `CAPLETS_POSTGRES_IMAGE` to select a
+different full image reference. The migration job must complete successfully before runtime starts.
+
+Do not point this file at a volume initialized by the former three-role overlay.
+
+#### Hardened PostgreSQL reference
+
+`docker-compose.postgres-hardened.yml` is a hardened single-Docker-host reference, not a
+high-availability topology. It retains separate administrator, migrator, and runtime roles, exact
+image defaults, file-backed secrets, an internal database network, read-only non-root Caplets
+containers, dropped capabilities, bounded logs, and a 60-second PostgreSQL shutdown grace period.
+
+Create three owner-only host secret files:
+
+```sh
+mkdir -p secrets
+chmod 700 secrets
+umask 077
+openssl rand -base64 32 > secrets/postgres-admin-password
+openssl rand -base64 32 > secrets/postgres-migrator-password
+openssl rand -base64 32 > secrets/postgres-runtime-password
+chmod 600 secrets/postgres-*-password
+docker compose -f docker-compose.postgres-hardened.yml config --quiet
+docker compose -f docker-compose.postgres-hardened.yml up -d --wait
+```
+
+The short-lived `caplets-postgres-secrets` service copies each Compose secret into a role-scoped
+Docker volume owned by the non-root Caplets user. Runtime mounts only the runtime credential.
+PostgreSQL and the migration service attach only to the internal database network; runtime also
+attaches to an egress network. PostgreSQL has no published host port, and Caplets binds loopback by
+default. Put remote access and TLS behind an operator-managed reverse proxy or private network.
+
+Existing users of the former two-file, three-role overlay can reuse its project-scoped volumes:
+
+1. Keep the same Compose project name or `-p` value.
+2. Copy the existing administrator, migrator, and runtime password values into the three secret
+   files above instead of generating replacements.
+3. Stop the old overlay without `--volumes`.
+4. Start only `docker-compose.postgres-hardened.yml`.
+
+The administrator secret must match the credential already stored in PostgreSQL. Changing its file
+cannot rotate that credential because the old value is needed to authenticate. Rotate it over the
+container's protected loopback connection, then replace the file and recreate the affected services
+in this order:
+
+```sh
+set -eu
+new_admin_secret=$(mktemp secrets/postgres-admin-password.XXXXXX)
+chmod 600 "$new_admin_secret"
+openssl rand -base64 32 > "$new_admin_secret"
+new_admin_password=$(cat "$new_admin_secret")
+
+docker compose -f docker-compose.postgres-hardened.yml exec -T caplets-postgres \
+  sh -ec 'export PGPASSWORD="$(cat /run/secrets/caplets_postgres_admin_password)"
+    exec psql --no-psqlrc --host 127.0.0.1 --username caplets_admin \
+      --dbname "$POSTGRES_DB" --set=ON_ERROR_STOP=1' <<SQL
+\set new_password '$new_admin_password'
+ALTER ROLE caplets_admin PASSWORD :'new_password';
+SQL
+
+mv "$new_admin_secret" secrets/postgres-admin-password
+chmod 600 secrets/postgres-admin-password
+unset new_admin_password
+docker compose -f docker-compose.postgres-hardened.yml up -d --wait --no-deps --force-recreate caplets-postgres
+docker compose -f docker-compose.postgres-hardened.yml up --no-deps --force-recreate caplets-postgres-secrets
+docker compose -f docker-compose.postgres-hardened.yml up --no-deps --force-recreate caplets-postgres-migrate
+docker compose -f docker-compose.postgres-hardened.yml up -d --wait --no-deps --force-recreate caplets
+```
+
+The running container authenticates with the old mounted secret; the new value travels on standard
+input rather than in command arguments. Recreating PostgreSQL remounts the replaced secret file
+before another rotation is attempted. If authentication fails, the active secret file is unchanged
+and the staged `postgres-admin-password.*` file contains the unused replacement. Migrator and runtime
+passwords are reconciled by the pre-start job.
+
+#### Operations and upgrades
+
+Check readiness and inspect logs:
+
+```sh
+curl --fail http://127.0.0.1:5387/v1/healthz
+docker compose -f <selected-compose-file> logs --tail 100
+```
+
+Stop containers while preserving data:
+
+```sh
+docker compose -f <selected-compose-file> down
+```
+
+For convenience deployments, pull the selected moving image before recreating services:
+
+```sh
+docker compose -f <selected-compose-file> pull
+docker compose -f <selected-compose-file> up -d --wait
+```
+
+The hardened file defaults to exact image versions. Before changing either image reference, take a
+database backup, verify a restore, update the exact tag or digest, and rerun `up -d --wait`. Schema
+migrations are forward-only; rolling back a container image does not roll back the schema.
+
+The supplied topology does not provide backups, certificate management, monitoring, or arbitrary
+resource limits. Treat `caplets-data` and `caplets-postgres-data` as single-host Docker volumes, not
+cross-host or high-availability storage.
 
 ### Readiness and fail-closed behavior
 
@@ -475,11 +589,11 @@ store credentials:
 caplets storage status --json
 ```
 
-For the Compose overlay before runtime cutover:
+For the hardened Compose reference before runtime cutover:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml run --rm --no-deps caplets \
-  /bin/sh -ec 'node /usr/local/bin/render-caplets-postgres-config.mjs runtime && node dist/index.js storage status --json'
+docker compose -f docker-compose.postgres-hardened.yml run --rm --no-deps caplets \
+  /bin/sh -ec 'node /usr/local/lib/caplets/postgres/render-config.mjs runtime && node dist/index.js storage status --json'
 ```
 
 Require ready database/schema health, expected Caplet Record and asset counts, object-store

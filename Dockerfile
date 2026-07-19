@@ -46,8 +46,10 @@ RUN mkdir -p /data/config /data/state && \
     chown -R node:root /app /data
 
 COPY --from=build --chown=node:root /deploy ./
+COPY --from=build --chown=node:root /app/deploy/postgres/*.mjs /usr/local/lib/caplets/postgres/
 
 VOLUME ["/data"]
+
 EXPOSE 5387
 
 USER node
