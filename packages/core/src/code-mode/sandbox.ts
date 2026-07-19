@@ -66,8 +66,14 @@ const CODE_MODE_DEBUG_METHODS = new Set<CodeModeSandboxInvokeInput["method"]>([
 ]);
 
 export type CodeModeSandboxResult =
-  | { ok: true; value: unknown; logs: CodeModeLogEntry[] }
-  | { ok: false; error: string; logs: CodeModeLogEntry[]; stack?: string };
+  | { ok: true; value: unknown; logs: CodeModeLogEntry[]; settledBindingNames?: string[] }
+  | {
+      ok: false;
+      error: string;
+      logs: CodeModeLogEntry[];
+      stack?: string;
+      settledBindingNames?: string[];
+    };
 
 export interface CodeModeSandbox {
   run(input: CodeModeSandboxInput): Promise<CodeModeSandboxResult>;
@@ -216,7 +222,11 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
         this.#clearPendingDeferreds();
       }
       if (!shouldDispose && !result.ok) {
-        shouldDispose = !this.#settleFailedDeclarations(cell.newNames);
+        const settledBindingNames = this.#settleFailedDeclarations(cell.newNames);
+        shouldDispose = settledBindingNames === undefined;
+        if (settledBindingNames && settledBindingNames.length > 0) {
+          result.settledBindingNames = settledBindingNames;
+        }
       }
       return result;
     } catch (error) {
@@ -471,19 +481,23 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
     return ok;
   }
 
-  #settleFailedDeclarations(names: string[]): boolean {
+  #settleFailedDeclarations(names: string[]): string[] | undefined {
     if (names.length === 0 || this.#disposed) {
-      return true;
+      return [];
     }
     const result = this.#context.evalCode(
       `__caplets_settle_failed_declarations(${JSON.stringify(this.#checkpointToken)}, ${JSON.stringify(names)})`,
     );
     if (result.error) {
       result.error.dispose();
-      return false;
+      return undefined;
     }
+    const settledBindingNames = this.#context.dump(result.value);
     result.value.dispose();
-    return true;
+    return Array.isArray(settledBindingNames) &&
+      settledBindingNames.every((name) => typeof name === "string")
+      ? settledBindingNames
+      : undefined;
   }
 
   #isPersistTainted(): boolean {
@@ -1291,13 +1305,16 @@ function buildSessionInitSource(checkpointToken: string): string {
     "  } });",
     "  Object.defineProperty(globalThis, '__caplets_settle_failed_declarations', { configurable: false, writable: false, value: (token, names) => {",
     "    assertToken(token);",
+    "    const settled = [];",
     "    for (const name of names) {",
     "      const record = persistBacking[name];",
     "      if (!record || record.initialized) continue;",
     "      record.initialized = true;",
     "      record.value = undefined;",
     "      if (record.kind === 'const' || record.kind === 'class') record.kind = 'let';",
+    "      settled.push(name);",
     "    }",
+    "    return settled;",
     "  } });",
     "  Object.defineProperty(globalThis, '__caplets_set_cell_caplets', { configurable: false, writable: false, value: (token, value) => { assertToken(token); platformBindings.caplets = value; } });",
     "  Object.defineProperty(globalThis, '__caplets_existing_persist_names', { configurable: false, writable: false, value: (token, names) => { assertToken(token); return names.filter((name) => hasOwn(persistBacking, name)); } });",

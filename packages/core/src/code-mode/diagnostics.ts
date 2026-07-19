@@ -140,13 +140,14 @@ export class CodeModeDiagnosticsSession {
     return diagnostics;
   }
 
-  recordCell(code: string, declaration = ""): void {
+  recordCell(code: string, declaration = "", settledBindingNames: string[] = []): void {
     const source = ts.createSourceFile(
       "/caplets-code-mode/session-cell.ts",
       code,
       ts.ScriptTarget.ES2022,
       true,
     );
+    const settledBindings = new Set(settledBindingNames);
     const compilerOptions = codeModeCompilerOptions();
     const ambientDeclarations = [
       CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
@@ -197,16 +198,21 @@ export class CodeModeDiagnosticsSession {
     })) {
       this.#valueDeclarations.set(
         binding.name,
-        `declare ${binding.kind} ${binding.name}: ${binding.type};`,
+        `declare ${settledBindings.has(binding.name) ? "let" : binding.kind} ${binding.name}: ${binding.type};`,
       );
     }
     for (const binding of collectRuntimeBindings(programSource)) {
+      const settled = settledBindings.has(binding.name);
+      if (settled && binding.kind === "class") {
+        this.#valueDeclarations.set(binding.name, `declare let ${binding.name}: unknown;`);
+      }
       const prior = this.#runtimeKinds.get(binding.name);
-      if (prior === undefined || !isVarLikeRuntimeBinding(binding.kind)) {
-        this.#runtimeKinds.set(binding.name, binding.kind);
+      if (settled || prior === undefined || !isVarLikeRuntimeBinding(binding.kind)) {
+        this.#runtimeKinds.set(binding.name, settled ? "let" : binding.kind);
       }
     }
     for (const projected of projectedTypeDeclarations(code)) {
+      if (projected.kind === "class" && settledBindings.has(projected.name)) continue;
       const existing = this.#typeDeclarations.get(projected.key);
       this.#typeDeclarations.set(
         projected.key,
@@ -253,6 +259,8 @@ type RuntimeBinding = {
 
 type ProjectedTypeDeclaration = {
   key: string;
+  name: string;
+  kind: "class" | "enum" | "interface" | "type" | "namespace";
   declaration: string;
 };
 
@@ -271,6 +279,25 @@ function collectRuntimeBindings(source: ts.SourceFile): RuntimeBinding[] {
     }
   };
   const visit = (node: ts.Node): void => {
+    if (node.parent === source) {
+      if (ts.isFunctionDeclaration(node) && node.name) {
+        bindings.set(node.name.text, { name: node.name.text, kind: "function", node });
+        return;
+      }
+      if (ts.isClassDeclaration(node) && node.name) {
+        bindings.set(node.name.text, { name: node.name.text, kind: "class", node });
+        return;
+      }
+      if (
+        (ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) &&
+        node.name &&
+        !hasDeclareModifier(node)
+      ) {
+        const name = node.name.text;
+        bindings.set(name, { name, kind: "var", node });
+        return;
+      }
+    }
     if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) return;
     if (ts.isVariableStatement(node)) {
       const kind = declarationListKind(node.declarationList);
@@ -286,25 +313,6 @@ function collectRuntimeBindings(source: ts.SourceFile): RuntimeBinding[] {
       declarationListKind(node.initializer) === "var"
     ) {
       addDeclarationList(node.initializer, node.initializer);
-    }
-    if (node.parent === source) {
-      if (ts.isFunctionDeclaration(node) && node.name) {
-        bindings.set(node.name.text, { name: node.name.text, kind: "function", node });
-        return;
-      }
-      if (ts.isClassDeclaration(node) && node.name) {
-        bindings.set(node.name.text, { name: node.name.text, kind: "class", node });
-        return;
-      }
-      if (
-        (ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) &&
-        node.name &&
-        !hasDeclareModifier(node)
-      ) {
-        const name = ts.isIdentifier(node.name) ? node.name.text : node.name.text;
-        bindings.set(name, { name, kind: "var", node });
-        return;
-      }
     }
     ts.forEachChild(node, visit);
   };
@@ -410,10 +418,27 @@ function projectedTypeDeclarations(code: string): ProjectedTypeDeclaration[] {
     const name = statement.name.text;
     declarations.push({
       key: `type:${name}`,
+      name,
+      kind: projectedTypeDeclarationKind(statement),
       declaration: statement.getText(source),
     });
   }
   return declarations;
+}
+
+function projectedTypeDeclarationKind(
+  statement:
+    | ts.ClassDeclaration
+    | ts.EnumDeclaration
+    | ts.InterfaceDeclaration
+    | ts.TypeAliasDeclaration
+    | ts.ModuleDeclaration,
+): ProjectedTypeDeclaration["kind"] {
+  if (ts.isClassDeclaration(statement)) return "class";
+  if (ts.isEnumDeclaration(statement)) return "enum";
+  if (ts.isInterfaceDeclaration(statement)) return "interface";
+  if (ts.isTypeAliasDeclaration(statement)) return "type";
+  return "namespace";
 }
 
 function typeDeclarationDiagnostics(

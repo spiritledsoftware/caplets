@@ -211,6 +211,37 @@ describe("CodeModeSessionManager", () => {
     }
   });
 
+  it("aligns settled failed lexical bindings with reused-session diagnostics", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-settled-lexical" });
+    try {
+      const failed = await runCodeMode({
+        code: "const blocked = await Promise.reject(new Error('nope'));\nclass Pending {}",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const assigned = await runCodeMode({
+        code: "blocked = 1;\nPending = 2;\nreturn { blocked, Pending };",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-settled-lexical",
+        runtimeScope: "test",
+      });
+
+      expect(failed).toMatchObject({
+        ok: false,
+        error: { code: "sandbox_error", message: "nope" },
+      });
+      expect(assigned).toMatchObject({
+        ok: true,
+        value: { blocked: 1, Pending: 2 },
+        diagnostics: [],
+      });
+    } finally {
+      manager.close();
+    }
+  });
+
   it("blocks duplicate lexical declarations without changing session state", async () => {
     const manager = new CodeModeSessionManager({ idGenerator: () => "session-duplicate-const" });
     try {
