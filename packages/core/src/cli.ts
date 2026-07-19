@@ -4177,7 +4177,9 @@ function configureStorageCommands(
         const legacyVaultRoot = context.io.authDir
           ? join(authDir, "vault")
           : join(defaultStateBaseDir(context.env), "caplets", "vault");
-        const remoteSecurityDir = join(authDir, "remote-server");
+        // Legacy remote credentials and dashboard activity intentionally share this directory;
+        // each store owns a distinct file within it.
+        const legacyHostAdminDir = join(authDir, "remote-server");
         const report = await migrateLegacyHostState({
           storage: loadHostStorageConfig(configPath),
           capletsRoot,
@@ -4187,9 +4189,9 @@ function configureStorageCommands(
           legacyVaultRoot,
           legacyVaultEnv: context.env,
           targetVaultRoot: legacyVaultRoot,
-          remoteSecurityDir,
+          remoteSecurityDir: legacyHostAdminDir,
           setupStateDir: join(defaultCacheBaseDir(context.env), "caplets", "setup"),
-          operatorActivityDir: remoteSecurityDir,
+          operatorActivityDir: legacyHostAdminDir,
           ...(options.backupRoot ? { backupRoot: options.backupRoot } : {}),
           dryRun: options.dryRun ?? false,
         });

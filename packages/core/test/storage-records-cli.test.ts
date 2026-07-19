@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeTokenBundle } from "../src/auth/store";
+import { DashboardActivityLog } from "../src/dashboard/activity-log";
+import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { FileVaultStore } from "../src/vault";
 import { runCli } from "../src/cli";
 import { installCaplets } from "../src/install";
@@ -292,6 +294,41 @@ describe("stored Caplet Record CLI", () => {
       },
       authDir,
     );
+    const remoteDir = join(authDir, "remote-server");
+    const hostUrl = "https://host.example.test/caplets";
+    const remoteNow = new Date();
+    const remote = new RemoteServerCredentialStore({ dir: remoteDir });
+    const usedPairing = remote.createPairingCode({
+      hostUrl,
+      clientLabel: "Migrated client",
+      ttlMs: 60 * 60_000,
+      now: remoteNow,
+    });
+    const remoteCredentials = remote.exchangePairingCode({
+      hostUrl,
+      code: usedPairing.code,
+      clientLabel: "Migrated client",
+      now: remoteNow,
+    });
+    const unusedPairing = remote.createPairingCode({
+      hostUrl,
+      clientLabel: "Pair after migration",
+      ttlMs: 60 * 60_000,
+      now: remoteNow,
+    });
+    const pendingLogin = remote.createPendingLogin({
+      hostUrl,
+      clientLabel: "Pending client",
+      sourceHint: "migration-test",
+      now: remoteNow,
+    });
+    const activity = new DashboardActivityLog({ dir: remoteDir }).append({
+      actorClientId: "legacy_operator",
+      action: "catalog_installed",
+      target: { type: "catalog", id: "legacy-cli", label: "Legacy CLI" },
+      metadata: { source: "legacy" },
+      now: new Date("2026-07-18T10:04:00.000Z"),
+    });
     const vault = new FileVaultStore({ root: vaultRoot, env });
     vault.set("LEGACY_TOKEN", "legacy-vault-value");
     vault.grantAccess({
@@ -314,12 +351,12 @@ describe("stored Caplet Record CLI", () => {
       backendAuthTokenBundles: 1,
       vaultValues: 1,
       vaultGrants: 2,
-      remotePairingCodes: 0,
-      remoteClients: 0,
-      remotePendingLogins: 0,
+      remotePairingCodes: 2,
+      remoteClients: 1,
+      remotePendingLogins: 1,
       setupApprovals: 0,
       setupAttempts: 0,
-      operatorActivityEntries: 0,
+      operatorActivityEntries: 1,
       dashboardSessions: "not_applicable_no_legacy_format",
       projectBindings: "not_applicable_no_legacy_format",
     };
@@ -357,8 +394,16 @@ describe("stored Caplet Record CLI", () => {
     });
     expect(existsSync(join(authDir, "legacy-cli.json"))).toBe(false);
     expect(existsSync(vault.valuePath("LEGACY_TOKEN"))).toBe(false);
+    expect(existsSync(join(remoteDir, "remote-server-credentials.json"))).toBe(false);
+    expect(existsSync(join(remoteDir, "dashboard-activity.jsonl"))).toBe(false);
     expect(existsSync(vault.paths.keyFile)).toBe(true);
     expect(existsSync(join(migrated.backupPath, "vault", "vault-key"))).toBe(true);
+    expect(
+      existsSync(join(migrated.backupPath, "remote-security", "remote-server-credentials.json")),
+    ).toBe(true);
+    expect(
+      existsSync(join(migrated.backupPath, "operator-activity", "dashboard-activity.jsonl")),
+    ).toBe(true);
     expect(existsSync(overlayPath)).toBe(true);
 
     const storage = await createHostStorage({ type: "sqlite", path: databasePath }, { vaultRoot });
@@ -384,6 +429,30 @@ describe("stored Caplet Record CLI", () => {
             originPath: overlayPath,
           }),
         ]),
+      );
+      await expect(
+        storage.remoteSecurity.validateAccessToken({
+          hostUrl,
+          accessToken: remoteCredentials.accessToken,
+        }),
+      ).resolves.toMatchObject({ clientId: remoteCredentials.clientId, role: "access" });
+      await expect(
+        storage.remoteSecurity.pollPendingLogin({
+          flowId: pendingLogin.flowId,
+          pendingCompletionSecret: pendingLogin.pendingCompletionSecret,
+        }),
+      ).resolves.toEqual({ flowId: pendingLogin.flowId, status: "pending" });
+      await expect(
+        storage.remoteSecurity.exchangePairingCode({
+          hostUrl,
+          code: unusedPairing.code,
+          clientLabel: "Post-migration client",
+        }),
+      ).resolves.toMatchObject({ hostUrl, role: "access" });
+      await expect(storage.operatorActivity.list({ action: "catalog_installed" })).resolves.toEqual(
+        {
+          entries: [expect.objectContaining({ id: activity.id, actorClientId: "legacy_operator" })],
+        },
       );
     } finally {
       await storage.close();

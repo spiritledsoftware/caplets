@@ -528,6 +528,8 @@ async function vaultGrantsAvailableBeforeImport(
   storage: HostStorage,
   grants: LegacyVaultGrantImport[],
 ): Promise<LegacyVaultGrantImport[]> {
+  // Stored-record grants for records in this migration become importable only after those
+  // records are inserted in the transaction.
   const available: LegacyVaultGrantImport[] = [];
   for (const grant of grants) {
     if (grant.originKind !== "stored-record" || (await storage.caplets.get(grant.capletId))) {
