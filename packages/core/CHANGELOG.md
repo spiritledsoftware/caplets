@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.36.0
+
+### Minor Changes
+
+- 7dbfb74: Add authoritative SQLite and PostgreSQL host storage, relational Caplet Records with Markdown import/export, and SQL-backed host administration across CLI, HTTP, and remote-control surfaces.
+
 ## 0.35.0
 
 ### Minor Changes
