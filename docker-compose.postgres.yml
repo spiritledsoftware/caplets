@@ -1,31 +1,26 @@
+# Convenience topology for fresh deployments. The caplets role owns the database and schema.
+# Use docker-compose.postgres-hardened.yml for separate migration and runtime roles.
 services:
   caplets-postgres:
-    image: postgres:17.6-bookworm
+    image: ${CAPLETS_POSTGRES_IMAGE:-postgres:17-bookworm}
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${CAPLETS_POSTGRES_DATABASE:-caplets}
-      POSTGRES_USER: caplets_admin
-      POSTGRES_PASSWORD: ${CAPLETS_POSTGRES_ADMIN_PASSWORD:?set CAPLETS_POSTGRES_ADMIN_PASSWORD}
-      CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
-      CAPLETS_POSTGRES_MIGRATOR_PASSWORD: ${CAPLETS_POSTGRES_MIGRATOR_PASSWORD:?set CAPLETS_POSTGRES_MIGRATOR_PASSWORD}
-      CAPLETS_POSTGRES_RUNTIME_PASSWORD: ${CAPLETS_POSTGRES_RUNTIME_PASSWORD:?set CAPLETS_POSTGRES_RUNTIME_PASSWORD}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${CAPLETS_POSTGRES_PASSWORD:?set CAPLETS_POSTGRES_PASSWORD}
     volumes:
       - caplets-postgres-data:/var/lib/postgresql/data
-      - ./deploy/postgres/init-caplets-roles.sh:/docker-entrypoint-initdb.d/10-caplets-roles.sh:ro
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready --username caplets_admin --dbname "$${POSTGRES_DB}"
+        - pg_isready --username postgres --dbname "$${POSTGRES_DB}"
       interval: 5s
       timeout: 5s
       retries: 12
       start_period: 10s
 
   caplets-postgres-migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: caplets:local
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:latest}
     restart: "no"
     depends_on:
       caplets-postgres:
@@ -36,20 +31,20 @@ services:
       CAPLETS_POSTGRES_PORT: "5432"
       CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}
       CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
-      CAPLETS_POSTGRES_MIGRATOR_PASSWORD: ${CAPLETS_POSTGRES_MIGRATOR_PASSWORD:?set CAPLETS_POSTGRES_MIGRATOR_PASSWORD}
-    volumes:
-      - ./deploy/postgres/render-config.mjs:/usr/local/bin/render-caplets-postgres-config.mjs:ro
-      - ./deploy/postgres/finalize-runtime-grants.mjs:/usr/local/bin/finalize-caplets-postgres-grants.mjs:ro
+      CAPLETS_POSTGRES_USER: caplets
+      CAPLETS_POSTGRES_PASSWORD: ${CAPLETS_POSTGRES_PASSWORD:?set CAPLETS_POSTGRES_PASSWORD}
     entrypoint:
       - /bin/sh
       - -ec
     command:
       - |
-        node /usr/local/bin/render-caplets-postgres-config.mjs migrator
+        node /usr/local/lib/caplets/postgres/provision-roles.mjs convenience
+        node /usr/local/lib/caplets/postgres/render-config.mjs migrator
         node dist/index.js storage schema-migrate
-        node /usr/local/bin/finalize-caplets-postgres-grants.mjs
 
   caplets:
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:latest}
+    restart: unless-stopped
     depends_on:
       caplets-postgres:
         condition: service_healthy
@@ -58,20 +53,40 @@ services:
     environment:
       CAPLETS_CONFIG: /tmp/caplets-runtime-config.json
       CAPLETS_BASE_CONFIG: /data/config/caplets/config.json
+      CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
+      CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server
       CAPLETS_POSTGRES_HOST: caplets-postgres
       CAPLETS_POSTGRES_PORT: "5432"
       CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}
       CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
-      CAPLETS_POSTGRES_RUNTIME_PASSWORD: ${CAPLETS_POSTGRES_RUNTIME_PASSWORD:?set CAPLETS_POSTGRES_RUNTIME_PASSWORD}
+      CAPLETS_POSTGRES_USER: caplets
+      CAPLETS_POSTGRES_PASSWORD: ${CAPLETS_POSTGRES_PASSWORD:?set CAPLETS_POSTGRES_PASSWORD}
+      XDG_CONFIG_HOME: /data/config
+      XDG_STATE_HOME: /data/state
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${CAPLETS_BIND_ADDRESS:-127.0.0.1}:${CAPLETS_PORT:-5387}:5387"
     volumes:
-      - ./deploy/postgres/render-config.mjs:/usr/local/bin/render-caplets-postgres-config.mjs:ro
+      - caplets-data:/data
     command:
       - /bin/sh
       - -ec
       - |
         test -f "$${CAPLETS_BASE_CONFIG}" || env CAPLETS_CONFIG="$${CAPLETS_BASE_CONFIG}" CAPLETS_MODE=local node dist/index.js init --global
-        node /usr/local/bin/render-caplets-postgres-config.mjs runtime
+        node /usr/local/lib/caplets/postgres/render-config.mjs runtime
         exec env CAPLETS_MODE=local node dist/index.js serve --transport http --host 0.0.0.0
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:5387/v1/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
+  caplets-data:
   caplets-postgres-data:

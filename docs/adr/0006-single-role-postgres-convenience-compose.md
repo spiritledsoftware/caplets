@@ -1,0 +1,3 @@
+# Use One PostgreSQL Owner Role In Convenience Compose
+
+The standalone `docker-compose.postgres.yml` deployment uses one `caplets` owner role for database initialization, schema migration, and runtime access so a fresh installation requires only one operator-managed password. This deliberately gives runtime DDL and migration-metadata privileges in exchange for lower operational friction; `docker-compose.postgres-hardened.yml` and externally managed PostgreSQL deployments retain the separate administrator, migrator, and runtime role boundary from ADR 0004, and existing three-role Compose deployments upgrade through the hardened descriptor rather than collapsing roles.

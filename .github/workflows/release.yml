@@ -69,37 +69,33 @@ jobs:
           CAPLETS_SENTRY_ENVIRONMENT: production
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check whether CLI package was published
-        if: steps.changesets.outputs.published == 'true'
-        id: cli-package
+      - name: Detect CLI release for this commit
+        id: cli-release
         env:
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
-        run: |
-          cli_published=$(node <<'NODE'
-          const publishedPackages = JSON.parse(process.env.PUBLISHED_PACKAGES || '[]');
-          const cliPublished = publishedPackages.some((pkg) => pkg && pkg.name === 'caplets');
-          process.stdout.write(cliPublished ? 'true' : 'false');
-          NODE
-          )
-          echo "published=${cli_published}" >> "$GITHUB_OUTPUT"
-
-      - name: Read Docker image version
-        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
-        id: image-version
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version=$(node -p "require('./packages/cli/package.json').version")
+          tag="caplets@${version}"
+          git fetch --force --tags origin
+          tag_commit=$(git rev-list -n 1 "$tag" 2>/dev/null || true)
+          published=false
+          if [ "$tag_commit" = "$GITHUB_SHA" ]; then
+            gh release view "$tag" >/dev/null
+            published=true
+          fi
+          echo "published=${published}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Setup QEMU
-        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        if: steps.cli-release.outputs.published == 'true'
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3
 
       - name: Setup Docker Buildx
-        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        if: steps.cli-release.outputs.published == 'true'
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
 
       - name: Log in to GitHub Container Registry
-        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        if: steps.cli-release.outputs.published == 'true'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         with:
           registry: ghcr.io
@@ -107,19 +103,19 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate Docker metadata
-        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        if: steps.cli-release.outputs.published == 'true'
         id: docker-meta
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9
         with:
           images: ghcr.io/spiritledsoftware/caplets
           tags: |
             type=raw,value=latest
-            type=raw,value=${{ steps.image-version.outputs.version }}
-            type=raw,value=v${{ steps.image-version.outputs.version }}
+            type=raw,value=${{ steps.cli-release.outputs.version }}
+            type=raw,value=v${{ steps.cli-release.outputs.version }}
             type=sha,format=short,prefix=sha-
 
       - name: Publish Docker image
-        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        if: steps.cli-release.outputs.published == 'true'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
         with:
           context: .
@@ -133,3 +129,14 @@ jobs:
             CAPLETS_RUNTIME_SENTRY_DSN=${{ secrets.CAPLETS_RUNTIME_SENTRY_DSN }}
             CAPLETS_SENTRY_RELEASE=caplets-runtime@${{ github.sha }}
             CAPLETS_SENTRY_ENVIRONMENT=production
+
+      - name: Publish Docker Compose release assets
+        if: steps.cli-release.outputs.published == 'true'
+        run: >-
+          gh release upload "caplets@${{ steps.cli-release.outputs.version }}"
+          docker-compose.yml
+          docker-compose.postgres.yml
+          docker-compose.postgres-hardened.yml
+          --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

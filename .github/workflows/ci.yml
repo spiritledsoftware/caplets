@@ -40,6 +40,21 @@ jobs:
       - name: Run quality gates
         run: pnpm verify
 
+  compose:
+    name: Compose smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run standalone deployment smoke tests
+        run: node scripts/smoke-compose-deployments.mjs
+
   changeset:
     name: Changeset
     runs-on: ubuntu-latest

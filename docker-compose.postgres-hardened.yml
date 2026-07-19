@@ -1,0 +1,180 @@
+# Hardened single-Docker-host reference. It is not a high-availability topology.
+# Back up and test restore before changing either exact image version.
+x-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  caplets-postgres:
+    image: ${CAPLETS_POSTGRES_IMAGE:-postgres:17.6-bookworm}
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      POSTGRES_DB: ${CAPLETS_POSTGRES_DATABASE:-caplets}
+      POSTGRES_USER: caplets_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/caplets_postgres_admin_password
+    secrets:
+      - caplets_postgres_admin_password
+    volumes:
+      - caplets-postgres-data:/var/lib/postgresql/data
+    networks:
+      - database
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username caplets_admin --dbname "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *bounded-logging
+
+  caplets-postgres-secrets:
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.26.0}
+    user: root
+    restart: "no"
+    read_only: true
+    network_mode: none
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - caplets_postgres_admin_password
+      - caplets_postgres_migrator_password
+      - caplets_postgres_runtime_password
+    volumes:
+      - caplets-postgres-admin-secret:/prepared/admin
+      - caplets-postgres-migrator-secret:/prepared/migrator
+      - caplets-postgres-runtime-secret:/prepared/runtime
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        install --owner=1000 --group=1000 --mode=0400 /run/secrets/caplets_postgres_admin_password /prepared/admin/password
+        install --owner=1000 --group=1000 --mode=0400 /run/secrets/caplets_postgres_migrator_password /prepared/migrator/password
+        install --owner=1000 --group=1000 --mode=0400 /run/secrets/caplets_postgres_runtime_password /prepared/runtime/password
+    logging: *bounded-logging
+
+  caplets-postgres-migrate:
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.26.0}
+    user: node
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      caplets-postgres:
+        condition: service_healthy
+      caplets-postgres-secrets:
+        condition: service_completed_successfully
+    environment:
+      CAPLETS_CONFIG: /tmp/caplets-migrator-config.json
+      CAPLETS_POSTGRES_HOST: caplets-postgres
+      CAPLETS_POSTGRES_PORT: "5432"
+      CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}
+      CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
+      CAPLETS_POSTGRES_ADMIN_PASSWORD_FILE: /run/caplets-secrets/admin/password
+      CAPLETS_POSTGRES_MIGRATOR_PASSWORD_FILE: /run/caplets-secrets/migrator/password
+      CAPLETS_POSTGRES_RUNTIME_PASSWORD_FILE: /run/caplets-secrets/runtime/password
+    volumes:
+      - caplets-postgres-admin-secret:/run/caplets-secrets/admin:ro
+      - caplets-postgres-migrator-secret:/run/caplets-secrets/migrator:ro
+      - caplets-postgres-runtime-secret:/run/caplets-secrets/runtime:ro
+    networks:
+      - database
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        node /usr/local/lib/caplets/postgres/provision-roles.mjs
+        node /usr/local/lib/caplets/postgres/render-config.mjs migrator
+        node dist/index.js storage schema-migrate
+        node /usr/local/lib/caplets/postgres/finalize-runtime-grants.mjs
+    logging: *bounded-logging
+
+  caplets:
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.26.0}
+    user: node
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      caplets-postgres:
+        condition: service_healthy
+      caplets-postgres-migrate:
+        condition: service_completed_successfully
+    environment:
+      CAPLETS_CONFIG: /tmp/caplets-runtime-config.json
+      CAPLETS_BASE_CONFIG: /data/config/caplets/config.json
+      CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
+      CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server
+      CAPLETS_POSTGRES_HOST: caplets-postgres
+      CAPLETS_POSTGRES_PORT: "5432"
+      CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}
+      CAPLETS_POSTGRES_SCHEMA: ${CAPLETS_POSTGRES_SCHEMA:-caplets}
+      CAPLETS_POSTGRES_RUNTIME_PASSWORD_FILE: /run/caplets-secrets/runtime/password
+      XDG_CONFIG_HOME: /data/config
+      XDG_STATE_HOME: /data/state
+    volumes:
+      - caplets-data:/data
+      - caplets-postgres-runtime-secret:/run/caplets-secrets/runtime:ro
+    networks:
+      - database
+      - runtime
+    ports:
+      - "${CAPLETS_BIND_ADDRESS:-127.0.0.1}:${CAPLETS_PORT:-5387}:5387"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        test -f "$${CAPLETS_BASE_CONFIG}" || env CAPLETS_CONFIG="$${CAPLETS_BASE_CONFIG}" CAPLETS_MODE=local node dist/index.js init --global
+        node /usr/local/lib/caplets/postgres/render-config.mjs runtime
+        exec env CAPLETS_MODE=local node dist/index.js serve --transport http --host 0.0.0.0
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:5387/v1/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *bounded-logging
+
+volumes:
+  caplets-data:
+  caplets-postgres-data:
+  caplets-postgres-admin-secret:
+  caplets-postgres-migrator-secret:
+  caplets-postgres-runtime-secret:
+
+secrets:
+  caplets_postgres_admin_password:
+    file: ${CAPLETS_POSTGRES_ADMIN_PASSWORD_FILE:-./secrets/postgres-admin-password}
+  caplets_postgres_migrator_password:
+    file: ${CAPLETS_POSTGRES_MIGRATOR_PASSWORD_FILE:-./secrets/postgres-migrator-password}
+  caplets_postgres_runtime_password:
+    file: ${CAPLETS_POSTGRES_RUNTIME_PASSWORD_FILE:-./secrets/postgres-runtime-password}
+
+networks:
+  database:
+    internal: true
+  runtime:

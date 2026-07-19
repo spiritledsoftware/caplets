@@ -158,7 +158,7 @@ Cloud Auth stores hosted credentials and a selected workspace. `caplets attach` 
 
 The public CLI package is `caplets`. The native packages are `@caplets/opencode` and `@caplets/pi`.
 
-The repo includes a source-build `Dockerfile` and `docker-compose.yml` for self-hosting the HTTP service. Release workflows publish npm packages and can publish the service image.
+The repo includes a source-build `Dockerfile` and three standalone Compose deployment descriptors for SQLite, convenient PostgreSQL, and hardened single-host PostgreSQL. Release workflows publish the service image and matching Compose files as GitHub Release assets.
 
 ## Benchmark Architecture
 
