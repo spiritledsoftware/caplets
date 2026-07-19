@@ -15,12 +15,14 @@ if (mode !== "migrator" && mode !== "runtime") {
 const role =
   process.env.CAPLETS_POSTGRES_USER ||
   (mode === "migrator" ? "caplets_migrator" : "caplets_runtime");
-const passwordName =
-  process.env.CAPLETS_POSTGRES_PASSWORD || process.env.CAPLETS_POSTGRES_PASSWORD_FILE
-    ? "CAPLETS_POSTGRES_PASSWORD"
-    : mode === "migrator"
-      ? "CAPLETS_POSTGRES_MIGRATOR_PASSWORD"
-      : "CAPLETS_POSTGRES_RUNTIME_PASSWORD";
+const hasGenericPassword =
+  Boolean(process.env.CAPLETS_POSTGRES_PASSWORD) ||
+  Boolean(process.env.CAPLETS_POSTGRES_PASSWORD_FILE);
+const passwordName = hasGenericPassword
+  ? "CAPLETS_POSTGRES_PASSWORD"
+  : mode === "migrator"
+    ? "CAPLETS_POSTGRES_MIGRATOR_PASSWORD"
+    : "CAPLETS_POSTGRES_RUNTIME_PASSWORD";
 const password = readCredential(passwordName);
 const schema = postgresSchema();
 const target = process.env.CAPLETS_CONFIG || "/tmp/caplets-config.json";

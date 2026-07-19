@@ -58,9 +58,11 @@ services:
       - -ec
     command:
       - |
-        install --owner=1000 --group=1000 --mode=0400 /run/secrets/caplets_postgres_admin_password /prepared/admin/password
-        install --owner=1000 --group=1000 --mode=0400 /run/secrets/caplets_postgres_migrator_password /prepared/migrator/password
-        install --owner=1000 --group=1000 --mode=0400 /run/secrets/caplets_postgres_runtime_password /prepared/runtime/password
+        owner_uid=$(id -u node)
+        owner_gid=$(id -g node)
+        install --owner="$${owner_uid}" --group="$${owner_gid}" --mode=0400 /run/secrets/caplets_postgres_admin_password /prepared/admin/password
+        install --owner="$${owner_uid}" --group="$${owner_gid}" --mode=0400 /run/secrets/caplets_postgres_migrator_password /prepared/migrator/password
+        install --owner="$${owner_uid}" --group="$${owner_gid}" --mode=0400 /run/secrets/caplets_postgres_runtime_password /prepared/runtime/password
     logging: *bounded-logging
 
   caplets-postgres-migrate:

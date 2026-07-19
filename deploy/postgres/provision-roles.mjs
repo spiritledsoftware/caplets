@@ -45,6 +45,7 @@ try {
 
 async function provisionConvenienceRole(bootstrapRole) {
   const role = "caplets";
+  const quotedRole = quoteIdentifier(role);
   const password = readCredential("CAPLETS_POSTGRES_PASSWORD");
   if (bootstrapRole) {
     await reconcileRole(role, password);
@@ -55,13 +56,13 @@ async function provisionConvenienceRole(bootstrapRole) {
   const quotedDatabase = quoteIdentifier(database);
   const quotedSchema = quoteIdentifier(schema);
   await client.query(`REVOKE ALL ON DATABASE ${quotedDatabase} FROM PUBLIC`);
-  await client.query(`ALTER DATABASE ${quotedDatabase} OWNER TO ${role}`);
+  await client.query(`ALTER DATABASE ${quotedDatabase} OWNER TO ${quotedRole}`);
   await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
-  await client.query(`CREATE SCHEMA IF NOT EXISTS ${quotedSchema} AUTHORIZATION ${role}`);
-  await client.query(`ALTER SCHEMA ${quotedSchema} OWNER TO ${role}`);
+  await client.query(`CREATE SCHEMA IF NOT EXISTS ${quotedSchema} AUTHORIZATION ${quotedRole}`);
+  await client.query(`ALTER SCHEMA ${quotedSchema} OWNER TO ${quotedRole}`);
   await client.query(`REVOKE ALL ON SCHEMA ${quotedSchema} FROM PUBLIC`);
   await client.query(
-    `ALTER ROLE ${role} IN DATABASE ${quotedDatabase} SET search_path TO ${quotedSchema}`,
+    `ALTER ROLE ${quotedRole} IN DATABASE ${quotedDatabase} SET search_path TO ${quotedSchema}`,
   );
   if (bootstrapRole) await rotateBootstrapPassword(bootstrapRole);
 }
@@ -104,6 +105,8 @@ async function rotateBootstrapPassword(role) {
 async function provisionHardenedRoles() {
   const migratorRole = "caplets_migrator";
   const runtimeRole = "caplets_runtime";
+  const quotedMigratorRole = quoteIdentifier(migratorRole);
+  const quotedRuntimeRole = quoteIdentifier(runtimeRole);
   const migratorPassword = readCredential("CAPLETS_POSTGRES_MIGRATOR_PASSWORD");
   const runtimePassword = readCredential("CAPLETS_POSTGRES_RUNTIME_PASSWORD");
   await reconcileRole(migratorRole, migratorPassword);
@@ -112,36 +115,40 @@ async function provisionHardenedRoles() {
   const quotedDatabase = quoteIdentifier(database);
   const quotedSchema = quoteIdentifier(schema);
   await client.query(`REVOKE ALL ON DATABASE ${quotedDatabase} FROM PUBLIC`);
-  await client.query(`GRANT CONNECT, CREATE ON DATABASE ${quotedDatabase} TO ${migratorRole}`);
-  await client.query(`GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${runtimeRole}`);
+  await client.query(
+    `GRANT CONNECT, CREATE ON DATABASE ${quotedDatabase} TO ${quotedMigratorRole}`,
+  );
+  await client.query(`GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedRuntimeRole}`);
   await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
-  await client.query(`CREATE SCHEMA IF NOT EXISTS ${quotedSchema} AUTHORIZATION ${migratorRole}`);
-  await client.query(`ALTER SCHEMA ${quotedSchema} OWNER TO ${migratorRole}`);
+  await client.query(
+    `CREATE SCHEMA IF NOT EXISTS ${quotedSchema} AUTHORIZATION ${quotedMigratorRole}`,
+  );
+  await client.query(`ALTER SCHEMA ${quotedSchema} OWNER TO ${quotedMigratorRole}`);
   await client.query(`REVOKE ALL ON SCHEMA ${quotedSchema} FROM PUBLIC`);
-  await client.query(`GRANT USAGE ON SCHEMA ${quotedSchema} TO ${runtimeRole}`);
+  await client.query(`GRANT USAGE ON SCHEMA ${quotedSchema} TO ${quotedRuntimeRole}`);
   await client.query(
-    `ALTER ROLE ${migratorRole} IN DATABASE ${quotedDatabase} SET search_path TO ${quotedSchema}`,
+    `ALTER ROLE ${quotedMigratorRole} IN DATABASE ${quotedDatabase} SET search_path TO ${quotedSchema}`,
   );
   await client.query(
-    `ALTER ROLE ${runtimeRole} IN DATABASE ${quotedDatabase} SET search_path TO ${quotedSchema}`,
+    `ALTER ROLE ${quotedRuntimeRole} IN DATABASE ${quotedDatabase} SET search_path TO ${quotedSchema}`,
   );
   await client.query(
-    `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA ${quotedSchema} REVOKE ALL ON TABLES FROM PUBLIC`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedMigratorRole} IN SCHEMA ${quotedSchema} REVOKE ALL ON TABLES FROM PUBLIC`,
   );
   await client.query(
-    `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA ${quotedSchema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${runtimeRole}`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedMigratorRole} IN SCHEMA ${quotedSchema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${quotedRuntimeRole}`,
   );
   await client.query(
-    `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA ${quotedSchema} REVOKE ALL ON SEQUENCES FROM PUBLIC`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedMigratorRole} IN SCHEMA ${quotedSchema} REVOKE ALL ON SEQUENCES FROM PUBLIC`,
   );
   await client.query(
-    `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA ${quotedSchema} GRANT USAGE, SELECT ON SEQUENCES TO ${runtimeRole}`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${quotedMigratorRole} IN SCHEMA ${quotedSchema} GRANT USAGE, SELECT ON SEQUENCES TO ${quotedRuntimeRole}`,
   );
 }
 
 async function reconcileRole(role, password) {
   const existing = await client.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [role]);
-  if (existing.rowCount === 0) await client.query(`CREATE ROLE ${role}`);
+  if (existing.rowCount === 0) await client.query(`CREATE ROLE ${quoteIdentifier(role)}`);
   const statement = await client.query(
     "SELECT format('ALTER ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', $1::text, $2::text) AS sql",
     [role, password],
