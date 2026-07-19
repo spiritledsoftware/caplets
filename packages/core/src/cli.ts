@@ -131,7 +131,13 @@ import {
   type DaemonOperationOptions,
 } from "./daemon";
 import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
-import { defaultTelemetryStateDir } from "./config/paths";
+import {
+  defaultAuthDir,
+  defaultCacheBaseDir,
+  defaultCapletsLockfilePath,
+  defaultStateBaseDir,
+  defaultTelemetryStateDir,
+} from "./config/paths";
 import { appendBasePath } from "./server/options";
 import {
   acknowledgeTelemetryAttributionClaim,
@@ -4143,8 +4149,8 @@ function configureStorageCommands(
   storage
     .command("migrate-legacy")
     .description("Migrate verified legacy Host state into SQL storage.")
-    .requiredOption("--caplets-root <path>", "tracked global Caplet installation root")
-    .requiredOption("--lockfile <path>", "tracked global Caplet lockfile")
+    .option("--caplets-root <path>", "tracked global Caplet installation root")
+    .option("--lockfile <path>", "tracked global Caplet lockfile")
     .option("--dry-run", "verify migration inputs without writing or moving files")
     .option("--backup-root <path>", "timestamped backup destination")
     .option(
@@ -4154,18 +4160,36 @@ function configureStorageCommands(
     )
     .action(
       async (options: {
-        capletsRoot: string;
-        lockfile: string;
+        capletsRoot?: string;
+        lockfile?: string;
         dryRun?: boolean;
         backupRoot?: string;
         operatorClient: string;
       }) => {
         const configPath = context.configPath();
+        const capletsRoot = options.capletsRoot
+          ? resolve(options.capletsRoot)
+          : resolve(resolveCapletsRoot(configPath));
+        const lockfilePath = options.lockfile
+          ? resolve(options.lockfile)
+          : defaultCapletsLockfilePath(context.env);
+        const authDir = context.io.authDir ?? defaultAuthDir(context.env);
+        const legacyVaultRoot = context.io.authDir
+          ? join(authDir, "vault")
+          : join(defaultStateBaseDir(context.env), "caplets", "vault");
+        const remoteSecurityDir = join(authDir, "remote-server");
         const report = await migrateLegacyHostState({
           storage: loadHostStorageConfig(configPath),
-          capletsRoot: resolve(options.capletsRoot),
-          lockfilePath: resolve(options.lockfile),
+          capletsRoot,
+          lockfilePath,
           operatorClientId: options.operatorClient,
+          backendAuthDir: authDir,
+          legacyVaultRoot,
+          legacyVaultEnv: context.env,
+          targetVaultRoot: legacyVaultRoot,
+          remoteSecurityDir,
+          setupStateDir: join(defaultCacheBaseDir(context.env), "caplets", "setup"),
+          operatorActivityDir: remoteSecurityDir,
           ...(options.backupRoot ? { backupRoot: options.backupRoot } : {}),
           dryRun: options.dryRun ?? false,
         });

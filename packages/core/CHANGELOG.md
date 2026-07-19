@@ -6,6 +6,12 @@
 
 - 7dbfb74: Add authoritative SQLite and PostgreSQL host storage, relational Caplet Records with Markdown import/export, and SQL-backed host administration across CLI, HTTP, and remote-control surfaces.
 
+  **Migration required for `caplets` CLI users:** Hosts that ran `caplets@0.25.x` or
+  earlier must stop every Caplets Host Node and run
+  `caplets storage migrate-legacy --dry-run`, then `caplets storage migrate-legacy`,
+  before restarting. The SQL-backed runtime does not fall back to legacy Authoritative
+  Host State.
+
 ## 0.35.0
 
 ### Minor Changes

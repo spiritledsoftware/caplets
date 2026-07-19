@@ -28,6 +28,9 @@ https://caplets.example.com/caplets/dashboard
 ```
 
 The exact URL depends on the host, port, and configured serve path.
+
+The dashboard targets current evergreen browsers with JavaScript enabled. It is served by
+the Caplets HTTP runtime; the stdio-only `caplets attach` adapter has no dashboard.
 If the server is mounted below a base path such as `/caplets`, the dashboard lives under that
 same base path.
 
@@ -35,14 +38,15 @@ same base path.
 
 An unauthenticated browser sees an operator approval screen first.
 Selecting **Authorize this browser** creates a pending login and shows the host-side approval command.
-On the host, approve that operator code from the same environment that owns the remote credential state:
+On the host, approve that operator code from the same user configuration that selects
+Authoritative Host State:
 
 ```sh
 caplets remote host approve <code> --yes
 ```
 
-If the host uses a non-default remote credential state directory, use the matching `--state-path`
-value when approving from the CLI.
+The deprecated `--state-path` option no longer selects credential state. Remote clients,
+pending logins, and dashboard sessions are stored in the host's configured SQL backend.
 
 After approval, the browser receives an operator dashboard session and can administer the Current Host.
 

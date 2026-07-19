@@ -9,8 +9,8 @@ Set `CAPLETS_DISABLE_CATALOG_INDEXING=1` to disable catalog indexing submissions
 
 Anonymous telemetry intentionally excludes source URLs, Caplet IDs, hostnames, local paths,
 tool arguments, tool outputs, raw config, raw search text, session replay, and raw browser URLs.
-Public catalog indexing needs different data: it publishes public-source metadata so other users
-can search for public Caplets.
+Public catalog indexing submits source and Caplet content so other users can search public
+Caplets. It is a separate disclosure boundary from anonymous telemetry.
 
 Landing, docs, and catalog analytics are anonymous telemetry, not public catalog indexing. They
 use categorical page, search, filter, and install-intent events. A final browser PostHog envelope
@@ -21,25 +21,31 @@ known-user or person-profile attribution, and they never hand browser identity i
 
 ## What can become public
 
-After a successful install, restore, or update of an eligible public external Caplet,
+After a successful install, restore, or update of an eligible GitHub-shaped external Caplet,
 Caplets may submit:
 
-- Normalized public provider and repository identity, such as `github.com/owner/repo`.
-- Caplet ID and source path inside the public repository.
-- Resolved revision or content hash when available.
-- Installed content hash.
-- Generated install command metadata.
-- Safe derived catalog metadata, warnings, and aggregate install counts.
+- Normalized provider and repository identity, such as `github.com/owner/repo`.
+- Caplet ID and source path inside the repository.
+- Resolved revision and installed content hash.
+- The full installed `CAPLET.md` content.
+- Derived name, description, icon, tags, setup/auth/Project Binding requirements, workflow and
+  risk summaries, child metadata, warnings, and generated install command data.
 
-## What must not be sent
+Eligibility validates GitHub source syntax, not repository visibility. A private GitHub repository
+can therefore be eligible. Disable catalog indexing before installing from a private repository or
+when any Caplet file contains material that must not become public.
 
-Catalog indexing must not send installer identity, local paths, private config, credentials,
-raw agent prompts, tool arguments, tool outputs, hostnames for private sources, private
-source URLs, Vault secret values, raw environment values, or individual install-event
-identity.
+## Envelope boundary
 
-Ineligible sources return categorical statuses such as `ineligible`,
-`revision_unavailable`, or `unavailable` without echoing raw private source values.
+The indexing envelope does not separately add installer identity, local filesystem paths, Vault
+values, raw environment values, agent prompts, tool arguments, tool outputs, or individual
+install-event identity. It rejects credential-bearing source URLs and private-network source
+hosts.
+
+The full Caplet file is still part of the envelope. Anything authored in its Markdown or
+frontmatter—including literal secrets, internal URLs, or private hostnames—can be submitted. Do
+not put secrets in Caplet files, and use `CAPLETS_DISABLE_CATALOG_INDEXING=1` whenever the source
+or content is not intended for publication.
 
 ## Nonblocking behavior
 

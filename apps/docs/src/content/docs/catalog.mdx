@@ -6,8 +6,8 @@ description: Search public Caplets and inspect installable catalog entries.
 <a href="https://catalog.caplets.dev" target="_blank" rel="noopener noreferrer">
   catalog.caplets.dev
 </a>
-is the public search surface for Caplets. It lists official Caplets from this repository and public
-community Caplets discovered from successful public external installs.
+is the public search surface for Caplets. It lists official Caplets from this repository and
+community Caplets submitted after eligible GitHub-shaped external installs.
 
 <a
   class="caplets-docs-cta"
@@ -25,10 +25,11 @@ generated install command when the catalog can tie that command to inspected con
 ## Safety model
 
 The catalog is not a scanner, certification program, endorsement list, or moderation
-queue. V1 performs basic public-source eligibility checks, bounded ingestion, sanitized
-Markdown rendering, count bucketing, and operator suppression. It does not claim semantic
-malware review, dependency scanning, vulnerability scanning, secret scanning, or human
-approval.
+queue. V1 validates source syntax but does not verify GitHub repository visibility before
+submission. Catalog ingestion is bounded, renders Markdown through a sanitizer, buckets counts,
+and supports operator suppression. It does not claim semantic malware review, dependency
+scanning, vulnerability scanning, secret scanning, or human approval. Disable catalog indexing
+before installing private repositories or Caplet content that must not become public.
 
 Install counts are popularity and ranking signals only. They are not safety, quality, or
 trust signals.

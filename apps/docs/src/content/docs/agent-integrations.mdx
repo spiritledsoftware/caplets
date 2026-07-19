@@ -79,6 +79,22 @@ settings still win over those defaults.
 Native integrations use the shared anonymous telemetry controls and do not send telemetry on a
 native-first run until a visible CLI telemetry notice has already been recorded.
 
+### Native runtime selection
+
+OpenCode and Pi accept shared runtime selectors through integration settings or environment:
+
+| Mode     | Selection                                                                                            |
+| -------- | ---------------------------------------------------------------------------------------------------- |
+| `auto`   | Cloud for Cloud URLs, remote for other URLs, setup-written daemon defaults when present, then local. |
+| `local`  | Run Caplets in the agent process with user and project config.                                       |
+| `daemon` | Use the loopback runtime selected by `CAPLETS_DAEMON_URL`.                                           |
+| `remote` | Use the saved Remote Profile selected by `CAPLETS_REMOTE_URL`.                                       |
+| `cloud`  | Use the Cloud runtime selected by `CAPLETS_REMOTE_URL` and optional `CAPLETS_REMOTE_WORKSPACE`.      |
+
+Cloud native sessions and loopback daemon sessions with a project root can open
+[Project Binding](/project-binding/) for required Caplets. Self-hosted HTTPS native remotes do not
+currently establish that managed binding session; required project Caplets remain hidden.
+
 Remote native usage:
 
 ```sh
@@ -122,3 +138,7 @@ caplets serve --transport http --upstream-url https://caplets.example.com/caplet
 Then configure the MCP client with `caplets attach <local-runtime-url>`. If you also need
 host administration, open the same runtime's `/dashboard` path in a browser and complete an
 Operator approval there.
+
+Use the [CLI reference](/reference/cli/) for the complete command-family map and
+[Privacy and network activity](/privacy/) for the independent native telemetry, update-check,
+and catalog-indexing controls.

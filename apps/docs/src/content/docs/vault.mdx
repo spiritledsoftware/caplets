@@ -177,26 +177,30 @@ CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev caplets vault li
 Remote Vault values belong to the selected runtime. Local Caplets do not read, mirror, or
 forward remote or Cloud Vault values.
 
-## Encryption key
+## Encryption and key storage
 
-For local and self-hosted stores, Caplets writes encrypted values under the Caplets state
-directory. On Linux and macOS the default local path is:
+Vault values and access grants are part of [Authoritative Host State](/storage/) in SQLite
+or PostgreSQL. Values are encrypted with AES-256-GCM before Caplets writes them to SQL.
+The encryption key remains outside SQL under the Caplets state directory. On Linux and
+macOS the default key file is:
 
 ```text
-~/.local/state/caplets/vault
+~/.local/state/caplets/vault/vault-key
 ```
 
-The Vault encryption key is minted automatically on first write and stored as a private
-file with `0600` permissions where the platform supports POSIX permissions. You can
-instead provide a 32-byte base64url key with `CAPLETS_ENCRYPTION_KEY`:
+The file key is created automatically when a host runtime initializes Vault storage, or when a
+Vault value is first written if that happens earlier. It is stored with `0600` permissions where
+the platform supports POSIX permissions. You can instead provide a 32-byte base64url key with
+`CAPLETS_ENCRYPTION_KEY`:
 
 ```sh
 CAPLETS_ENCRYPTION_KEY=... caplets vault list
 ```
 
-Use the environment key only when you need to provide the same key from another secret
-manager or deployment system. If the encryption key is unavailable or has the wrong
-permissions, Vault-backed Caplets are quarantined until the key source is fixed.
+Use the environment key only when the same key comes from another secret manager or
+deployment system. Every node sharing one PostgreSQL host must use the same key. If the
+key is unavailable or invalid, Vault-backed Caplets are quarantined until the key source
+is fixed.
 
 ## Diagnostics
 

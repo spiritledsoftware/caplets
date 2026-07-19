@@ -41,7 +41,6 @@ export default defineConfig({
           items: [
             { label: "Quick Start", link: "/" },
             { label: "Install", link: "/install/" },
-            { label: "Configuration", link: "/configuration/" },
           ],
         },
         {
@@ -49,20 +48,35 @@ export default defineConfig({
           items: [
             { label: "Code Mode", link: "/code-mode/" },
             { label: "Add capabilities", link: "/capabilities/" },
+            { label: "Configuration", link: "/configuration/" },
             { label: "Catalog", link: "/catalog/" },
-            { label: "Dashboard", link: "/dashboard/" },
             { label: "Caplets Vault", link: "/vault/" },
+            { label: "Project Binding", link: "/project-binding/" },
+          ],
+        },
+        {
+          label: "Connect Agents",
+          items: [
             { label: "Agent integrations", link: "/agent-integrations/" },
             { label: "Remote attach", link: "/remote-attach/" },
+          ],
+        },
+        {
+          label: "Operate a Host",
+          items: [
+            { label: "Dashboard", link: "/dashboard/" },
+            { label: "Authoritative Host State", link: "/storage/" },
+            { label: "Privacy and network activity", link: "/privacy/" },
             { label: "Troubleshooting", link: "/troubleshooting/" },
           ],
         },
         {
           label: "Reference",
           items: [
+            { label: "CLI", link: "/reference/cli/" },
             { label: "Configuration schema", link: "/reference/config/" },
-            { label: "Code Mode API", link: "/reference/code-mode-api/" },
             { label: "Caplet files", link: "/reference/caplet-files/" },
+            { label: "Code Mode API", link: "/reference/code-mode-api/" },
             { label: "Catalog indexing privacy", link: "/privacy/indexing/" },
             {
               label: "GitHub releases",

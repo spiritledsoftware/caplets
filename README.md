@@ -44,6 +44,14 @@ Caplets can wrap:
 
 Full setup and configuration docs are available at [docs.caplets.dev](https://docs.caplets.dev/).
 
+> **Required upgrade migration:** If this host ran `caplets@0.25.x` or earlier, installing
+> `caplets@0.26.0` or later requires a one-time SQL migration **before** you restart the
+> daemon, run `caplets setup`, or serve requests. Stop every Caplets Host Node, then run
+> `caplets storage migrate-legacy --dry-run` followed by
+> `caplets storage migrate-legacy`. Skipping this step leaves legacy auth, Vault, remote
+> security, setup, activity, and tracked-Caplet state outside the authoritative SQL store.
+> See [SQL Authoritative Host State operations](docs/operations/sql-authoritative-host-state.md#offline-legacy-filesystem-migration).
+
 Install the CLI and wire it into your agent:
 
 ```sh

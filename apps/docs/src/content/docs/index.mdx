@@ -10,6 +10,12 @@ handle that an agent can inspect, search, call, filter, and summarize in one wor
 Use Caplets with Codex, Claude, OpenCode, Pi, or any MCP client that can launch a local
 stdio server.
 
+> **Required upgrade migration:** If this host ran `caplets@0.25.x` or earlier, do not
+> start `caplets@0.26.0` or later until you complete the
+> [one-time legacy-state migration](/install/#required-migration-when-upgrading-to-0260-or-later).
+> Caplets does not automatically migrate or fall back to the old auth, Vault, remote-security,
+> setup, activity, and tracked-Caplet stores.
+
 ## Quick Start
 
 Install the CLI, then run a known-good no-auth setup first. OSV is public, so it is the
@@ -68,4 +74,8 @@ should contain the OSV identifiers the agent found.
 - [Caplets Vault](/vault/) - store secret config values without relying on agent environment propagation.
 - [Agent integrations](/agent-integrations/) - use Codex, Claude, OpenCode, and Pi.
 - [Remote attach](/remote-attach/) - connect agents to a remote Caplets runtime.
+- [Project Binding](/project-binding/) - synchronize local repository context for remote Caplets.
+- [Authoritative Host State](/storage/) - operate SQLite or PostgreSQL host state.
+- [CLI reference](/reference/cli/) - find command families and environment controls.
+- [Privacy and network activity](/privacy/) - control telemetry, update checks, and catalog indexing.
 - [Troubleshooting](/troubleshooting/) - check config, auth, and runtime issues.
