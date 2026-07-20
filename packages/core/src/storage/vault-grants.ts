@@ -59,6 +59,18 @@ type NormalizedRevokeInput = Omit<VaultGrantRevokeInput, "referenceName"> & {
   referenceName: string;
 };
 
+export type PreparedVaultGrant = {
+  input: Omit<VaultGrantInput, "referenceName"> & { referenceName: string };
+  operatorId: string;
+};
+
+export function prepareVaultGrant(input: VaultGrantInput): PreparedVaultGrant {
+  return {
+    input: normalizeGrantInput(input),
+    operatorId: requireOperator(input.operator),
+  };
+}
+
 type VaultGrantSubject =
   | {
       kind: "record";
@@ -85,12 +97,16 @@ export class VaultGrantStore {
   constructor(private readonly database: HostDatabase) {}
 
   async grant(input: VaultGrantInput): Promise<void> {
-    const operatorId = requireOperator(input.operator);
-    const normalized = normalizeGrantInput(input);
+    const prepared = prepareVaultGrant(input);
+    const createdAt = new Date().toISOString();
     if (this.database.dialect === "sqlite") {
-      grantSqlite(this.database.db, normalized, operatorId);
+      this.database.db.transaction((transaction) =>
+        grantPreparedVaultSqlite(transaction, prepared, createdAt),
+      );
     } else {
-      await grantPostgres(this.database.db, normalized, operatorId);
+      await this.database.db.transaction(
+        async (transaction) => await grantPreparedVaultPostgres(transaction, prepared, createdAt),
+      );
     }
   }
 
@@ -488,72 +504,78 @@ function legacyGrantMatches(
   );
 }
 
-function grantSqlite(
-  db: SqliteHostDatabase,
-  input: NormalizedGrantInput,
-  operatorId: string,
+export function grantPreparedVaultSqlite(
+  db: SqliteVaultGrantDatabase,
+  prepared: PreparedVaultGrant,
+  createdAt: string,
 ): void {
-  db.transaction((transaction) => {
-    const subject = sqliteSubject(transaction, input);
-    const now = new Date().toISOString();
-    transaction
-      .insert(sqlite.vaultAccessGrants)
-      .values(grantValues(subject, input, operatorId, now))
-      .onConflictDoUpdate({
-        target: [
-          sqlite.vaultAccessGrants.subjectKind,
-          sqlite.vaultAccessGrants.subjectKey,
-          sqlite.vaultAccessGrants.referenceName,
-        ],
-        set: {
-          vaultKey: input.vaultKey,
-          originKind: input.originKind,
-          originPath: input.originPath ?? null,
-          createdAt: now,
-          createdBy: operatorId,
-        },
-      })
-      .run();
-    transaction
-      .insert(sqlite.operatorActivity)
-      .values(
-        activity(operatorId, "vault.grant", subject, input.vaultKey, input.referenceName, now),
-      )
-      .run();
-  });
+  const subject = sqliteSubject(db, prepared.input);
+  db.insert(sqlite.vaultAccessGrants)
+    .values(grantValues(subject, prepared.input, prepared.operatorId, createdAt))
+    .onConflictDoUpdate({
+      target: [
+        sqlite.vaultAccessGrants.subjectKind,
+        sqlite.vaultAccessGrants.subjectKey,
+        sqlite.vaultAccessGrants.referenceName,
+      ],
+      set: {
+        vaultKey: prepared.input.vaultKey,
+        originKind: prepared.input.originKind,
+        originPath: prepared.input.originPath ?? null,
+        createdAt,
+        createdBy: prepared.operatorId,
+      },
+    })
+    .run();
+  db.insert(sqlite.operatorActivity)
+    .values(
+      activity(
+        prepared.operatorId,
+        "vault.grant",
+        subject,
+        prepared.input.vaultKey,
+        prepared.input.referenceName,
+        createdAt,
+      ),
+    )
+    .run();
 }
 
-async function grantPostgres(
-  db: PostgresHostDatabase,
-  input: NormalizedGrantInput,
-  operatorId: string,
+export async function grantPreparedVaultPostgres(
+  db: PostgresVaultGrantDatabase,
+  prepared: PreparedVaultGrant,
+  createdAt: string,
 ): Promise<void> {
-  await db.transaction(async (transaction) => {
-    const subject = await postgresSubject(transaction, input);
-    const now = new Date().toISOString();
-    await transaction
-      .insert(postgres.vaultAccessGrants)
-      .values(grantValues(subject, input, operatorId, now))
-      .onConflictDoUpdate({
-        target: [
-          postgres.vaultAccessGrants.subjectKind,
-          postgres.vaultAccessGrants.subjectKey,
-          postgres.vaultAccessGrants.referenceName,
-        ],
-        set: {
-          vaultKey: input.vaultKey,
-          originKind: input.originKind,
-          originPath: input.originPath ?? null,
-          createdAt: now,
-          createdBy: operatorId,
-        },
-      });
-    await transaction
-      .insert(postgres.operatorActivity)
-      .values(
-        activity(operatorId, "vault.grant", subject, input.vaultKey, input.referenceName, now),
-      );
-  });
+  const subject = await postgresSubject(db, prepared.input);
+  await db
+    .insert(postgres.vaultAccessGrants)
+    .values(grantValues(subject, prepared.input, prepared.operatorId, createdAt))
+    .onConflictDoUpdate({
+      target: [
+        postgres.vaultAccessGrants.subjectKind,
+        postgres.vaultAccessGrants.subjectKey,
+        postgres.vaultAccessGrants.referenceName,
+      ],
+      set: {
+        vaultKey: prepared.input.vaultKey,
+        originKind: prepared.input.originKind,
+        originPath: prepared.input.originPath ?? null,
+        createdAt,
+        createdBy: prepared.operatorId,
+      },
+    });
+  await db
+    .insert(postgres.operatorActivity)
+    .values(
+      activity(
+        prepared.operatorId,
+        "vault.grant",
+        subject,
+        prepared.input.vaultKey,
+        prepared.input.referenceName,
+        createdAt,
+      ),
+    );
 }
 
 function revokeSqlite(
@@ -695,7 +717,7 @@ function grantValues(
 }
 
 function sqliteSubject(
-  db: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
+  db: SqliteVaultGrantDatabase,
   input: NormalizedGrantInput,
 ): VaultGrantSubject {
   if (input.originKind !== "stored-record") {
@@ -706,7 +728,7 @@ function sqliteSubject(
 }
 
 async function postgresSubject(
-  db: Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0],
+  db: PostgresVaultGrantDatabase,
   input: NormalizedGrantInput,
 ): Promise<VaultGrantSubject> {
   if (input.originKind !== "stored-record") {
@@ -730,7 +752,7 @@ function fileSubject(
 }
 
 function sqliteRecordKey(
-  db: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
+  db: SqliteVaultGrantDatabase,
   capletId: string,
   required: boolean,
 ): string | undefined {
@@ -746,7 +768,7 @@ function sqliteRecordKey(
 }
 
 async function postgresRecordKey(
-  db: Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0],
+  db: PostgresVaultGrantDatabase,
   capletId: string,
   required: boolean,
 ): Promise<string | undefined> {

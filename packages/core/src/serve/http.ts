@@ -53,13 +53,16 @@ import type { ProjectBindingSocketClientMessage } from "../project-binding/sessi
 import { ProjectBindingWorkspaceStore } from "../project-binding/workspaces";
 import {
   dispatchRemoteCliRequest,
+  LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES,
+  maximumBase64EncodedBytes,
   type RemoteControlDispatchContext,
 } from "../remote-control/dispatch";
-import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import { MAX_BUNDLE_FILES, MAX_BUNDLE_TOTAL_BYTES } from "../storage/caplet-records";
 import type { RemoteSecurityStore } from "../storage/remote-security";
 import type { BackendAuthStateStore } from "../storage/backend-auth";
+import type { BackendAuthFlowRepository } from "../storage/backend-auth-flows";
 import type { HostStorage } from "../storage/database";
 import {
   remoteClientRoleSatisfies,
@@ -69,13 +72,14 @@ import {
 import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
+import { readCommandLimitedJsonObject, readLimitedJsonObject } from "./request-body";
 
 type RemoteCredentialStore = RemoteServerCredentialStore | RemoteSecurityStore;
 
 type HttpServeIo = {
   writeErr?: (value: string) => void;
-  control?: Omit<RemoteControlDispatchContext, "writeErr">;
-  authFlowStore?: RemoteAuthFlowStore;
+  control?: Omit<RemoteControlDispatchContext, "writeErr" | "backendAuthFlows">;
+  backendAuthFlows?: BackendAuthFlowRepository;
   sessionFactory?: HttpMcpSessionFactory;
   attachSessionFactory?: HttpAttachSessionFactory;
   defaultAttachSessionFactory?: HttpAttachSessionFactory;
@@ -168,7 +172,23 @@ type AttachEventSource = {
 
 const ATTACH_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
 const ATTACH_SESSION_PRUNE_INTERVAL_MS = 60_000;
+const BACKEND_AUTH_FLOW_MAINTENANCE_INTERVAL_MS = 60_000;
 const PROJECT_BINDING_LEASE_TTL_MS = 60_000;
+export const AUTH_REQUEST_MAX_BYTES = 64 * 1024;
+export const CONTROL_REQUEST_MAX_BYTES = 1024 * 1024;
+export const ATTACH_INVOKE_REQUEST_MAX_BYTES = 16 * 1024 * 1024;
+// The ceiling is the exact worst-case padded payload plus the metadata bound enforced by
+// semantic import/update decoding for the canonical RemoteHttpClient envelope.
+const LEGACY_CAPLET_BUNDLE_BASE64_MAX_BYTES = maximumBase64EncodedBytes(
+  MAX_BUNDLE_TOTAL_BYTES,
+  MAX_BUNDLE_FILES + 1,
+);
+export const LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES =
+  LEGACY_CAPLET_BUNDLE_BASE64_MAX_BYTES + LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES;
+const LEGACY_BUNDLE_COMMANDS: Readonly<Record<string, true>> = {
+  storage_records_import: true,
+  storage_records_update: true,
+};
 
 export function createHttpServeApp(
   options: HttpServeOptions,
@@ -192,7 +212,6 @@ export function createHttpServeApp(
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
   const stackIdentity = httpStackIdentity(options);
-  const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
   const authoritativeStorage =
@@ -203,6 +222,13 @@ export function createHttpServeApp(
       ? (io.remoteCredentialStore ?? authoritativeStorage?.remoteSecurity)
       : undefined;
   const backendAuthStore = io.backendAuthStore ?? authoritativeStorage?.backendAuth;
+  const backendAuthFlows = io.backendAuthFlows ?? authoritativeStorage?.backendAuthFlows;
+  let backendAuthFlowMaintenance: Promise<void> | undefined;
+  const backendAuthFlowMaintenanceTimer = backendAuthFlows
+    ? setInterval(maintainBackendAuthFlows, BACKEND_AUTH_FLOW_MAINTENANCE_INTERVAL_MS)
+    : undefined;
+  backendAuthFlowMaintenanceTimer?.unref?.();
+  maintainBackendAuthFlows();
   const projectBindingRepository = authoritativeStorage?.projectBindings;
   const hostNodeId =
     typeof engine.hostNodeIdentity === "function" ? engine.hostNodeIdentity() : undefined;
@@ -259,6 +285,7 @@ export function createHttpServeApp(
     remoteCredentialStore,
     vaultGrants: authoritativeStorage?.vaultGrants,
     vaultValues: authoritativeStorage?.vaultValues,
+    vaultState: authoritativeStorage?.vaultState,
     version: packageJsonVersion,
   });
   const authenticatedRemoteClients = new WeakMap<Request, ValidatedRemoteClient>();
@@ -360,7 +387,11 @@ export function createHttpServeApp(
   app.post(paths.dashboardLoginStart, attachHostProtection, async (c) => {
     if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard login start request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard login start request",
+        AUTH_REQUEST_MAX_BYTES,
+      );
       const clientLabel = optionalStringField(parsed, "clientLabel") ?? "Caplets Dashboard";
       const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
       const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
@@ -390,7 +421,11 @@ export function createHttpServeApp(
   app.post(paths.dashboardLoginPoll, attachHostProtection, async (c) => {
     if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard login poll request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard login poll request",
+        AUTH_REQUEST_MAX_BYTES,
+      );
       return c.json(
         await remoteCredentialStore.pollPendingLogin({
           flowId: stringField(parsed, "flowId"),
@@ -405,7 +440,11 @@ export function createHttpServeApp(
   app.post(paths.dashboardLoginComplete, attachHostProtection, async (c) => {
     if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard login complete request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard login complete request",
+        AUTH_REQUEST_MAX_BYTES,
+      );
       const credentials = await remoteCredentialStore.completePendingLogin({
         hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
           c.req.header(name),
@@ -502,7 +541,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Stored Caplet import request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Stored Caplet import request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const historyLimit = optionalIntegerField(parsed, "historyLimit");
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
@@ -545,7 +588,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Stored Caplet update request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Stored Caplet update request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -568,7 +615,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Stored Caplet delete request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Stored Caplet delete request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -609,7 +660,11 @@ export function createHttpServeApp(
       });
       if (!session.ok) return session.response;
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Stored Caplet restore request");
+        const parsed = await readLimitedJsonObject(
+          c.req.raw,
+          "Stored Caplet restore request",
+          CONTROL_REQUEST_MAX_BYTES,
+        );
         const outcome = await currentHostOperations.execute(
           dashboardPrincipalForSession(c, session.session),
           {
@@ -633,7 +688,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Stored Caplet revision delete request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Stored Caplet revision delete request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -720,7 +779,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard catalog install request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard catalog install request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -745,7 +808,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard catalog update request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard catalog update request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -800,9 +867,10 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(
-        c.req.json(),
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
         "Dashboard pending login approval request",
+        CONTROL_REQUEST_MAX_BYTES,
       );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
@@ -873,7 +941,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard remote client role request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard remote client role request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -940,7 +1012,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault set request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard Vault set request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -982,7 +1058,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault grant request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard Vault grant request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -1006,7 +1086,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault revoke request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard Vault revoke request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
@@ -1030,7 +1114,11 @@ export function createHttpServeApp(
     });
     if (!session.ok) return session.response;
     try {
-      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault reveal request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Dashboard Vault reveal request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const key = stringField(parsed, "key");
       if (stringField(parsed, "confirmation") !== `reveal ${key}`) {
         throw new CapletsError("REQUEST_INVALID", "Vault reveal confirmation is invalid.");
@@ -1195,7 +1283,11 @@ export function createHttpServeApp(
   if (remoteCredentialStore) {
     app.post(paths.remoteLoginStart, attachHostProtection, async (c) => {
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Pending remote login start request");
+        const parsed = await readLimitedJsonObject(
+          c.req.raw,
+          "Pending remote login start request",
+          AUTH_REQUEST_MAX_BYTES,
+        );
         const clientLabel = optionalStringField(parsed, "clientLabel");
         const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
         const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
@@ -1222,7 +1314,11 @@ export function createHttpServeApp(
 
     app.post(paths.remoteLoginPoll, attachHostProtection, async (c) => {
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Pending remote login poll request");
+        const parsed = await readLimitedJsonObject(
+          c.req.raw,
+          "Pending remote login poll request",
+          AUTH_REQUEST_MAX_BYTES,
+        );
         return c.json(
           await remoteCredentialStore.pollPendingLogin({
             flowId: stringField(parsed, "flowId"),
@@ -1236,7 +1332,11 @@ export function createHttpServeApp(
 
     app.post(paths.remoteLoginRefresh, attachHostProtection, async (c) => {
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Pending remote login refresh request");
+        const parsed = await readLimitedJsonObject(
+          c.req.raw,
+          "Pending remote login refresh request",
+          AUTH_REQUEST_MAX_BYTES,
+        );
         return c.json(
           await remoteCredentialStore.refreshPendingLogin({
             flowId: stringField(parsed, "flowId"),
@@ -1251,7 +1351,11 @@ export function createHttpServeApp(
 
     app.post(paths.remoteLoginComplete, attachHostProtection, async (c) => {
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Pending remote login complete request");
+        const parsed = await readLimitedJsonObject(
+          c.req.raw,
+          "Pending remote login complete request",
+          AUTH_REQUEST_MAX_BYTES,
+        );
         const credentials = await remoteCredentialStore.completePendingLogin({
           hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
             c.req.header(name),
@@ -1267,7 +1371,11 @@ export function createHttpServeApp(
 
     app.post(paths.remoteLoginCancel, attachHostProtection, async (c) => {
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Pending remote login cancel request");
+        const parsed = await readLimitedJsonObject(
+          c.req.raw,
+          "Pending remote login cancel request",
+          AUTH_REQUEST_MAX_BYTES,
+        );
         return c.json(
           await remoteCredentialStore.cancelPendingLogin({
             flowId: stringField(parsed, "flowId"),
@@ -1285,7 +1393,11 @@ export function createHttpServeApp(
 
     app.post(paths.remoteRefresh, async (c) => {
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
+        const parsed = await readLimitedJsonObject(
+          c.req.raw,
+          "Remote refresh request",
+          AUTH_REQUEST_MAX_BYTES,
+        );
         const refreshToken = stringField(parsed, "refreshToken");
         const credentials = await remoteCredentialStore.refreshClientCredentials({
           hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
@@ -1376,7 +1488,11 @@ export function createHttpServeApp(
     if (io.attachSessionFactory) {
       app.post(paths.attachSessions, attachHostProtection, accessRouteAuth, async (c) => {
         try {
-          const parsed = await parseJsonObject(c.req.json(), "Attach session request");
+          const parsed = await readLimitedJsonObject(
+            c.req.raw,
+            "Attach session request",
+            CONTROL_REQUEST_MAX_BYTES,
+          );
           const metadata = parseAttachSessionMetadata(parsed, {
             allowProjectContext: allowAttachSessionProjectContext(options, c.req.url, (name) =>
               c.req.header(name),
@@ -1449,7 +1565,13 @@ export function createHttpServeApp(
 
     app.post(paths.attachInvoke, attachHostProtection, accessRouteAuth, async (c) => {
       try {
-        const request = await parseAttachInvokeRequest(c.req.json());
+        const request = parseAttachInvokeRequest(
+          await readLimitedJsonObject(
+            c.req.raw,
+            "Attach invoke request",
+            ATTACH_INVOKE_REQUEST_MAX_BYTES,
+          ),
+        );
         const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
         const attachSession = attachSessionId
           ? attachSessionForRequest(attachSessionId)
@@ -1529,6 +1651,27 @@ export function createHttpServeApp(
     }
   }
 
+  function maintainBackendAuthFlows(): void {
+    if (!backendAuthFlows || backendAuthFlowMaintenance) return;
+    const maintenance = backendAuthFlows.expireDue().then(async () => {
+      await backendAuthFlows.prune();
+    });
+    backendAuthFlowMaintenance = maintenance;
+    void maintenance.then(
+      () => {
+        if (backendAuthFlowMaintenance === maintenance) {
+          backendAuthFlowMaintenance = undefined;
+        }
+      },
+      (error) => {
+        if (backendAuthFlowMaintenance === maintenance) {
+          backendAuthFlowMaintenance = undefined;
+        }
+        writeErr(`Could not maintain backend OAuth flows: ${errorMessage(error)}\n`);
+      },
+    );
+  }
+
   function pruneProjectBindingWorkspaces(): void {
     if (projectBindingWorkspaceCleanup) return;
     const cleanup = projectBindingWorkspaceStore.cleanup();
@@ -1562,7 +1705,15 @@ export function createHttpServeApp(
   app.post(paths.control, currentHostDevelopmentGuard(options), operatorRouteAuth, async (c) => {
     let request: RemoteCliRequest;
     try {
-      request = parseRemoteCliRequest(await c.req.json());
+      request = parseRemoteCliRequest(
+        await readCommandLimitedJsonObject(
+          c.req.raw,
+          "Control request",
+          CONTROL_REQUEST_MAX_BYTES,
+          LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES,
+          LEGACY_BUNDLE_COMMANDS,
+        ),
+      );
     } catch (error) {
       const requestError =
         error instanceof CapletsError
@@ -1574,7 +1725,7 @@ export function createHttpServeApp(
     const context = controlContext(
       io,
       writeErr,
-      authFlowStore,
+      backendAuthFlows,
       backendAuthStore,
       authoritativeStorage,
       c.req.url,
@@ -1687,7 +1838,11 @@ export function createHttpServeApp(
       if (projectBindingSessionsClosing) {
         return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
       }
-      const parsed = await parseJsonObject(c.req.json(), "Project Binding session request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Project Binding session request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const projectRoot = stringField(parsed, "projectRoot");
       const projectFingerprint =
         optionalStringField(parsed, "projectFingerprint") ?? fingerprintProjectRoot(projectRoot);
@@ -1813,7 +1968,11 @@ export function createHttpServeApp(
       const ownerKey = projectBindingOwnerKey(c);
       let record = projectBindingRecordFor(bindingId, ownerKey);
       if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
-      const parsed = await parseJsonObject(c.req.json(), "Project Binding heartbeat request");
+      const parsed = await readLimitedJsonObject(
+        c.req.raw,
+        "Project Binding heartbeat request",
+        CONTROL_REQUEST_MAX_BYTES,
+      );
       const sessionId = stringField(parsed, "sessionId");
       record = projectBindingRecordFor(bindingId, ownerKey);
       if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
@@ -2450,7 +2609,7 @@ export function createHttpServeApp(
       controlContext(
         io,
         writeErr,
-        authFlowStore,
+        backendAuthFlows,
         backendAuthStore,
         authoritativeStorage,
         c.req.url,
@@ -2472,6 +2631,7 @@ export function createHttpServeApp(
 
   app.closeCapletsSessions = async () => {
     clearInterval(attachSessionPruneTimer);
+    clearInterval(backendAuthFlowMaintenanceTimer);
     projectBindingSessionsClosing = true;
     for (const stream of attachEventStreams) {
       stream.close();
@@ -2490,6 +2650,9 @@ export function createHttpServeApp(
     await Promise.all(
       [...projectBindingSessions.values()].map((record) => endProjectBindingRecord(record)),
     );
+    if (backendAuthFlowMaintenance) {
+      await Promise.allSettled([backendAuthFlowMaintenance]);
+    }
   };
 
   if (options.warnUnauthenticatedNetwork) {
@@ -2504,7 +2667,7 @@ export function createHttpServeApp(
 function controlContext(
   io: HttpServeIo,
   writeErr: (value: string) => void,
-  authFlowStore: RemoteAuthFlowStore,
+  backendAuthFlows: BackendAuthFlowRepository | undefined,
   backendAuthStore: BackendAuthStateStore | undefined,
   authoritativeStorage: HostStorage | undefined,
   requestUrl: string,
@@ -2518,7 +2681,7 @@ function controlContext(
     projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
     globalCapletsRoot: io.control?.globalCapletsRoot ?? resolveCapletsRoot(io.control?.configPath),
     globalLockfilePath: io.control?.globalLockfilePath ?? defaultCapletsLockfilePath(),
-    authFlowStore,
+    ...(backendAuthFlows ? { backendAuthFlows } : {}),
     ...(backendAuthStore ? { backendAuthStore } : {}),
     ...(authoritativeStorage ? { hostStorage: authoritativeStorage } : {}),
     controlCallbackBaseUrl: new URL(
@@ -2712,21 +2875,8 @@ function versionDiscovery(
   };
 }
 
-async function parseAttachInvokeRequest(input: Promise<unknown>): Promise<AttachInvokeRequest> {
-  let parsed: unknown;
-  try {
-    parsed = await input;
-  } catch (error) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Attach invoke request body must be valid JSON.",
-      error,
-    );
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new CapletsError("REQUEST_INVALID", "Attach invoke request JSON must be an object.");
-  }
-  const request = parsed as Record<string, unknown>;
+function parseAttachInvokeRequest(parsed: Record<string, unknown>): AttachInvokeRequest {
+  const request = parsed;
   if (
     typeof request.revision !== "string" ||
     typeof request.kind !== "string" ||
@@ -3371,22 +3521,6 @@ function bearerTokenFromWebSocketProtocol(header: string | undefined): string | 
   } catch {
     return undefined;
   }
-}
-
-async function parseJsonObject(
-  input: Promise<unknown>,
-  label: string,
-): Promise<Record<string, unknown>> {
-  let parsed: unknown;
-  try {
-    parsed = await input;
-  } catch (error) {
-    throw new CapletsError("REQUEST_INVALID", `${label} body must be valid JSON.`, error);
-  }
-  if (!isRecord(parsed)) {
-    throw new CapletsError("REQUEST_INVALID", `${label} JSON must be an object.`);
-  }
-  return parsed;
 }
 
 function parseRemoteCliRequest(value: unknown): RemoteCliRequest {

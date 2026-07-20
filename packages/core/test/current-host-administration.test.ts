@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createCurrentHostOperations,
@@ -611,6 +612,92 @@ describe("Current Host administration operations", () => {
     }
   });
 
+  it("rolls authoritative SQL Vault state back when grant insertion fails", async () => {
+    let invalidationCalls = 0;
+    const setup = await sqlTestOperations(async () => {
+      invalidationCalls += 1;
+    });
+    if (setup.storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
+    try {
+      setup.storage.database.db.run(
+        sql.raw(`
+          create temp trigger fail_current_host_vault_grant
+          before insert on vault_access_grants
+          begin
+            select raise(abort, 'injected current-host grant failure');
+          end
+        `),
+      );
+
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "SQL_TOKEN",
+          value: "rolled_back_sql_secret",
+          grant: "status",
+          referenceName: "API_TOKEN",
+        }),
+      ).rejects.toThrow("injected current-host grant failure");
+
+      await expect(setup.storage.vaultValues.getStatus("SQL_TOKEN")).resolves.toEqual({
+        key: "SQL_TOKEN",
+        present: false,
+      });
+      await expect(setup.storage.vaultGrants.list()).resolves.toEqual([]);
+      await expect(setup.storage.operatorActivity.list()).resolves.toEqual({ entries: [] });
+      expect(invalidationCalls).toBe(0);
+    } finally {
+      setup.storage.database.db.run(
+        sql.raw("drop trigger if exists fail_current_host_vault_grant"),
+      );
+      await setup.engine.close();
+      await setup.storage.close();
+    }
+  });
+
+  it("propagates config activation failure after committing SQL Vault state", async () => {
+    const activationFailure = new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Injected config activation failure.",
+    );
+    let activationCalls = 0;
+    const setup = await sqlTestOperations(async () => {
+      activationCalls += 1;
+      throw activationFailure;
+    });
+    try {
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "SQL_TOKEN",
+          value: "committed_sql_secret",
+          grant: "status",
+          referenceName: "API_TOKEN",
+        }),
+      ).rejects.toBe(activationFailure);
+
+      await expect(setup.storage.vaultValues.resolveValue("SQL_TOKEN")).resolves.toBe(
+        "committed_sql_secret",
+      );
+      await expect(setup.storage.vaultGrants.list("status")).resolves.toEqual([
+        expect.objectContaining({
+          capletId: "status",
+          vaultKey: "SQL_TOKEN",
+          referenceName: "API_TOKEN",
+          createdBy: setup.principal.clientId,
+        }),
+      ]);
+      const actions = (await setup.storage.operatorActivity.list()).entries
+        .map((entry) => entry.action)
+        .sort();
+      expect(actions).toEqual(["vault.grant", "vault_value_written"]);
+      expect(activationCalls).toBe(1);
+    } finally {
+      await setup.engine.close();
+      await setup.storage.close();
+    }
+  });
+
   it("rejects credential-shaped identifiers without echoing them into outcomes or activity", async () => {
     const setup = testOperations();
     const credentialShapedIds = [
@@ -695,6 +782,66 @@ function testOperations() {
     engine,
     store,
     activity,
+    operations,
+    principal: {
+      clientId: operator.clientId,
+      clientLabel: operator.clientLabel,
+      hostUrl: operator.hostUrl,
+      role: "operator" as const,
+    },
+  };
+}
+
+async function sqlTestOperations(invalidateConfig: (operatorClientId: string) => Promise<void>) {
+  const root = tempDir("caplets-current-host-sql-operations-");
+  const userRoot = join(root, "user");
+  const projectRoot = join(root, "project", ".caplets");
+  const authDir = join(root, "auth");
+  const globalCapletsRoot = join(root, "global-caplets");
+  const globalLockfilePath = join(root, "remote-state", "caplets.lock.json");
+  const databasePath = join(root, "host.sqlite3");
+  mkdirSync(userRoot, { recursive: true });
+  mkdirSync(projectRoot, { recursive: true });
+  mkdirSync(authDir, { recursive: true });
+  mkdirSync(globalCapletsRoot, { recursive: true });
+  const configPath = join(userRoot, "config.json");
+  const projectConfigPath = join(projectRoot, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      httpApis: {
+        status: {
+          name: "Status",
+          description: "Status API.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    }),
+  );
+  const storage = await createHostStorage(
+    { type: "sqlite", path: databasePath },
+    { vaultRoot: join(root, "vault") },
+  );
+  const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+  const credentials = new RemoteServerCredentialStore({ dir: join(root, "remote-state") });
+  const operator = issueOperator(credentials, "SQL Operator");
+  const activity = new DashboardActivityLog({ dir: join(root, "activity") });
+  const operations = createCurrentHostOperations({
+    engine,
+    control: { configPath, projectConfigPath, authDir, globalCapletsRoot, globalLockfilePath },
+    activityLog: activity,
+    remoteCredentialStore: credentials,
+    vaultGrants: storage.vaultGrants,
+    vaultValues: storage.vaultValues,
+    vaultState: storage.vaultState,
+    invalidateConfig,
+    version: "test-version",
+  });
+  return {
+    engine,
+    storage,
     operations,
     principal: {
       clientId: operator.clientId,

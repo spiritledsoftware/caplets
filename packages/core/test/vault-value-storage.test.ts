@@ -3,9 +3,13 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHostStorage } from "../src/storage";
-import { VaultValueStore } from "../src/storage/vault-values";
+import {
+  prepareVaultValueSet,
+  setPreparedVaultValueSqlite,
+  VaultValueStore,
+} from "../src/storage/vault-values";
 import { operatorActivity, vaultValues } from "../src/storage/schema/sqlite";
 import { VAULT_MAX_VALUE_BYTES } from "../src/vault";
 
@@ -37,20 +41,17 @@ describe("VaultValueStore", () => {
         code: "REQUEST_INVALID",
       });
 
-      await expect(
-        first.set("API_TOKEN", plaintext, {
-          expectedGeneration: 0,
-          operatorClientId: "operator-1",
-          now: new Date("2026-07-18T10:00:00.000Z"),
-        }),
-      ).resolves.toEqual({
+      const firstStatus = await first.set("API_TOKEN", plaintext, {
+        expectedGeneration: 0,
+        operatorClientId: "operator-1",
+      });
+      expect(firstStatus).toMatchObject({
         key: "API_TOKEN",
         present: true,
         generation: 1,
         valueBytes: Buffer.byteLength(plaintext),
-        createdAt: "2026-07-18T10:00:00.000Z",
-        updatedAt: "2026-07-18T10:00:00.000Z",
       });
+      expect(firstStatus.createdAt).toBe(firstStatus.updatedAt);
 
       const persisted = firstStorage.database.db.select().from(vaultValues).get();
       expect(persisted).toMatchObject({ vaultKey: "API_TOKEN", generation: 1 });
@@ -68,20 +69,18 @@ describe("VaultValueStore", () => {
       });
       await expect(second.resolveValue("API_TOKEN")).resolves.toBe(plaintext);
 
-      await expect(
-        second.set("API_TOKEN", rotatedPlaintext, {
-          force: true,
-          expectedGeneration: 1,
-          operatorClientId: "operator-2",
-          now: new Date("2026-07-18T10:01:00.000Z"),
-        }),
-      ).resolves.toMatchObject({
+      const rotatedStatus = await second.set("API_TOKEN", rotatedPlaintext, {
+        force: true,
+        expectedGeneration: 1,
+        operatorClientId: "operator-2",
+      });
+      expect(rotatedStatus).toMatchObject({
         key: "API_TOKEN",
         present: true,
         generation: 2,
-        createdAt: "2026-07-18T10:00:00.000Z",
-        updatedAt: "2026-07-18T10:01:00.000Z",
+        createdAt: firstStatus.createdAt,
       });
+      expect(rotatedStatus.updatedAt >= firstStatus.updatedAt).toBe(true);
       await expect(
         first.set("API_TOKEN", "stale-secret", { force: true, expectedGeneration: 1 }),
       ).rejects.toMatchObject({
@@ -168,6 +167,84 @@ describe("VaultValueStore", () => {
       }
     } finally {
       await firstStorage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("timestamps forced writers in serialization order rather than preparation order", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-vault-value-ordering-"));
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+    if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
+    const options = {
+      env: { CAPLETS_ENCRYPTION_KEY: Buffer.alloc(32, 31).toString("base64url") },
+    };
+    const values = new VaultValueStore(storage.database, options);
+    vi.useFakeTimers();
+
+    try {
+      vi.setSystemTime(new Date("2026-07-18T10:00:00.000Z"));
+      const preparedFirst = prepareVaultValueSet(
+        "ORDERED_SECRET",
+        "prepared-first",
+        { force: true, operatorClientId: "operator-first" },
+        options,
+      );
+      vi.setSystemTime(new Date("2026-07-18T10:01:00.000Z"));
+      const preparedSecond = prepareVaultValueSet(
+        "ORDERED_SECRET",
+        "prepared-second",
+        { force: true, operatorClientId: "operator-second" },
+        options,
+      );
+
+      vi.setSystemTime(new Date("2026-07-18T10:02:00.000Z"));
+      const serializedFirst = storage.database.db.transaction(
+        (transaction) => setPreparedVaultValueSqlite(transaction, preparedSecond),
+        { behavior: "immediate" },
+      );
+      vi.setSystemTime(new Date("2026-07-18T10:03:00.000Z"));
+      const serializedSecond = storage.database.db.transaction(
+        (transaction) => setPreparedVaultValueSqlite(transaction, preparedFirst),
+        { behavior: "immediate" },
+      );
+
+      expect(serializedFirst).toMatchObject({
+        generation: 1,
+        createdAt: "2026-07-18T10:02:00.000Z",
+        updatedAt: "2026-07-18T10:02:00.000Z",
+      });
+      expect(serializedSecond).toMatchObject({
+        generation: 2,
+        createdAt: "2026-07-18T10:02:00.000Z",
+        updatedAt: "2026-07-18T10:03:00.000Z",
+      });
+      await expect(values.getStatus("ORDERED_SECRET")).resolves.toEqual(serializedSecond);
+      await expect(values.resolveValue("ORDERED_SECRET")).resolves.toBe("prepared-first");
+
+      const activity = storage.database.db.select().from(operatorActivity).all();
+      expect(
+        activity
+          .map((entry) => ({
+            actor: entry.operatorClientId,
+            timestamp: entry.createdAt,
+          }))
+          .sort((left, right) => left.actor.localeCompare(right.actor)),
+      ).toEqual([
+        {
+          actor: "operator-first",
+          timestamp: "2026-07-18T10:03:00.000Z",
+        },
+        {
+          actor: "operator-second",
+          timestamp: "2026-07-18T10:02:00.000Z",
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+      await storage.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });

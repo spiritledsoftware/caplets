@@ -9,6 +9,9 @@ import { HOST_STORAGE_SCHEMA_VERSION, createHostStorage, migrateHostStorage } fr
 
 const directories: string[] = [];
 const postgresUrl = process.env.CAPLETS_TEST_POSTGRES_URL;
+if (process.env.CAPLETS_REQUIRE_TEST_POSTGRES === "1" && !postgresUrl) {
+  throw new Error("CAPLETS_TEST_POSTGRES_URL is required when CAPLETS_REQUIRE_TEST_POSTGRES=1.");
+}
 const postgresSchemas: string[] = [];
 const postgresIt = postgresUrl ? it : it.skip;
 

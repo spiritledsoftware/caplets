@@ -47,7 +47,6 @@ export type VaultValueSetOptions = {
   force?: boolean | undefined;
   expectedGeneration?: number | undefined;
   operatorClientId?: string | undefined;
-  now?: Date | undefined;
 };
 
 export type VaultValueDeleteOptions = {
@@ -72,6 +71,23 @@ export type VaultValueStoreOptions = {
   env?: Record<string, string | undefined> | undefined;
 };
 
+export type ResolvedVaultValueStoreOptions = {
+  root: string;
+  keyFile: string;
+  env: Record<string, string | undefined>;
+};
+
+export function resolveVaultValueStoreOptions(
+  options: VaultValueStoreOptions = {},
+): ResolvedVaultValueStoreOptions {
+  const root = options.root ?? join(defaultStateBaseDir(options.env), "caplets", "vault");
+  return {
+    root,
+    keyFile: options.keyFile ?? join(root, "vault-key"),
+    env: options.env ?? process.env,
+  };
+}
+
 export interface VaultValueRepository {
   set(
     key: string,
@@ -91,6 +107,39 @@ export interface VaultValueRepository {
 type VaultValueRow = typeof sqlite.vaultValues.$inferSelect;
 type PresentVaultValueStatus = Extract<VaultValueRecordStatus, { present: true }>;
 
+export type PreparedVaultValueSet = {
+  key: string;
+  plaintext: string;
+  encryptionKey: Buffer;
+  force: boolean;
+  expectedGeneration?: number | undefined;
+  operatorClientId?: string | undefined;
+};
+
+export function prepareVaultValueSet(
+  key: string,
+  value: string,
+  options: VaultValueSetOptions = {},
+  storeOptions: VaultValueStoreOptions = {},
+): PreparedVaultValueSet {
+  const normalizedKey = validateVaultKeyName(key);
+  validateValue(value);
+  validateSetOptions(options);
+  const { keyFile, env } = resolveVaultValueStoreOptions(storeOptions);
+  return {
+    key: normalizedKey,
+    plaintext: value,
+    encryptionKey: ensureVaultKey({ keyFile, env }),
+    force: options.force ?? false,
+    ...(options.expectedGeneration !== undefined
+      ? { expectedGeneration: options.expectedGeneration }
+      : {}),
+    ...(options.operatorClientId !== undefined
+      ? { operatorClientId: options.operatorClientId }
+      : {}),
+  };
+}
+
 export class VaultValueStore implements VaultValueRepository {
   readonly root: string;
   readonly keyFile: string;
@@ -100,9 +149,10 @@ export class VaultValueStore implements VaultValueRepository {
     private readonly database: HostDatabase,
     options: VaultValueStoreOptions = {},
   ) {
-    this.root = options.root ?? join(defaultStateBaseDir(options.env), "caplets", "vault");
-    this.keyFile = options.keyFile ?? join(this.root, "vault-key");
-    this.env = options.env ?? process.env;
+    const resolved = resolveVaultValueStoreOptions(options);
+    this.root = resolved.root;
+    this.keyFile = resolved.keyFile;
+    this.env = resolved.env;
   }
 
   hostRuntimeFingerprint(hostConfigurationFingerprint: string): string {
@@ -120,14 +170,20 @@ export class VaultValueStore implements VaultValueRepository {
     value: string,
     options: VaultValueSetOptions = {},
   ): Promise<PresentVaultValueStatus> {
-    const normalizedKey = validateVaultKeyName(key);
-    validateValue(value);
-    validateSetOptions(options);
-    const encryptionKey = () => ensureVaultKey({ keyFile: this.keyFile, env: this.env });
-
-    return this.database.dialect === "sqlite"
-      ? setSqlite(this.database.db, normalizedKey, value, options, encryptionKey)
-      : await setPostgres(this.database.db, normalizedKey, value, options, encryptionKey);
+    const prepared = prepareVaultValueSet(key, value, options, {
+      root: this.root,
+      keyFile: this.keyFile,
+      env: this.env,
+    });
+    if (this.database.dialect === "sqlite") {
+      return this.database.db.transaction(
+        (transaction) => setPreparedVaultValueSqlite(transaction, prepared),
+        { behavior: "immediate" },
+      );
+    }
+    return await this.database.db.transaction(
+      async (transaction) => await setPreparedVaultValuePostgres(transaction, prepared),
+    );
   }
 
   async getStatus(key: string): Promise<VaultValueRecordStatus> {
@@ -275,12 +331,12 @@ export class VaultValueStore implements VaultValueRepository {
   }
 }
 
-type SqliteVaultValueDatabase =
-  | SqliteHostDatabase
-  | Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0];
-type PostgresVaultValueDatabase =
-  | PostgresHostDatabase
-  | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
+type SqliteVaultValueTransaction = Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0];
+type SqliteVaultValueDatabase = SqliteHostDatabase | SqliteVaultValueTransaction;
+type PostgresVaultValueTransaction = Parameters<
+  Parameters<PostgresHostDatabase["transaction"]>[0]
+>[0];
+type PostgresVaultValueDatabase = PostgresHostDatabase | PostgresVaultValueTransaction;
 function importLegacyValuesSqlite(
   database: SqliteVaultValueDatabase,
   values: LegacyVaultValueMigrationRecord[],
@@ -458,92 +514,88 @@ function legacyValueRow(value: LegacyVaultValueMigrationRecord, key: Buffer) {
   return rowValues(value.key, 1, encrypted);
 }
 
-function setSqlite(
-  db: SqliteHostDatabase,
-  key: string,
-  value: string,
-  options: VaultValueSetOptions,
-  encryptionKey: () => Buffer,
+export function setPreparedVaultValueSqlite(
+  db: SqliteVaultValueTransaction,
+  prepared: PreparedVaultValueSet,
 ): PresentVaultValueStatus {
-  return db.transaction((transaction) => {
-    const current = transaction
-      .select()
-      .from(sqlite.vaultValues)
-      .where(eq(sqlite.vaultValues.vaultKey, key))
-      .get();
-    const existing = current ? encryptedRecordForRow(current, key) : undefined;
-    if (existing && !options.force) {
-      throw new CapletsError("CONFIG_EXISTS", `Vault key ${key} already exists.`);
-    }
-    assertExpectedGeneration(current?.generation, options.expectedGeneration);
-    const encrypted = encryptVaultValue({
-      plaintext: value,
-      key: encryptionKey(),
-      now: options.now ?? new Date(),
-      ...(existing ? { existing } : {}),
-    });
-    const generation = (current?.generation ?? 0) + 1;
-    transaction
-      .insert(sqlite.vaultValues)
-      .values(rowValues(key, generation, encrypted))
-      .onConflictDoUpdate({
-        target: sqlite.vaultValues.vaultKey,
-        set: rowValues(key, generation, encrypted),
-      })
+  const current = db
+    .select()
+    .from(sqlite.vaultValues)
+    .where(eq(sqlite.vaultValues.vaultKey, prepared.key))
+    .get();
+  const existing = current ? encryptedRecordForRow(current, prepared.key) : undefined;
+  if (existing && !prepared.force) {
+    throw new CapletsError("CONFIG_EXISTS", `Vault key ${prepared.key} already exists.`);
+  }
+  assertExpectedGeneration(current?.generation, prepared.expectedGeneration);
+  const mutationCreatedAt = mutationTimestamp(new Date().toISOString(), existing);
+  const encrypted = encryptPreparedVaultValue(prepared, mutationCreatedAt, existing);
+  const generation = (current?.generation ?? 0) + 1;
+  db.insert(sqlite.vaultValues)
+    .values(rowValues(prepared.key, generation, encrypted))
+    .onConflictDoUpdate({
+      target: sqlite.vaultValues.vaultKey,
+      set: rowValues(prepared.key, generation, encrypted),
+    })
+    .run();
+  if (prepared.operatorClientId) {
+    db.insert(sqlite.operatorActivity)
+      .values(
+        activity(
+          prepared.operatorClientId,
+          "vault_value_written",
+          prepared.key,
+          generation,
+          mutationCreatedAt,
+        ),
+      )
       .run();
-    if (options.operatorClientId) {
-      transaction
-        .insert(sqlite.operatorActivity)
-        .values(activity(options.operatorClientId, "vault_value_written", key, generation))
-        .run();
-    }
-    return statusForEncryptedRecord(key, generation, encrypted);
-  });
+  }
+  return statusForEncryptedRecord(prepared.key, generation, encrypted);
 }
 
-async function setPostgres(
-  db: PostgresHostDatabase,
-  key: string,
-  value: string,
-  options: VaultValueSetOptions,
-  encryptionKey: () => Buffer,
+export async function setPreparedVaultValuePostgres(
+  db: PostgresVaultValueTransaction,
+  prepared: PreparedVaultValueSet,
 ): Promise<PresentVaultValueStatus> {
-  return await db.transaction(async (transaction) => {
-    await transaction.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["vault-value", key])}, 0))`,
-    );
-    const [current] = await transaction
-      .select()
-      .from(postgres.vaultValues)
-      .where(eq(postgres.vaultValues.vaultKey, key))
-      .for("update")
-      .limit(1);
-    const existing = current ? encryptedRecordForRow(current, key) : undefined;
-    if (existing && !options.force) {
-      throw new CapletsError("CONFIG_EXISTS", `Vault key ${key} already exists.`);
-    }
-    assertExpectedGeneration(current?.generation, options.expectedGeneration);
-    const encrypted = encryptVaultValue({
-      plaintext: value,
-      key: encryptionKey(),
-      now: options.now ?? new Date(),
-      ...(existing ? { existing } : {}),
+  await db.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["vault-value", prepared.key])}, 0))`,
+  );
+  const [current] = await db
+    .select()
+    .from(postgres.vaultValues)
+    .where(eq(postgres.vaultValues.vaultKey, prepared.key))
+    .for("update")
+    .limit(1);
+  const existing = current ? encryptedRecordForRow(current, prepared.key) : undefined;
+  if (existing && !prepared.force) {
+    throw new CapletsError("CONFIG_EXISTS", `Vault key ${prepared.key} already exists.`);
+  }
+  assertExpectedGeneration(current?.generation, prepared.expectedGeneration);
+  const mutationCreatedAt = await postgresMutationTimestamp(db, existing);
+  const encrypted = encryptPreparedVaultValue(prepared, mutationCreatedAt, existing);
+  const generation = (current?.generation ?? 0) + 1;
+  await db
+    .insert(postgres.vaultValues)
+    .values(rowValues(prepared.key, generation, encrypted))
+    .onConflictDoUpdate({
+      target: postgres.vaultValues.vaultKey,
+      set: rowValues(prepared.key, generation, encrypted),
     });
-    const generation = (current?.generation ?? 0) + 1;
-    await transaction
-      .insert(postgres.vaultValues)
-      .values(rowValues(key, generation, encrypted))
-      .onConflictDoUpdate({
-        target: postgres.vaultValues.vaultKey,
-        set: rowValues(key, generation, encrypted),
-      });
-    if (options.operatorClientId) {
-      await transaction
-        .insert(postgres.operatorActivity)
-        .values(activity(options.operatorClientId, "vault_value_written", key, generation));
-    }
-    return statusForEncryptedRecord(key, generation, encrypted);
-  });
+  if (prepared.operatorClientId) {
+    await db
+      .insert(postgres.operatorActivity)
+      .values(
+        activity(
+          prepared.operatorClientId,
+          "vault_value_written",
+          prepared.key,
+          generation,
+          mutationCreatedAt,
+        ),
+      );
+  }
+  return statusForEncryptedRecord(prepared.key, generation, encrypted);
 }
 
 function deleteSqlite(
@@ -690,11 +742,48 @@ function rowValues(key: string, generation: number, record: VaultEncryptedRecord
   };
 }
 
+function encryptPreparedVaultValue(
+  prepared: PreparedVaultValueSet,
+  mutationCreatedAt: string,
+  existing: VaultEncryptedRecord | undefined,
+): VaultEncryptedRecord {
+  return encryptVaultValue({
+    plaintext: prepared.plaintext,
+    key: prepared.encryptionKey,
+    now: new Date(mutationCreatedAt),
+    ...(existing ? { existing } : {}),
+  });
+}
+
+function mutationTimestamp(
+  authorityTimestamp: string,
+  existing: VaultEncryptedRecord | undefined,
+): string {
+  return existing && authorityTimestamp < existing.updatedAt
+    ? existing.updatedAt
+    : authorityTimestamp;
+}
+
+async function postgresMutationTimestamp(
+  db: PostgresVaultValueTransaction,
+  existing: VaultEncryptedRecord | undefined,
+): Promise<string> {
+  const result = await db.execute<{ timestamp: string }>(
+    sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "timestamp"`,
+  );
+  const timestamp = result.rows[0]?.timestamp;
+  if (!timestamp) {
+    throw new CapletsError("INTERNAL_ERROR", "Vault mutation clock query failed.");
+  }
+  return mutationTimestamp(timestamp, existing);
+}
+
 function activity(
   operatorClientId: string,
   action: "vault_value_written" | "vault_value_deleted",
   key: string,
   generation: number,
+  createdAt = new Date().toISOString(),
 ) {
   return {
     activityKey: randomUUID(),
@@ -704,7 +793,7 @@ function activity(
     targetKey: key,
     outcome: "succeeded",
     metadata: { generation },
-    createdAt: new Date().toISOString(),
+    createdAt,
   };
 }
 
@@ -724,12 +813,6 @@ function validateSetOptions(options: VaultValueSetOptions): void {
   validateDeleteOptions(options);
   if (options.force !== undefined && typeof options.force !== "boolean") {
     throw new CapletsError("REQUEST_INVALID", "Vault force must be a boolean when provided.");
-  }
-  if (
-    options.now !== undefined &&
-    (!(options.now instanceof Date) || !Number.isFinite(options.now.getTime()))
-  ) {
-    throw new CapletsError("REQUEST_INVALID", "Vault mutation time must be a valid date.");
   }
 }
 

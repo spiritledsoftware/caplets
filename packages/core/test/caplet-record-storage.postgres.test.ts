@@ -4,6 +4,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createHostStorage, migrateHostStorage } from "../src/storage";
 
 const connectionString = process.env.CAPLETS_TEST_POSTGRES_URL;
+if (process.env.CAPLETS_REQUIRE_TEST_POSTGRES === "1" && !connectionString) {
+  throw new Error("CAPLETS_TEST_POSTGRES_URL is required when CAPLETS_REQUIRE_TEST_POSTGRES=1.");
+}
 const schemas: string[] = [];
 const postgresIt = connectionString ? it : it.skip;
 

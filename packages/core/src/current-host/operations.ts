@@ -10,6 +10,7 @@ import type { RemoteServerCredentialStore } from "../remote/server-credential-st
 import type { VaultGrantStore } from "../storage/vault-grants";
 import type { OperatorActivityEntry } from "../storage/operator-activity";
 import type { VaultValueRepository } from "../storage/vault-values";
+import type { VaultStateStore } from "../storage/vault-state";
 import type { RemoteSecurityStore } from "../storage/remote-security";
 import type { CapletRecordStore, CapletRecordView } from "../storage/caplet-records";
 import type { HostStorage } from "../storage/database";
@@ -419,6 +420,7 @@ export type CurrentHostOperationsDependencies = {
   catalogStorage?: HostStorage | undefined;
   vaultGrants?: VaultGrantStore | undefined;
   vaultValues?: VaultValueRepository | undefined;
+  vaultState?: VaultStateStore | undefined;
   version: string;
 };
 

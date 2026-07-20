@@ -11,9 +11,13 @@ import {
   type HostStorage,
   type PostgresHostStorageConfig,
 } from "../src/storage";
+import { VaultStateStore } from "../src/storage/vault-state";
 import type { SetupAttempt } from "../src/setup/types";
 
 const connectionString = process.env.CAPLETS_TEST_POSTGRES_URL;
+if (process.env.CAPLETS_REQUIRE_TEST_POSTGRES === "1" && !connectionString) {
+  throw new Error("CAPLETS_TEST_POSTGRES_URL is required when CAPLETS_REQUIRE_TEST_POSTGRES=1.");
+}
 const postgresIt = connectionString ? it : it.skip;
 const schemas = new Set<string>();
 const storages = new Set<HostStorage>();
@@ -251,6 +255,151 @@ postgresIt(
     expect(activityPayload).not.toContain(originPath);
   },
 );
+
+postgresIt(
+  "rolls back and commits Vault value-and-grant mutations atomically on PostgreSQL",
+  async () => {
+    process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 31).toString("base64url");
+    const { first, second } = await openPair("vault_state_atomic");
+    const firstState = new VaultStateStore(first.database);
+    const secondState = new VaultStateStore(second.database);
+
+    await first.vaultValues.set("ATOMIC_SECRET", "original-postgres-secret", {
+      expectedGeneration: 0,
+    });
+    await expect(
+      firstState.setValueAndGrant({
+        key: "ATOMIC_SECRET",
+        value: "rolled-back-postgres-secret",
+        force: true,
+        grant: {
+          capletId: "missing-record",
+          vaultKey: "ATOMIC_SECRET",
+          referenceName: "TOKEN",
+          originKind: "stored-record",
+          operator,
+        },
+        operatorClientId: operator.clientId,
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+
+    await expect(second.vaultValues.resolveValue("ATOMIC_SECRET")).resolves.toBe(
+      "original-postgres-secret",
+    );
+    await expect(second.vaultValues.getStatus("ATOMIC_SECRET")).resolves.toMatchObject({
+      present: true,
+      generation: 1,
+    });
+    await expect(second.vaultGrants.list()).resolves.toEqual([]);
+    await expect(second.operatorActivity.list()).resolves.toEqual({ entries: [] });
+
+    const committed = await secondState.setValueAndGrant({
+      key: "ATOMIC_SECRET",
+      value: "committed-postgres-secret",
+      force: true,
+      grant: {
+        capletId: "postgres-atomic-caplet",
+        vaultKey: "ATOMIC_SECRET",
+        referenceName: "TOKEN",
+        originKind: "project-file",
+        originPath: "/project/.caplets/postgres-atomic-caplet.md",
+        operator,
+      },
+      operatorClientId: operator.clientId,
+    });
+    expect(committed).toMatchObject({ present: true, generation: 2 });
+    await expect(first.vaultValues.resolveValue("ATOMIC_SECRET")).resolves.toBe(
+      "committed-postgres-secret",
+    );
+    await expect(first.vaultGrants.list()).resolves.toEqual([
+      expect.objectContaining({
+        capletId: "postgres-atomic-caplet",
+        vaultKey: "ATOMIC_SECRET",
+        referenceName: "TOKEN",
+        createdAt: committed.updatedAt,
+      }),
+    ]);
+    const activity = (await first.operatorActivity.list()).entries;
+    expect(activity.map((entry) => entry.action).sort()).toEqual([
+      "vault.grant",
+      "vault_value_written",
+    ]);
+    expect(new Set(activity.map((entry) => entry.createdAt))).toEqual(
+      new Set([committed.updatedAt]),
+    );
+  },
+);
+
+postgresIt("serializes competing atomic Vault writers across PostgreSQL instances", async () => {
+  process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 37).toString("base64url");
+  const { first, second } = await openPair("vault_state_race");
+  const states = [new VaultStateStore(first.database), new VaultStateStore(second.database)];
+  const inputs = [
+    {
+      key: "POSTGRES_RACE_SECRET",
+      value: "first-postgres-race-secret",
+      force: false,
+      grant: {
+        capletId: "first-postgres-race-caplet",
+        vaultKey: "POSTGRES_RACE_SECRET",
+        referenceName: "TOKEN",
+        originKind: "project-file" as const,
+        originPath: "/project/.caplets/first-postgres-race-caplet.md",
+        operator,
+      },
+      operatorClientId: operator.clientId,
+    },
+    {
+      key: "POSTGRES_RACE_SECRET",
+      value: "second-postgres-race-secret",
+      force: false,
+      grant: {
+        capletId: "second-postgres-race-caplet",
+        vaultKey: "POSTGRES_RACE_SECRET",
+        referenceName: "TOKEN",
+        originKind: "project-file" as const,
+        originPath: "/project/.caplets/second-postgres-race-caplet.md",
+        operator,
+      },
+      operatorClientId: operator.clientId,
+    },
+  ] as const;
+
+  const results = await Promise.allSettled(
+    states.map((state, index) => state.setValueAndGrant(inputs[index]!)),
+  );
+  const winnerIndex = results.findIndex((result) => result.status === "fulfilled");
+  expect(winnerIndex).toBeGreaterThanOrEqual(0);
+  if (winnerIndex < 0) {
+    throw new Error("Expected one successful PostgreSQL Vault writer");
+  }
+  const winner = results[winnerIndex];
+  if (!winner || winner.status !== "fulfilled") {
+    throw new Error("Expected a fulfilled PostgreSQL Vault writer result");
+  }
+  expect(winner.value.generation).toBe(1);
+  const loser = results[1 - winnerIndex];
+  expect(loser?.status).toBe("rejected");
+  if (!loser || loser.status !== "rejected") {
+    throw new Error("Expected one rejected PostgreSQL Vault writer");
+  }
+  expect(loser.reason).toMatchObject({ code: "CONFIG_EXISTS" });
+
+  await expect(first.vaultValues.resolveValue("POSTGRES_RACE_SECRET")).resolves.toBe(
+    inputs[winnerIndex]!.value,
+  );
+  await expect(second.vaultGrants.list()).resolves.toEqual([
+    expect.objectContaining({
+      capletId: inputs[winnerIndex]!.grant.capletId,
+      vaultKey: "POSTGRES_RACE_SECRET",
+    }),
+  ]);
+  const activity = (await second.operatorActivity.list()).entries;
+  expect(activity.map((entry) => entry.action).sort()).toEqual([
+    "vault.grant",
+    "vault_value_written",
+  ]);
+});
 
 postgresIt(
   "creates, validates, expires, and deletes dashboard sessions across PostgreSQL instances",

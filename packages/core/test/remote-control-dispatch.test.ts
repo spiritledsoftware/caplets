@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TemporarilyUnavailableError } from "@modelcontextprotocol/sdk/server/auth/errors";
 
 const mockMcpAuth = vi.hoisted(() => vi.fn());
 
@@ -10,11 +11,18 @@ vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
   auth: mockMcpAuth,
 }));
 
-import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
-import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
+import { FileOAuthProvider } from "../src/auth";
+
+import {
+  dispatchRemoteCliRequest,
+  LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES,
+  maximumBase64EncodedBytes,
+  remoteBundleSerializedMetadataBytes,
+} from "../src/remote-control/dispatch";
 import { createCurrentHostOperations } from "../src/current-host/operations";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { createHostStorage, type HostStorage } from "../src/storage";
+import { MAX_BUNDLE_FILES, MAX_BUNDLE_TOTAL_BYTES } from "../src/storage/caplet-records";
 
 const dirs: string[] = [];
 const storages: HostStorage[] = [];
@@ -29,6 +37,80 @@ afterEach(async () => {
 });
 
 describe("dispatchRemoteCliRequest", () => {
+  it("derives padded payload and escaped metadata sizes without materializing a maximum bundle", () => {
+    expect(maximumBase64EncodedBytes(4, 4)).toBe(16);
+    expect(maximumBase64EncodedBytes(4, 1)).toBe(8);
+    expect(maximumBase64EncodedBytes(MAX_BUNDLE_TOTAL_BYTES, MAX_BUNDLE_FILES + 1)).toBeGreaterThan(
+      Math.ceil(MAX_BUNDLE_TOTAL_BYTES / 3) * 4,
+    );
+    const args = { id: "padding", files: [] };
+    const plain = [{ path: "x", executable: false }];
+    const escaped = [{ path: '"', executable: false }];
+    expect(remoteBundleSerializedMetadataBytes("storage_records_import", args, escaped)).toBe(
+      remoteBundleSerializedMetadataBytes("storage_records_import", args, plain) + 1,
+    );
+  });
+
+  it("accepts the serialized bundle metadata boundary and rejects one excess byte", async () => {
+    const context = testContext();
+    const importBundle = vi.fn(async () => ({ id: "metadata-boundary" }));
+    const administration = {
+      ...currentHostAdministration(context),
+      storage: { caplets: { importBundle } } as unknown as HostStorage,
+    };
+    const command = "storage_records_import";
+    const id = "metadata-boundary";
+    const fixedFiles = [
+      { path: "CAPLET.md", contentBase64: "", executable: false },
+      { path: "x", contentBase64: "", executable: false },
+    ];
+    const fixedArguments = { id, files: fixedFiles };
+    const fixedBytes = remoteBundleSerializedMetadataBytes(command, fixedArguments, fixedFiles);
+    const boundaryPath = "x".repeat(LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES - fixedBytes + 1);
+    const boundaryFiles = [
+      fixedFiles[0]!,
+      { path: boundaryPath, contentBase64: "", executable: false },
+    ];
+    const boundaryArguments = { id, files: boundaryFiles };
+    expect(remoteBundleSerializedMetadataBytes(command, boundaryArguments, boundaryFiles)).toBe(
+      LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES,
+    );
+
+    await expect(
+      dispatchRemoteCliRequest(
+        {
+          command,
+          arguments: boundaryArguments,
+        },
+        context,
+        administration,
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      dispatchRemoteCliRequest(
+        {
+          command,
+          arguments: {
+            id,
+            files: [
+              fixedFiles[0]!,
+              { path: `${boundaryPath}x`, contentBase64: "", executable: false },
+            ],
+          },
+        },
+        context,
+        administration,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Remote Caplet bundle metadata exceeds the byte limit.",
+      },
+    });
+    expect(importBundle).toHaveBeenCalledTimes(1);
+  });
+
   it("lists Caplets from the server-side config", async () => {
     const context = testContext();
 
@@ -699,9 +781,8 @@ describe("dispatchRemoteCliRequest", () => {
     await expect(storage.backendAuth.readTokenBundle("remote")).resolves.toBeUndefined();
   });
 
-  it("resolves Google Discovery scopes before starting remote OAuth login", async () => {
+  it("persists generic OAuth state before returning the authorization URL", async () => {
     const context = testContext();
-    const authFlowStore = new RemoteAuthFlowStore();
     const authDir = join(context.tempRoot, "auth");
     mkdirSync(authDir, { recursive: true });
     const discoveryPath = join(context.tempRoot, "drive.discovery.json");
@@ -752,9 +833,7 @@ describe("dispatchRemoteCliRequest", () => {
       ...context,
       authDir,
       hostStorage: storage,
-      backendAuthStore: storage.backendAuth,
       controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-      authFlowStore,
     };
 
     const response = await dispatchRemoteCliRequest(
@@ -771,6 +850,13 @@ describe("dispatchRemoteCliRequest", () => {
     expect(authorizationUrl.searchParams.get("scope")).toBe(
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     );
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
+      `http://127.0.0.1:5387/control/auth/callback/${result?.flowId}`,
+    );
+    await expect(storage.backendAuthFlows.get(result?.flowId ?? "")).resolves.toMatchObject({
+      server: "drive",
+      status: "pending",
+    });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         access_token: "drive-access-token",
@@ -779,17 +865,21 @@ describe("dispatchRemoteCliRequest", () => {
       }),
     );
 
-    await dispatchRemoteCliRequest(
+    const completed = await dispatchRemoteCliRequest(
       {
         command: "auth_login_complete",
         arguments: {
           flowId: result?.flowId,
-          callbackUrl: `http://127.0.0.1/callback?code=code&state=${authorizationUrl.searchParams.get("state")}`,
+          callbackUrl: oauthCallbackUrl(authorizationUrl),
         },
       },
       dispatchContext,
     );
 
+    expect(completed).toEqual({
+      ok: true,
+      result: { server: "drive", authenticated: true },
+    });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://oauth2.googleapis.com/token",
       expect.objectContaining({
@@ -797,6 +887,9 @@ describe("dispatchRemoteCliRequest", () => {
         body: expect.stringContaining("code=code"),
       }),
     );
+    await expect(storage.backendAuthFlows.get(result?.flowId ?? "")).resolves.toMatchObject({
+      status: "completed",
+    });
     await expect(storage.backendAuth.readTokenBundle("drive")).resolves.toMatchObject({
       bundle: {
         protectedResourceOrigin: "https://www.googleapis.com",
@@ -808,18 +901,15 @@ describe("dispatchRemoteCliRequest", () => {
     });
   });
 
-  it("does not create a pending auth flow when MCP auth is already authorized", async () => {
+  it("does not persist a pending auth flow when MCP auth is already authorized", async () => {
     const fixture = remoteFixtureWithOAuth();
-    const authFlowStore = new RemoteAuthFlowStore();
     const storage = await configuredTestStorage(fixture.context);
     const dispatchContext = {
       ...fixture.context,
       hostStorage: storage,
-      backendAuthStore: storage.backendAuth,
       controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-      authFlowStore,
     };
-    const create = vi.spyOn(authFlowStore, "create");
+    const create = vi.spyOn(storage.backendAuthFlows, "create");
     mockMcpAuth.mockResolvedValueOnce("AUTHORIZED");
 
     const response = await dispatchRemoteCliRequest(
@@ -831,47 +921,513 @@ describe("dispatchRemoteCliRequest", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("expires stale remote auth flows", () => {
-    let now = 1_000;
-    const authFlowStore = new RemoteAuthFlowStore({ ttlMs: 100, now: () => now });
-    const flow = authFlowStore.create({
-      server: "remote",
-      authorizationUrl: "https://auth.example/authorize",
-      complete: async () => {},
-    });
+  it("completes once across nodes sharing Host Storage and rejects replay", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const firstStorage = await configuredTestStorage(fixture.context);
+    const secondStorage = await configuredTestStorage(fixture.context);
+    const startContext = remoteOAuthDispatchContext(fixture.context, firstStorage);
+    const callbackContext = remoteOAuthDispatchContext(fixture.context, secondStorage);
+    const started = await startRemoteOAuth(startContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(oauthTokenResponse());
 
-    expect(authFlowStore.get(flow.id)).toEqual(flow);
-    expect(authFlowStore.get(flow.id)).not.toBe(flow);
-
-    now = 1_101;
-    expect(authFlowStore.get(flow.id)).toBeUndefined();
-  });
-
-  it("removes remote auth flows before completion to prevent concurrent replay", async () => {
-    const authFlowStore = new RemoteAuthFlowStore();
-    const flow = authFlowStore.create({
-      server: "remote",
-      authorizationUrl: "https://auth.example/authorize",
-      complete: async () => {
-        expect(authFlowStore.get(flow.id)).toBeUndefined();
-        throw new Error("callback failed");
-      },
-    });
-
-    const response = await dispatchRemoteCliRequest(
+    const completed = await dispatchRemoteCliRequest(
       {
         command: "auth_login_complete",
-        arguments: { flowId: flow.id, callbackUrl: "http://127.0.0.1/callback?code=bad" },
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
       },
-      {
-        ...testContext(),
-        authFlowStore,
-        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-      },
+      callbackContext,
     );
 
-    expect(response).toMatchObject({ ok: false });
-    expect(authFlowStore.get(flow.id)).toBeUndefined();
+    expect(completed).toEqual({
+      ok: true,
+      result: { server: "remote", authenticated: true },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(firstStorage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "completed",
+    });
+    await expect(secondStorage.backendAuth.readTokenBundle("remote")).resolves.toMatchObject({
+      bundle: { accessToken: "remote-access-token" },
+    });
+
+    const replay = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      },
+      startContext,
+    );
+    expect(replay).toMatchObject({
+      ok: false,
+      error: { code: "AUTH_FAILED", message: expect.stringContaining("already been completed") },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows only one flow started against empty credentials to complete", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const firstStorage = await configuredTestStorage(fixture.context);
+    const secondStorage = await configuredTestStorage(fixture.context);
+    const firstContext = remoteOAuthDispatchContext(fixture.context, firstStorage);
+    const secondContext = remoteOAuthDispatchContext(fixture.context, secondStorage);
+    const first = await startRemoteOAuth(firstContext);
+    const second = await startRemoteOAuth(secondContext);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => oauthTokenResponse());
+
+    const completions = await Promise.all([
+      dispatchRemoteCliRequest(
+        {
+          command: "auth_login_complete",
+          arguments: {
+            flowId: first.flowId,
+            callbackUrl: oauthCallbackUrl(new URL(first.authorizationUrl)),
+          },
+        },
+        firstContext,
+      ),
+      dispatchRemoteCliRequest(
+        {
+          command: "auth_login_complete",
+          arguments: {
+            flowId: second.flowId,
+            callbackUrl: oauthCallbackUrl(new URL(second.authorizationUrl)),
+          },
+        },
+        secondContext,
+      ),
+    ]);
+
+    expect(completions.filter((result) => result.ok)).toHaveLength(1);
+    expect(completions.filter((result) => !result.ok)).toHaveLength(1);
+    await expect(firstStorage.backendAuth.readTokenBundle("remote")).resolves.toMatchObject({
+      generation: 1,
+    });
+    const flows = await Promise.all([
+      firstStorage.backendAuthFlows.get(first.flowId),
+      secondStorage.backendAuthFlows.get(second.flowId),
+    ]);
+    expect(flows.filter((flow) => flow?.status === "completed")).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a concurrent callback as in progress without exchanging twice", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    let finishExchange!: (response: Response) => void;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        finishExchange = resolve;
+      }),
+    );
+    const first = dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      },
+      dispatchContext,
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const concurrent = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      },
+      dispatchContext,
+    );
+    expect(concurrent).toMatchObject({
+      ok: false,
+      error: { code: "AUTH_FAILED", message: expect.stringContaining("already being completed") },
+    });
+
+    finishExchange(oauthTokenResponse());
+    await expect(first).resolves.toEqual({
+      ok: true,
+      result: { server: "remote", authenticated: true },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a matching claim after an explicitly retryable pre-commit failure", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ error: "temporarily_unavailable" }, { status: 503 }))
+      .mockResolvedValueOnce(oauthTokenResponse());
+
+    const transientFailure = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      },
+      dispatchContext,
+    );
+    expect(transientFailure).toMatchObject({ ok: false, error: { code: "AUTH_FAILED" } });
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "pending",
+    });
+
+    await expect(
+      dispatchRemoteCliRequest(
+        {
+          command: "auth_login_complete",
+          arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+        },
+        dispatchContext,
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      result: { server: "remote", authenticated: true },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases an MCP claim after a retryable OAuth token error", async () => {
+    const fixture = remoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    mockMcpAuth
+      .mockImplementationOnce(async (provider: FileOAuthProvider) => {
+        provider.saveCodeVerifier("persisted-pkce-verifier");
+        provider.saveDiscoveryState({ authorizationServerUrl: "https://auth.example.com" });
+        provider.redirectToAuthorization(
+          new URL(`https://auth.example.com/authorize?state=${provider.state()}`),
+        );
+        return "REDIRECT";
+      })
+      .mockRejectedValueOnce(new TemporarilyUnavailableError("OAuth provider overloaded"))
+      .mockImplementationOnce(async (provider: FileOAuthProvider) => {
+        await provider.saveTokens({
+          access_token: "completed-access-token",
+          token_type: "Bearer",
+        });
+        return "AUTHORIZED";
+      });
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const completionRequest = {
+      command: "auth_login_complete",
+      arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+    } as const;
+
+    await expect(
+      dispatchRemoteCliRequest(completionRequest, dispatchContext),
+    ).resolves.toMatchObject({
+      ok: false,
+    });
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "pending",
+    });
+
+    await expect(dispatchRemoteCliRequest(completionRequest, dispatchContext)).resolves.toEqual({
+      ok: true,
+      result: { server: "remote", authenticated: true },
+    });
+    expect(mockMcpAuth).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails an ambiguous credential-storage outcome closed without re-exchanging", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(oauthTokenResponse());
+    vi.spyOn(storage.backendAuthFlows, "completeClaim").mockRejectedValueOnce(
+      Object.assign(new Error("connection reset before credential commit"), {
+        code: "ECONNRESET",
+      }),
+    );
+
+    const ambiguous = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      },
+      dispatchContext,
+    );
+
+    expect(ambiguous).toMatchObject({
+      ok: false,
+      error: {
+        code: "AUTH_FAILED",
+        message: expect.stringContaining("unknown completion outcome"),
+      },
+    });
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "unknown",
+    });
+    const replay = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      },
+      dispatchContext,
+    );
+    expect(replay).toMatchObject({
+      ok: false,
+      error: {
+        code: "AUTH_FAILED",
+        message: expect.stringContaining("unknown completion outcome"),
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers a correlated completion when the atomic commit acknowledgement is lost", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(oauthTokenResponse());
+    const completeClaim = storage.backendAuthFlows.completeClaim.bind(storage.backendAuthFlows);
+    vi.spyOn(storage.backendAuthFlows, "completeClaim").mockImplementationOnce(async (input) => {
+      await completeClaim(input);
+      throw Object.assign(new Error("connection reset after credential commit"), {
+        code: "ECONNRESET",
+      });
+    });
+
+    await expect(
+      dispatchRemoteCliRequest(
+        {
+          command: "auth_login_complete",
+          arguments: {
+            flowId: started.flowId,
+            callbackUrl: oauthCallbackUrl(authorizationUrl),
+          },
+        },
+        dispatchContext,
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      result: { server: "remote", authenticated: true },
+    });
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "completed",
+    });
+    await expect(storage.backendAuth.readTokenBundle("remote")).resolves.toMatchObject({
+      generation: 1,
+      bundle: { accessToken: "remote-access-token" },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminalizes state mismatch and scrubs the durable flow", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const mismatch = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: {
+          flowId: started.flowId,
+          callbackUrl: "http://127.0.0.1/callback?code=code&state=wrong-state",
+        },
+      },
+      dispatchContext,
+    );
+
+    expect(mismatch).toMatchObject({ ok: false, error: { code: "AUTH_FAILED" } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("terminalizes an OAuth provider callback error", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const state = authorizationUrl.searchParams.get("state");
+    const callbackUrl = new URL("http://127.0.0.1/callback");
+    callbackUrl.searchParams.set("error", "access_denied");
+    callbackUrl.searchParams.set("error_description", "Denied");
+    callbackUrl.searchParams.set("state", state ?? "");
+
+    const providerError = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: {
+          flowId: started.flowId,
+          callbackUrl: callbackUrl.toString(),
+        },
+      },
+      dispatchContext,
+    );
+
+    expect(providerError).toMatchObject({
+      ok: false,
+      error: {
+        code: "AUTH_FAILED",
+        message: expect.stringContaining("provider returned an error"),
+      },
+    });
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("reports an expired durable flow without exchanging", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const flow = await storage.backendAuthFlows.get(started.flowId);
+    if (!flow) throw new Error("Expected a persisted backend auth flow.");
+    await storage.backendAuthFlows.expire(started.flowId, new Date(flow.expiresAt));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const expired = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: {
+          flowId: started.flowId,
+          callbackUrl: oauthCallbackUrl(new URL(started.authorizationUrl)),
+        },
+      },
+      dispatchContext,
+    );
+
+    expect(expired).toMatchObject({
+      ok: false,
+      error: { code: "AUTH_FAILED", message: expect.stringContaining("expired") },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "expired",
+    });
+  });
+
+  it("fails closed when security-sensitive OAuth configuration drifts", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const config = JSON.parse(readFileSync(fixture.context.configPath, "utf8")) as {
+      httpApis: { remote: { auth: { tokenUrl: string } } };
+    };
+    config.httpApis.remote.auth.tokenUrl = "https://changed.example.com/token";
+    writeFileSync(fixture.context.configPath, JSON.stringify(config));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const drifted = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: {
+          flowId: started.flowId,
+          callbackUrl: oauthCallbackUrl(new URL(started.authorizationUrl)),
+        },
+      },
+      dispatchContext,
+    );
+
+    expect(drifted).toMatchObject({
+      ok: false,
+      error: {
+        code: "AUTH_FAILED",
+        message: expect.stringContaining("configuration changed"),
+        nextAction: "run_caplets_auth_login",
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("marks an abandoned uncorrelated claim unknown without re-exchanging", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    await storage.backendAuthFlows.claim({
+      flowId: started.flowId,
+      now: new Date(Date.now() - 3 * 60_000),
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const abandoned = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: {
+          flowId: started.flowId,
+          callbackUrl: oauthCallbackUrl(new URL(started.authorizationUrl)),
+        },
+      },
+      dispatchContext,
+    );
+
+    expect(abandoned).toMatchObject({
+      ok: false,
+      error: {
+        code: "AUTH_FAILED",
+        message: expect.stringContaining("unknown completion outcome"),
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "unknown",
+    });
+  });
+
+  it("reconciles an abandoned claim from a correlated credential write", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const claim = await storage.backendAuthFlows.claim({
+      flowId: started.flowId,
+      now: new Date(Date.now() - 3 * 60_000),
+    });
+    if (!claim.acquired) throw new Error("Expected to acquire the backend auth flow.");
+    await storage.backendAuth.writeTokenBundle({
+      server: "remote",
+      accessToken: "committed-access-token",
+      metadata: {
+        backendAuthFlow: {
+          flowId: started.flowId,
+          completionCorrelation: claim.completionCorrelation,
+        },
+      },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const reconciled = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: {
+          flowId: started.flowId,
+          callbackUrl: oauthCallbackUrl(new URL(started.authorizationUrl)),
+        },
+      },
+      dispatchContext,
+    );
+
+    expect(reconciled).toEqual({
+      ok: true,
+      result: { server: "remote", authenticated: true },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "completed",
+    });
   });
   it("rejects a forged Access principal for stored record administration", async () => {
     const context = testContext();
@@ -1181,10 +1737,10 @@ type DispatchAdministrationContext = {
   tempRoot: string;
   configPath: string;
   projectConfigPath: string;
-  authDir?: string | undefined;
-  globalCapletsRoot?: string | undefined;
-  globalLockfilePath?: string | undefined;
-  storage?: HostStorage | undefined;
+  authDir?: string;
+  globalCapletsRoot?: string;
+  globalLockfilePath?: string;
+  storage?: HostStorage;
 };
 
 function currentHostAdministration(context: DispatchAdministrationContext) {
@@ -1194,8 +1750,10 @@ function currentHostAdministration(context: DispatchAdministrationContext) {
       control: {
         configPath: context.configPath,
         projectConfigPath: context.projectConfigPath,
-        authDir: context.authDir,
-        globalCapletsRoot: context.globalCapletsRoot,
+        ...(context.authDir !== undefined ? { authDir: context.authDir } : {}),
+        ...(context.globalCapletsRoot !== undefined
+          ? { globalCapletsRoot: context.globalCapletsRoot }
+          : {}),
         globalLockfilePath:
           context.globalLockfilePath ?? join(context.tempRoot, "remote-state", "caplets.lock.json"),
       },
@@ -1232,6 +1790,103 @@ async function configuredTestStorage(context: DispatchAdministrationContext): Pr
   );
   storages.push(storage);
   return storage;
+}
+
+function remoteOAuthDispatchContext(
+  context: DispatchAdministrationContext & {
+    projectCapletsRoot: string;
+    watch: boolean;
+  },
+  storage: HostStorage,
+): Parameters<typeof dispatchRemoteCliRequest>[1] {
+  return {
+    configPath: context.configPath,
+    projectConfigPath: context.projectConfigPath,
+    projectCapletsRoot: context.projectCapletsRoot,
+    watch: context.watch,
+    ...(context.authDir !== undefined ? { authDir: context.authDir } : {}),
+    ...(context.globalCapletsRoot !== undefined
+      ? { globalCapletsRoot: context.globalCapletsRoot }
+      : {}),
+    ...(context.globalLockfilePath !== undefined
+      ? { globalLockfilePath: context.globalLockfilePath }
+      : {}),
+    hostStorage: storage,
+    controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+  };
+}
+
+async function startRemoteOAuth(
+  context: Parameters<typeof dispatchRemoteCliRequest>[1],
+): Promise<{ flowId: string; authorizationUrl: string }> {
+  const response = await dispatchRemoteCliRequest(
+    { command: "auth_login_start", arguments: { server: "remote" } },
+    context,
+  );
+  if (!response.ok) {
+    throw new Error(`Could not start remote OAuth: ${response.error.message}`);
+  }
+  return response.result as { flowId: string; authorizationUrl: string };
+}
+
+function oauthCallbackUrl(authorizationUrl: URL): string {
+  const callbackUrl = new URL("http://127.0.0.1/callback");
+  callbackUrl.searchParams.set("code", "code");
+  callbackUrl.searchParams.set("state", authorizationUrl.searchParams.get("state") ?? "");
+  return callbackUrl.toString();
+}
+
+function oauthTokenResponse(): Response {
+  return Response.json({
+    access_token: "remote-access-token",
+    refresh_token: "remote-refresh-token",
+    token_type: "Bearer",
+    expires_in: 3600,
+  });
+}
+
+function genericRemoteFixtureWithOAuth() {
+  const dir = mkdtempSync(join(tmpdir(), "caplets-dispatch-generic-auth-"));
+  dirs.push(dir);
+  const userRoot = join(dir, "user");
+  const projectRoot = join(dir, "project", ".caplets");
+  const authDir = join(dir, "auth");
+  mkdirSync(userRoot, { recursive: true });
+  mkdirSync(projectRoot, { recursive: true });
+  mkdirSync(authDir, { recursive: true });
+  const configPath = join(userRoot, "config.json");
+  const projectConfigPath = join(projectRoot, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      httpApis: {
+        remote: {
+          name: "Remote",
+          description: "Remote generic OAuth server.",
+          baseUrl: "https://api.example.com",
+          auth: {
+            type: "oauth2",
+            clientId: "client",
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+          },
+          actions: {
+            status: { method: "GET", path: "/status" },
+          },
+        },
+      },
+    }),
+  );
+  return {
+    context: {
+      tempRoot: dir,
+      configPath,
+      projectConfigPath,
+      projectCapletsRoot: projectRoot,
+      authDir,
+      watch: false,
+    },
+  };
 }
 
 function remoteFixtureWithOAuth() {

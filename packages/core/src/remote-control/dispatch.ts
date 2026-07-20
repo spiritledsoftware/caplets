@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   addCliCaplet,
   addGoogleDiscoveryCaplet,
@@ -20,8 +19,7 @@ import { listCaplets } from "./../cli/inspection";
 import { loadConfigWithSources, vaultBootstrapResolver, vaultResolverForAuthDir } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
-import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
-import type { RemoteAuthFlowStore } from "./auth-flow";
+import { RemoteAuthFlowCoordinator } from "./auth-flow";
 import {
   toCurrentHostSafeError,
   type CurrentHostOperatorPrincipal,
@@ -30,14 +28,20 @@ import {
 import type { RemoteCapletBundleFile, RemoteCliRequest, RemoteCliResponse } from "./types";
 import type { BackendAuthStateStore } from "../storage/backend-auth";
 import type { HostStorage } from "../storage/database";
+import type { BackendAuthFlowRepository } from "../storage/backend-auth-flows";
 import { createHostStorageVaultResolver } from "../storage/vault-resolver";
-import type { CapletBundleInputFile } from "../storage/caplet-records";
+import {
+  MAX_BUNDLE_FILES,
+  MAX_BUNDLE_FILE_BYTES,
+  MAX_BUNDLE_TOTAL_BYTES,
+  type CapletBundleInputFile,
+} from "../storage/caplet-records";
 
 export type RemoteControlDispatchContext = CapletsEngineOptions & {
   projectCapletsRoot: string;
   globalCapletsRoot?: string | undefined;
   globalLockfilePath?: string | undefined;
-  authFlowStore?: RemoteAuthFlowStore;
+  backendAuthFlows?: BackendAuthFlowRepository;
   controlCallbackBaseUrl?: string;
   backendAuthStore?: BackendAuthStateStore;
 };
@@ -69,10 +73,63 @@ const ENGINE_COMMANDS = new Set<RemoteCliRequest["command"]>([
 ]);
 
 const STORAGE_RECORD_COMMAND_PREFIX = "storage_records_";
-const MAX_REMOTE_BUNDLE_FILES = 2_049;
-const MAX_REMOTE_BUNDLE_FILE_BYTES = 64 * 1024 * 1024;
-const MAX_REMOTE_BUNDLE_TOTAL_BYTES = 256 * 1024 * 1024;
+const MAX_REMOTE_BUNDLE_FILES = MAX_BUNDLE_FILES + 1;
+// This is the authoritative UTF-8 size of the canonical import/update envelope after base64
+// payloads are replaced with empty strings. decodeBundleFiles enforces it before each decode.
+export const LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES = 16 * 1024 * 1024;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
+type RemoteBundleMetadataFile = Pick<RemoteCapletBundleFile, "path" | "executable">;
+
+// Splitting bytes across files can add one padded quartet per populated file. This returns
+// the exact maximum for a total byte count distributed across at most fileCount files.
+export function maximumBase64EncodedBytes(totalBytes: number, fileCount: number): number {
+  if (
+    !Number.isSafeInteger(totalBytes) ||
+    totalBytes < 0 ||
+    !Number.isSafeInteger(fileCount) ||
+    fileCount < 0 ||
+    (totalBytes > 0 && fileCount === 0)
+  ) {
+    throw new RangeError("totalBytes and fileCount must describe a bounded file set.");
+  }
+  const populatedFiles = Math.min(totalBytes, fileCount);
+  const encodedBytes = 4 * (populatedFiles + Math.floor((totalBytes - populatedFiles) / 3));
+  if (!Number.isSafeInteger(encodedBytes)) {
+    throw new RangeError("The encoded bundle size exceeds the safe integer range.");
+  }
+  return encodedBytes;
+}
+
+const MAX_REMOTE_BUNDLE_FILE_BASE64_BYTES = maximumBase64EncodedBytes(MAX_BUNDLE_FILE_BYTES, 1);
+
+export function remoteBundleSerializedMetadataBytes(
+  command: string,
+  args: Readonly<Record<string, unknown>>,
+  files: readonly RemoteBundleMetadataFile[],
+): number {
+  const serialized = JSON.stringify({
+    command,
+    arguments: {
+      ...args,
+      files: files.map((file) => ({
+        path: file.path,
+        contentBase64: "",
+        executable: file.executable,
+      })),
+    },
+  });
+  return Buffer.byteLength(serialized);
+}
+
+function remoteBundleFileSerializedMetadataBytes(file: RemoteBundleMetadataFile): number {
+  const serialized = JSON.stringify({
+    path: file.path,
+    contentBase64: "",
+    executable: file.executable,
+  });
+  return Buffer.byteLength(serialized);
+}
 
 type CurrentHostRemoteAdministration = {
   operations: CurrentHostOperations;
@@ -406,7 +463,7 @@ async function dispatchCurrentHostStorage(
             };
       const record = await storage.caplets.importBundle({
         id: requiredString(args, "id"),
-        files: decodeBundleFiles(args.files),
+        files: decodeBundleFiles(request),
         operator,
         ...optionalProp("historyLimit", optionalNonNegativeInteger(args, "historyLimit")),
         ...(installation ? { installation } : {}),
@@ -418,7 +475,7 @@ async function dispatchCurrentHostStorage(
       assertOnlyKeys(args, ["id", "files", "expectedGeneration", "detachInstallation"]);
       const record = await storage.caplets.updateBundle({
         id: requiredString(args, "id"),
-        files: decodeBundleFiles(args.files),
+        files: decodeBundleFiles(request),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
         operator,
         ...optionalProp("detachInstallation", optionalBoolean(args, "detachInstallation")),
@@ -564,47 +621,13 @@ function requireBackendAuthStore(context: RemoteControlDispatchContext) {
 }
 
 async function startRemoteAuthLogin(serverId: string, context: RemoteControlDispatchContext) {
-  if (!context.authFlowStore || !context.controlCallbackBaseUrl) {
+  if (!context.controlCallbackBaseUrl) {
     throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
   }
-  const vaultResolver = context.hostStorage
-    ? await createHostStorageVaultResolver(context.hostStorage)
-    : vaultResolverForAuthDir(context.authDir);
-  const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
-    vaultResolver,
-  }).config;
-  const authStore = requireBackendAuthStore(context);
-  const target = await resolveAuthTarget(serverId, config, authStore);
-  assertLoginTarget(target, serverId);
-  const flowId = randomUUID();
-  const baseUrl = context.controlCallbackBaseUrl.endsWith("/")
-    ? context.controlCallbackBaseUrl
-    : `${context.controlCallbackBaseUrl}/`;
-  const redirectUri = new URL(`auth/callback/${flowId}`, baseUrl).toString();
-  const started =
-    target.backend === "mcp"
-      ? await startOAuthFlow(target, {
-          redirectUri,
-          authStore,
-          operatorClientId: "remote_cli",
-        })
-      : await startGenericOAuthFlow(target, {
-          redirectUri,
-          authStore,
-          operatorClientId: "remote_cli",
-        });
-  if (!started.authorizationUrl) {
-    return { server: serverId, authenticated: true };
-  }
-  const flow = context.authFlowStore.create(
-    {
-      server: serverId,
-      authorizationUrl: started.authorizationUrl,
-      complete: started.complete,
-    },
-    flowId,
-  );
-  return { server: serverId, flowId: flow.id, authorizationUrl: flow.authorizationUrl };
+  return await remoteAuthFlowCoordinator(context).start({
+    server: serverId,
+    callbackBaseUrl: context.controlCallbackBaseUrl,
+  });
 }
 
 async function completeRemoteAuthLogin(
@@ -612,13 +635,36 @@ async function completeRemoteAuthLogin(
   callbackUrl: string,
   context: RemoteControlDispatchContext,
 ) {
-  const flow = context.authFlowStore?.get(flowId);
-  if (!flow) {
-    throw new CapletsError("REQUEST_INVALID", `Unknown auth flow ${flowId}`);
+  return await remoteAuthFlowCoordinator(context).complete(flowId, callbackUrl);
+}
+
+function remoteAuthFlowCoordinator(
+  context: RemoteControlDispatchContext,
+): RemoteAuthFlowCoordinator {
+  const repository = context.backendAuthFlows ?? context.hostStorage?.backendAuthFlows;
+  if (!repository) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Authoritative backend auth flow storage is unavailable.",
+    );
   }
-  context.authFlowStore?.delete(flowId);
-  await flow.complete(callbackUrl);
-  return { server: flow.server, authenticated: true };
+  const authStore = requireBackendAuthStore(context);
+  return new RemoteAuthFlowCoordinator({
+    repository,
+    authStore,
+    operatorClientId: "remote_cli",
+    resolveTarget: async (serverId) => {
+      const vaultResolver = context.hostStorage
+        ? await createHostStorageVaultResolver(context.hostStorage)
+        : vaultResolverForAuthDir(context.authDir);
+      const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
+        vaultResolver,
+      }).config;
+      const target = await resolveAuthTarget(serverId, config, authStore);
+      assertLoginTarget(target, serverId);
+      return target;
+    },
+  });
 }
 
 function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispatchContext) {
@@ -801,40 +847,54 @@ function requiredInstallationObservationStatus(
   );
 }
 
-function decodeBundleFiles(value: unknown): CapletBundleInputFile[] {
+function decodeBundleFiles(request: RemoteCliRequest): CapletBundleInputFile[] {
+  const value = request.arguments.files;
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_REMOTE_BUNDLE_FILES) {
     throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle file list is invalid.");
   }
   const files: CapletBundleInputFile[] = [];
   let totalBytes = 0;
-  for (const item of value) {
+  let metadataBytes = remoteBundleSerializedMetadataBytes(request.command, request.arguments, []);
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
     assertObject(item, "Remote Caplet bundle file");
     assertOnlyKeys(item, ["path", "contentBase64", "executable"]);
     const path = requiredString(item, "path");
+    if (typeof item.executable !== "boolean") {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Remote Caplet bundle executable intent must be boolean.",
+      );
+    }
+    metadataBytes += index === 0 ? 0 : 1;
+    metadataBytes += remoteBundleFileSerializedMetadataBytes({
+      path,
+      executable: item.executable,
+    });
+    if (metadataBytes > LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Remote Caplet bundle metadata exceeds the byte limit.",
+      );
+    }
     const contentBase64 = item.contentBase64;
     if (
       typeof contentBase64 !== "string" ||
-      contentBase64.length > Math.ceil(MAX_REMOTE_BUNDLE_FILE_BYTES / 3) * 4 ||
+      contentBase64.length > MAX_REMOTE_BUNDLE_FILE_BASE64_BYTES ||
       !BASE64_PATTERN.test(contentBase64)
     ) {
       throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle file content is invalid.");
     }
     const content = Buffer.from(contentBase64, "base64");
     if (
-      content.byteLength > MAX_REMOTE_BUNDLE_FILE_BYTES ||
+      content.byteLength > MAX_BUNDLE_FILE_BYTES ||
       content.toString("base64") !== contentBase64
     ) {
       throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle file content is invalid.");
     }
     totalBytes += content.byteLength;
-    if (totalBytes > MAX_REMOTE_BUNDLE_TOTAL_BYTES) {
+    if (totalBytes > MAX_BUNDLE_TOTAL_BYTES) {
       throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle exceeds the byte limit.");
-    }
-    if (typeof item.executable !== "boolean") {
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        "Remote Caplet bundle executable intent must be boolean.",
-      );
     }
     files.push({ path, content, executable: item.executable });
   }

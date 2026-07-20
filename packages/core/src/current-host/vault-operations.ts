@@ -6,7 +6,8 @@ import {
 import { SERVER_ID_PATTERN } from "../config/validation";
 import { CapletsError } from "../errors";
 import { FileVaultStore, validateVaultKeyName, type VaultAccessGrantInput } from "../vault";
-import type { StoredVaultGrant, VaultGrantStore } from "../storage/vault-grants";
+import type { StoredVaultGrant, VaultGrantInput, VaultGrantStore } from "../storage/vault-grants";
+import type { VaultStateStore } from "../storage/vault-state";
 import type { VaultValueRepository } from "../storage/vault-values";
 import type {
   CurrentHostOperation,
@@ -38,6 +39,7 @@ type VaultAccessListOutcome = Extract<CurrentHostOperationOutcome, { kind: "vaul
 export function createCurrentHostVaultOperations(dependencies: CurrentHostOperationsDependencies) {
   const sqlValues = dependencies.vaultValues;
   const sqlGrants = dependencies.vaultGrants;
+  const sqlState = dependencies.vaultState;
   if (Boolean(sqlValues) !== Boolean(sqlGrants)) {
     throw new CapletsError(
       "INTERNAL_ERROR",
@@ -68,7 +70,14 @@ export function createCurrentHostVaultOperations(dependencies: CurrentHostOperat
       operation: VaultSetOperation,
     ): Promise<VaultSetOutcome> =>
       sqlValues && sqlGrants
-        ? await sqlVaultSetOutcome(dependencies, sqlValues, sqlGrants, principal, operation)
+        ? await sqlVaultSetOutcome(
+            dependencies,
+            sqlValues,
+            sqlGrants,
+            sqlState,
+            principal,
+            operation,
+          )
         : vaultSetOutcome(dependencies, fileVault!, principal, operation),
     delete: async (
       principal: CurrentHostOperatorPrincipal,
@@ -115,6 +124,7 @@ async function sqlVaultSetOutcome(
   dependencies: CurrentHostOperationsDependencies,
   values: VaultValueRepository,
   grants: VaultGrantStore,
+  state: VaultStateStore | undefined,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultSetOperation,
 ): Promise<VaultSetOutcome> {
@@ -122,46 +132,55 @@ async function sqlVaultSetOutcome(
   const capletId = operation.grant === undefined ? undefined : requiredCapletId(operation.grant);
   const referenceName =
     capletId === undefined ? undefined : validateVaultKeyName(operation.referenceName ?? storedKey);
-  const previousStatus = await values.getStatus(storedKey);
-  const previousValue =
-    previousStatus.present && capletId !== undefined
-      ? await values.resolveValue(storedKey)
-      : undefined;
-  const status = await values.set(storedKey, operation.value, {
-    force: operation.force ?? false,
-    operatorClientId: principal.clientId,
+  const origin = capletId === undefined ? undefined : vaultAccessOrigin(capletId, dependencies);
+  const grant: VaultGrantInput | undefined =
+    capletId === undefined || referenceName === undefined || origin === undefined
+      ? undefined
+      : {
+          capletId,
+          vaultKey: storedKey,
+          referenceName,
+          originKind: origin.kind,
+          originPath: origin.path,
+          operator: sqlOperator(principal),
+        };
+  const force = operation.force ?? false;
+  const status = state
+    ? await state.setValueAndGrant({
+        key: storedKey,
+        value: operation.value,
+        force,
+        ...(grant === undefined ? {} : { grant }),
+        operatorClientId: principal.clientId,
+      })
+    : await setValueAndGrantWithRepositories(values, grants, {
+        key: storedKey,
+        value: operation.value,
+        force,
+        grant,
+        operatorClientId: principal.clientId,
+      });
+  await dependencies.invalidateConfig?.(principal.clientId);
+  return { kind: "vault_set", status };
+}
+
+async function setValueAndGrantWithRepositories(
+  values: VaultValueRepository,
+  grants: VaultGrantStore,
+  input: {
+    key: string;
+    value: string;
+    force: boolean;
+    grant: VaultGrantInput | undefined;
+    operatorClientId: string;
+  },
+) {
+  const status = await values.set(input.key, input.value, {
+    force: input.force,
+    operatorClientId: input.operatorClientId,
   });
-  if (capletId === undefined || referenceName === undefined) {
-    await dependencies.invalidateConfig?.(principal.clientId);
-    return { kind: "vault_set", status };
-  }
-  try {
-    const origin = vaultAccessOrigin(capletId, dependencies);
-    await grants.grant({
-      capletId,
-      vaultKey: storedKey,
-      referenceName,
-      originKind: origin.kind,
-      originPath: origin.path,
-      operator: sqlOperator(principal),
-    });
-    await dependencies.invalidateConfig?.(principal.clientId);
-    return { kind: "vault_set", status };
-  } catch (error) {
-    if (previousStatus.present && previousValue !== undefined) {
-      await values.set(storedKey, previousValue, {
-        force: true,
-        expectedGeneration: status.generation,
-        operatorClientId: principal.clientId,
-      });
-    } else {
-      await values.delete(storedKey, {
-        expectedGeneration: status.generation,
-        operatorClientId: principal.clientId,
-      });
-    }
-    throw error;
-  }
+  if (input.grant) await grants.grant(input.grant);
+  return status;
 }
 
 async function sqlVaultDeleteOutcome(

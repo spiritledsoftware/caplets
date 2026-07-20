@@ -94,16 +94,48 @@ describe("BackendAuthStateStore", () => {
       ).resolves.toBe(true);
       await expect(store.readTokenBundle("alpha")).resolves.toBeUndefined();
       await expect(store.deleteTokenBundle("alpha")).resolves.toBe(false);
+      await expect(store.readState("alpha")).resolves.toEqual({ generation: 2 });
+      await expect(store.listTokenBundles()).resolves.toEqual([
+        { bundle: updatedBundle, generation: 2 },
+      ]);
+      await expect(
+        store.writeTokenBundle(
+          { server: "alpha", accessToken: "stale-alpha-token" },
+          { expectedGeneration: 1, operatorClientId: "operator-1" },
+        ),
+      ).rejects.toMatchObject({
+        code: "REQUEST_INVALID",
+        details: {
+          kind: "stale_generation",
+          expectedGeneration: 1,
+          currentGeneration: 2,
+        },
+      });
+      const reauthenticatedAlpha = { server: "alpha", accessToken: "new-alpha-token" };
+      await expect(
+        store.writeTokenBundle(reauthenticatedAlpha, {
+          expectedGeneration: 2,
+          operatorClientId: "operator-1",
+        }),
+      ).resolves.toEqual({ bundle: reauthenticatedAlpha, generation: 3 });
+      await expect(store.readTokenBundle("alpha")).resolves.toEqual({
+        bundle: reauthenticatedAlpha,
+        generation: 3,
+      });
 
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
-      expect(storage.database.db.select().from(backendAuthStates).all()).toMatchObject([
-        { server: "beta", generation: 2, tokenBundle: updatedBundle },
-      ]);
+      expect(storage.database.db.select().from(backendAuthStates).all()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ server: "alpha", generation: 3 }),
+          expect.objectContaining({ server: "beta", generation: 2, tokenBundle: updatedBundle }),
+        ]),
+      );
       const activity = storage.database.db.select().from(operatorActivity).all();
       expect(activity.map(({ action, metadata }) => ({ action, metadata }))).toEqual([
         { action: "backend_auth_written", metadata: { generation: 1 } },
         { action: "backend_auth_written", metadata: { generation: 2 } },
-        { action: "backend_auth_deleted", metadata: { generation: 1 } },
+        { action: "backend_auth_deleted", metadata: { generation: 2 } },
+        { action: "backend_auth_written", metadata: { generation: 3 } },
       ]);
       const activityMetadata = JSON.stringify(activity.map((entry) => entry.metadata));
       for (const secret of [
@@ -111,6 +143,8 @@ describe("BackendAuthStateStore", () => {
         "alpha-token",
         "rotated-access-token",
         "stale-overwrite-token",
+        "stale-alpha-token",
+        "new-alpha-token",
       ]) {
         expect(activityMetadata).not.toContain(secret);
       }

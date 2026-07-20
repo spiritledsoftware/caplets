@@ -327,10 +327,37 @@ export const dashboardSessions = sqliteTable(
 export const backendAuthStates = sqliteTable("backend_auth_states", {
   server: text("server").primaryKey(),
   generation: integer("generation").notNull(),
-  tokenBundle: text("token_bundle", { mode: "json" }).$type<unknown>().notNull(),
+  tokenBundle: text("token_bundle", { mode: "json" }).$type<unknown>(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const backendAuthFlows = sqliteTable(
+  "backend_auth_flows",
+  {
+    flowId: text("flow_id").primaryKey(),
+    server: text("server").notNull(),
+    status: text("status").notNull(),
+    envelopeVersion: integer("envelope_version").notNull(),
+    encryptedPayload: text("encrypted_payload", { mode: "json" }).$type<unknown>(),
+    startingBackendAuthGeneration: integer("starting_backend_auth_generation"),
+    completionCorrelation: text("completion_correlation"),
+    completedBackendAuthGeneration: integer("completed_backend_auth_generation"),
+    claimToken: text("claim_token"),
+    claimedAt: text("claimed_at"),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    terminalAt: text("terminal_at"),
+  },
+  (table) => [
+    uniqueIndex("backend_auth_flows_claim_token_unique").on(table.claimToken),
+    uniqueIndex("backend_auth_flows_completion_correlation_unique").on(table.completionCorrelation),
+    index("backend_auth_flows_server_created_at_idx").on(table.server, table.createdAt),
+    index("backend_auth_flows_status_expires_at_idx").on(table.status, table.expiresAt),
+    index("backend_auth_flows_status_terminal_at_idx").on(table.status, table.terminalAt),
+  ],
+);
 
 export const setupApprovals = sqliteTable(
   "setup_approvals",

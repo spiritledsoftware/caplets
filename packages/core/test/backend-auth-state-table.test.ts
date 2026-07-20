@@ -12,7 +12,7 @@ describe("BackendAuthStateStore dedicated SQL table", () => {
       create table backend_auth_states (
         server text primary key not null,
         generation integer not null,
-        token_bundle text not null,
+          token_bundle text,
         created_at text not null,
         updated_at text not null
       )

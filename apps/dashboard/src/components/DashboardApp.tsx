@@ -107,9 +107,14 @@ type CatalogMutationResult = {
     catalogIndexing?: { status?: string; reason?: string };
   }>;
 };
+type DashboardActionOptions = {
+  clientRevocation?: boolean;
+};
+
 type DashboardAction = (
   label: string | ((result: unknown) => string),
   callback: () => Promise<unknown>,
+  options?: DashboardActionOptions,
 ) => Promise<void>;
 export function catalogMutationLabel(result: unknown): string {
   const status = (result as CatalogMutationResult | undefined)?.installed?.[0]?.status;
@@ -294,7 +299,12 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   const [authCommand, setAuthCommand] = useState("");
   const [authMessage, setAuthMessage] = useState("Restoring dashboard session…");
   const [confirmation, setConfirmation] = useState<ConfirmationRequest>();
+  const [runtimeRestartPending, setRuntimeRestartPending] = useState(false);
   const confirmationRef = useRef<ConfirmationRequest | undefined>(undefined);
+  const mutationRevisionRef = useRef(0);
+  const pendingClientRevocationsRef = useRef(0);
+  const clientRevocationWaitersRef = useRef(new Set<() => void>());
+  const runtimeRestartPendingRef = useRef(false);
 
   const resolveConfirmation = useCallback((confirmed: ConfirmationResult) => {
     const activeConfirmation = confirmationRef.current;
@@ -319,6 +329,27 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   );
 
   const dismissConfirmation = useCallback(() => resolveConfirmation(false), [resolveConfirmation]);
+
+  function beginClientRevocationRefreshBarrier(): () => void {
+    pendingClientRevocationsRef.current += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      pendingClientRevocationsRef.current -= 1;
+      if (pendingClientRevocationsRef.current !== 0) return;
+      for (const resolve of clientRevocationWaitersRef.current) resolve();
+      clientRevocationWaitersRef.current.clear();
+    };
+  }
+
+  async function waitForClientRevocationBarrier(): Promise<void> {
+    while (pendingClientRevocationsRef.current !== 0) {
+      await new Promise<void>((resolve) => {
+        clientRevocationWaitersRef.current.add(resolve);
+      });
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -363,7 +394,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     }
   }
 
-  async function refresh(): Promise<boolean> {
+  async function refresh(expectedMutationRevision = mutationRevisionRef.current): Promise<boolean> {
     setDataLoading(true);
     try {
       const loaded = await Promise.all([
@@ -379,6 +410,8 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         load("projectBinding", "project-binding"),
         load("updates", "catalog/updates"),
       ]);
+      await waitForClientRevocationBarrier();
+      if (expectedMutationRevision !== mutationRevisionRef.current) return false;
       setData(
         Object.fromEntries(loaded.map((entry) => [entry.name, entry.value])) as DashboardData,
       );
@@ -472,11 +505,16 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     }
   }
 
-  const action: DashboardAction = async (label, callback) => {
+  const action: DashboardAction = async (label, callback, options = {}) => {
+    const releaseClientRevocationBarrier = options.clientRevocation
+      ? beginClientRevocationRefreshBarrier()
+      : undefined;
     try {
       const result = await callback();
       if (result === ACTION_DISCARDED) return;
-      const refreshed = await refresh();
+      const mutationRevision = ++mutationRevisionRef.current;
+      releaseClientRevocationBarrier?.();
+      const refreshed = await refresh(mutationRevision);
       if (refreshed) {
         toast.success(typeof label === "function" ? label(result) : label);
         if (catalogIndexingUnavailable(result)) {
@@ -489,8 +527,35 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         return;
       }
       toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      releaseClientRevocationBarrier?.();
     }
   };
+
+  async function requestRuntimeRestart(): Promise<void> {
+    if (runtimeRestartPendingRef.current) return;
+    runtimeRestartPendingRef.current = true;
+    setRuntimeRestartPending(true);
+    try {
+      if (
+        !(await confirm({
+          title: "Restart runtime?",
+          description:
+            "This interrupts active Current Host requests while the daemon restarts. Type restart runtime to continue.",
+          expectedPhrase: "restart runtime",
+          confirmLabel: "Restart runtime",
+          destructive: true,
+        }))
+      )
+        return;
+      await action("Restart requested", () =>
+        dashboardApi("runtime/restart", { method: "POST", body: "{}" }),
+      );
+    } finally {
+      runtimeRestartPendingRef.current = false;
+      setRuntimeRestartPending(false);
+    }
+  }
 
   async function logout() {
     try {
@@ -676,6 +741,8 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
                     data={data}
                     loading={dataLoading}
                     action={action}
+                    runtimeRestartPending={runtimeRestartPending}
+                    requestRuntimeRestart={requestRuntimeRestart}
                     session={session}
                   />
                 </div>
@@ -793,12 +860,16 @@ function Page({
   loading,
   action,
   session,
+  runtimeRestartPending,
+  requestRuntimeRestart,
 }: {
   route: RouteKey;
   data: DashboardData;
   loading: boolean;
   session: DashboardSession;
   action: DashboardAction;
+  runtimeRestartPending: boolean;
+  requestRuntimeRestart: () => Promise<void>;
 }) {
   const { confirmAction, confirmDestructive, confirmTyped } = useActionConfirm();
   if (route === "access") return <AccessPage data={data} loading={loading} action={action} />;
@@ -815,7 +886,15 @@ function Page({
   if (route === "catalog")
     return <CatalogPage data={data} action={action} confirmTyped={confirmTyped} />;
   if (route === "vault") return <VaultPage data={data} loading={loading} action={action} />;
-  if (route === "runtime") return <RuntimePage data={data} loading={loading} action={action} />;
+  if (route === "runtime")
+    return (
+      <RuntimePage
+        data={data}
+        loading={loading}
+        restartPending={runtimeRestartPending}
+        requestRestart={requestRuntimeRestart}
+      />
+    );
   if (route === "activity") return <ActivityPage data={data} loading={loading} />;
   if (route === "settings") return <SettingsPage session={session} summary={data.summary} />;
   return <OverviewPage data={data} loading={loading} />;
@@ -1149,7 +1228,7 @@ function AccessPage({
 }: {
   data: DashboardData;
   loading: boolean;
-  action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  action: DashboardAction;
 }) {
   const { confirmAction, confirmTyped } = useActionConfirm();
   const pending = data.pending?.pendingLogins ?? [];
@@ -1334,7 +1413,7 @@ function ClientCard({
   confirmTyped,
 }: {
   client: Record<string, string>;
-  action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  action: DashboardAction;
   confirmAction: (title: string, description: string) => Promise<boolean>;
   confirmTyped: (title: string, description: string, expectedPhrase: string) => Promise<boolean>;
 }) {
@@ -1363,7 +1442,7 @@ function ClientActions({
   confirmTyped,
 }: {
   client: Record<string, string>;
-  action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  action: DashboardAction;
   confirmAction: (title: string, description: string) => Promise<boolean>;
   confirmTyped: (title: string, description: string, expectedPhrase: string) => Promise<boolean>;
 }) {
@@ -1401,11 +1480,14 @@ function ClientActions({
             ))
           )
             return;
-          await action("Client revoked", () =>
-            dashboardApi(`access/clients/${client.clientId}/revoke`, {
-              method: "POST",
-              body: "{}",
-            }),
+          await action(
+            "Client revoked",
+            () =>
+              dashboardApi(`access/clients/${client.clientId}/revoke`, {
+                method: "POST",
+                body: "{}",
+              }),
+            { clientRevocation: true },
           );
         }}
       >
@@ -1947,13 +2029,14 @@ function activityEntryView(entry: Record<string, unknown>) {
 function RuntimePage({
   data,
   loading,
-  action,
+  restartPending,
+  requestRestart,
 }: {
   data: DashboardData;
   loading: boolean;
-  action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  restartPending: boolean;
+  requestRestart: () => Promise<void>;
 }) {
-  const confirm = useConfirm();
   const runtime = data.runtime?.runtime ?? {};
   const checks = data.diagnostics?.checks ?? [];
   const runtimeStatus = String(runtime.status ?? "unknown");
@@ -1995,24 +2078,12 @@ function RuntimePage({
               <Button
                 variant="destructive"
                 className="md:h-11 md:min-h-11"
-                onClick={async () => {
-                  if (
-                    !(await confirm({
-                      title: "Restart runtime?",
-                      description:
-                        "This interrupts active Current Host requests while the daemon restarts. Type restart runtime to continue.",
-                      expectedPhrase: "restart runtime",
-                      confirmLabel: "Restart runtime",
-                      destructive: true,
-                    }))
-                  )
-                    return;
-                  await action("Restart requested", () =>
-                    dashboardApi("runtime/restart", { method: "POST", body: "{}" }),
-                  );
-                }}
+                aria-label="Restart runtime"
+                disabled={restartPending}
+                aria-busy={restartPending}
+                onClick={() => void requestRestart()}
               >
-                Restart runtime
+                {restartPending ? "Restart pending…" : "Restart runtime"}
               </Button>
               <a
                 href={routeHref("activity")}

@@ -34,6 +34,18 @@ export {
   type ReadCapletBundleResult,
 } from "./caplet-records";
 export { BackendAuthStateStore, type BackendAuthMutationOptions } from "./backend-auth";
+export {
+  BACKEND_AUTH_FLOW_ENVELOPE_VERSION,
+  BackendAuthFlowRepository,
+  DEFAULT_BACKEND_AUTH_FLOW_RETENTION_MS,
+  MAX_BACKEND_AUTH_FLOW_PRUNE_BATCH,
+  type BackendAuthFlowClaim,
+  type BackendAuthFlowClaimResult,
+  type BackendAuthFlowRepositoryOptions,
+  type BackendAuthFlowSerializableState,
+  type BackendAuthFlowStatus,
+  type BackendAuthFlowView,
+} from "./backend-auth-flows";
 export { DashboardSessionRepository } from "./dashboard-sessions";
 export {
   ProjectBindingStore,
@@ -75,6 +87,7 @@ export {
   type VaultValueSetOptions,
   type VaultValueStoreOptions,
 } from "./vault-values";
+export { VaultStateStore, type SetVaultValueAndGrantInput } from "./vault-state";
 export { createHostStorageVaultResolver } from "./vault-resolver";
 export {
   HOST_STORAGE_SCHEMA_VERSION,

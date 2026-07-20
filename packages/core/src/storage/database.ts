@@ -13,12 +13,14 @@ import { CapletInstallationStore } from "./installations";
 import { HostCoordinationStore } from "./coordination";
 import { VaultGrantStore } from "./vault-grants";
 import { BackendAuthStateStore } from "./backend-auth";
+import { BackendAuthFlowRepository } from "./backend-auth-flows";
 import { DashboardSessionRepository } from "./dashboard-sessions";
 import { ProjectBindingStore } from "./project-bindings";
 import { RemoteSecurityStore } from "./remote-security";
 import { SetupStateStore } from "./setup-state";
 import { OperatorActivityStore } from "./operator-activity";
 import { VaultValueStore } from "./vault-values";
+import { VaultStateStore } from "./vault-state";
 import { inspectHostDatabase, migrateHostDatabase } from "./migrations";
 import { postgresSchema } from "./schema/postgres";
 import { sqliteSchema } from "./schema/sqlite";
@@ -43,12 +45,14 @@ export class HostStorage {
   readonly coordination: HostCoordinationStore;
   readonly vaultGrants: VaultGrantStore;
   readonly backendAuth: BackendAuthStateStore;
+  readonly backendAuthFlows: BackendAuthFlowRepository;
   readonly dashboardSessions: DashboardSessionRepository;
   readonly projectBindings: ProjectBindingStore;
   readonly remoteSecurity: RemoteSecurityStore;
   readonly setupState: SetupStateStore;
   readonly operatorActivity: OperatorActivityStore;
   readonly vaultValues: VaultValueStore;
+  readonly vaultState: VaultStateStore;
   private readonly assetObjectStore: AssetObjectStore | undefined;
   private closed = false;
 
@@ -69,15 +73,15 @@ export class HostStorage {
     this.vaultGrants = new VaultGrantStore(database);
     this.coordination = new HostCoordinationStore(database, postgresListenerPool);
     this.backendAuth = new BackendAuthStateStore(database);
+    const vaultOptions = options.vaultRoot === undefined ? {} : { root: options.vaultRoot };
+    this.backendAuthFlows = new BackendAuthFlowRepository(database, vaultOptions);
     this.dashboardSessions = new DashboardSessionRepository(database);
     this.projectBindings = new ProjectBindingStore(database);
     this.remoteSecurity = new RemoteSecurityStore(database);
     this.setupState = new SetupStateStore(database);
     this.operatorActivity = new OperatorActivityStore(database);
-    this.vaultValues = new VaultValueStore(
-      database,
-      options.vaultRoot === undefined ? {} : { root: options.vaultRoot },
-    );
+    this.vaultValues = new VaultValueStore(database, vaultOptions);
+    this.vaultState = new VaultStateStore(database, vaultOptions);
   }
 
   async health(): Promise<HostStorageHealth> {

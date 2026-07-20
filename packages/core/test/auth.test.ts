@@ -9,6 +9,8 @@ vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
 
 import {
   classifyRemoteAuthError,
+  type BackendAuthCompletionPersistence,
+  completeOAuthFlowState,
   genericOAuthHeaders,
   extractCompletion,
   FileOAuthProvider,
@@ -18,6 +20,7 @@ import {
   runOAuthFlow,
   runGenericOAuthFlow,
   startGenericOAuthFlow,
+  startOAuthFlowState,
 } from "../src/auth";
 import { formatAuthRows, listAuth } from "../src/cli/auth";
 import { runCli } from "../src/cli";
@@ -1044,6 +1047,71 @@ describe("auth helpers", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("reconstructs MCP completion with persisted PKCE and generation-zero persistence", async () => {
+    const server = parseConfig({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "A useful remote server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: { type: "oauth2", clientId: "client" },
+        },
+      },
+    }).mcpServers.remote!;
+    const persistedVerifier = "persisted-pkce-verifier";
+    mockMcpAuth.mockReset();
+    mockMcpAuth
+      .mockImplementationOnce(async (provider: FileOAuthProvider) => {
+        provider.saveCodeVerifier(persistedVerifier);
+        provider.saveDiscoveryState({
+          authorizationServerUrl: "https://auth.example.com",
+        });
+        provider.redirectToAuthorization(
+          new URL(`https://auth.example.com/authorize?state=${provider.state()}`),
+        );
+        return "REDIRECT";
+      })
+      .mockImplementationOnce(async (provider: FileOAuthProvider) => {
+        expect(provider.codeVerifier()).toBe(persistedVerifier);
+        await provider.saveTokens({
+          access_token: "completed-access-token",
+          token_type: "Bearer",
+        });
+        return "AUTHORIZED";
+      });
+    const started = await startOAuthFlowState(server, {
+      redirectUri: "http://127.0.0.1/callback",
+      authStore,
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      expiresAt: new Date("2026-07-20T12:10:00.000Z"),
+    });
+    if (!started.state) throw new Error("Expected durable MCP OAuth state.");
+    const persistTokenBundle = vi.fn<BackendAuthCompletionPersistence>(async (bundle) => ({
+      bundle,
+      generation: 1,
+    }));
+
+    await expect(
+      completeOAuthFlowState(
+        server,
+        started.state,
+        `http://127.0.0.1/callback?code=provider-code&state=${started.state.stateVerifier}`,
+        {
+          persistTokenBundle,
+          now: new Date("2026-07-20T12:01:00.000Z"),
+        },
+      ),
+    ).resolves.toMatchObject({
+      generation: 1,
+      bundle: { accessToken: "completed-access-token" },
+    });
+    expect(persistTokenBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ server: "remote", accessToken: "completed-access-token" }),
+      expect.objectContaining({ expectedGeneration: 0 }),
+    );
   });
 
   it("does not mix dynamic public client ID with configured client secret", async () => {

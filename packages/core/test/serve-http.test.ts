@@ -4,40 +4,44 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { serve, type WebSocketServerLike } from "@hono/node-server";
-import BetterSqlite3 from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
+import { backendAuthCompletionCorrelation } from "../src/auth";
 import { CapletsEngine } from "../src/engine";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import type { CapletsEngineOptions } from "../src/engine";
 import { CapletsError } from "../src/errors";
-import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import type { ProjectBindingLease } from "../src/project-binding";
 import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
+import { createHostStorage } from "../src/storage";
 import {
+  ATTACH_INVOKE_REQUEST_MAX_BYTES,
+  AUTH_REQUEST_MAX_BYTES,
   CAPLETS_STACK_CHAIN_HEADER,
+  CONTROL_REQUEST_MAX_BYTES,
   createHttpServeApp,
+  LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES,
   sanitizeRemoteEngineOptions,
 } from "../src/serve/http";
 import * as serveHttpModule from "../src/serve/http";
-import type { HttpAttachSessionFactory, HttpMcpSessionFactory } from "../src/serve/http";
+import type {
+  CapletsHttpApp,
+  HttpAttachSessionFactory,
+  HttpMcpSessionFactory,
+} from "../src/serve/http";
+import { readLimitedJsonObject } from "../src/serve/request-body";
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import { buildManifestExposureProjection } from "../src/exposure/projection";
 import type { HttpServeOptions } from "../src/serve/options";
-import { BackendAuthStateStore } from "../src/storage/backend-auth";
-import { sqliteSchema } from "../src/storage/schema/sqlite";
 
 const dirs: string[] = [];
-const backendAuthDatabases: Array<InstanceType<typeof BetterSqlite3>> = [];
 
 afterEach(() => {
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
-  for (const database of backendAuthDatabases.splice(0)) database.close();
 });
 
 it("forces remote artifact paths off after caller engine options", () => {
@@ -54,6 +58,178 @@ it("forces remote artifact paths off after caller engine options", () => {
     vaultRecoveryTarget: "remote",
   });
 });
+describe("readLimitedJsonObject", () => {
+  const encoder = new TextEncoder();
+  const jsonObjectOverheadBytes = encoder.encode('{"value":""}').byteLength;
+  const jsonAtLength = (length: number): string =>
+    `{"value":"${"x".repeat(length - jsonObjectOverheadBytes)}"}`;
+  const requestWithBody = (
+    body: ReadableStream<Uint8Array>,
+    headers?: Record<string, string>,
+  ): Request =>
+    new Request("http://127.0.0.1/request", {
+      method: "POST",
+      headers,
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+  it("accepts a streamed JSON object exactly at the byte limit", async () => {
+    const maxBytes = 32;
+    const encoded = encoder.encode(jsonAtLength(maxBytes));
+    expect(encoded.byteLength).toBe(maxBytes);
+
+    const parsed = await readLimitedJsonObject(
+      requestWithBody(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoded);
+            controller.close();
+          },
+        }),
+      ),
+      "Test request",
+      maxBytes,
+    );
+
+    expect(parsed).toEqual({ value: "x".repeat(20) });
+  });
+
+  it("cancels on the first byte over the limit without pulling a trailing chunk", async () => {
+    const maxBytes = 32;
+    const encoded = encoder.encode(jsonAtLength(maxBytes + 1));
+    const chunks = [
+      encoded.subarray(0, maxBytes),
+      encoded.subarray(maxBytes),
+      encoder.encode("private trailing sentinel"),
+    ];
+    let pulls = 0;
+    let canceled = false;
+    const request = requestWithBody(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            const chunk = chunks[pulls];
+            pulls += 1;
+            if (chunk) controller.enqueue(chunk);
+            else controller.close();
+          },
+          cancel() {
+            canceled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+
+    await expect(readLimitedJsonObject(request, "Test request", maxBytes)).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Test request body is too large.",
+    });
+    expect(pulls).toBe(2);
+    expect(canceled).toBe(true);
+  });
+
+  it("rejects a declared oversized body before pulling its stream", async () => {
+    let pulls = 0;
+    const request = requestWithBody(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            pulls += 1;
+            controller.enqueue(encoder.encode("{}"));
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      { "content-length": "33" },
+    );
+
+    await expect(readLimitedJsonObject(request, "Test request", 32)).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Test request body is too large.",
+    });
+    expect(pulls).toBe(0);
+  });
+
+  it("rejects malformed declared lengths before pulling the stream", async () => {
+    for (const contentLength of ["-1", "1.5", "not-a-length"]) {
+      let pulls = 0;
+      const request = requestWithBody(
+        new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(encoder.encode("{}"));
+              controller.close();
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { "content-length": contentLength },
+      );
+
+      await expect(readLimitedJsonObject(request, "Test request", 32)).rejects.toMatchObject({
+        code: "REQUEST_INVALID",
+        message: "Test request content length must be a non-negative integer.",
+      });
+      expect(pulls).toBe(0);
+    }
+  });
+
+  it("reports invalid UTF-8 and malformed JSON without reflecting input", async () => {
+    const cases = [
+      {
+        bytes: new Uint8Array([0xc3, 0x28, ...encoder.encode("private utf8 sentinel")]),
+        secret: "private utf8 sentinel",
+      },
+      {
+        bytes: encoder.encode('{"secret":"private malformed sentinel"'),
+        secret: "private malformed sentinel",
+      },
+    ];
+
+    for (const { bytes, secret } of cases) {
+      const error = await readLimitedJsonObject(
+        requestWithBody(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(bytes);
+              controller.close();
+            },
+          }),
+        ),
+        "Test request",
+        128,
+      ).then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(CapletsError);
+      expect(error).toMatchObject({
+        code: "REQUEST_INVALID",
+        message: "Test request body must be valid JSON.",
+      });
+      expect(String(error)).not.toContain(secret);
+    }
+  });
+
+  it("bounds the materialized-body fallback", async () => {
+    const bytes = encoder.encode(jsonAtLength(33));
+    const request = {
+      headers: new Headers(),
+      body: null,
+      arrayBuffer: async () => bytes.buffer,
+    } as unknown as Request;
+
+    await expect(readLimitedJsonObject(request, "Test request", 32)).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Test request body is too large.",
+    });
+  });
+});
+
 describe("createHttpServeApp", () => {
   it("serves root info and health without auth", async () => {
     const { engine } = testEngine();
@@ -103,6 +279,238 @@ describe("createHttpServeApp", () => {
       ready: true,
     });
 
+    await engine.close();
+  });
+
+  it("applies the named body class to representative auth, dashboard, attach, and v1 bundle routes", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const store = remoteCredentialStore();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      control: context,
+      remoteCredentialStore: store,
+    });
+    const authApp = createHttpServeApp(
+      httpOptions({ auth: { type: "remote_credentials" } }),
+      engine,
+      {
+        writeErr: () => {},
+        control: context,
+        remoteCredentialStore: store,
+      },
+    );
+    const encoder = new TextEncoder();
+    const bundleRequest = {
+      command: "storage_records_import",
+      arguments: {
+        id: "bounded",
+        files: [
+          {
+            path: "CAPLET.md",
+            contentBase64: Buffer.from(httpReadmeCaplet("Bounded bundle.")).toString("base64"),
+            executable: false,
+          },
+        ],
+      },
+    };
+    const routeCases = [
+      {
+        name: "auth",
+        app: authApp,
+        url: "http://127.0.0.1:5387/v1/remote/login/start",
+        maxBytes: AUTH_REQUEST_MAX_BYTES,
+        headers: { "content-type": "application/json" },
+        body: { clientLabel: "Bounded Client" },
+        status: 200,
+        expected: { flowId: expect.any(String) },
+      },
+      {
+        app,
+        name: "dashboard",
+        url: "http://127.0.0.1:5387/dashboard/api/stored-caplets",
+        maxBytes: CONTROL_REQUEST_MAX_BYTES,
+        headers: {
+          "content-type": "application/json",
+          "x-caplets-csrf": "development_unauthenticated",
+        },
+        body: {},
+        status: 400,
+        expected: {
+          ok: false,
+          error: { code: "REQUEST_INVALID", message: "id must be a non-empty string." },
+        },
+      },
+      {
+        app,
+        name: "attach",
+        url: "http://127.0.0.1:5387/v1/attach/invoke",
+        maxBytes: ATTACH_INVOKE_REQUEST_MAX_BYTES,
+        headers: { "content-type": "application/json" },
+        body: {},
+        status: 400,
+        expected: {
+          ok: false,
+          error: {
+            code: "REQUEST_INVALID",
+            message: "Attach invoke request requires revision, kind, and exportId.",
+          },
+        },
+      },
+      {
+        app,
+        name: "v1 bundle",
+        url: "http://127.0.0.1:5387/v1/admin",
+        maxBytes: LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES,
+        headers: { "content-type": "application/json" },
+        body: bundleRequest,
+        status: 200,
+        expected: {
+          ok: false,
+          error: {
+            code: "SERVER_UNAVAILABLE",
+            message: "Authoritative Host State storage is unavailable.",
+          },
+        },
+      },
+    ] as const;
+
+    for (const routeCase of routeCases) {
+      const inLimit = await routeCase.app.request(routeCase.url, {
+        method: "POST",
+        headers: routeCase.headers,
+        body: JSON.stringify(routeCase.body),
+      });
+      expect(inLimit.status, `${routeCase.name} in-limit status`).toBe(routeCase.status);
+      await expect(inLimit.json()).resolves.toMatchObject(routeCase.expected);
+
+      let pulls = 0;
+      const declaredOversize = await routeCase.app.request(routeCase.url, {
+        method: "POST",
+        headers: {
+          ...routeCase.headers,
+          "content-length": String(routeCase.maxBytes + 1),
+        },
+        body: new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(encoder.encode("{}"));
+              controller.close();
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+      expect(declaredOversize.status, `${routeCase.name} declared-oversize status`).toBe(
+        routeCase.name === "v1 bundle" ? 200 : 400,
+      );
+      await expect(declaredOversize.json()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "REQUEST_INVALID", message: expect.stringContaining("too large") },
+      });
+      expect(pulls, `${routeCase.name} declared-oversize pulls`).toBe(0);
+    }
+
+    await authApp.closeCapletsSessions();
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("elevates only command-first legacy bundle requests above the v1 control limit", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      control: context,
+    });
+    const encoder = new TextEncoder();
+    const oversizedStream = async (prefix: string, trailing = "private trailing sentinel") => {
+      const prefixBytes = encoder.encode(prefix);
+      expect(prefixBytes.byteLength).toBeLessThan(CONTROL_REQUEST_MAX_BYTES);
+      const firstChunk = encoder.encode(
+        `${prefix}${"x".repeat(CONTROL_REQUEST_MAX_BYTES - prefixBytes.byteLength)}`,
+      );
+      const chunks = [firstChunk, encoder.encode("x"), encoder.encode(trailing)];
+      let pulls = 0;
+      let canceled = false;
+      const response = await app.request("http://127.0.0.1:5387/v1/admin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              const chunk = chunks[pulls];
+              pulls += 1;
+              if (chunk) controller.enqueue(chunk);
+              else controller.close();
+            },
+            cancel() {
+              canceled = true;
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+      return { response, pulls, canceled };
+    };
+
+    for (const { prefix, trailing } of [
+      {
+        prefix: '{"command":"list","arguments":{"command":"storage_records_import","padding":"',
+        trailing: "private trailing sentinel",
+      },
+      {
+        prefix: '{"arguments":{"padding":"',
+        trailing: '"},"command":"storage_records_update","arguments":{"id":"spoofed","files":[]}}',
+      },
+    ]) {
+      const rejected = await oversizedStream(prefix, trailing);
+      expect(rejected.pulls).toBe(2);
+      expect(rejected.canceled).toBe(true);
+      await expect(rejected.response.json()).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "REQUEST_INVALID",
+          message: "Control request body is too large.",
+        },
+      });
+    }
+
+    for (const command of ["storage_records_import", "storage_records_update"] as const) {
+      const body = JSON.stringify({
+        command,
+        arguments: {
+          id: "x".repeat(CONTROL_REQUEST_MAX_BYTES),
+          files: [{ path: "CAPLET.md", contentBase64: "", executable: false }],
+        },
+      });
+      expect(encoder.encode(body).byteLength).toBeGreaterThan(CONTROL_REQUEST_MAX_BYTES);
+      const accepted = await app.request("http://127.0.0.1:5387/v1/admin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      await expect(accepted.json()).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "SERVER_UNAVAILABLE",
+          message: "Authoritative Host State storage is unavailable.",
+        },
+      });
+    }
+
+    await app.closeCapletsSessions();
     await engine.close();
   });
 
@@ -1080,6 +1488,44 @@ describe("createHttpServeApp", () => {
     } finally {
       await app.closeCapletsSessions();
       await engine.close();
+    }
+  });
+
+  it("maintains durable backend OAuth flows until the HTTP lifecycle closes", async () => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), "caplets-backend-auth-maintenance-"));
+    dirs.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "host-state.sqlite3"),
+    });
+    const expireDue = vi.spyOn(storage.backendAuthFlows, "expireDue");
+    const prune = vi.spyOn(storage.backendAuthFlows, "prune");
+    const { engine } = testEngine();
+    let app: CapletsHttpApp | undefined;
+    try {
+      app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        backendAuthFlows: storage.backendAuthFlows,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(expireDue).toHaveBeenCalledOnce();
+      expect(prune).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(expireDue).toHaveBeenCalledTimes(2);
+      expect(prune).toHaveBeenCalledTimes(2);
+
+      await app.closeCapletsSessions();
+      app = undefined;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(expireDue).toHaveBeenCalledTimes(2);
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally {
+      await app?.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+      vi.useRealTimers();
     }
   });
 
@@ -2638,86 +3084,277 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("dispatches auth callback completion under the control path", async () => {
-    const context = testContext();
+  it("completes durable backend OAuth across Host Nodes through public HTTP and rejects replay", async () => {
+    const context = testContext({ oauth: true });
+    const firstStorage = await testAuthoritativeHostStorage(context.configPath);
+    const secondStorage = await testAuthoritativeHostStorage(context.configPath);
+    const firstEngine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+      hostStorage: firstStorage,
+    });
+    const secondEngine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+      hostStorage: secondStorage,
+    });
+    const firstApp = createHttpServeApp(httpOptions({ path: "/caplets" }), firstEngine, {
+      writeErr: () => {},
+      control: context,
+    });
+    const secondApp = createHttpServeApp(httpOptions({ path: "/caplets" }), secondEngine, {
+      writeErr: () => {},
+      control: context,
+    });
+    const [firstServer, secondServer] = await Promise.all([
+      startTestHttpServer(firstApp),
+      startTestHttpServer(secondApp),
+    ]);
+    const networkFetch = globalThis.fetch;
+    let tokenExchanges = 0;
+    const atomicCompletion = vi.spyOn(secondStorage.backendAuthFlows, "completeClaim");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (fetchInputUrl(input) === "https://auth.example/token") {
+        tokenExchanges += 1;
+        return Promise.resolve(testOAuthTokenResponse());
+      }
+      return networkFetch(input, init);
+    });
+
+    try {
+      const started = await startBackendOAuthOverHttp(firstServer.origin, "/caplets");
+      const authorizationUrl = new URL(started.authorizationUrl);
+      const state = authorizationUrl.searchParams.get("state");
+      if (!state) throw new Error("Expected OAuth authorization state.");
+      const callbackCode = "cross-node-provider-code";
+      const callbackUrl = backendOAuthCallbackUrl(secondServer.origin, authorizationUrl, {
+        code: callbackCode,
+        state,
+      });
+
+      const completed = await fetch(callbackUrl);
+
+      expect(completed.status).toBe(200);
+      const completedText = await completed.text();
+      expect(completedText).toBe(
+        "Caplets authentication complete. You can return to your terminal.",
+      );
+      for (const secret of [callbackCode, state, "remote-access-token", "remote-refresh-token"]) {
+        expect(completedText).not.toContain(secret);
+      }
+      expect(tokenExchanges).toBe(1);
+      expect(atomicCompletion).toHaveBeenCalledTimes(1);
+      await expect(firstStorage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+        flowId: started.flowId,
+        server: "remote",
+        status: "completed",
+      });
+      await expect(firstStorage.backendAuth.readTokenBundle("remote")).resolves.toMatchObject({
+        generation: 1,
+        bundle: {
+          accessToken: "remote-access-token",
+          refreshToken: "remote-refresh-token",
+        },
+      });
+
+      const replayUrl = new URL(callbackUrl.pathname, `${firstServer.origin}/`);
+      replayUrl.search = callbackUrl.search;
+      const replay = await fetch(replayUrl);
+
+      expect(replay.status).toBe(400);
+      const replayText = await replay.text();
+      expect(replayText).toBe("Caplets authentication failed. Check server logs for details.");
+      for (const secret of [callbackCode, state, "remote-access-token", "remote-refresh-token"]) {
+        expect(replayText).not.toContain(secret);
+      }
+      expect(tokenExchanges).toBe(1);
+      expect(atomicCompletion).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+      atomicCompletion.mockRestore();
+      await Promise.all([firstServer.close(), secondServer.close()]);
+      await Promise.all([firstEngine.close(), secondEngine.close()]);
+    }
+  });
+
+  it("keeps provider error, state mismatch, and expiry callback envelopes safe", async () => {
+    const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
-    const authFlowStore = new RemoteAuthFlowStore();
-    authFlowStore.create(
-      {
-        server: "remote",
-        authorizationUrl: "https://auth.example/authorize",
-        complete: async (_callbackUrl: string) => {},
-      },
-      "flow-1",
-    );
     const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
       writeErr: () => {},
       control: context,
-      authFlowStore,
     });
+    const server = await startTestHttpServer(app);
+    const networkFetch = globalThis.fetch;
+    let tokenExchanges = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (fetchInputUrl(input) === "https://auth.example/token") {
+        tokenExchanges += 1;
+        return Promise.resolve(testOAuthTokenResponse());
+      }
+      return networkFetch(input, init);
+    });
+    const safeFailure = async (url: URL, secrets: string[]): Promise<void> => {
+      const response = await fetch(url);
+      expect(response.status).toBe(400);
+      const text = await response.text();
+      expect(text).toBe("Caplets authentication failed. Check server logs for details.");
+      for (const secret of secrets) expect(text).not.toContain(secret);
+    };
 
-    const response = await app.request(
-      "http://127.0.0.1:5387/caplets/v1/admin/auth/callback/flow-1?code=abc&state=xyz",
-    );
+    try {
+      const providerFlow = await startBackendOAuthOverHttp(server.origin, "/caplets");
+      const providerAuthorizationUrl = new URL(providerFlow.authorizationUrl);
+      const providerState = providerAuthorizationUrl.searchParams.get("state");
+      if (!providerState) throw new Error("Expected provider-error OAuth state.");
+      const providerDescription = "private provider denial detail";
+      await safeFailure(
+        backendOAuthCallbackUrl(server.origin, providerAuthorizationUrl, {
+          error: "access_denied",
+          error_description: providerDescription,
+          state: providerState,
+        }),
+        [providerDescription, providerState],
+      );
+      await expect(storage.backendAuthFlows.get(providerFlow.flowId)).resolves.toMatchObject({
+        status: "failed",
+      });
 
-    expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toContain("authentication complete");
+      const mismatchFlow = await startBackendOAuthOverHttp(server.origin, "/caplets");
+      const mismatchAuthorizationUrl = new URL(mismatchFlow.authorizationUrl);
+      const wrongState = "private-wrong-state";
+      await safeFailure(
+        backendOAuthCallbackUrl(server.origin, mismatchAuthorizationUrl, {
+          code: "private-mismatch-code",
+          state: wrongState,
+        }),
+        ["private-mismatch-code", wrongState],
+      );
+      await expect(storage.backendAuthFlows.get(mismatchFlow.flowId)).resolves.toMatchObject({
+        status: "failed",
+      });
 
-    await engine.close();
+      const expiredFlow = await startBackendOAuthOverHttp(server.origin, "/caplets");
+      const expiredAuthorizationUrl = new URL(expiredFlow.authorizationUrl);
+      const expiredState = expiredAuthorizationUrl.searchParams.get("state");
+      if (!expiredState) throw new Error("Expected expiring OAuth state.");
+      const flow = await storage.backendAuthFlows.get(expiredFlow.flowId);
+      if (!flow) throw new Error("Expected a durable backend auth flow.");
+      await storage.backendAuthFlows.expire(expiredFlow.flowId, new Date(flow.expiresAt));
+      await safeFailure(
+        backendOAuthCallbackUrl(server.origin, expiredAuthorizationUrl, {
+          code: "private-expired-code",
+          state: expiredState,
+        }),
+        ["private-expired-code", expiredState],
+      );
+      await expect(storage.backendAuthFlows.get(expiredFlow.flowId)).resolves.toMatchObject({
+        status: "expired",
+      });
+      expect(tokenExchanges).toBe(0);
+    } finally {
+      fetchMock.mockRestore();
+      await server.close();
+      await engine.close();
+    }
   });
 
-  it("hides auth callback failure details from unauthenticated browsers", async () => {
-    const context = testContext();
+  it("continues correlated OAuth persistence and finalization after callback disconnect", async () => {
+    const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
-    const authFlowStore = new RemoteAuthFlowStore();
-    authFlowStore.create(
-      {
-        server: "remote",
-        authorizationUrl: "https://auth.example/authorize",
-        complete: async () => {
-          throw new Error("internal token exchange failure");
-        },
-      },
-      "flow-1",
-    );
-    const logs: string[] = [];
-    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
-      writeErr: (value) => logs.push(value),
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
       control: context,
-      authFlowStore,
+    });
+    const server = await startTestHttpServer(app);
+    const networkFetch = globalThis.fetch;
+    const exchangeStarted = Promise.withResolvers<void>();
+    const tokenExchange = Promise.withResolvers<Response>();
+    let tokenExchanges = 0;
+    const atomicCompletion = vi.spyOn(storage.backendAuthFlows, "completeClaim");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (fetchInputUrl(input) === "https://auth.example/token") {
+        tokenExchanges += 1;
+        exchangeStarted.resolve();
+        return tokenExchange.promise;
+      }
+      return networkFetch(input, init);
     });
 
-    const response = await app.request(
-      "http://127.0.0.1:5387/caplets/v1/admin/auth/callback/flow-1?code=abc&state=xyz",
-    );
+    try {
+      const started = await startBackendOAuthOverHttp(server.origin);
+      const authorizationUrl = new URL(started.authorizationUrl);
+      const state = authorizationUrl.searchParams.get("state");
+      if (!state) throw new Error("Expected OAuth authorization state.");
+      const callbackUrl = backendOAuthCallbackUrl(server.origin, authorizationUrl, {
+        code: "disconnect-provider-code",
+        state,
+      });
+      const controller = new AbortController();
+      const callback = fetch(callbackUrl, { signal: controller.signal });
+      await withTimeout(exchangeStarted.promise, "acquire durable OAuth completion");
 
-    expect(response.status).toBe(400);
-    await expect(response.text()).resolves.toBe(
-      "Caplets authentication failed. Check server logs for details.",
-    );
-    expect(logs.join("")).toContain("internal token exchange failure");
+      controller.abort();
+      await expect(callback).rejects.toMatchObject({ name: "AbortError" });
+      expect(atomicCompletion).not.toHaveBeenCalled();
+      tokenExchange.resolve(testOAuthTokenResponse());
 
-    await engine.close();
+      await withTimeout(
+        waitFor(async () => {
+          await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+            status: "completed",
+          });
+        }),
+        "finalize disconnected OAuth completion",
+      );
+      const stored = await storage.backendAuth.readTokenBundle("remote");
+      if (!stored) throw new Error("Expected correlated OAuth credentials.");
+      const correlation = backendAuthCompletionCorrelation(stored.bundle);
+      if (!correlation) throw new Error("Expected backend auth completion correlation.");
+      expect(correlation).toMatchObject({ flowId: started.flowId });
+      expect(tokenExchanges).toBe(1);
+      expect(atomicCompletion).toHaveBeenCalledTimes(1);
+      expect(atomicCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          flowId: started.flowId,
+          completionCorrelation: correlation.completionCorrelation,
+          expectedGeneration: 0,
+        }),
+      );
+    } finally {
+      tokenExchange.resolve(testOAuthTokenResponse());
+      fetchMock.mockRestore();
+      atomicCompletion.mockRestore();
+      await server.close();
+      await engine.close();
+    }
   });
 
   it("uses the mounted control path when auth login starts under a base path containing control", async () => {
     const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
     const app = createHttpServeApp(httpOptions({ path: "/control-api" }), engine, {
       writeErr: () => {},
-      backendAuthStore: testBackendAuthStore(),
       control: context,
     });
 
@@ -2741,17 +3378,18 @@ describe("createHttpServeApp", () => {
 
   it("uses CAPLETS_SERVER_URL public scheme for remote auth callback URLs", async () => {
     const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
     const app = createHttpServeApp(
       httpOptions({ path: "/caplets", publicOrigin: "https://caplets.example.com" }),
       engine,
       {
         writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
         control: context,
       },
     );
@@ -2776,10 +3414,12 @@ describe("createHttpServeApp", () => {
 
   it("ignores forwarded host and proto for remote auth callback URLs by default", async () => {
     const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
     const store = remoteCredentialStore();
     const operator = pairedClient(store, "https://10.0.0.5:5387/caplets/", "operator");
@@ -2788,7 +3428,6 @@ describe("createHttpServeApp", () => {
       engine,
       {
         writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
         control: context,
         remoteCredentialStore: store,
       },
@@ -2819,10 +3458,12 @@ describe("createHttpServeApp", () => {
 
   it("ignores spoofed host headers for remote auth callback URLs by default", async () => {
     const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
     const store = remoteCredentialStore();
     const operator = pairedClient(store, "https://10.0.0.5:5387/caplets/", "operator");
@@ -2831,7 +3472,6 @@ describe("createHttpServeApp", () => {
       engine,
       {
         writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
         control: context,
         remoteCredentialStore: store,
       },
@@ -2861,10 +3501,12 @@ describe("createHttpServeApp", () => {
 
   it("uses explicit public origin for auth callback URLs behind trusted proxies", async () => {
     const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
     const store = remoteCredentialStore();
     const operator = pairedClient(store, "https://caplets.example.com/caplets/", "operator");
@@ -2878,7 +3520,6 @@ describe("createHttpServeApp", () => {
       engine,
       {
         writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
         control: context,
         remoteCredentialStore: store,
       },
@@ -4202,6 +4843,62 @@ async function startTestHttpServer(app: ReturnType<typeof createHttpServeApp>): 
   });
 }
 
+function fetchInputUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+async function startBackendOAuthOverHttp(
+  origin: string,
+  basePath = "",
+): Promise<{ flowId: string; authorizationUrl: string }> {
+  const response = await fetch(`${origin}${basePath}/v1/admin`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
+  });
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as {
+    ok: true;
+    result: { server: string; flowId: string; authorizationUrl: string };
+  };
+  expect(body).toEqual({
+    ok: true,
+    result: {
+      server: "remote",
+      flowId: expect.any(String),
+      authorizationUrl: expect.any(String),
+    },
+  });
+  return body.result;
+}
+
+function backendOAuthCallbackUrl(
+  origin: string,
+  authorizationUrl: URL,
+  parameters: Record<string, string>,
+): URL {
+  const redirectUri = authorizationUrl.searchParams.get("redirect_uri");
+  if (!redirectUri) throw new Error("Expected OAuth redirect URI.");
+  const redirectUrl = new URL(redirectUri);
+  const callbackUrl = new URL(redirectUrl.pathname, `${origin}/`);
+  callbackUrl.search = redirectUrl.search;
+  for (const [name, value] of Object.entries(parameters)) {
+    callbackUrl.searchParams.set(name, value);
+  }
+  return callbackUrl;
+}
+
+function testOAuthTokenResponse(): Response {
+  return Response.json({
+    access_token: "remote-access-token",
+    refresh_token: "remote-refresh-token",
+    token_type: "Bearer",
+    expires_in: 3600,
+  });
+}
+
 async function waitForSocketOpen(socket: WebSocket): Promise<void> {
   if (socket.readyState === WebSocket.OPEN) return;
   await new Promise<void>((resolve, reject) => {
@@ -4458,30 +5155,12 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-function testBackendAuthStore(): BackendAuthStateStore {
-  const sqlite = new BetterSqlite3(":memory:");
-  backendAuthDatabases.push(sqlite);
-  sqlite.exec(`
-    create table backend_auth_states (
-      server text primary key not null,
-      generation integer not null,
-      token_bundle text not null,
-      created_at text not null,
-      updated_at text not null
-    );
-    create table operator_activity (
-      activity_key text primary key not null,
-      operator_client_id text not null,
-      action text not null,
-      target_kind text not null,
-      target_key text not null,
-      outcome text not null,
-      metadata text not null,
-      created_at text not null
-    )
-  `);
-  const database = drizzle(sqlite, { schema: sqliteSchema });
-  return new BackendAuthStateStore({ dialect: "sqlite", db: database });
+async function testAuthoritativeHostStorage(configPath: string) {
+  const root = dirname(dirname(configPath));
+  return await createHostStorage(
+    { type: "sqlite", path: join(root, "host-state.sqlite3") },
+    { vaultRoot: join(root, "host-vault") },
+  );
 }
 
 function testEngine(config: Record<string, unknown> = {}): {

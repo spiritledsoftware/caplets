@@ -5,6 +5,9 @@ import { createHostStorage, migrateHostStorage } from "../src/storage";
 import { RemoteSecurityStore } from "../src/storage/remote-security";
 
 const postgresUrl = process.env.CAPLETS_TEST_POSTGRES_URL;
+if (process.env.CAPLETS_REQUIRE_TEST_POSTGRES === "1" && !postgresUrl) {
+  throw new Error("CAPLETS_TEST_POSTGRES_URL is required when CAPLETS_REQUIRE_TEST_POSTGRES=1.");
+}
 const postgresIt = postgresUrl ? it : it.skip;
 const schemas: string[] = [];
 

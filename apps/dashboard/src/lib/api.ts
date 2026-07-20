@@ -34,7 +34,7 @@ export async function dashboardApi<T>(path: string, options: RequestInit = {}): 
     credentials: "same-origin",
     headers: {
       "content-type": "application/json",
-      ...csrfHeaders(),
+      ...csrfHeadersForMethod(options.method),
       ...options.headers,
     },
     ...options,
@@ -45,6 +45,13 @@ export async function dashboardApi<T>(path: string, options: RequestInit = {}): 
     throw new DashboardApiError(apiErrorMessage(body, response), { status: response.status, body });
   }
   return body as T;
+}
+
+function csrfHeadersForMethod(method: string | undefined): HeadersInit {
+  const normalized = (method ?? "GET").toUpperCase();
+  return normalized === "GET" || normalized === "HEAD" || normalized === "OPTIONS"
+    ? {}
+    : csrfHeaders();
 }
 
 export function isDashboardUnauthorized(error: unknown): boolean {

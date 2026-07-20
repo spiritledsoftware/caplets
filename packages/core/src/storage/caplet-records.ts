@@ -178,9 +178,9 @@ type PreparedBundle = {
   >;
 };
 
-const MAX_BUNDLE_FILES = 2_048;
-const MAX_BUNDLE_FILE_BYTES = 64 * 1024 * 1024;
-const MAX_BUNDLE_TOTAL_BYTES = 256 * 1024 * 1024;
+export const MAX_BUNDLE_FILES = 2_048;
+export const MAX_BUNDLE_FILE_BYTES = 64 * 1024 * 1024;
+export const MAX_BUNDLE_TOTAL_BYTES = 256 * 1024 * 1024;
 
 type BundleLimits = {
   maxFiles: number;
