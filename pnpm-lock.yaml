@@ -84,8 +84,8 @@ importers:
         specifier: ^4.3.3
         version: 4.3.3(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))
       '@tanstack/virtual-core':
-        specifier: ^3.17.4
-        version: 3.17.4
+        specifier: ^3.17.5
+        version: 3.17.5
       astro:
         specifier: ^7.1.1
         version: 7.1.1(@astrojs/markdown-remark@7.2.1)(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(@types/node@26.1.1)(aws4fetch@1.0.20)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)
@@ -145,8 +145,8 @@ importers:
         specifier: ^4.3.3
         version: 4.3.3(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0))
       '@tanstack/react-virtual':
-        specifier: ^3.14.6
-        version: 3.14.6(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: ^3.14.7
+        version: 3.14.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       astro:
         specifier: ^7.1.1
         version: 7.1.1(@astrojs/markdown-remark@7.2.1)(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(@types/node@26.1.1)(aws4fetch@1.0.20)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)
@@ -372,8 +372,8 @@ importers:
         specifier: ^1.3.3
         version: 1.3.3
       add-mcp:
-        specifier: 1.13.0
-        version: 1.13.0
+        specifier: 1.14.0
+        version: 1.14.0
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -541,10 +541,10 @@ importers:
     dependencies:
       '@astrojs/language-server':
         specifier: ^2.16.12
-        version: 2.16.12(prettier-plugin-astro@0.14.1)(prettier@3.9.5)(typescript@6.0.3)
+        version: 2.16.12(prettier-plugin-astro@0.14.1)(prettier@3.9.5)(typescript@7.0.2)
       typescript:
-        specifier: 6.0.3
-        version: 6.0.3
+        specifier: 7.0.2
+        version: 7.0.2
 
 packages:
 
@@ -3361,14 +3361,14 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@tanstack/react-virtual@3.14.6':
-    resolution: {integrity: sha512-4+Uq8m0/gzO4kMCHUEpTtGX1RnONK0C+g88b2ltwPMWUBiaVarBuWKoPJaz7gj1cKCVRAdyu+U8GcKhwCc2beA==}
+  '@tanstack/react-virtual@3.14.7':
+    resolution: {integrity: sha512-11uSrj77IDijNBqizD4lY4y1laMyRrqMLSxjnWy5CvWkCjyRDW+gGmxYq0lwQKVas/sq7zyzYWXbL/BvBzR32g==}
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
       react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
-  '@tanstack/virtual-core@3.17.4':
-    resolution: {integrity: sha512-nGm5KteqxasUdThLc2izl6dHUqLv0LQj7Nuyo5gYalTPf/U8a9ermvsl7reT+6ioBW1l8WfpP/mcU338nLXpqw==}
+  '@tanstack/virtual-core@3.17.5':
+    resolution: {integrity: sha512-AXfBC3sq6PuYSwyxYORqqgHCNjPGAvKJvZuBBJ1klhztWBB5cgqgwsq8+fNfaQJG7/K4xYBja9S90QFn2zmQAg==}
 
   '@ts-morph/common@0.27.0':
     resolution: {integrity: sha512-Wf29UqxWDpc+i61k3oIOzcUfQt79PIT9y/MWfAGlrkjg6lBC1hwDECLXPVJAhWjiGbfBCxZd65F/LIZF3+jeJQ==}
@@ -3717,8 +3717,8 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
-  add-mcp@1.13.0:
-    resolution: {integrity: sha512-ESxIzbzvJM0XPaSd8Os4WbDVGYB5rSg3V9mKzvCzjKff6E9DN86Ncr+csq4kQ8G+Ws7v7EGiZpy3tpNww2lyjQ==}
+  add-mcp@1.14.0:
+    resolution: {integrity: sha512-EVUZxL2ASWk53VJUgVIyK9nqD/YdoKocxtdrZehXjjmaWseBcHg25LfA5YhTrsk3Nuf3PPAF1JPPlodzd+7TVg==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -6122,6 +6122,10 @@ packages:
     resolution: {integrity: sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==}
     engines: {node: ^10 || ^12 || >=14}
 
+  postcss@8.5.20:
+    resolution: {integrity: sha512-lW616l85ucIQL+FocMmL7pQFPqBmwejrCMg+iPxyImlrANNJG9NHq/RkyCZopDhd8C3LA03PHRJDjkbGu8vvug==}
+    engines: {node: ^10 || ^12 || >=14}
+
   postgres-array@2.0.0:
     resolution: {integrity: sha512-VpZrUqU5A69eQyW2c5CA1jtLecCsN2U/bD6VilrFDWq5+5UIEVO7nazS3TEcHf1zuPYO/sqGvUvW62g86RXZuA==}
     engines: {node: '>=4'}
@@ -7582,12 +7586,12 @@ snapshots:
       smol-toml: 1.7.0
       unified: 11.0.5
 
-  '@astrojs/language-server@2.16.12(prettier-plugin-astro@0.14.1)(prettier@3.9.5)(typescript@6.0.3)':
+  '@astrojs/language-server@2.16.12(prettier-plugin-astro@0.14.1)(prettier@3.9.5)(typescript@7.0.2)':
     dependencies:
       '@astrojs/compiler': 2.13.1
       '@astrojs/yaml2ts': 0.2.4
       '@jridgewell/sourcemap-codec': 1.5.5
-      '@volar/kit': 2.4.28(typescript@6.0.3)
+      '@volar/kit': 2.4.28(typescript@7.0.2)
       '@volar/language-core': 2.4.28
       '@volar/language-server': 2.4.28
       '@volar/language-service': 2.4.28
@@ -10183,13 +10187,13 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1)(yaml@2.9.0)
 
-  '@tanstack/react-virtual@3.14.6(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@tanstack/react-virtual@3.14.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
-      '@tanstack/virtual-core': 3.17.4
+      '@tanstack/virtual-core': 3.17.5
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
 
-  '@tanstack/virtual-core@3.17.4': {}
+  '@tanstack/virtual-core@3.17.5': {}
 
   '@ts-morph/common@0.27.0':
     dependencies:
@@ -10463,12 +10467,12 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
 
-  '@volar/kit@2.4.28(typescript@6.0.3)':
+  '@volar/kit@2.4.28(typescript@7.0.2)':
     dependencies:
       '@volar/language-service': 2.4.28
       '@volar/typescript': 2.4.28
       typesafe-path: 0.2.2
-      typescript: 6.0.3
+      typescript: 7.0.2
       vscode-languageserver-textdocument: 1.0.12
       vscode-uri: 3.1.0
 
@@ -10524,7 +10528,7 @@ snapshots:
 
   acorn@8.17.0: {}
 
-  add-mcp@1.13.0:
+  add-mcp@1.14.0:
     dependencies:
       '@clack/prompts': 0.9.1
       '@iarna/toml': 2.2.5
@@ -13332,6 +13336,12 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
+  postcss@8.5.20:
+    dependencies:
+      nanoid: 3.3.16
+      picocolors: 1.1.1
+      source-map-js: 1.2.1
+
   postgres-array@2.0.0: {}
 
   postgres-bytea@1.0.1: {}
@@ -14458,7 +14468,7 @@ snapshots:
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.20
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:
