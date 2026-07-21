@@ -15,64 +15,26 @@ afterEach(() => {
 });
 
 describe("dashboard Vault APIs", () => {
-  it("sets, lists, grants, revokes, deletes, and records redacted activity", async () => {
+  it("does not retain legacy shared dashboard Vault policy routes", async () => {
     const setup = await authenticatedDashboard();
-    const secret = "super_secret_dashboard_value";
-
-    const set = await dashboardPost(setup, "/dashboard/api/vault/values", {
-      key: "GH_TOKEN",
-      value: secret,
-    });
-    expect(set.status).toBe(200);
-    await expect(set.json()).resolves.toMatchObject({ status: { key: "GH_TOKEN", present: true } });
-
-    const list = await dashboardGet(setup, "/dashboard/api/vault");
-    expect(list.status).toBe(200);
-    const listText = await list.text();
-    expect(listText).toContain('"key":"GH_TOKEN"');
-    expect(listText).not.toContain(secret);
-
-    const grant = await dashboardPost(setup, "/dashboard/api/vault/grants", {
-      storedKey: "GH_TOKEN",
-      referenceName: "API_TOKEN",
-      capletId: "status",
-    });
-    expect(grant.status).toBe(200);
-    const grantBody = await grant.json();
-    expect(grantBody).toMatchObject({
-      grant: {
-        referenceName: "API_TOKEN",
-        capletId: "status",
-        origin: { kind: "global-config" },
-      },
-    });
-    expect(JSON.stringify(grantBody)).not.toContain(setup.context.configPath);
-
-    const revoke = await dashboardPost(setup, "/dashboard/api/vault/grants/revoke", {
-      storedKey: "GH_TOKEN",
-      referenceName: "API_TOKEN",
-      capletId: "status",
-    });
-    expect(revoke.status).toBe(200);
-    await expect(revoke.json()).resolves.toMatchObject({
-      revoked: [expect.objectContaining({ storedKey: "GH_TOKEN" })],
-    });
-
-    const deleted = await dashboardPost(setup, "/dashboard/api/vault/values/GH_TOKEN/delete", {});
-    expect(deleted.status).toBe(200);
-    await expect(deleted.json()).resolves.toMatchObject({
-      deleted: { key: "GH_TOKEN", deleted: true },
-    });
-
-    const activity = await dashboardGet(setup, "/dashboard/api/activity");
-    expect(activity.status).toBe(200);
-    const activityText = await activity.text();
-    expect(activityText).not.toContain(secret);
-    expect(activityText).toContain('"action":"vault_value_written"');
-    expect(activityText).toContain('"action":"vault.grant"');
-    expect(activityText).toContain('"action":"vault.revoke"');
-    expect(activityText).toContain('"action":"vault_value_deleted"');
-    expect(activityText).not.toContain(setup.context.configPath);
+    for (const [method, path] of [
+      ["GET", "/dashboard/api/vault"],
+      ["POST", "/dashboard/api/vault/values"],
+      ["POST", "/dashboard/api/vault/grants"],
+      ["POST", "/dashboard/api/vault/grants/revoke"],
+      ["POST", "/dashboard/api/vault/reveal"],
+    ] as const) {
+      const response = await setup.app.request(`http://127.0.0.1:5387${path}`, {
+        method,
+        headers: {
+          cookie: setup.cookie,
+          "content-type": "application/json",
+          "x-caplets-csrf": setup.csrfToken,
+        },
+        ...(method === "POST" ? { body: "{}" } : {}),
+      });
+      expect(response.status, `${method} ${path}`).toBe(404);
+    }
 
     await setup.engine.close();
     await setup.storage.close();
@@ -80,18 +42,17 @@ describe("dashboard Vault APIs", () => {
 
   it("reveals exactly one confirmed key and redacts reveal activity", async () => {
     const setup = await authenticatedDashboard();
-    await dashboardPost(setup, "/dashboard/api/vault/values", {
-      key: "GH_TOKEN",
-      value: "remote_secret",
+    await setup.storage.vaultValues.set("GH_TOKEN", "remote_secret", {
+      operatorClientId: setup.operatorClientId,
     });
 
-    const denied = await dashboardPost(setup, "/dashboard/api/vault/reveal", {
+    const denied = await dashboardPost(setup, "/dashboard/api/private/vault-reveals", {
       key: "GH_TOKEN",
       confirmation: "reveal WRONG",
     });
     expect(denied.status).toBe(400);
 
-    const revealed = await dashboardPost(setup, "/dashboard/api/vault/reveal", {
+    const revealed = await dashboardPost(setup, "/dashboard/api/private/vault-reveals", {
       key: "GH_TOKEN",
       confirmation: "reveal GH_TOKEN",
     });
@@ -99,11 +60,9 @@ describe("dashboard Vault APIs", () => {
     expect(revealed.headers.get("cache-control")).toBe("no-store");
     await expect(revealed.json()).resolves.toEqual({ key: "GH_TOKEN", value: "remote_secret" });
 
-    const activity = await dashboardGet(
-      setup,
-      "/dashboard/api/activity?action=vault_value_revealed",
+    const text = JSON.stringify(
+      await setup.storage.operatorActivity.list({ action: "vault_value_revealed" }),
     );
-    const text = await activity.text();
     expect(text).toContain('"action":"vault_value_revealed"');
     expect(text).not.toContain("remote_secret");
 
@@ -112,15 +71,14 @@ describe("dashboard Vault APIs", () => {
   });
   it("maps reveal collaborator faults to internal errors without ending the session", async () => {
     const setup = await authenticatedDashboard();
-    await dashboardPost(setup, "/dashboard/api/vault/values", {
-      key: "GH_TOKEN",
-      value: "remote_secret",
+    await setup.storage.vaultValues.set("GH_TOKEN", "remote_secret", {
+      operatorClientId: setup.operatorClientId,
     });
     vi.spyOn(VaultValueStore.prototype, "resolveValue").mockRejectedValue(
       new Error("Vault read failed at /tmp/private token=cap_remote_access_sensitive_value"),
     );
 
-    const response = await dashboardPost(setup, "/dashboard/api/vault/reveal", {
+    const response = await dashboardPost(setup, "/dashboard/api/private/vault-reveals", {
       key: "GH_TOKEN",
       confirmation: "reveal GH_TOKEN",
     });
@@ -134,6 +92,7 @@ describe("dashboard Vault APIs", () => {
     expect(body).not.toContain("/tmp/private");
     expect(body).not.toContain("cap_remote_access_sensitive_value");
     expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store");
 
     await setup.engine.close();
     await setup.storage.close();
@@ -142,11 +101,21 @@ describe("dashboard Vault APIs", () => {
     const setup = await authenticatedDashboard();
     const value = " \t\r\n ";
 
-    const dashboardResponse = await dashboardPost(setup, "/dashboard/api/vault/values", {
-      key: "DASHBOARD_WHITESPACE",
-      value,
-    });
-    expect(dashboardResponse.status).toBe(200);
+    const dashboardResponse = await setup.app.request(
+      "http://127.0.0.1:5387/dashboard/api/v2/vault-values/DASHBOARD_WHITESPACE",
+      {
+        method: "PUT",
+        headers: {
+          cookie: setup.cookie,
+          "content-type": "application/json",
+          "idempotency-key": "dashboard-whitespace",
+          "if-none-match": "*",
+          "x-caplets-csrf": setup.csrfToken,
+        },
+        body: JSON.stringify({ value }),
+      },
+    );
+    expect(dashboardResponse.status).toBe(201);
 
     const pending = await setup.store.createPendingLogin({
       hostUrl: "http://127.0.0.1:5387/",
@@ -161,18 +130,20 @@ describe("dashboard Vault APIs", () => {
       flowId: pending.flowId,
       pendingCompletionSecret: pending.pendingCompletionSecret,
     });
-    const bearerResponse = await setup.app.request("http://127.0.0.1:5387/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${operator.accessToken}`,
-        "content-type": "application/json",
+    const bearerResponse = await setup.app.request(
+      "http://127.0.0.1:5387/v2/admin/vault-values/BEARER_WHITESPACE",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${operator.accessToken}`,
+          "content-type": "application/json",
+          "idempotency-key": "bearer-whitespace",
+          "if-none-match": "*",
+        },
+        body: JSON.stringify({ value }),
       },
-      body: JSON.stringify({
-        command: "vault_set",
-        arguments: { name: "BEARER_WHITESPACE", value },
-      }),
-    });
-    expect(bearerResponse.status).toBe(200);
+    );
+    expect(bearerResponse.status).toBe(201);
 
     await expect(setup.storage.vaultValues.resolveValue("DASHBOARD_WHITESPACE")).resolves.toBe(
       value,
@@ -213,12 +184,6 @@ async function authenticatedDashboard() {
     csrfToken: body.session.csrfToken,
     operatorClientId: body.session.operatorClientId,
   };
-}
-
-async function dashboardGet(setup: Setup, path: string) {
-  return await setup.app.request(`http://127.0.0.1:5387${path}`, {
-    headers: { cookie: setup.cookie },
-  });
 }
 
 async function dashboardPost(setup: Setup, path: string, body: unknown) {
@@ -285,6 +250,11 @@ function httpOptions(stateDir: string): HttpServeOptions {
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
   };
 }
 

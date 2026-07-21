@@ -1,6 +1,22 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  count,
+  gt,
+  inArray,
+  isNotNull,
+  lt,
+  isNull,
+  lte,
+  or,
+  sql,
+  type AnyColumn,
+  type SQL,
+} from "drizzle-orm";
 import { CapletsError } from "../errors";
 import { normalizeRemoteProfileHostUrl } from "../remote/options";
 import { createPairingCode, parsePairingCode, randomToken } from "../remote/pairing";
@@ -13,6 +29,7 @@ import {
   type RefreshClientCredentialsInput,
   type RefreshPendingLoginInput,
   type RemoteServerCredentialState,
+  type RemoteServerCredentialStore,
   type ValidateAccessTokenInput,
 } from "../remote/server-credential-store";
 import {
@@ -26,6 +43,7 @@ import {
 } from "../remote/server-credentials";
 import { decryptVaultValue, encryptVaultValue, type VaultEncryptedRecord } from "../vault/crypto";
 import { stableJsonStringify } from "../stable-json";
+import { storagePageLimit, type KeysetSortDirection, type StorageKeysetPage } from "./keyset-page";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
 import type {
@@ -45,36 +63,75 @@ export type {
   ValidateAccessTokenInput,
 };
 
-export type OperatorPendingLoginInput = {
+type RemoteGenerationExpectation = {
+  expectedGeneration?: number | undefined;
+};
+
+export type RefreshPendingLoginMutationInput = RefreshPendingLoginInput &
+  RemoteGenerationExpectation;
+
+export type CancelPendingLoginInput = PendingLoginPossessionInput & RemoteGenerationExpectation;
+
+export type OperatorPendingLoginInput = RemoteGenerationExpectation & {
   operatorClientId: string;
   operatorCode: string;
   grantedRole?: RemoteClientRole | undefined;
   now?: Date | undefined;
 };
 
-export type OperatorPendingLoginFlowInput = {
+export type OperatorPendingLoginFlowInput = RemoteGenerationExpectation & {
   operatorClientId: string;
   flowId: string;
   grantedRole?: RemoteClientRole | undefined;
   now?: Date | undefined;
 };
 
-export type CompletePendingLoginInput = PendingLoginPossessionInput & {
-  hostUrl: string;
-  requiredRole?: RemoteClientRole | undefined;
+export type CompletePendingLoginInput = PendingLoginPossessionInput &
+  RemoteGenerationExpectation & {
+    hostUrl: string;
+    requiredRole?: RemoteClientRole | undefined;
+  };
+
+export type CompletedPendingLoginCredentials = IssuedRemoteClientCredentials & {
+  pendingLoginGeneration: number;
 };
 
-export type RevokeRemoteClientInput = {
+export type RevokeRemoteClientInput = RemoteGenerationExpectation & {
   operatorClientId: string;
   clientId: string;
   now?: Date | undefined;
 };
 
-export type ChangeRemoteClientRoleInput = {
+export type ChangeRemoteClientRoleInput = RemoteGenerationExpectation & {
   operatorClientId: string;
   clientId: string;
   role: RemoteClientRole;
   now?: Date | undefined;
+};
+
+export type RemoteClientPageKey = {
+  createdAt: string;
+  clientId: string;
+};
+
+export type ListRemoteClientsPageInput = {
+  limit?: number | undefined;
+  after?: RemoteClientPageKey | undefined;
+  sort?: KeysetSortDirection | undefined;
+  role?: RemoteClientRole | undefined;
+  revoked?: boolean | undefined;
+};
+
+export type PendingLoginPageKey = {
+  createdAt: string;
+  flowId: string;
+};
+
+export type ListPendingLoginsPageInput = {
+  limit?: number | undefined;
+  after?: PendingLoginPageKey | undefined;
+  sort?: KeysetSortDirection | undefined;
+  statuses?: readonly RemotePendingLoginState[] | undefined;
 };
 
 type SupersededRefreshToken = { hash: string; supersededAt: string };
@@ -106,6 +163,7 @@ type StoredRemoteClient = {
   supersededRefreshTokenHashes: SupersededRefreshToken[];
   refreshFamilyId: string;
   createdAt: string;
+  generation: number;
   lastUsedAt?: string | undefined;
   revokedAt?: string | undefined;
 };
@@ -127,6 +185,7 @@ type StoredPendingLogin = {
   createdAt: string;
   codeExpiresAt: string;
   flowExpiresAt: string;
+  generation: number;
   status: RemotePendingLoginState;
   operatorCodeFingerprint?: string | undefined;
   approvedAt?: string | undefined;
@@ -195,6 +254,7 @@ export class RemoteSecurityStore {
         createdAt: now.toISOString(),
         codeExpiresAt,
         flowExpiresAt,
+        generation: 1,
         status: "pending",
         operatorCodeFingerprint: operatorCodeFingerprint(operatorCode),
       });
@@ -222,7 +282,7 @@ export class RemoteSecurityStore {
     return { flowId: flow.flowId, status: flow.status };
   }
 
-  async refreshPendingLogin(input: RefreshPendingLoginInput) {
+  async refreshPendingLogin(input: RefreshPendingLoginMutationInput) {
     return await this.update((state) => {
       const now = input.now ?? new Date();
       cleanupPendingLogins(state, now);
@@ -232,6 +292,7 @@ export class RemoteSecurityStore {
         input.pendingCompletionSecret,
         now,
       );
+      assertExpectedGeneration(flow.generation, input.expectedGeneration);
       if (flow.status !== "pending")
         throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
       const refreshHash = hashSecret(input.pendingRefreshSecret);
@@ -271,6 +332,7 @@ export class RemoteSecurityStore {
         codeExpiresAt,
         flowExpiresAt: flow.flowExpiresAt,
         intervalSeconds: DEFAULT_PENDING_POLL_INTERVAL_SECONDS,
+        generation: flow.generation + 1,
       };
       flow.operatorCodeHash = hashSecret(operatorCode);
       flow.operatorCodeFingerprint = response.operatorCodeFingerprint;
@@ -292,6 +354,7 @@ export class RemoteSecurityStore {
       );
       flow.pendingRefreshHash = hashSecret(pendingRefreshSecret);
       flow.codeExpiresAt = codeExpiresAt;
+      flow.generation += 1;
       return { value: response };
     });
   }
@@ -309,7 +372,9 @@ export class RemoteSecurityStore {
           safeHashEqual(codeHash, candidate.operatorCodeHash),
         );
         if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
+        assertExpectedGeneration(flow.generation, input.expectedGeneration);
         denyFlow(flow, now);
+        flow.generation += 1;
         return { value: pendingLoginStatus(flow), targetKey: flow.flowId };
       },
     );
@@ -326,15 +391,17 @@ export class RemoteSecurityStore {
         const now = input.now ?? new Date();
         cleanupPendingLogins(state, now);
         const flow = requireFlow(state, input.flowId);
+        assertExpectedGeneration(flow.generation, input.expectedGeneration);
         denyFlow(flow, now);
+        flow.generation += 1;
         return { value: pendingLoginStatus(flow), targetKey: flow.flowId };
       },
     );
   }
 
   async cancelPendingLogin(
-    input: PendingLoginPossessionInput,
-  ): Promise<{ flowId: string; status: "cancelled" }> {
+    input: CancelPendingLoginInput,
+  ): Promise<{ flowId: string; status: "cancelled"; generation: number }> {
     return await this.update((state) => {
       const now = input.now ?? new Date();
       cleanupPendingLogins(state, now);
@@ -344,11 +411,19 @@ export class RemoteSecurityStore {
         input.pendingCompletionSecret,
         now,
       );
+      assertExpectedGeneration(flow.generation, input.expectedGeneration);
       if (flow.status !== "pending" && flow.status !== "approved")
         throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
       flow.status = "cancelled";
       flow.cancelledAt = now.toISOString();
-      return { value: { flowId: flow.flowId, status: "cancelled" as const } };
+      flow.generation += 1;
+      return {
+        value: {
+          flowId: flow.flowId,
+          status: "cancelled" as const,
+          generation: flow.generation,
+        },
+      };
     });
   }
 
@@ -365,7 +440,9 @@ export class RemoteSecurityStore {
           safeHashEqual(codeHash, candidate.operatorCodeHash),
         );
         if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
+        assertExpectedGeneration(flow.generation, input.expectedGeneration);
         approveFlow(flow, input.grantedRole, now);
+        flow.generation += 1;
         return {
           value: pendingApprovalStatus(flow),
           targetKey: flow.flowId,
@@ -386,7 +463,9 @@ export class RemoteSecurityStore {
         const now = input.now ?? new Date();
         cleanupPendingLogins(state, now);
         const flow = requireFlow(state, input.flowId);
+        assertExpectedGeneration(flow.generation, input.expectedGeneration);
         approveFlow(flow, input.grantedRole, now);
+        flow.generation += 1;
         return {
           value: pendingLoginStatus(flow),
           targetKey: flow.flowId,
@@ -397,8 +476,14 @@ export class RemoteSecurityStore {
   }
 
   async completePendingLogin(
+    input: CompletePendingLoginInput & { expectedGeneration: number },
+  ): Promise<CompletedPendingLoginCredentials>;
+  async completePendingLogin(
     input: CompletePendingLoginInput,
-  ): Promise<IssuedRemoteClientCredentials> {
+  ): Promise<IssuedRemoteClientCredentials>;
+  async completePendingLogin(
+    input: CompletePendingLoginInput,
+  ): Promise<IssuedRemoteClientCredentials | CompletedPendingLoginCredentials> {
     return await this.update((state) => {
       const now = input.now ?? new Date();
       cleanupPendingLogins(state, now);
@@ -408,6 +493,7 @@ export class RemoteSecurityStore {
         input.pendingCompletionSecret,
         now,
       );
+      assertExpectedGeneration(flow.generation, input.expectedGeneration);
       if (flow.hostUrl !== normalizeRemoteProfileHostUrl(input.hostUrl))
         throw new CapletsError("AUTH_FAILED", "Pending login belongs to a different host.");
       if (flow.status !== "approved") {
@@ -444,12 +530,18 @@ export class RemoteSecurityStore {
       state.clients.push(client);
       flow.status = "exchanged";
       flow.exchangedAt = now.toISOString();
+      flow.generation += 1;
       const credentials = credentialsFromClient(client, accessToken, refreshToken);
       flow.completionReplay = {
         expiresAt: new Date(now.getTime() + STALE_REFRESH_REVOKE_GRACE_MS).toISOString(),
         encryptedCredentials: encryptReplayValue(credentials, input.pendingCompletionSecret, now),
       };
-      return { value: credentials };
+      return {
+        value:
+          input.expectedGeneration === undefined
+            ? credentials
+            : { ...credentials, pendingLoginGeneration: flow.generation },
+      };
     });
   }
 
@@ -523,37 +615,371 @@ export class RemoteSecurityStore {
     });
   }
 
-  async listClients(): Promise<RemoteClientStatus[]> {
-    const state = await this.readState();
-    return state.clients
-      .map(clientStatus)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  async getClient(clientId: string): Promise<RemoteClientStatus | undefined> {
+    const row =
+      this.database.dialect === "sqlite"
+        ? this.database.db
+            .select({
+              clientId: sqlite.remoteClients.clientId,
+              clientLabel: sqlite.remoteClients.clientLabel,
+              role: sqlite.remoteClients.role,
+              hostUrl: sqlite.remoteClients.hostUrl,
+              createdAt: sqlite.remoteClients.createdAt,
+              generation: sqlite.remoteClients.generation,
+              lastUsedAt: sqlite.remoteClients.lastUsedAt,
+              revokedAt: sqlite.remoteClients.revokedAt,
+            })
+            .from(sqlite.remoteClients)
+            .where(eq(sqlite.remoteClients.clientId, clientId))
+            .get()
+        : (
+            await this.database.db
+              .select({
+                clientId: postgres.remoteClients.clientId,
+                clientLabel: postgres.remoteClients.clientLabel,
+                role: postgres.remoteClients.role,
+                hostUrl: postgres.remoteClients.hostUrl,
+                createdAt: postgres.remoteClients.createdAt,
+                generation: postgres.remoteClients.generation,
+                lastUsedAt: postgres.remoteClients.lastUsedAt,
+                revokedAt: postgres.remoteClients.revokedAt,
+              })
+              .from(postgres.remoteClients)
+              .where(eq(postgres.remoteClients.clientId, clientId))
+              .limit(1)
+          )[0];
+    return row ? clientStatus(row) : undefined;
   }
 
-  async listPendingLogins(now = new Date()): Promise<RemotePendingLoginStatus[]> {
-    return await this.update((state) => {
-      const changed = cleanupPendingLogins(state, now);
-      return {
-        value: state.pendingLogins
-          .map(pendingLoginStatus)
-          .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-        save: changed,
-      };
+  async listClientsPage(
+    input: ListRemoteClientsPageInput,
+  ): Promise<StorageKeysetPage<RemoteClientStatus, RemoteClientPageKey>> {
+    const limit = storagePageLimit(input.limit);
+    const sort = input.sort ?? "asc";
+    const rows =
+      this.database.dialect === "sqlite"
+        ? this.database.db
+            .select({
+              clientId: sqlite.remoteClients.clientId,
+              clientLabel: sqlite.remoteClients.clientLabel,
+              role: sqlite.remoteClients.role,
+              hostUrl: sqlite.remoteClients.hostUrl,
+              createdAt: sqlite.remoteClients.createdAt,
+              generation: sqlite.remoteClients.generation,
+              lastUsedAt: sqlite.remoteClients.lastUsedAt,
+              revokedAt: sqlite.remoteClients.revokedAt,
+            })
+            .from(sqlite.remoteClients)
+            .where(remoteClientPageWhere(sqlite.remoteClients, input))
+            .orderBy(
+              sort === "asc"
+                ? asc(sqlite.remoteClients.createdAt)
+                : desc(sqlite.remoteClients.createdAt),
+              sort === "asc"
+                ? asc(sqlite.remoteClients.clientId)
+                : desc(sqlite.remoteClients.clientId),
+            )
+            .limit(limit + 1)
+            .all()
+        : await this.database.db
+            .select({
+              clientId: postgres.remoteClients.clientId,
+              clientLabel: postgres.remoteClients.clientLabel,
+              role: postgres.remoteClients.role,
+              hostUrl: postgres.remoteClients.hostUrl,
+              createdAt: postgres.remoteClients.createdAt,
+              generation: postgres.remoteClients.generation,
+              lastUsedAt: postgres.remoteClients.lastUsedAt,
+              revokedAt: postgres.remoteClients.revokedAt,
+            })
+            .from(postgres.remoteClients)
+            .where(
+              remoteClientPageWhere(
+                postgres.remoteClients,
+                input,
+                postgresBinaryText(postgres.remoteClients.clientId),
+              ),
+            )
+            .orderBy(
+              sort === "asc"
+                ? asc(postgres.remoteClients.createdAt)
+                : desc(postgres.remoteClients.createdAt),
+              sort === "asc"
+                ? asc(postgresBinaryText(postgres.remoteClients.clientId))
+                : desc(postgresBinaryText(postgres.remoteClients.clientId)),
+            )
+            .limit(limit + 1);
+    const pageRows = rows.slice(0, limit);
+    return {
+      items: pageRows.map(clientStatus),
+      ...(rows.length > limit
+        ? {
+            nextKey: {
+              createdAt: pageRows[pageRows.length - 1]!.createdAt,
+              clientId: pageRows[pageRows.length - 1]!.clientId,
+            },
+          }
+        : {}),
+    };
+  }
+
+  async countClients(): Promise<number> {
+    if (this.database.dialect === "sqlite") {
+      return (
+        this.database.db.select({ value: count() }).from(sqlite.remoteClients).get()?.value ?? 0
+      );
+    }
+    const [row] = await this.database.db.select({ value: count() }).from(postgres.remoteClients);
+    return row?.value ?? 0;
+  }
+
+  async listClients(): Promise<RemoteClientStatus[]> {
+    const clients: RemoteClientStatus[] = [];
+    let after: RemoteClientPageKey | undefined;
+    do {
+      const page = await this.listClientsPage({ after });
+      clients.push(...page.items);
+      after = page.nextKey;
+    } while (after);
+    return clients;
+  }
+
+  async getPendingLogin(
+    flowId: string,
+    now = new Date(),
+  ): Promise<RemotePendingLoginStatus | undefined> {
+    if (this.database.dialect === "sqlite") {
+      return this.database.db.transaction((transaction) => {
+        cleanupSqlitePendingLogins(transaction, now);
+        const row = transaction
+          .select({
+            flowId: sqlite.remotePendingLogins.flowId,
+            hostUrl: sqlite.remotePendingLogins.hostUrl,
+            hostIdentity: sqlite.remotePendingLogins.hostIdentity,
+            status: sqlite.remotePendingLogins.status,
+            requestedRole: sqlite.remotePendingLogins.requestedRole,
+            grantedRole: sqlite.remotePendingLogins.grantedRole,
+            operatorCodeFingerprint: sqlite.remotePendingLogins.operatorCodeFingerprint,
+            clientLabel: sqlite.remotePendingLogins.clientLabel,
+            clientFingerprint: sqlite.remotePendingLogins.clientFingerprint,
+            sourceHint: sqlite.remotePendingLogins.sourceHint,
+            createdAt: sqlite.remotePendingLogins.createdAt,
+            codeExpiresAt: sqlite.remotePendingLogins.codeExpiresAt,
+            flowExpiresAt: sqlite.remotePendingLogins.flowExpiresAt,
+            generation: sqlite.remotePendingLogins.generation,
+            approvedAt: sqlite.remotePendingLogins.approvedAt,
+            deniedAt: sqlite.remotePendingLogins.deniedAt,
+            cancelledAt: sqlite.remotePendingLogins.cancelledAt,
+            exchangedAt: sqlite.remotePendingLogins.exchangedAt,
+          })
+          .from(sqlite.remotePendingLogins)
+          .where(eq(sqlite.remotePendingLogins.flowId, flowId))
+          .get();
+        return row ? pendingLoginStatus(row) : undefined;
+      });
+    }
+    return await this.database.db.transaction(async (transaction) => {
+      await cleanupPostgresPendingLogins(transaction, now);
+      const rows = await transaction
+        .select({
+          flowId: postgres.remotePendingLogins.flowId,
+          hostUrl: postgres.remotePendingLogins.hostUrl,
+          hostIdentity: postgres.remotePendingLogins.hostIdentity,
+          status: postgres.remotePendingLogins.status,
+          requestedRole: postgres.remotePendingLogins.requestedRole,
+          grantedRole: postgres.remotePendingLogins.grantedRole,
+          operatorCodeFingerprint: postgres.remotePendingLogins.operatorCodeFingerprint,
+          clientLabel: postgres.remotePendingLogins.clientLabel,
+          clientFingerprint: postgres.remotePendingLogins.clientFingerprint,
+          sourceHint: postgres.remotePendingLogins.sourceHint,
+          createdAt: postgres.remotePendingLogins.createdAt,
+          codeExpiresAt: postgres.remotePendingLogins.codeExpiresAt,
+          flowExpiresAt: postgres.remotePendingLogins.flowExpiresAt,
+          generation: postgres.remotePendingLogins.generation,
+          approvedAt: postgres.remotePendingLogins.approvedAt,
+          deniedAt: postgres.remotePendingLogins.deniedAt,
+          cancelledAt: postgres.remotePendingLogins.cancelledAt,
+          exchangedAt: postgres.remotePendingLogins.exchangedAt,
+        })
+        .from(postgres.remotePendingLogins)
+        .where(eq(postgres.remotePendingLogins.flowId, flowId))
+        .limit(1);
+      return rows[0] ? pendingLoginStatus(rows[0]) : undefined;
     });
   }
 
-  async revokeClient(input: RevokeRemoteClientInput): Promise<boolean> {
-    return await this.operatorUpdate(
+  async countPendingLogins(
+    statuses?: readonly RemotePendingLoginState[],
+    now = new Date(),
+  ): Promise<number> {
+    const normalizedStatuses = normalizePendingLoginStatuses(statuses);
+    if (this.database.dialect === "sqlite") {
+      return this.database.db.transaction((transaction) => {
+        cleanupSqlitePendingLogins(transaction, now);
+        return (
+          transaction
+            .select({ value: count() })
+            .from(sqlite.remotePendingLogins)
+            .where(
+              normalizedStatuses
+                ? inArray(sqlite.remotePendingLogins.status, normalizedStatuses)
+                : undefined,
+            )
+            .get()?.value ?? 0
+        );
+      });
+    }
+    return await this.database.db.transaction(async (transaction) => {
+      await cleanupPostgresPendingLogins(transaction, now);
+      const [row] = await transaction
+        .select({ value: count() })
+        .from(postgres.remotePendingLogins)
+        .where(
+          normalizedStatuses
+            ? inArray(postgres.remotePendingLogins.status, normalizedStatuses)
+            : undefined,
+        );
+      return row?.value ?? 0;
+    });
+  }
+
+  async listPendingLoginsPage(
+    input: ListPendingLoginsPageInput,
+  ): Promise<StorageKeysetPage<RemotePendingLoginStatus, PendingLoginPageKey>> {
+    return await this.listPendingLoginsPageAt(input, new Date());
+  }
+
+  async listPendingLogins(now = new Date()): Promise<RemotePendingLoginStatus[]> {
+    const flows: RemotePendingLoginStatus[] = [];
+    let after: PendingLoginPageKey | undefined;
+    do {
+      const page = await this.listPendingLoginsPageAt({ after }, now);
+      flows.push(...page.items);
+      after = page.nextKey;
+    } while (after);
+    return flows;
+  }
+
+  private async listPendingLoginsPageAt(
+    input: ListPendingLoginsPageInput,
+    now: Date,
+  ): Promise<StorageKeysetPage<RemotePendingLoginStatus, PendingLoginPageKey>> {
+    const limit = storagePageLimit(input.limit);
+    const sort = input.sort ?? "asc";
+    const statuses = normalizePendingLoginStatuses(input.statuses);
+    if (this.database.dialect === "sqlite") {
+      return this.database.db.transaction((transaction) => {
+        cleanupSqlitePendingLogins(transaction, now);
+        const rows = transaction
+          .select({
+            flowId: sqlite.remotePendingLogins.flowId,
+            hostUrl: sqlite.remotePendingLogins.hostUrl,
+            hostIdentity: sqlite.remotePendingLogins.hostIdentity,
+            status: sqlite.remotePendingLogins.status,
+            requestedRole: sqlite.remotePendingLogins.requestedRole,
+            grantedRole: sqlite.remotePendingLogins.grantedRole,
+            operatorCodeFingerprint: sqlite.remotePendingLogins.operatorCodeFingerprint,
+            clientLabel: sqlite.remotePendingLogins.clientLabel,
+            clientFingerprint: sqlite.remotePendingLogins.clientFingerprint,
+            sourceHint: sqlite.remotePendingLogins.sourceHint,
+            createdAt: sqlite.remotePendingLogins.createdAt,
+            codeExpiresAt: sqlite.remotePendingLogins.codeExpiresAt,
+            flowExpiresAt: sqlite.remotePendingLogins.flowExpiresAt,
+            generation: sqlite.remotePendingLogins.generation,
+            approvedAt: sqlite.remotePendingLogins.approvedAt,
+            deniedAt: sqlite.remotePendingLogins.deniedAt,
+            cancelledAt: sqlite.remotePendingLogins.cancelledAt,
+            exchangedAt: sqlite.remotePendingLogins.exchangedAt,
+          })
+          .from(sqlite.remotePendingLogins)
+          .where(pendingLoginPageWhere(sqlite.remotePendingLogins, input.after, statuses, sort))
+          .orderBy(
+            sort === "asc"
+              ? asc(sqlite.remotePendingLogins.createdAt)
+              : desc(sqlite.remotePendingLogins.createdAt),
+            sort === "asc"
+              ? asc(sqlite.remotePendingLogins.flowId)
+              : desc(sqlite.remotePendingLogins.flowId),
+          )
+          .limit(limit + 1)
+          .all();
+        return pendingLoginPage(rows, limit);
+      });
+    }
+    return await this.database.db.transaction(async (transaction) => {
+      await cleanupPostgresPendingLogins(transaction, now);
+      const rows = await transaction
+        .select({
+          flowId: postgres.remotePendingLogins.flowId,
+          hostUrl: postgres.remotePendingLogins.hostUrl,
+          hostIdentity: postgres.remotePendingLogins.hostIdentity,
+          status: postgres.remotePendingLogins.status,
+          requestedRole: postgres.remotePendingLogins.requestedRole,
+          grantedRole: postgres.remotePendingLogins.grantedRole,
+          operatorCodeFingerprint: postgres.remotePendingLogins.operatorCodeFingerprint,
+          clientLabel: postgres.remotePendingLogins.clientLabel,
+          clientFingerprint: postgres.remotePendingLogins.clientFingerprint,
+          sourceHint: postgres.remotePendingLogins.sourceHint,
+          createdAt: postgres.remotePendingLogins.createdAt,
+          codeExpiresAt: postgres.remotePendingLogins.codeExpiresAt,
+          flowExpiresAt: postgres.remotePendingLogins.flowExpiresAt,
+          generation: postgres.remotePendingLogins.generation,
+          approvedAt: postgres.remotePendingLogins.approvedAt,
+          deniedAt: postgres.remotePendingLogins.deniedAt,
+          cancelledAt: postgres.remotePendingLogins.cancelledAt,
+          exchangedAt: postgres.remotePendingLogins.exchangedAt,
+        })
+        .from(postgres.remotePendingLogins)
+        .where(
+          pendingLoginPageWhere(
+            postgres.remotePendingLogins,
+            input.after,
+            statuses,
+            sort,
+            postgresBinaryText(postgres.remotePendingLogins.flowId),
+          ),
+        )
+        .orderBy(
+          sort === "asc"
+            ? asc(postgres.remotePendingLogins.createdAt)
+            : desc(postgres.remotePendingLogins.createdAt),
+          sort === "asc"
+            ? asc(postgresBinaryText(postgres.remotePendingLogins.flowId))
+            : desc(postgresBinaryText(postgres.remotePendingLogins.flowId)),
+        )
+        .limit(limit + 1);
+      return pendingLoginPage(rows, limit);
+    });
+  }
+
+  async revokeClient(
+    input: RevokeRemoteClientInput & { expectedGeneration: number },
+  ): Promise<RemoteClientStatus | undefined>;
+  async revokeClient(input: RevokeRemoteClientInput): Promise<boolean>;
+  async revokeClient(
+    input: RevokeRemoteClientInput,
+  ): Promise<boolean | RemoteClientStatus | undefined> {
+    const client = await this.operatorUpdate(
       input.operatorClientId,
       "remote_client_revoked",
       "remote_client",
       (state) => {
-        const client = state.clients.find((candidate) => candidate.clientId === input.clientId);
-        if (!client) return { value: false, save: false };
-        client.revokedAt ??= (input.now ?? new Date()).toISOString();
-        return { value: true, targetKey: client.clientId };
+        const current = state.clients.find((candidate) => candidate.clientId === input.clientId);
+        if (!current) {
+          assertExpectedGeneration(undefined, input.expectedGeneration);
+          return { value: undefined, save: false };
+        }
+        assertExpectedGeneration(current.generation, input.expectedGeneration);
+        if (current.revokedAt) return { value: clientStatus(current), save: false };
+        current.revokedAt = (input.now ?? new Date()).toISOString();
+        current.generation += 1;
+        return {
+          value: clientStatus(current),
+          targetKey: current.clientId,
+        };
       },
     );
+    return input.expectedGeneration === undefined ? client !== undefined : client;
   }
 
   async changeClientRole(
@@ -565,9 +991,17 @@ export class RemoteSecurityStore {
       "remote_client",
       (state) => {
         const client = state.clients.find((candidate) => candidate.clientId === input.clientId);
-        if (!client) return { value: undefined, save: false };
+        if (!client) {
+          assertExpectedGeneration(undefined, input.expectedGeneration);
+          return { value: undefined, save: false };
+        }
+        assertExpectedGeneration(client.generation, input.expectedGeneration);
+        if (client.role === input.role) {
+          return { value: clientStatus(client), save: false };
+        }
         const previousRole = client.role;
         client.role = input.role;
+        client.generation += 1;
         return {
           value: clientStatus(client),
           targetKey: client.clientId,
@@ -610,9 +1044,12 @@ export class RemoteSecurityStore {
           const supersededAt = Date.parse(entry?.supersededAt ?? "");
           if (
             Number.isFinite(supersededAt) &&
-            now.getTime() - supersededAt >= STALE_REFRESH_REVOKE_GRACE_MS
-          )
+            now.getTime() - supersededAt >= STALE_REFRESH_REVOKE_GRACE_MS &&
+            !replayed.revokedAt
+          ) {
             replayed.revokedAt = now.toISOString();
+            replayed.generation += 1;
+          }
           return {
             error: new CapletsError(
               "REMOTE_CREDENTIALS_REVOKED",
@@ -637,6 +1074,7 @@ export class RemoteSecurityStore {
       });
       client.refreshTokenHash = hashSecret(refreshToken);
       client.lastUsedAt = now.toISOString();
+      client.generation += 1;
       return { value: credentialsFromClient(client, accessToken, refreshToken) };
     });
   }
@@ -773,6 +1211,14 @@ export class RemoteSecurityStore {
   }
 }
 
+export async function remoteClientById(
+  store: RemoteServerCredentialStore | RemoteSecurityStore,
+  clientId: string,
+): Promise<RemoteClientStatus | undefined> {
+  if (store instanceof RemoteSecurityStore) return await store.getClient(clientId);
+  return store.listClients().find((client) => client.clientId === clientId);
+}
+
 function mergeLegacyRemoteSecurityState(
   current: RemoteSecurityState,
   legacy: RemoteServerCredentialState,
@@ -784,20 +1230,20 @@ function mergeLegacyRemoteSecurityState(
   );
   const pendingLogins = mergeLegacyRemoteCollection(
     current.pendingLogins,
-    legacy.pendingLogins,
+    legacy.pendingLogins.map((entry) => ({ ...entry, generation: 1 })),
     (entry) => entry.flowId,
   );
   const clients = mergeLegacyRemoteCollection(
     current.clients,
-    legacy.clients,
+    legacy.clients.map((entry) => ({ ...entry, generation: 1 })),
     (entry) => entry.clientId,
   );
-  const state = parseRemoteServerCredentialState({
+  const state: RemoteSecurityState = {
     version: 1,
     pairingCodes: pairingCodes.values,
     pendingLogins: pendingLogins.values,
     clients: clients.values,
-  });
+  };
   return {
     state,
     changed: pairingCodes.changed || pendingLogins.changed || clients.changed,
@@ -986,6 +1432,7 @@ function assembleState(rows: RelationalRemoteSecurityRows): RemoteSecurityState 
         ),
         refreshFamilyId: family.familyId,
         createdAt: row.createdAt,
+        generation: row.generation,
         ...(row.lastUsedAt ? { lastUsedAt: row.lastUsedAt } : {}),
         ...(row.revokedAt || family.revokedAt
           ? { revokedAt: row.revokedAt ?? family.revokedAt! }
@@ -1016,6 +1463,7 @@ function assembleState(rows: RelationalRemoteSecurityRows): RemoteSecurityState 
       createdAt: row.createdAt,
       codeExpiresAt: row.codeExpiresAt,
       flowExpiresAt: row.flowExpiresAt,
+      generation: row.generation,
       status: parsePendingStatus(row.status),
       ...(row.operatorCodeFingerprint
         ? { operatorCodeFingerprint: row.operatorCodeFingerprint }
@@ -1123,6 +1571,7 @@ function relationalValues(state: RemoteSecurityState) {
       hostUrl: client.hostUrl,
       accessTokenHash: client.accessTokenHash,
       accessExpiresAt: client.accessExpiresAt,
+      generation: client.generation,
       createdAt: client.createdAt,
       lastUsedAt: client.lastUsedAt ?? null,
       revokedAt: client.revokedAt ?? null,
@@ -1158,6 +1607,7 @@ function relationalValues(state: RemoteSecurityState) {
       createdAt: flow.createdAt,
       codeExpiresAt: flow.codeExpiresAt,
       flowExpiresAt: flow.flowExpiresAt,
+      generation: flow.generation,
       status: flow.status,
       operatorCodeFingerprint: flow.operatorCodeFingerprint ?? null,
       approvedAt: flow.approvedAt ?? null,
@@ -1292,6 +1742,7 @@ function createClient(
     supersededRefreshTokenHashes: [],
     refreshFamilyId: randomUUID(),
     createdAt: now.toISOString(),
+    generation: 1,
   };
 }
 function requireFlow(state: RemoteSecurityState, flowId: string): StoredPendingLogin {
@@ -1347,11 +1798,94 @@ function assertPendingOperatorCodeFresh(flow: StoredPendingLogin, now: Date): vo
     );
 }
 
+type PendingLoginCleanupColumns = {
+  status: AnyColumn;
+  flowExpiresAt: AnyColumn;
+  deniedAt: AnyColumn;
+  cancelledAt: AnyColumn;
+  exchangedAt: AnyColumn;
+};
+
+function stalePendingLoginWhere(
+  table: PendingLoginCleanupColumns,
+  cutoff: string,
+): SQL | undefined {
+  return or(
+    and(
+      eq(table.status, "denied"),
+      lte(sql<string>`coalesce(${table.deniedAt}, ${table.flowExpiresAt})`, cutoff),
+    ),
+    and(
+      eq(table.status, "cancelled"),
+      lte(sql<string>`coalesce(${table.cancelledAt}, ${table.flowExpiresAt})`, cutoff),
+    ),
+    and(
+      eq(table.status, "exchanged"),
+      lte(sql<string>`coalesce(${table.exchangedAt}, ${table.flowExpiresAt})`, cutoff),
+    ),
+    and(eq(table.status, "expired"), lte(table.flowExpiresAt, cutoff)),
+  );
+}
+
+function cleanupSqlitePendingLogins(database: SqliteTransaction, now: Date): void {
+  const nowIso = now.toISOString();
+  database
+    .update(sqlite.remotePendingLogins)
+    .set({
+      status: "expired",
+      generation: sql<number>`${sqlite.remotePendingLogins.generation} + 1`,
+    })
+    .where(
+      and(
+        inArray(sqlite.remotePendingLogins.status, ["pending", "approved"]),
+        lte(sqlite.remotePendingLogins.flowExpiresAt, nowIso),
+      ),
+    )
+    .run();
+  database
+    .delete(sqlite.remotePendingLogins)
+    .where(
+      stalePendingLoginWhere(
+        sqlite.remotePendingLogins,
+        new Date(now.getTime() - PENDING_TERMINAL_RETENTION_MS).toISOString(),
+      ),
+    )
+    .run();
+}
+
+async function cleanupPostgresPendingLogins(
+  database: PostgresTransaction,
+  now: Date,
+): Promise<void> {
+  const nowIso = now.toISOString();
+  await database
+    .update(postgres.remotePendingLogins)
+    .set({
+      status: "expired",
+      generation: sql<number>`${postgres.remotePendingLogins.generation} + 1`,
+    })
+    .where(
+      and(
+        inArray(postgres.remotePendingLogins.status, ["pending", "approved"]),
+        lte(postgres.remotePendingLogins.flowExpiresAt, nowIso),
+      ),
+    );
+  await database
+    .delete(postgres.remotePendingLogins)
+    .where(
+      stalePendingLoginWhere(
+        postgres.remotePendingLogins,
+        new Date(now.getTime() - PENDING_TERMINAL_RETENTION_MS).toISOString(),
+      ),
+    );
+}
+
 function cleanupPendingLogins(state: RemoteSecurityState, now: Date): boolean {
   let changed = false;
   for (const flow of state.pendingLogins)
     if (isActivePendingLogin(flow) && Date.parse(flow.flowExpiresAt) <= now.getTime()) {
       flow.status = "expired";
+      flow.generation += 1;
       changed = true;
     }
   const retained = state.pendingLogins.filter((flow) => shouldRetain(flow, now));
@@ -1521,25 +2055,150 @@ function credentialsFromClient(
     createdAt: client.createdAt,
   };
 }
-function clientStatus(client: StoredRemoteClient): RemoteClientStatus {
+type RemoteClientPageColumns = {
+  createdAt: AnyColumn;
+  clientId: AnyColumn;
+  role: AnyColumn;
+  revokedAt: AnyColumn;
+};
+
+function remoteClientPageWhere(
+  table: RemoteClientPageColumns,
+  input: ListRemoteClientsPageInput,
+  stableClientId: AnyColumn | SQL = table.clientId,
+): SQL | undefined {
+  const after = input.after
+    ? input.sort === "desc"
+      ? or(
+          lt(table.createdAt, input.after.createdAt),
+          and(
+            eq(table.createdAt, input.after.createdAt),
+            sql`${stableClientId} < ${input.after.clientId}`,
+          ),
+        )
+      : or(
+          gt(table.createdAt, input.after.createdAt),
+          and(
+            eq(table.createdAt, input.after.createdAt),
+            sql`${stableClientId} > ${input.after.clientId}`,
+          ),
+        )
+    : undefined;
+  const role = input.role ? eq(table.role, input.role) : undefined;
+  let revoked: SQL | undefined;
+  if (input.revoked === true) revoked = isNotNull(table.revokedAt);
+  if (input.revoked === false) revoked = isNull(table.revokedAt);
+  return and(after, role, revoked);
+}
+
+type RemoteClientStatusSource = {
+  clientId: string;
+  clientLabel: string;
+  role: string;
+  hostUrl: string;
+  createdAt: string;
+  generation: number;
+  lastUsedAt?: string | null | undefined;
+  revokedAt?: string | null | undefined;
+};
+
+function clientStatus(client: RemoteClientStatusSource): RemoteClientStatus {
   return {
     clientId: client.clientId,
     clientLabel: client.clientLabel,
-    role: client.role,
+    role: parseRole(client.role),
     hostUrl: client.hostUrl,
     createdAt: client.createdAt,
+    generation: client.generation,
     ...(client.lastUsedAt ? { lastUsedAt: client.lastUsedAt } : {}),
     ...(client.revokedAt ? { revokedAt: client.revokedAt } : {}),
   };
 }
-function pendingLoginStatus(flow: StoredPendingLogin): RemotePendingLoginStatus {
+function postgresBinaryText(column: AnyColumn): SQL<string> {
+  return sql<string>`${column} collate "C"`;
+}
+
+type PendingLoginPageColumns = {
+  createdAt: AnyColumn;
+  flowId: AnyColumn;
+  status: AnyColumn;
+};
+
+function normalizePendingLoginStatuses(
+  statuses: readonly RemotePendingLoginState[] | undefined,
+): RemotePendingLoginState[] | undefined {
+  if (!statuses || statuses.length === 0) return undefined;
+  return [...new Set(statuses)].sort();
+}
+
+function pendingLoginPageWhere(
+  table: PendingLoginPageColumns,
+  after: PendingLoginPageKey | undefined,
+  statuses: RemotePendingLoginState[] | undefined,
+  sort: KeysetSortDirection,
+  stableFlowId: AnyColumn | SQL = table.flowId,
+): SQL | undefined {
+  const afterPredicate = after
+    ? sort === "asc"
+      ? or(
+          gt(table.createdAt, after.createdAt),
+          and(eq(table.createdAt, after.createdAt), sql`${stableFlowId} > ${after.flowId}`),
+        )
+      : or(
+          lt(table.createdAt, after.createdAt),
+          and(eq(table.createdAt, after.createdAt), sql`${stableFlowId} < ${after.flowId}`),
+        )
+    : undefined;
+  return and(afterPredicate, statuses ? inArray(table.status, statuses) : undefined);
+}
+
+type PendingLoginStatusSource = {
+  flowId: string;
+  hostUrl: string;
+  hostIdentity?: string | null | undefined;
+  status: string;
+  requestedRole: string;
+  grantedRole?: string | null | undefined;
+  operatorCodeFingerprint?: string | null | undefined;
+  clientLabel: string;
+  clientFingerprint?: string | null | undefined;
+  sourceHint?: string | null | undefined;
+  createdAt: string;
+  codeExpiresAt: string;
+  flowExpiresAt: string;
+  generation: number;
+  approvedAt?: string | null | undefined;
+  deniedAt?: string | null | undefined;
+  cancelledAt?: string | null | undefined;
+  exchangedAt?: string | null | undefined;
+};
+
+function pendingLoginPage(
+  rows: PendingLoginStatusSource[],
+  limit: number,
+): StorageKeysetPage<RemotePendingLoginStatus, PendingLoginPageKey> {
+  const pageRows = rows.slice(0, limit);
+  return {
+    items: pageRows.map(pendingLoginStatus),
+    ...(rows.length > limit
+      ? {
+          nextKey: {
+            createdAt: pageRows[pageRows.length - 1]!.createdAt,
+            flowId: pageRows[pageRows.length - 1]!.flowId,
+          },
+        }
+      : {}),
+  };
+}
+
+function pendingLoginStatus(flow: PendingLoginStatusSource): RemotePendingLoginStatus {
   return {
     flowId: flow.flowId,
     hostUrl: flow.hostUrl,
     ...(flow.hostIdentity ? { hostIdentity: flow.hostIdentity } : {}),
-    status: flow.status,
-    requestedRole: flow.requestedRole,
-    ...(flow.grantedRole ? { grantedRole: flow.grantedRole } : {}),
+    status: parsePendingStatus(flow.status),
+    requestedRole: parseRole(flow.requestedRole),
+    ...(flow.grantedRole ? { grantedRole: parseRole(flow.grantedRole) } : {}),
     ...(flow.operatorCodeFingerprint
       ? { operatorCodeFingerprint: flow.operatorCodeFingerprint }
       : {}),
@@ -1549,6 +2208,7 @@ function pendingLoginStatus(flow: StoredPendingLogin): RemotePendingLoginStatus 
     createdAt: flow.createdAt,
     codeExpiresAt: flow.codeExpiresAt,
     flowExpiresAt: flow.flowExpiresAt,
+    generation: flow.generation,
     ...(flow.approvedAt ? { approvedAt: flow.approvedAt } : {}),
     ...(flow.deniedAt ? { deniedAt: flow.deniedAt } : {}),
     ...(flow.cancelledAt ? { cancelledAt: flow.cancelledAt } : {}),
@@ -1562,6 +2222,7 @@ function pendingApprovalStatus(flow: StoredPendingLogin) {
     clientLabel: flow.clientLabel,
     requestedRole: flow.requestedRole,
     grantedRole: flow.grantedRole ?? flow.requestedRole,
+    generation: flow.generation,
     ...(flow.clientFingerprint ? { clientFingerprint: flow.clientFingerprint } : {}),
     ...(flow.sourceHint ? { sourceHint: flow.sourceHint } : {}),
   };
@@ -1581,4 +2242,25 @@ function safeHashEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function assertExpectedGeneration(
+  currentGeneration: number | undefined,
+  expectedGeneration: number | undefined,
+): void {
+  if (expectedGeneration === undefined) return;
+  if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) {
+    throw new CapletsError("REQUEST_INVALID", "Expected remote resource generation is invalid.");
+  }
+  const normalizedCurrentGeneration = currentGeneration ?? 0;
+  if (normalizedCurrentGeneration === expectedGeneration) return;
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    "Remote resource changed after it was read; reload and retry.",
+    {
+      kind: "stale_generation",
+      expectedGeneration,
+      currentGeneration: normalizedCurrentGeneration,
+    },
+  );
 }

@@ -4,7 +4,7 @@ import type { HostStorageConfig } from "../config";
 import type { postgresSchema } from "./schema/postgres";
 import type { sqliteSchema } from "./schema/sqlite";
 
-export const HOST_STORAGE_SCHEMA_VERSION = 14;
+export const HOST_STORAGE_SCHEMA_VERSION = 17;
 
 export type SqliteHostStorageConfig = Extract<HostStorageConfig, { type: "sqlite" }>;
 export type PostgresHostStorageConfig = Extract<HostStorageConfig, { type: "postgres" }>;

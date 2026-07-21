@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import BetterSqlite3 from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,6 +15,19 @@ if (process.env.CAPLETS_REQUIRE_TEST_POSTGRES === "1" && !postgresUrl) {
 }
 const postgresSchemas: string[] = [];
 const postgresIt = postgresUrl ? it : it.skip;
+const RESOURCE_VERSION_MIGRATION_CREATED_AT = 1_784_565_600_999;
+
+function legacyGrantVersion(
+  subjectKind: string,
+  subjectKey: string,
+  referenceName: string,
+): string {
+  const identity =
+    `${subjectKind.length}:${subjectKind}` +
+    `${subjectKey.length}:${subjectKey}` +
+    `${referenceName.length}:${referenceName}`;
+  return `legacy-v16-${Buffer.from(identity).toString("hex")}`;
+}
 
 afterEach(async () => {
   for (const directory of directories.splice(0)) {
@@ -33,6 +47,7 @@ afterEach(async () => {
 
 describe("host storage", () => {
   it("creates a ready migrated SQLite store by default", async () => {
+    expect(HOST_STORAGE_SCHEMA_VERSION).toBe(17);
     const directory = mkdtempSync(join(tmpdir(), "caplets-storage-"));
     directories.push(directory);
 
@@ -112,6 +127,114 @@ describe("host storage", () => {
     });
   });
 
+  it("backfills pre-v16 SQLite resource versions without secret material", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-storage-v16-"));
+    directories.push(directory);
+    const path = join(directory, "caplets.sqlite3");
+    const config = { type: "sqlite" as const, path };
+    await migrateHostStorage(config);
+
+    const subjectKey = JSON.stringify(["shared", "global-file", "/shared/CAPLET.md"]);
+    const database = new BetterSqlite3(path);
+    try {
+      database
+        .prepare(
+          `INSERT INTO remote_clients (
+            client_id, client_label, role, host_url, access_token_hash,
+            access_expires_at, generation, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "rcli_existing",
+          "Existing",
+          "access",
+          "https://remote.example.test",
+          "secret-access-hash",
+          "2027-01-01T00:00:00.000Z",
+          9,
+          "2026-01-01T00:00:00.000Z",
+        );
+      database
+        .prepare(
+          `INSERT INTO remote_pending_logins (
+            flow_id, host_url, operator_code_hash, pending_refresh_hash,
+            pending_completion_hash, client_label, requested_role, created_at,
+            code_expires_at, flow_expires_at, generation, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "rlogin_existing",
+          "https://remote.example.test",
+          "secret-code-hash",
+          "secret-refresh-hash",
+          "secret-completion-hash",
+          "Existing pending",
+          "access",
+          "2026-01-01T00:00:00.000Z",
+          "2026-01-01T00:10:00.000Z",
+          "2026-01-02T00:00:00.000Z",
+          7,
+          "pending",
+        );
+      database
+        .prepare(
+          `INSERT INTO vault_access_grants (
+            subject_kind, subject_key, caplet_id, vault_key, reference_name,
+            origin_kind, origin_path, resource_version, created_at, created_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "file",
+          subjectKey,
+          "shared",
+          "SECRET_TOKEN",
+          "TOKEN",
+          "global-file",
+          "/shared/CAPLET.md",
+          "old-version",
+          "2026-01-01T00:00:00.000Z",
+          "secret-operator",
+        );
+      database.exec(`
+        DROP INDEX caplet_records_updated_key_idx;
+        DROP INDEX remote_pending_logins_status_created_idx;
+        ALTER TABLE remote_clients DROP COLUMN generation;
+        ALTER TABLE remote_pending_logins DROP COLUMN generation;
+        ALTER TABLE vault_access_grants DROP COLUMN resource_version;
+        DELETE FROM caplets_migrations
+        WHERE created_at >= ${RESOURCE_VERSION_MIGRATION_CREATED_AT};
+        UPDATE caplets_schema SET version = 15 WHERE singleton = 1;
+      `);
+    } finally {
+      database.close();
+    }
+
+    await migrateHostStorage(config);
+    const migrated = new BetterSqlite3(path);
+    try {
+      expect(
+        migrated
+          .prepare("SELECT generation FROM remote_clients WHERE client_id = ?")
+          .get("rcli_existing"),
+      ).toEqual({ generation: 1 });
+      expect(
+        migrated
+          .prepare("SELECT generation FROM remote_pending_logins WHERE flow_id = ?")
+          .get("rlogin_existing"),
+      ).toEqual({ generation: 1 });
+      const grant = migrated
+        .prepare(
+          "SELECT resource_version AS resourceVersion FROM vault_access_grants WHERE subject_key = ?",
+        )
+        .get(subjectKey) as { resourceVersion: string };
+      expect(grant.resourceVersion).toBe(legacyGrantVersion("file", subjectKey, "TOKEN"));
+      expect(grant.resourceVersion).not.toContain("SECRET_TOKEN");
+      expect(grant.resourceVersion).not.toContain("secret-operator");
+    } finally {
+      migrated.close();
+    }
+  });
+
   it("rejects invalid and unavailable PostgreSQL storage", async () => {
     await expect(
       createHostStorage({
@@ -160,6 +283,116 @@ describe("host storage", () => {
       });
     } finally {
       await storage.close();
+    }
+  });
+  postgresIt("backfills pre-v16 PostgreSQL resource versions without secret material", async () => {
+    const schema = `caplets_v16_${randomUUID().replaceAll("-", "")}`;
+    postgresSchemas.push(schema);
+    const config = {
+      type: "postgres" as const,
+      connectionString: postgresUrl!,
+      schema,
+    };
+    await migrateHostStorage(config);
+
+    const subjectKey = JSON.stringify(["shared", "global-file", "/shared/CAPLET.md"]);
+    const pool = new Pool({ connectionString: postgresUrl! });
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO "${schema}".remote_clients (
+          client_id, client_label, role, host_url, access_token_hash,
+          access_expires_at, generation, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          "rcli_existing",
+          "Existing",
+          "access",
+          "https://remote.example.test",
+          "secret-access-hash",
+          "2027-01-01T00:00:00.000Z",
+          9,
+          "2026-01-01T00:00:00.000Z",
+        ],
+      );
+      await client.query(
+        `INSERT INTO "${schema}".remote_pending_logins (
+          flow_id, host_url, operator_code_hash, pending_refresh_hash,
+          pending_completion_hash, client_label, requested_role, created_at,
+          code_expires_at, flow_expires_at, generation, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          "rlogin_existing",
+          "https://remote.example.test",
+          "secret-code-hash",
+          "secret-refresh-hash",
+          "secret-completion-hash",
+          "Existing pending",
+          "access",
+          "2026-01-01T00:00:00.000Z",
+          "2026-01-01T00:10:00.000Z",
+          "2026-01-02T00:00:00.000Z",
+          7,
+          "pending",
+        ],
+      );
+      await client.query(
+        `INSERT INTO "${schema}".vault_access_grants (
+          subject_kind, subject_key, caplet_id, vault_key, reference_name,
+          origin_kind, origin_path, resource_version, created_at, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          "file",
+          subjectKey,
+          "shared",
+          "SECRET_TOKEN",
+          "TOKEN",
+          "global-file",
+          "/shared/CAPLET.md",
+          "old-version",
+          "2026-01-01T00:00:00.000Z",
+          "secret-operator",
+        ],
+      );
+      await client.query(`
+        DROP INDEX "${schema}".caplet_records_updated_key_idx;
+        DROP INDEX "${schema}".remote_pending_logins_status_created_idx;
+        ALTER TABLE "${schema}".remote_clients DROP COLUMN generation;
+        ALTER TABLE "${schema}".remote_pending_logins DROP COLUMN generation;
+        ALTER TABLE "${schema}".vault_access_grants DROP COLUMN resource_version;
+        DELETE FROM "${schema}".caplets_migrations
+        WHERE created_at >= ${RESOURCE_VERSION_MIGRATION_CREATED_AT};
+        UPDATE "${schema}".caplets_schema SET version = 15 WHERE singleton = 1;
+      `);
+    } finally {
+      client.release();
+      await pool.end();
+    }
+
+    await migrateHostStorage(config);
+    const migrated = new Pool({ connectionString: postgresUrl! });
+    try {
+      await expect(
+        migrated.query(`SELECT generation FROM "${schema}".remote_clients WHERE client_id = $1`, [
+          "rcli_existing",
+        ]),
+      ).resolves.toMatchObject({ rows: [{ generation: 1 }] });
+      await expect(
+        migrated.query(
+          `SELECT generation FROM "${schema}".remote_pending_logins WHERE flow_id = $1`,
+          ["rlogin_existing"],
+        ),
+      ).resolves.toMatchObject({ rows: [{ generation: 1 }] });
+      const grant = await migrated.query<{ resourceVersion: string }>(
+        `SELECT resource_version AS "resourceVersion"
+         FROM "${schema}".vault_access_grants WHERE subject_key = $1`,
+        [subjectKey],
+      );
+      expect(grant.rows[0]?.resourceVersion).toBe(legacyGrantVersion("file", subjectKey, "TOKEN"));
+      expect(grant.rows[0]?.resourceVersion).not.toContain("SECRET_TOKEN");
+      expect(grant.rows[0]?.resourceVersion).not.toContain("secret-operator");
+    } finally {
+      await migrated.end();
     }
   });
 });

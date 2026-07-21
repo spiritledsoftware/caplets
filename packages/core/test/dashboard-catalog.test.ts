@@ -19,36 +19,22 @@ afterEach(() => {
 describe("dashboard caplets and catalog APIs", () => {
   it("serves the official catalog API for dashboard browsing and detail", async () => {
     const setup = await authenticatedDashboard();
-    const officialEntryKey = "github:spiritledsoftware:caplets:github%2Fcaplet.md:github";
+    const officialEntryKey = "github:spiritledsoftware:caplets:github%2FCAPLET.md:github";
     const officialEntry = {
+      ...officialCompactEntry(0),
       entryKey: officialEntryKey,
       id: "github",
       name: "GitHub from API",
       description: "Work with GitHub repositories.",
-      source: {
-        provider: "github",
-        owner: "spiritledsoftware",
-        repo: "caplets",
-        repository: "spiritledsoftware/caplets",
-        canonicalUrl: "https://github.com/spiritledsoftware/caplets",
-      },
       sourcePath: "github/CAPLET.md",
-      trustLevel: "official",
       tags: ["github"],
       intendedTask: "Work with GitHub repositories.",
-      setupReadiness: "ready",
       authReadiness: "required",
-      projectBindingReadiness: "ready",
-      warnings: [],
       installCommand: {
         text: "caplets install spiritledsoftware/caplets github",
         copyable: true,
         revisionBound: false,
       },
-      workflow: { kind: "code_mode", label: "Code Mode" },
-      installCount: 0,
-      installCountDisplay: "<10",
-      rankScore: 0,
     };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       if (String(url).includes("/entries/")) {
@@ -59,17 +45,15 @@ describe("dashboard caplets and catalog APIs", () => {
       }
       return Response.json({
         version: 1,
-        entries: [{ ...officialEntry, contentMarkdown: "# GitHub" }],
+        view: "compact",
+        entries: [officialEntry],
       });
     });
 
-    const search = await dashboardGet(
-      setup,
-      "/dashboard/api/catalog/search?source=official&q=github",
-    );
-    expect(search.status).toBe(200);
+    const search = await dashboardGet(setup, "/dashboard/api/v2/catalog/entries?source=official");
+    expect(search.status, await search.clone().text()).toBe(200);
     await expect(search.json()).resolves.toMatchObject({
-      entries: [
+      items: [
         expect.objectContaining({
           id: "github",
           name: "GitHub from API",
@@ -80,7 +64,7 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const detail = await dashboardGet(
       setup,
-      `/dashboard/api/catalog/detail?source=official&entryKey=${encodeURIComponent(officialEntryKey)}`,
+      `/dashboard/api/v2/catalog/entries/${encodeURIComponent(officialEntryKey)}?source=official`,
     );
     expect(detail.status).toBe(200);
     await expect(detail.json()).resolves.toMatchObject({
@@ -89,9 +73,10 @@ describe("dashboard caplets and catalog APIs", () => {
         contentMarkdown: "# GitHub from catalog.caplets.dev",
       },
     });
-    expect(fetchMock).toHaveBeenCalledWith("https://catalog.caplets.dev/api/v1/catalog", {
-      signal: expect.any(AbortSignal),
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://catalog.caplets.dev/api/v1/catalog?view=compact",
+      { signal: expect.any(AbortSignal) },
+    );
 
     await closeDashboard(setup);
   });
@@ -103,34 +88,36 @@ describe("dashboard caplets and catalog APIs", () => {
       Response.json({ version: 1, view: "compact", entries }),
     );
 
-    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
+    const response = await dashboardGet(
+      setup,
+      "/dashboard/api/v2/catalog/entries?source=official&limit=500",
+    );
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { entries: Array<Record<string, unknown>> };
-    expect(body.entries).toHaveLength(150);
-    expect(body.entries[149]).toMatchObject({ id: "entry-149" });
-    expect(body.entries.some((entry) => "contentMarkdown" in entry)).toBe(false);
+    const body = (await response.json()) as { items: Array<Record<string, unknown>> };
+    expect(body.items).toHaveLength(150);
+    expect(body.items).toContainEqual(expect.objectContaining({ id: "entry-149" }));
+    expect(body.items.some((entry) => "contentMarkdown" in entry)).toBe(false);
 
     await closeDashboard(setup);
   });
 
-  it("preserves legacy catalog search limits when query parameters are present", async () => {
+  it("honors bounded catalog page limits", async () => {
     const setup = await authenticatedDashboard();
-    const entries = Array.from({ length: 5 }, (_, index) => ({
-      ...officialCompactEntry(index),
-      contentMarkdown: `# Entry ${index}`,
-    }));
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ version: 1, entries }));
+    const entries = Array.from({ length: 5 }, (_, index) => officialCompactEntry(index));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ version: 1, view: "compact", entries }),
+    );
 
     const response = await dashboardGet(
       setup,
-      "/dashboard/api/catalog/search?source=official&limit=2",
+      "/dashboard/api/v2/catalog/entries?source=official&limit=2&sort=desc",
     );
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { entries: Array<Record<string, unknown>> };
-    expect(body.entries).toHaveLength(2);
-    expect(body.entries).toEqual([
-      expect.objectContaining({ id: "entry-0" }),
-      expect.objectContaining({ id: "entry-1" }),
+    const body = (await response.json()) as { items: Array<Record<string, unknown>> };
+    expect(body.items).toHaveLength(2);
+    expect(body.items).toEqual([
+      expect.objectContaining({ id: "entry-4" }),
+      expect.objectContaining({ id: "entry-3" }),
     ]);
 
     await closeDashboard(setup);
@@ -147,11 +134,10 @@ describe("dashboard caplets and catalog APIs", () => {
       }),
     );
 
-    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
-    expect(response.status).toBe(500);
+    const response = await dashboardGet(setup, "/dashboard/api/v2/catalog/entries?source=official");
+    expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
     });
 
     await closeDashboard(setup);
@@ -167,11 +153,10 @@ describe("dashboard caplets and catalog APIs", () => {
       }),
     );
 
-    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
-    expect(response.status).toBe(500);
+    const response = await dashboardGet(setup, "/dashboard/api/v2/catalog/entries?source=official");
+    expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
     });
 
     await closeDashboard(setup);
@@ -247,11 +232,10 @@ describe("dashboard caplets and catalog APIs", () => {
       Response.json({ version: 1, view: "compact", entries: [entry] }),
     );
 
-    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
-    expect(response.status).toBe(500);
+    const response = await dashboardGet(setup, "/dashboard/api/v2/catalog/entries?source=official");
+    expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
     });
     await closeDashboard(setup);
   });
@@ -284,12 +268,11 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const response = await dashboardGet(
       setup,
-      `/dashboard/api/catalog/detail?source=official&entryKey=${encodeURIComponent(requested.entryKey)}`,
+      `/dashboard/api/v2/catalog/entries/${encodeURIComponent(requested.entryKey)}?source=official`,
     );
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
     });
     await closeDashboard(setup);
   });
@@ -300,11 +283,11 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const search = await dashboardGet(
       setup,
-      `/dashboard/api/catalog/search?source=${encodeURIComponent(source)}&q=sample`,
+      `/dashboard/api/v2/catalog/entries?source=${encodeURIComponent(source)}`,
     );
     expect(search.status).toBe(200);
     await expect(search.json()).resolves.toMatchObject({
-      entries: [
+      items: [
         expect.objectContaining({
           id: "sample",
           setupReadiness: "required",
@@ -324,7 +307,7 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const detail = await dashboardGet(
       setup,
-      `/dashboard/api/catalog/detail?source=${encodeURIComponent(source)}&entryKey=${encodeURIComponent(await localEntryKey(setup, source))}`,
+      `/dashboard/api/v2/catalog/entries/${encodeURIComponent(await localEntryKey(setup, source))}?source=${encodeURIComponent(source)}`,
     );
     expect(detail.status).toBe(200);
     await expect(detail.json()).resolves.toMatchObject({
@@ -344,26 +327,32 @@ describe("dashboard caplets and catalog APIs", () => {
     const setup = await authenticatedDashboard();
     const source = catalogSource();
 
-    const installed = await dashboardPost(setup, "/dashboard/api/catalog/install", {
+    const installed = await dashboardPost(setup, "/dashboard/api/v2/catalog/installations", {
       source,
       entryKey: await localEntryKey(setup, source),
     });
-    expect(installed.status, await installed.clone().text()).toBe(200);
+    expect(installed.status, await installed.clone().text()).toBe(201);
     const installedBody = (await installed.json()) as {
       installed: Array<Record<string, unknown>>;
       setupActions: unknown[];
+      installedCount: number;
+      setupActionCount: number;
     };
     expect(installedBody).toMatchObject({
       installed: [
         expect.objectContaining({
-          id: "sample",
+          kind: "file",
           status: "installed",
-          destination: "sql://caplet-records/sample",
         }),
       ],
+      installedCount: 1,
       setupActions: expect.arrayContaining([expect.objectContaining({ kind: "auth" })]),
+      setupActionCount: expect.any(Number),
     });
     expect(installedBody.installed[0]).not.toHaveProperty("lockfile");
+    expect(installedBody.setupActionCount).toBeGreaterThanOrEqual(
+      installedBody.setupActions.length,
+    );
 
     const record = await setup.storage.caplets.readBundle("sample", {
       operator: { clientId: setup.operatorClientId, role: "operator" },
@@ -397,11 +386,11 @@ describe("dashboard caplets and catalog APIs", () => {
       ]),
     );
 
-    const updates = await dashboardGet(setup, "/dashboard/api/catalog/updates");
+    const updates = await dashboardGet(setup, "/dashboard/api/v2/catalog/update-candidates");
     expect(updates.status).toBe(200);
-    await expect(updates.json()).resolves.toEqual({ updates: [] });
+    await expect(updates.json()).resolves.toEqual({ items: [] });
 
-    const activity = await dashboardGet(setup, "/dashboard/api/activity?action=catalog_installed");
+    const activity = await dashboardGet(setup, "/dashboard/api/v2/activity");
     expect(activity.status).toBe(200);
     const text = await activity.text();
     expect(text).toContain('"action":"catalog_installed"');
@@ -416,24 +405,21 @@ describe("dashboard caplets and catalog APIs", () => {
     const setup = await authenticatedDashboard();
     const source = catalogSource();
 
-    const installed = await dashboardPost(setup, "/dashboard/api/catalog/install", {
+    const installed = await dashboardPost(setup, "/dashboard/api/v2/catalog/installations", {
       source,
       entryKey: await localEntryKey(setup, source),
     });
-    expect(installed.status, await installed.clone().text()).toBe(200);
+    expect(installed.status, await installed.clone().text()).toBe(201);
     makeCatalogSourceDestructive(source);
 
-    const rejected = await dashboardPost(setup, "/dashboard/api/catalog/update", {
-      capletId: "sample",
+    const rejected = await dashboardPost(setup, "/dashboard/api/v2/catalog/update-runs", {
+      capletIds: ["sample"],
       acknowledgeRiskIncrease: false,
     });
     expect(rejected.status).toBe(400);
     await expect(rejected.json()).resolves.toMatchObject({
-      ok: false,
-      error: {
-        code: "REQUEST_INVALID",
-        message: expect.stringContaining("risk profile"),
-      },
+      code: "REQUEST_INVALID",
+      detail: expect.stringContaining("risk profile"),
     });
     await expect(setup.storage.caplets.get("sample")).resolves.toMatchObject({
       headGeneration: 1,
@@ -442,19 +428,19 @@ describe("dashboard caplets and catalog APIs", () => {
       generation: 1,
     });
 
-    const updated = await dashboardPost(setup, "/dashboard/api/catalog/update", {
-      capletId: "sample",
+    const updated = await dashboardPost(setup, "/dashboard/api/v2/catalog/update-runs", {
+      capletIds: ["sample"],
       acknowledgeRiskIncrease: true,
     });
-    expect(updated.status).toBe(200);
+    expect(updated.status).toBe(201);
     await expect(updated.json()).resolves.toMatchObject({
       installed: [
         expect.objectContaining({
-          id: "sample",
+          kind: "file",
           status: "updated",
-          destination: "sql://caplet-records/sample",
         }),
       ],
+      installedCount: 1,
     });
     await expect(setup.storage.caplets.get("sample")).resolves.toMatchObject({
       headGeneration: 2,
@@ -478,22 +464,21 @@ describe("dashboard caplets and catalog APIs", () => {
     const setup = await authenticatedDashboard();
     const source = catalogSource();
 
-    const installed = await dashboardPost(setup, "/dashboard/api/catalog/install", {
+    const installed = await dashboardPost(setup, "/dashboard/api/v2/catalog/installations", {
       source,
       entryKey: await localEntryKey(setup, source),
     });
-    expect(installed.status, await installed.clone().text()).toBe(200);
+    expect(installed.status, await installed.clone().text()).toBe(201);
 
     rmSync(source, { recursive: true, force: true });
 
-    const update = await dashboardPost(setup, "/dashboard/api/catalog/update", {
-      capletId: "sample",
+    const update = await dashboardPost(setup, "/dashboard/api/v2/catalog/update-runs", {
+      capletIds: ["sample"],
       acknowledgeRiskIncrease: true,
     });
     expect(update.status).toBe(404);
     await expect(update.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "CONFIG_NOT_FOUND" },
+      code: "CONFIG_NOT_FOUND",
     });
     await expect(setup.storage.installations.getLatestObservation("sample")).resolves.toMatchObject(
       {
@@ -508,13 +493,18 @@ describe("dashboard caplets and catalog APIs", () => {
     const source =
       "https://operator:credential@127.0.0.1:1/private-repository?token=transport_secret";
 
-    const dashboardResponse = await dashboardPost(setup, "/dashboard/api/catalog/install", {
-      source,
-      entryKey: "github:local:source:caplets%2Fsample.md:sample",
-    });
+    const dashboardResponse = await dashboardPost(
+      setup,
+      "/dashboard/api/v2/catalog/installations",
+      {
+        source,
+        entryKey: "github:local:source:caplets%2Fsample.md:sample",
+      },
+    );
     expect(dashboardResponse.status).toBe(404);
     const dashboardError = (await dashboardResponse.json()) as {
-      error: { code: string; message: string };
+      code: string;
+      detail: string;
     };
 
     const pending = await setup.store.createPendingLogin({
@@ -547,7 +537,7 @@ describe("dashboard caplets and catalog APIs", () => {
       error: { code: string; message: string };
     };
 
-    expect(dashboardError.error).toMatchObject({ code: "CONFIG_NOT_FOUND" });
+    expect(dashboardError).toMatchObject({ code: "CONFIG_NOT_FOUND" });
     expect(bearerError.error).toMatchObject({
       code: "CONFIG_NOT_FOUND",
       message: "Could not clone repo [REDACTED]",
@@ -616,10 +606,10 @@ async function authenticatedDashboard(): Promise<AuthenticatedDashboard> {
 async function localEntryKey(setup: AuthenticatedDashboard, source: string): Promise<string> {
   const response = await dashboardGet(
     setup,
-    `/dashboard/api/catalog/search?source=${encodeURIComponent(source)}`,
+    `/dashboard/api/v2/catalog/entries?source=${encodeURIComponent(source)}`,
   );
-  const body = (await response.json()) as { entries: Array<{ entryKey: string }> };
-  const entryKey = body.entries[0]?.entryKey;
+  const body = (await response.json()) as { items: Array<{ entryKey: string }> };
+  const entryKey = body.items[0]?.entryKey;
   if (!entryKey) throw new Error("Missing local catalog entry");
   return entryKey;
 }
@@ -637,6 +627,8 @@ async function dashboardPost(setup: AuthenticatedDashboard, path: string, body: 
       cookie: setup.cookie,
       "x-caplets-csrf": setup.csrfToken,
       "content-type": "application/json",
+      "idempotency-key": crypto.randomUUID(),
+      "if-none-match": "*",
     },
     body: JSON.stringify(body),
   });
@@ -694,6 +686,11 @@ function httpOptions(stateDir: string): HttpServeOptions {
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
   };
 }
 

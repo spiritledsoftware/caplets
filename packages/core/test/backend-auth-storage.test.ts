@@ -154,6 +154,85 @@ describe("BackendAuthStateStore", () => {
     }
   });
 
+  it("pages connections after excluding bundle-less state rows", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-backend-auth-pages-"));
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+    const store = new BackendAuthStateStore(storage.database);
+
+    try {
+      await store.writeTokenBundle({ server: "Aardvark", accessToken: "excluded-token" });
+      await store.writeTokenBundle({ server: "Alpha", accessToken: "upper-alpha-token" });
+      await store.writeTokenBundle({ server: "Bravo", accessToken: "upper-bravo-token" });
+      await store.writeTokenBundle({ server: "alpha", accessToken: "lower-alpha-token" });
+      await store.writeTokenBundle({ server: "bravo", accessToken: "lower-bravo-token" });
+      await store.deleteTokenBundle("Aardvark");
+
+      const firstPage = await store.listConnectionsPage({ limit: 2 });
+      expect(firstPage).toEqual({
+        items: [
+          {
+            bundle: { server: "Alpha", accessToken: "upper-alpha-token" },
+            generation: 1,
+          },
+          {
+            bundle: { server: "Bravo", accessToken: "upper-bravo-token" },
+            generation: 1,
+          },
+        ],
+        nextKey: { server: "Bravo" },
+      });
+      await expect(
+        store.listConnectionsPage({ limit: 2, after: firstPage.nextKey }),
+      ).resolves.toEqual({
+        items: [
+          {
+            bundle: { server: "alpha", accessToken: "lower-alpha-token" },
+            generation: 1,
+          },
+          {
+            bundle: { server: "bravo", accessToken: "lower-bravo-token" },
+            generation: 1,
+          },
+        ],
+      });
+      const descendingFirst = await store.listConnectionsPage({ limit: 2, sort: "desc" });
+      expect(descendingFirst.items.map(({ bundle }) => bundle.server)).toEqual(["bravo", "alpha"]);
+      const descendingSecond = await store.listConnectionsPage({
+        limit: 2,
+        sort: "desc",
+        after: descendingFirst.nextKey,
+      });
+      expect(descendingSecond.items.map(({ bundle }) => bundle.server)).toEqual(["Bravo", "Alpha"]);
+      await expect(store.listTokenBundles()).resolves.toEqual([
+        {
+          bundle: { server: "Alpha", accessToken: "upper-alpha-token" },
+          generation: 1,
+        },
+        {
+          bundle: { server: "Bravo", accessToken: "upper-bravo-token" },
+          generation: 1,
+        },
+        {
+          bundle: { server: "alpha", accessToken: "lower-alpha-token" },
+          generation: 1,
+        },
+        {
+          bundle: { server: "bravo", accessToken: "lower-bravo-token" },
+          generation: 1,
+        },
+      ]);
+      await expect(
+        store.listConnectionsPage({ limit: 1, after: { server: " " } }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    } finally {
+      await storage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("shares SQL auth state across CLI and runtime instances without auth files", async () => {
     const directory = mkdtempSync(join(tmpdir(), "caplets-backend-auth-integration-"));
     const databasePath = join(directory, "caplets.sqlite3");

@@ -1,17 +1,24 @@
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { basename, dirname, extname, join, posix } from "node:path";
-import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
+import { basename, dirname, extname, join } from "node:path";
+import { and, asc, count, desc, eq, exists, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { stringify as stringifyYaml } from "yaml";
 import { parseCapletFileDocument, type CapletFileFrontmatter } from "../caplet-files-bundle";
 import { CapletsError } from "../errors";
 import { advancePostgresConfigGeneration, advanceSqliteConfigGeneration } from "./coordination";
 import type { AssetObjectStore } from "./asset-store";
 import {
+  bufferBundleFileSource,
+  readVerifiedBundleFile,
+  type ReopenableBundleFileSource,
+} from "./bundle-source";
+import { normalizeBundlePath, validateBundlePathSet } from "./bundle-path";
+import {
   requireOperator,
   type CapletInstallationObservationStatus,
   type OperatorPrincipal,
 } from "./installations";
+import { storagePageLimit, type KeysetSortDirection, type StorageKeysetPage } from "./keyset-page";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
 import type {
@@ -32,10 +39,17 @@ export type ReadCapletBundleResult = {
   record: CapletRecordView;
   files: CapletBundleInputFile[];
 };
+export type ReadCapletBundleSourcesResult = {
+  record: CapletRecordView;
+  sources: ReopenableBundleFileSource[];
+};
 
 export type UpdateCapletBundleInput = ImportCapletBundleInput & {
   expectedGeneration: number;
   detachInstallation?: boolean | undefined;
+};
+export type UpdateCapletBundleSourcesInput = Omit<UpdateCapletBundleInput, "files"> & {
+  sources: ReopenableBundleFileSource[];
 };
 
 export type UpdateCapletFromSourceInput = {
@@ -48,6 +62,10 @@ export type UpdateCapletFromSourceInput = {
   observationStatus: Exclude<CapletInstallationObservationStatus, "source-unavailable">;
   risk?: Record<string, unknown> | null | undefined;
   operator: OperatorPrincipal;
+};
+type SourceUpdateMetadata = Omit<UpdateCapletFromSourceInput, "files">;
+export type UpdateCapletFromBundleSourcesInput = SourceUpdateMetadata & {
+  sources: ReopenableBundleFileSource[];
 };
 
 export type DeleteCapletRevisionInput = {
@@ -94,6 +112,9 @@ export type ImportCapletBundleInput = {
       }
     | undefined;
 };
+export type ImportCapletBundleSourcesInput = Omit<ImportCapletBundleInput, "files"> & {
+  sources: ReopenableBundleFileSource[];
+};
 
 export type CapletBackendView = {
   family: string;
@@ -136,6 +157,32 @@ export type CapletRecordView = {
   updatedAt: string;
   currentRevision: CapletRevisionView;
 };
+export type CapletRevisionSummaryView = Pick<
+  CapletRevisionView,
+  "revisionKey" | "sequence" | "name" | "createdAt"
+>;
+export type CapletRecordSummaryView = Omit<CapletRecordView, "currentRevision"> & {
+  currentRevision: CapletRevisionSummaryView;
+};
+export type CapletRecordPageKey = Pick<CapletRecordView, "updatedAt" | "recordKey">;
+
+export type CapletRecordPageOptions = {
+  limit?: number | undefined;
+  sort?: KeysetSortDirection | undefined;
+  after?: CapletRecordPageKey | undefined;
+  source?: string | undefined;
+  status?: "active" | "detached" | undefined;
+  tag?: string | undefined;
+  search?: string | undefined;
+};
+
+export type CapletRevisionPageKey = Pick<CapletRevisionView, "createdAt" | "revisionKey">;
+
+export type CapletRevisionPageOptions = {
+  limit?: number | undefined;
+  sort?: KeysetSortDirection | undefined;
+  after?: CapletRevisionPageKey | undefined;
+};
 
 export type AssetGarbageCollectionResult = {
   blobRowsDeleted: number;
@@ -168,14 +215,8 @@ type PreparedBundle = {
     | undefined;
   tags: string[];
   backends: CapletBackendView[];
-  entries: Array<
-    CapletBundleEntryView & {
-      payload: Buffer;
-      sqlPayload: Buffer | null;
-      objectKey: string | null;
-      assetWasExisting: boolean;
-    }
-  >;
+  entries: CapletBundleEntryView[];
+  preparedBlobHashes: string[];
 };
 
 export const MAX_BUNDLE_FILES = 2_048;
@@ -216,43 +257,73 @@ export class CapletRecordStore {
   }
 
   async importBundle(input: ImportCapletBundleInput): Promise<CapletRecordView> {
-    requireOperator(input.operator);
-    const prepared = prepareBundle(input, this.limits);
-    await this.prepareAssetStorage([prepared]);
-    if (this.database.dialect === "sqlite") {
-      importSqlite(this.database.db, prepared);
-    } else {
-      await importPostgres(this.database.db, prepared);
+    return await this.importBundleSources({
+      ...input,
+      sources: input.files.map(bufferBundleFileSource),
+    });
+  }
+
+  async importBundleSources(input: ImportCapletBundleSourcesInput): Promise<CapletRecordView> {
+    const [prepared] = await this.prepareBundlesFromSources([input]);
+    try {
+      if (this.database.dialect === "sqlite") {
+        importSqlite(this.database.db, prepared!);
+      } else {
+        await importPostgres(this.database.db, prepared!);
+      }
+      const result = await this.get(input.id);
+      if (!result) {
+        throw new CapletsError("INTERNAL_ERROR", `Imported Caplet ${input.id} was not found.`);
+      }
+      return result;
+    } catch (error) {
+      await this.cleanupPreparedBlobs([prepared!]);
+      throw error;
     }
-    const result = await this.get(input.id);
-    if (!result)
-      throw new CapletsError("INTERNAL_ERROR", `Imported Caplet ${input.id} was not found.`);
-    return result;
   }
 
   async importBundles(inputs: ImportCapletBundleInput[]): Promise<CapletRecordView[]> {
-    for (const input of inputs) requireOperator(input.operator);
-    const bundles = inputs.map((input) => prepareBundle(input, this.limits));
-    await this.prepareAssetStorage(bundles);
-    if (this.database.dialect === "sqlite") {
-      importManySqlite(this.database.db, bundles);
-    } else {
-      await importManyPostgres(this.database.db, bundles);
-    }
-    const records = await Promise.all(inputs.map(async (input) => await this.get(input.id)));
-    return records.map((record, index) => {
-      if (!record) {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          `Imported Caplet ${inputs[index]!.id} was not found.`,
-        );
-      }
-      return record;
-    });
+    return await this.importBundleSourcesBatch(
+      inputs.map((input) => ({
+        ...input,
+        sources: input.files.map(bufferBundleFileSource),
+      })),
+    );
   }
+
+  async importBundleSourcesBatch(
+    inputs: ImportCapletBundleSourcesInput[],
+  ): Promise<CapletRecordView[]> {
+    const bundles = await this.prepareBundlesFromSources(inputs);
+    try {
+      if (this.database.dialect === "sqlite") {
+        importManySqlite(this.database.db, bundles);
+      } else {
+        await importManyPostgres(this.database.db, bundles);
+      }
+      const records = await Promise.all(inputs.map(async (input) => await this.get(input.id)));
+      return records.map((record, index) => {
+        if (!record) {
+          throw new CapletsError(
+            "INTERNAL_ERROR",
+            `Imported Caplet ${inputs[index]!.id} was not found.`,
+          );
+        }
+        return record;
+      });
+    } catch (error) {
+      await this.cleanupPreparedBlobs(bundles);
+      throw error;
+    }
+  }
+
   async prepareBundleAssetsForImport(inputs: ImportCapletBundleInput[]): Promise<void> {
-    for (const input of inputs) requireOperator(input.operator);
-    await this.prepareAssetStorage(inputs.map((input) => prepareBundle(input, this.limits)));
+    await this.prepareBundlesFromSources(
+      inputs.map((input) => ({
+        ...input,
+        sources: input.files.map(bufferBundleFileSource),
+      })),
+    );
   }
 
   importBundlesInTransaction(
@@ -260,7 +331,7 @@ export class CapletRecordStore {
     transaction: HostDatabaseTransaction,
   ): void | Promise<void> {
     for (const input of inputs) requireOperator(input.operator);
-    const bundles = inputs.map((input) => prepareBundle(input, this.limits));
+    const bundles = inputs.map((input) => prepareBufferedBundle(input, this.limits));
     if (bundles.length === 0) return;
     return transaction.dialect === "sqlite"
       ? importManySqliteTransaction(transaction.db, bundles)
@@ -282,10 +353,26 @@ export class CapletRecordStore {
       : await getPostgres(this.database.db, id);
   }
 
-  async list(): Promise<CapletRecordView[]> {
+  async listRecordsPage(
+    options: CapletRecordPageOptions = {},
+  ): Promise<StorageKeysetPage<CapletRecordSummaryView, CapletRecordPageKey>> {
+    const normalized = normalizeRecordPageOptions(options);
     return this.database.dialect === "sqlite"
-      ? listSqlite(this.database.db)
-      : await listPostgres(this.database.db);
+      ? listRecordsPageSqlite(this.database.db, normalized)
+      : await listRecordsPagePostgres(this.database.db, normalized);
+  }
+
+  /** Compatibility API for callers that explicitly require every Caplet Record. */
+  async list(): Promise<CapletRecordView[]> {
+    const items: CapletRecordView[] = [];
+    let after: CapletRecordPageKey | undefined;
+    do {
+      const page = await this.listRecordsPage({ after });
+      const records = await Promise.all(page.items.map(async ({ id }) => await this.get(id)));
+      items.push(...records.filter((record): record is CapletRecordView => record !== undefined));
+      after = page.nextKey;
+    } while (after);
+    return items;
   }
 
   async collectAssetGarbage(input: {
@@ -445,31 +532,51 @@ export class CapletRecordStore {
   }
 
   async updateBundle(input: UpdateCapletBundleInput): Promise<CapletRecordView> {
-    requireOperator(input.operator);
-    const prepared = prepareBundle(input, this.limits);
-    await this.prepareAssetStorage([prepared]);
-    if (this.database.dialect === "sqlite") {
-      updateSqlite(
-        this.database.db,
-        prepared,
-        input.expectedGeneration,
-        input.detachInstallation === true,
-      );
-    } else {
-      await updatePostgres(
-        this.database.db,
-        prepared,
-        input.expectedGeneration,
-        input.detachInstallation === true,
-      );
+    return await this.updateBundleSources({
+      ...input,
+      sources: input.files.map(bufferBundleFileSource),
+    });
+  }
+
+  async updateBundleSources(input: UpdateCapletBundleSourcesInput): Promise<CapletRecordView> {
+    const [prepared] = await this.prepareBundlesFromSources([input]);
+    try {
+      if (this.database.dialect === "sqlite") {
+        updateSqlite(
+          this.database.db,
+          prepared!,
+          input.expectedGeneration,
+          input.detachInstallation === true,
+        );
+      } else {
+        await updatePostgres(
+          this.database.db,
+          prepared!,
+          input.expectedGeneration,
+          input.detachInstallation === true,
+        );
+      }
+      const result = await this.get(input.id);
+      if (!result) {
+        throw new CapletsError("INTERNAL_ERROR", `Updated Caplet ${input.id} was not found.`);
+      }
+      return result;
+    } catch (error) {
+      await this.cleanupPreparedBlobs([prepared!]);
+      throw error;
     }
-    const result = await this.get(input.id);
-    if (!result)
-      throw new CapletsError("INTERNAL_ERROR", `Updated Caplet ${input.id} was not found.`);
-    return result;
   }
 
   async updateFromSource(input: UpdateCapletFromSourceInput): Promise<CapletRecordView> {
+    return await this.updateFromBundleSources({
+      ...input,
+      sources: input.files.map(bufferBundleFileSource),
+    });
+  }
+
+  async updateFromBundleSources(
+    input: UpdateCapletFromBundleSourcesInput,
+  ): Promise<CapletRecordView> {
     requireOperator(input.operator);
     if (
       (input.observationStatus !== "current" && input.observationStatus !== "metadata-only") ||
@@ -481,18 +588,25 @@ export class CapletRecordStore {
     ) {
       throw new CapletsError("REQUEST_INVALID", "Source update provenance is invalid.");
     }
-    const prepared = prepareBundle(input, this.limits);
-    await this.prepareAssetStorage([prepared]);
-    if (this.database.dialect === "sqlite") {
-      updateFromSourceSqlite(this.database.db, prepared, input);
-    } else {
-      await updateFromSourcePostgres(this.database.db, prepared, input);
+    const [prepared] = await this.prepareBundlesFromSources([input]);
+    try {
+      if (this.database.dialect === "sqlite") {
+        updateFromSourceSqlite(this.database.db, prepared!, input);
+      } else {
+        await updateFromSourcePostgres(this.database.db, prepared!, input);
+      }
+      const result = await this.get(input.id);
+      if (!result) {
+        throw new CapletsError(
+          "INTERNAL_ERROR",
+          `Source-updated Caplet ${input.id} was not found.`,
+        );
+      }
+      return result;
+    } catch (error) {
+      await this.cleanupPreparedBlobs([prepared!]);
+      throw error;
     }
-    const result = await this.get(input.id);
-    if (!result) {
-      throw new CapletsError("INTERNAL_ERROR", `Source-updated Caplet ${input.id} was not found.`);
-    }
-    return result;
   }
 
   async getStored(id: string, operator: OperatorPrincipal): Promise<CapletRecordView | undefined> {
@@ -515,54 +629,50 @@ export class CapletRecordStore {
     return records;
   }
 
+  async listRevisionsPage(
+    id: string,
+    operator: OperatorPrincipal,
+    options: CapletRevisionPageOptions = {},
+  ): Promise<StorageKeysetPage<CapletRevisionSummaryView, CapletRevisionPageKey>> {
+    const actor = requireOperator(operator);
+    const normalized = normalizeRevisionPageOptions(options);
+    const result =
+      this.database.dialect === "sqlite"
+        ? listRevisionsPageSqlite(this.database.db, id, normalized)
+        : await listRevisionsPagePostgres(this.database.db, id, normalized);
+    if (result.recordKey === undefined) throw missingCapletRecord(id);
+    await this.appendOperatorActivity(actor, "caplet.revisions_list", result.recordKey, {
+      capletId: id,
+      count: result.page.items.length,
+    });
+    return result.page;
+  }
+
+  /** Compatibility API for callers that explicitly require every revision summary. */
   async listRevisions(
     id: string,
     operator: OperatorPrincipal,
   ): Promise<Array<{ revisionKey: string; sequence: number; name: string }>> {
     const actor = requireOperator(operator);
+    const revisions: CapletRevisionSummaryView[] = [];
+    let after: CapletRevisionPageKey | undefined;
     let recordKey: string | undefined;
-    let revisions: Array<{ revisionKey: string; sequence: number; name: string }>;
-    if (this.database.dialect === "sqlite") {
-      const record = this.database.db
-        .select({ recordKey: sqlite.capletRecords.recordKey })
-        .from(sqlite.capletRecords)
-        .where(eq(sqlite.capletRecords.capletId, id))
-        .get();
-      if (!record) return [];
-      recordKey = record.recordKey;
-      revisions = this.database.db
-        .select({
-          revisionKey: sqlite.capletRevisions.revisionKey,
-          sequence: sqlite.capletRevisions.sequence,
-          name: sqlite.capletRevisions.name,
-        })
-        .from(sqlite.capletRevisions)
-        .where(eq(sqlite.capletRevisions.recordKey, record.recordKey))
-        .orderBy(desc(sqlite.capletRevisions.sequence))
-        .all();
-    } else {
-      const [record] = await this.database.db
-        .select({ recordKey: postgres.capletRecords.recordKey })
-        .from(postgres.capletRecords)
-        .where(eq(postgres.capletRecords.capletId, id))
-        .limit(1);
-      if (!record) return [];
-      recordKey = record.recordKey;
-      revisions = await this.database.db
-        .select({
-          revisionKey: postgres.capletRevisions.revisionKey,
-          sequence: postgres.capletRevisions.sequence,
-          name: postgres.capletRevisions.name,
-        })
-        .from(postgres.capletRevisions)
-        .where(eq(postgres.capletRevisions.recordKey, record.recordKey))
-        .orderBy(desc(postgres.capletRevisions.sequence));
-    }
+    do {
+      const normalized = normalizeRevisionPageOptions({ after });
+      const result =
+        this.database.dialect === "sqlite"
+          ? listRevisionsPageSqlite(this.database.db, id, normalized)
+          : await listRevisionsPagePostgres(this.database.db, id, normalized);
+      recordKey = result.recordKey;
+      revisions.push(...result.page.items);
+      after = result.page.nextKey;
+    } while (after);
+    if (recordKey === undefined) throw missingCapletRecord(id);
     await this.appendOperatorActivity(actor, "caplet.revisions_list", recordKey, {
       capletId: id,
       count: revisions.length,
     });
-    return revisions;
+    return revisions.map(({ revisionKey, sequence, name }) => ({ revisionKey, sequence, name }));
   }
 
   async deleteRevision(input: DeleteCapletRevisionInput): Promise<CapletRecordView | undefined> {
@@ -622,42 +732,32 @@ export class CapletRecordStore {
       revisionKey?: string | undefined;
     },
   ): Promise<ReadCapletBundleResult> {
+    const streamed = await this.readBundleSources(id, options);
+    const files: CapletBundleInputFile[] = [];
+    for (const source of streamed.sources) {
+      files.push({
+        path: source.path,
+        content: await readVerifiedBundleFile(source, { maxBytes: this.limits.maxFileBytes }),
+        executable: source.executable,
+      });
+    }
+    return { record: streamed.record, files };
+  }
+
+  async readBundleSources(
+    id: string,
+    options: {
+      operator: OperatorPrincipal;
+      revisionKey?: string | undefined;
+    },
+  ): Promise<ReadCapletBundleSourcesResult> {
     const actor = requireOperator(options.operator);
-    let record = await this.get(id);
-    if (!record) throw new CapletsError("CONFIG_INVALID", `Caplet Record ${id} was not found.`);
-    if (options.revisionKey) {
-      const revision = await getRevisionByKey(this.database, record.recordKey, options.revisionKey);
-      if (!revision) {
-        throw new CapletsError(
-          "CONFIG_INVALID",
-          `Caplet Revision ${options.revisionKey} was not found.`,
-        );
-      }
-      record = { ...record, currentRevision: revision };
-    }
-    const payloads = await this.bundlePayloads(record.currentRevision);
-    const files: CapletBundleInputFile[] = [
-      {
-        path: "CAPLET.md",
-        content: Buffer.from(renderCapletDocument(record.currentRevision)),
-        executable: false,
-      },
-    ];
-    for (const entry of record.currentRevision.bundle) {
-      const content = payloads.get(entry.hash);
-      if (!content) {
-        throw new CapletsError(
-          "SERVER_UNAVAILABLE",
-          `Caplet bundle asset ${entry.path} is unavailable.`,
-        );
-      }
-      files.push({ path: entry.path, content, executable: entry.executable });
-    }
-    await this.appendOperatorActivity(actor, "caplet.bundle_read", record.recordKey, {
+    const result = await this.resolveBundleSources(id, options.revisionKey);
+    await this.appendOperatorActivity(actor, "caplet.bundle_read", result.record.recordKey, {
       capletId: id,
-      revisionKey: record.currentRevision.revisionKey,
+      revisionKey: result.record.currentRevision.revisionKey,
     });
-    return { record, files };
+    return result;
   }
 
   async exportBundle(
@@ -691,31 +791,15 @@ export class CapletRecordStore {
         `Export destination ${destination} already exists.`,
       );
     }
-    let record = await this.get(id);
-    if (!record) throw new CapletsError("CONFIG_INVALID", `Caplet Record ${id} was not found.`);
-    if (options.revisionKey) {
-      const revision = await getRevisionByKey(this.database, record.recordKey, options.revisionKey);
-      if (!revision) {
-        throw new CapletsError(
-          "CONFIG_INVALID",
-          `Caplet Revision ${options.revisionKey} was not found.`,
-        );
-      }
-      record = { ...record, currentRevision: revision };
+    const bundle = await this.resolveBundleSources(id, options.revisionKey);
+    const files: CapletBundleInputFile[] = [];
+    for (const source of bundle.sources) {
+      files.push({
+        path: source.path,
+        content: await readVerifiedBundleFile(source, { maxBytes: this.limits.maxFileBytes }),
+        executable: source.executable,
+      });
     }
-    const payloads = await this.bundlePayloads(record.currentRevision);
-    const files: CapletBundleInputFile[] = [
-      {
-        path: "CAPLET.md",
-        content: Buffer.from(renderCapletDocument(record.currentRevision)),
-        executable: false,
-      },
-      ...record.currentRevision.bundle.map((entry) => ({
-        path: entry.path,
-        content: payloads.get(entry.hash)!,
-        executable: entry.executable,
-      })),
-    ];
     materializeCapletBundleFiles(files, destination, options);
   }
 
@@ -734,100 +818,226 @@ export class CapletRecordStore {
     });
   }
 
-  private async prepareAssetStorage(bundles: PreparedBundle[]): Promise<void> {
-    if (!this.objectStore) return;
-    const entries = bundles.flatMap((bundle) => bundle.entries);
-    const hashes = [...new Set(entries.map((entry) => entry.hash))];
-    if (hashes.length === 0) return;
-    const rows =
-      this.database.dialect === "sqlite"
-        ? this.database.db
-            .select()
-            .from(sqlite.capletAssetBlobs)
-            .where(inArray(sqlite.capletAssetBlobs.hash, hashes))
-            .all()
-        : await this.database.db
-            .select()
-            .from(postgres.capletAssetBlobs)
-            .where(inArray(postgres.capletAssetBlobs.hash, hashes));
-    const existing = new Map(rows.map((row) => [row.hash, row]));
-    for (const entry of entries) {
-      const row = existing.get(entry.hash);
-      if (row) {
-        if (row.size !== entry.size || row.verificationStatus !== "verified") {
-          throw new CapletsError(
-            "INTERNAL_ERROR",
-            `Caplet asset ${entry.hash} has invalid stored metadata.`,
-          );
-        }
-        entry.sqlPayload = row.payload ? entry.payload : null;
-        entry.objectKey = row.objectKey;
-        entry.assetWasExisting = true;
-        continue;
+  private async prepareBundlesFromSources(
+    inputs: ImportCapletBundleSourcesInput[],
+  ): Promise<PreparedBundle[]> {
+    for (const input of inputs) requireOperator(input.operator);
+    const validated = inputs.map((input) => validateBundleSources(input, this.limits));
+    const bundles: PreparedBundle[] = [];
+    const pendingHashes: string[] = [];
+    try {
+      for (const candidate of validated) {
+        const preparedHashes: string[] = [];
+        const bundle = await prepareBundleFromSources(
+          candidate,
+          preparedHashes,
+          async (source, now) => {
+            if (await this.prepareAssetSource(source, now)) {
+              preparedHashes.push(source.sha256);
+              pendingHashes.push(source.sha256);
+            }
+          },
+        );
+        bundles.push(bundle);
       }
-      entry.objectKey = await this.objectStore.putVerified(entry.hash, entry.payload);
-      entry.sqlPayload = null;
-      existing.set(entry.hash, {
-        hash: entry.hash,
-        size: entry.size,
-        payload: null,
-        objectKey: entry.objectKey,
-        verificationStatus: "verified",
-        createdAt: bundles[0]?.now ?? new Date().toISOString(),
-      });
+      return bundles;
+    } catch (error) {
+      await this.cleanupBlobHashes(pendingHashes);
+      throw error;
     }
   }
 
-  private async bundlePayloads(revision: CapletRevisionView): Promise<Map<string, Buffer>> {
-    const hashes = [...new Set(revision.bundle.map((entry) => entry.hash))];
-    const expectedSizes = new Map(revision.bundle.map((entry) => [entry.hash, entry.size]));
-    if (hashes.length === 0) return new Map();
-    const rows =
+  private async prepareAssetSource(
+    source: ReopenableBundleFileSource,
+    createdAt: string,
+  ): Promise<boolean> {
+    const existing = await this.assetMetadata(source.sha256);
+    if (existing) {
+      validateStoredAssetMetadata(existing, source);
+      await verifyBundleSource(source);
+      return false;
+    }
+
+    let payload: Buffer | null = null;
+    let objectKey: string | null = null;
+    try {
+      if (this.objectStore) {
+        objectKey = await this.objectStore.putVerifiedStream(
+          source.sha256,
+          source.size,
+          source.open(),
+        );
+      } else {
+        payload = await readVerifiedBundleFile(source, { maxBytes: this.limits.maxFileBytes });
+      }
+      const values = {
+        hash: source.sha256,
+        size: source.size,
+        payload,
+        objectKey,
+        verificationStatus: "verified" as const,
+        createdAt,
+      };
+      let inserted: boolean;
+      if (this.database.dialect === "sqlite") {
+        inserted =
+          this.database.db
+            .insert(sqlite.capletAssetBlobs)
+            .values(values)
+            .onConflictDoNothing()
+            .run().changes === 1;
+      } else {
+        inserted =
+          (
+            await this.database.db
+              .insert(postgres.capletAssetBlobs)
+              .values(values)
+              .onConflictDoNothing()
+              .returning({ hash: postgres.capletAssetBlobs.hash })
+          ).length === 1;
+      }
+      if (inserted) return true;
+      if (objectKey && this.objectStore) {
+        await this.objectStore.delete(objectKey).catch(() => undefined);
+        objectKey = null;
+      }
+      const winner = await this.assetMetadata(source.sha256);
+      if (!winner) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          `Caplet asset ${source.sha256} changed during import; retry the operation.`,
+        );
+      }
+      validateStoredAssetMetadata(winner, source);
+      return false;
+    } catch (error) {
+      if (objectKey && this.objectStore) {
+        await this.objectStore.delete(objectKey).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  private async assetMetadata(hash: string): Promise<StoredAssetMetadata | undefined> {
+    if (this.database.dialect === "sqlite") {
+      return this.database.db
+        .select({
+          hash: sqlite.capletAssetBlobs.hash,
+          size: sqlite.capletAssetBlobs.size,
+          objectKey: sqlite.capletAssetBlobs.objectKey,
+          verificationStatus: sqlite.capletAssetBlobs.verificationStatus,
+        })
+        .from(sqlite.capletAssetBlobs)
+        .where(eq(sqlite.capletAssetBlobs.hash, hash))
+        .get();
+    }
+    const [row] = await this.database.db
+      .select({
+        hash: postgres.capletAssetBlobs.hash,
+        size: postgres.capletAssetBlobs.size,
+        objectKey: postgres.capletAssetBlobs.objectKey,
+        verificationStatus: postgres.capletAssetBlobs.verificationStatus,
+      })
+      .from(postgres.capletAssetBlobs)
+      .where(eq(postgres.capletAssetBlobs.hash, hash))
+      .limit(1);
+    return row;
+  }
+
+  private async cleanupPreparedBlobs(bundles: PreparedBundle[]): Promise<void> {
+    await this.cleanupBlobHashes(bundles.flatMap((bundle) => bundle.preparedBlobHashes));
+  }
+
+  private async cleanupBlobHashes(hashes: string[]): Promise<void> {
+    for (const hash of new Set(hashes)) {
+      const objectKey =
+        this.database.dialect === "sqlite"
+          ? deleteUnreferencedSqliteBlob(this.database.db, hash)
+          : await deleteUnreferencedPostgresBlob(this.database.db, hash);
+      if (objectKey && this.objectStore) {
+        await this.objectStore.delete(objectKey).catch(() => undefined);
+      }
+    }
+  }
+
+  private async resolveBundleSources(
+    id: string,
+    revisionKey: string | undefined,
+  ): Promise<ReadCapletBundleSourcesResult> {
+    let record = await this.get(id);
+    if (!record) throw new CapletsError("CONFIG_NOT_FOUND", `Caplet Record ${id} was not found.`);
+    if (revisionKey) {
+      const revision = await getRevisionByKey(this.database, record.recordKey, revisionKey);
+      if (!revision) {
+        throw new CapletsError("CONFIG_NOT_FOUND", `Caplet Revision ${revisionKey} was not found.`);
+      }
+      record = { ...record, currentRevision: revision };
+    }
+    const document = bufferBundleFileSource({
+      path: "CAPLET.md",
+      content: Buffer.from(renderCapletDocument(record.currentRevision)),
+      executable: false,
+    });
+    const sources = [
+      document,
+      ...record.currentRevision.bundle.map(
+        (entry): ReopenableBundleFileSource => ({
+          path: entry.path,
+          size: entry.size,
+          sha256: entry.hash,
+          executable: entry.executable,
+          open: () => deferredReadableStream(async () => await this.storedAssetStream(entry)),
+        }),
+      ),
+    ];
+    return { record, sources };
+  }
+
+  private async storedAssetStream(
+    expected: CapletBundleEntryView,
+  ): Promise<ReadableStream<Uint8Array>> {
+    const row =
       this.database.dialect === "sqlite"
         ? this.database.db
             .select()
             .from(sqlite.capletAssetBlobs)
-            .where(inArray(sqlite.capletAssetBlobs.hash, hashes))
-            .all()
-        : await this.database.db
-            .select()
-            .from(postgres.capletAssetBlobs)
-            .where(inArray(postgres.capletAssetBlobs.hash, hashes));
-    const payloads = new Map<string, Buffer>();
-    for (const row of rows) {
-      if (row.verificationStatus !== "verified" || expectedSizes.get(row.hash) !== row.size) {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          `Caplet asset ${row.hash} has invalid stored metadata.`,
-        );
-      }
-      let payload: Buffer | undefined;
-      if (row.payload) {
-        payload = Buffer.from(row.payload);
-        const actualHash = createHash("sha256").update(payload).digest("hex");
-        if (actualHash !== row.hash || payload.byteLength !== row.size) {
-          throw new CapletsError(
-            "INTERNAL_ERROR",
-            `Caplet asset ${row.hash} failed integrity verification.`,
-          );
-        }
-      } else if (row.objectKey && this.objectStore) {
-        payload = await this.objectStore.getVerified(row.objectKey, {
-          hash: row.hash,
-          size: row.size,
-        });
-      }
-      if (!payload) {
-        throw new CapletsError("SERVER_UNAVAILABLE", `Caplet asset ${row.hash} is unavailable.`);
-      }
-      payloads.set(row.hash, payload);
+            .where(eq(sqlite.capletAssetBlobs.hash, expected.hash))
+            .get()
+        : (
+            await this.database.db
+              .select()
+              .from(postgres.capletAssetBlobs)
+              .where(eq(postgres.capletAssetBlobs.hash, expected.hash))
+              .limit(1)
+          )[0];
+    if (!row) {
+      throw new CapletsError("INTERNAL_ERROR", `Caplet asset ${expected.hash} is missing.`);
     }
-    for (const hash of hashes) {
-      if (!payloads.has(hash)) {
-        throw new CapletsError("INTERNAL_ERROR", `Caplet asset ${hash} is missing.`);
-      }
+    validateStoredAssetMetadata(row, {
+      size: expected.size,
+      sha256: expected.hash,
+    });
+    if (row.payload) {
+      const payload = Buffer.from(row.payload);
+      return verifiedAssetStream(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
+            );
+            controller.close();
+          },
+        }),
+        expected,
+      );
     }
-    return payloads;
+    if (row.objectKey && this.objectStore) {
+      return await this.objectStore.getVerifiedStream(row.objectKey, {
+        hash: expected.hash,
+        size: expected.size,
+      });
+    }
+    throw new CapletsError("SERVER_UNAVAILABLE", `Caplet asset ${expected.hash} is unavailable.`);
   }
 }
 
@@ -839,8 +1049,6 @@ export function materializeCapletBundleFiles(
   if (existsSync(destination) && !options.replace) {
     throw new CapletsError("REQUEST_INVALID", `Export destination ${destination} already exists.`);
   }
-  const normalizedFiles: CapletBundleInputFile[] = [];
-  const paths = new Set<string>();
   for (const file of files) {
     if (
       !file ||
@@ -850,14 +1058,13 @@ export function materializeCapletBundleFiles(
     ) {
       throw new CapletsError("REQUEST_INVALID", "Caplet bundle contains a malformed file.");
     }
-    const path = normalizedBundlePath(file.path);
-    if (paths.has(path)) {
-      throw new CapletsError("REQUEST_INVALID", `Duplicate Caplet bundle path ${path}.`);
-    }
-    paths.add(path);
-    normalizedFiles.push({ ...file, path });
   }
-  if (!paths.has("CAPLET.md")) {
+  const normalizedPaths = validateBundlePathSet(files.map((file) => file.path));
+  const normalizedFiles = files.map((file, index) => ({
+    ...file,
+    path: normalizedPaths[index]!,
+  }));
+  if (!normalizedPaths.includes("CAPLET.md")) {
     throw new CapletsError("REQUEST_INVALID", "Caplet bundle must contain CAPLET.md.");
   }
 
@@ -883,8 +1090,24 @@ export function materializeCapletBundleFiles(
   }
 }
 
-function prepareBundle(input: ImportCapletBundleInput, limits: BundleLimits): PreparedBundle {
-  if (!/^[A-Za-z0-9_-]+$/u.test(input.id)) {
+type ValidatedBundleSources = {
+  input: ImportCapletBundleSourcesInput;
+  document: ReopenableBundleFileSource;
+  assets: ReopenableBundleFileSource[];
+};
+
+type StoredAssetMetadata = {
+  hash: string;
+  size: number;
+  objectKey: string | null;
+  verificationStatus: string;
+};
+
+function validateBundleSources(
+  input: ImportCapletBundleSourcesInput,
+  limits: BundleLimits,
+): ValidatedBundleSources {
+  if (!/^[A-Za-z0-9_-]{1,64}$/u.test(input.id)) {
     throw new CapletsError("CONFIG_INVALID", `Invalid Caplet ID ${input.id}.`);
   }
   if (
@@ -903,19 +1126,52 @@ function prepareBundle(input: ImportCapletBundleInput, limits: BundleLimits): Pr
   ) {
     throw new CapletsError("REQUEST_INVALID", "Caplet installation risk provenance is invalid.");
   }
-
-  const paths = new Set<string>();
-  let document: CapletBundleInputFile | undefined;
-  const assets: CapletBundleInputFile[] = [];
-  for (const file of input.files) {
-    const path = normalizedBundlePath(file.path);
-    if (paths.has(path))
-      throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet bundle path ${path}.`);
-    paths.add(path);
-    if (path === "CAPLET.md") {
-      document = { ...file, path };
+  if (!Array.isArray(input.sources)) {
+    throw new CapletsError("REQUEST_INVALID", "Caplet Bundle sources are invalid.");
+  }
+  for (const source of input.sources) {
+    if (
+      !source ||
+      typeof source.path !== "string" ||
+      !Number.isSafeInteger(source.size) ||
+      source.size < 0 ||
+      !/^[a-f0-9]{64}$/u.test(source.sha256) ||
+      typeof source.executable !== "boolean" ||
+      typeof source.open !== "function"
+    ) {
+      throw new CapletsError("REQUEST_INVALID", "Caplet Bundle file metadata is invalid.");
+    }
+  }
+  const paths = validateBundlePathSet(input.sources.map((source) => source.path));
+  let document: ReopenableBundleFileSource | undefined;
+  const assets: ReopenableBundleFileSource[] = [];
+  let totalBytes = 0;
+  for (let index = 0; index < input.sources.length; index += 1) {
+    const original = input.sources[index]!;
+    const source: ReopenableBundleFileSource = {
+      path: paths[index]!,
+      size: original.size,
+      sha256: original.sha256,
+      executable: original.executable,
+      open: () => original.open(),
+    };
+    if (source.size > limits.maxFileBytes) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        `Caplet bundle file ${source.path} exceeds the ${limits.maxFileBytes} byte limit.`,
+      );
+    }
+    if (source.path === "CAPLET.md") {
+      document = source;
     } else {
-      assets.push({ ...file, path });
+      assets.push(source);
+      totalBytes += source.size;
+      if (totalBytes > limits.maxTotalBytes) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          `Caplet bundle exceeds the ${limits.maxTotalBytes} auxiliary byte limit.`,
+        );
+      }
     }
   }
   if (assets.length > limits.maxFiles) {
@@ -924,53 +1180,69 @@ function prepareBundle(input: ImportCapletBundleInput, limits: BundleLimits): Pr
       `Caplet bundle exceeds the ${limits.maxFiles} auxiliary file limit.`,
     );
   }
-  let totalBytes = 0;
-  for (const file of assets) {
-    if (file.content.byteLength > limits.maxFileBytes) {
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        `Caplet bundle file ${file.path} exceeds the ${limits.maxFileBytes} byte limit.`,
-      );
-    }
-    totalBytes += file.content.byteLength;
-  }
-  if (totalBytes > limits.maxTotalBytes) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      `Caplet bundle exceeds the ${limits.maxTotalBytes} auxiliary byte limit.`,
-    );
-  }
   if (!document) throw new CapletsError("CONFIG_INVALID", "Caplet bundle must contain CAPLET.md.");
-  const { frontmatter, body } = parseCapletFileDocument(
-    "CAPLET.md",
-    document.content.toString("utf8"),
+  return { input, document, assets };
+}
+
+async function prepareBundleFromSources(
+  candidate: ValidatedBundleSources,
+  preparedBlobHashes: string[],
+  prepareAsset: (source: ReopenableBundleFileSource, now: string) => Promise<void>,
+): Promise<PreparedBundle> {
+  const document = await readVerifiedBundleFile(candidate.document, {
+    maxBytes: candidate.document.size,
+  });
+  const assets = candidate.assets.sort((left, right) => left.path.localeCompare(right.path));
+  const now = new Date().toISOString();
+  for (const source of assets) await prepareAsset(source, now);
+  return buildPreparedBundle(candidate.input, document, assets, preparedBlobHashes, now);
+}
+
+function prepareBufferedBundle(
+  input: ImportCapletBundleInput,
+  limits: BundleLimits,
+): PreparedBundle {
+  const candidate = validateBundleSources(
+    { ...input, sources: input.files.map(bufferBundleFileSource) },
+    limits,
   );
+  const documentFile = input.files.find(
+    (file) => normalizeBundlePath(file.path) === candidate.document.path,
+  );
+  if (!documentFile) {
+    throw new CapletsError("CONFIG_INVALID", "Caplet bundle must contain CAPLET.md.");
+  }
+  return buildPreparedBundle(
+    candidate.input,
+    documentFile.content,
+    candidate.assets.sort((left, right) => left.path.localeCompare(right.path)),
+    [],
+    new Date().toISOString(),
+  );
+}
+
+function buildPreparedBundle(
+  input: ImportCapletBundleSourcesInput,
+  document: Buffer,
+  assets: ReopenableBundleFileSource[],
+  preparedBlobHashes: string[],
+  now: string,
+): PreparedBundle {
+  const { frontmatter, body } = parseCapletFileDocument("CAPLET.md", document.toString("utf8"));
   const projected = projectFrontmatter(frontmatter);
-  const entries = assets
-    .sort((left, right) => left.path.localeCompare(right.path))
-    .map((file) => ({
-      path: file.path,
-      payload: file.content,
-      sqlPayload: file.content,
-      objectKey: null,
-      hash: createHash("sha256").update(file.content).digest("hex"),
-      assetWasExisting: false,
-      mediaType: mediaTypeForPath(file.path),
-      size: file.content.byteLength,
-      executable: file.executable,
-    }));
+  const entries = assets.map((source) => ({
+    path: source.path,
+    hash: source.sha256,
+    mediaType: mediaTypeForPath(source.path),
+    size: source.size,
+    executable: source.executable,
+  }));
   const contentHash = createHash("sha256")
     .update(
       JSON.stringify({
         frontmatter,
         body,
-        entries: entries.map(({ path, hash, mediaType, size, executable }) => ({
-          path,
-          hash,
-          mediaType,
-          size,
-          executable,
-        })),
+        entries,
       }),
     )
     .digest("hex");
@@ -978,7 +1250,7 @@ function prepareBundle(input: ImportCapletBundleInput, limits: BundleLimits): Pr
     id: input.id,
     recordKey: randomUUID(),
     revisionKey: randomUUID(),
-    now: new Date().toISOString(),
+    now,
     actor: requireOperator(input.operator),
     historyLimit: input.historyLimit ?? null,
     name: frontmatter.name,
@@ -1001,21 +1273,130 @@ function prepareBundle(input: ImportCapletBundleInput, limits: BundleLimits): Pr
     tags: frontmatter.tags ?? [],
     backends: projected.backends,
     entries,
+    preparedBlobHashes,
   };
 }
 
-function normalizedBundlePath(value: string): string {
-  const normalized = posix.normalize(value.replaceAll("\\", "/"));
+function validateStoredAssetMetadata(
+  row: StoredAssetMetadata,
+  source: Pick<ReopenableBundleFileSource, "sha256" | "size">,
+): void {
   if (
-    !value ||
-    value.includes("\0") ||
-    normalized === "." ||
-    normalized.startsWith("../") ||
-    normalized.startsWith("/")
+    row.hash !== source.sha256 ||
+    row.size !== source.size ||
+    row.verificationStatus !== "verified"
   ) {
-    throw new CapletsError("CONFIG_INVALID", `Invalid Caplet bundle path ${value}.`);
+    throw new CapletsError(
+      "INTERNAL_ERROR",
+      `Caplet asset ${source.sha256} has invalid stored metadata.`,
+    );
   }
-  return normalized;
+}
+
+async function verifyBundleSource(source: ReopenableBundleFileSource): Promise<void> {
+  const reader = source.open().getReader();
+  const hash = createHash("sha256");
+  let size = 0;
+  let complete = false;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        complete = true;
+        break;
+      }
+      if (!(chunk.value instanceof Uint8Array)) throw invalidBundleSourcePayload();
+      size += chunk.value.byteLength;
+      if (size > source.size) throw invalidBundleSourcePayload();
+      hash.update(chunk.value);
+    }
+  } finally {
+    if (!complete) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  if (size !== source.size || hash.digest("hex") !== source.sha256) {
+    throw invalidBundleSourcePayload();
+  }
+}
+
+function verifiedAssetStream(
+  stream: ReadableStream<Uint8Array>,
+  expected: Pick<CapletBundleEntryView, "hash" | "size">,
+): ReadableStream<Uint8Array> {
+  const hash = createHash("sha256");
+  let size = 0;
+  return stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        if (!(chunk instanceof Uint8Array)) {
+          throw new CapletsError("INTERNAL_ERROR", "A stored Caplet asset is malformed.");
+        }
+        size += chunk.byteLength;
+        if (size > expected.size) {
+          throw new CapletsError(
+            "INTERNAL_ERROR",
+            `Caplet asset ${expected.hash} failed integrity verification.`,
+          );
+        }
+        hash.update(chunk);
+        controller.enqueue(chunk);
+      },
+      flush() {
+        if (size !== expected.size || hash.digest("hex") !== expected.hash) {
+          throw new CapletsError(
+            "INTERNAL_ERROR",
+            `Caplet asset ${expected.hash} failed integrity verification.`,
+          );
+        }
+      },
+    }),
+  );
+}
+
+function deferredReadableStream(
+  load: () => Promise<ReadableStream<Uint8Array>>,
+): ReadableStream<Uint8Array> {
+  let readerPromise: Promise<ReadableStreamDefaultReader<Uint8Array>> | undefined;
+  let cancelled = false;
+  let cancellationReason: unknown;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        readerPromise ??= load().then((stream) => stream.getReader());
+        const activeReader = await readerPromise;
+        if (cancelled) {
+          await activeReader.cancel(cancellationReason).catch(() => undefined);
+          activeReader.releaseLock();
+          return;
+        }
+        const chunk = await activeReader.read();
+        if (chunk.done) {
+          activeReader.releaseLock();
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      } catch (error) {
+        if (!cancelled) controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      cancelled = true;
+      cancellationReason = reason;
+      if (readerPromise) {
+        const activeReader = await readerPromise.catch(() => undefined);
+        await activeReader?.cancel(reason).catch(() => undefined);
+        activeReader?.releaseLock();
+      }
+    },
+  });
+}
+
+function invalidBundleSourcePayload(): CapletsError {
+  return new CapletsError(
+    "REQUEST_INVALID",
+    "A Caplet Bundle file does not match its declared size or hash.",
+  );
 }
 
 function projectFrontmatter(frontmatter: CapletFileFrontmatter): {
@@ -1084,16 +1465,14 @@ function importManySqliteTransaction(
   bundles: PreparedBundle[],
 ): void {
   for (const bundle of bundles) {
-    if (
-      transaction
-        .select()
-        .from(sqlite.capletRecords)
-        .where(eq(sqlite.capletRecords.capletId, bundle.id))
-        .get()
-    ) {
-      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${bundle.id} already exists.`);
+    const inserted = transaction
+      .insert(sqlite.capletRecords)
+      .values(recordValues(bundle))
+      .onConflictDoNothing()
+      .run();
+    if (inserted.changes !== 1) {
+      throw new CapletsError("CONFIG_EXISTS", `Caplet Record ${bundle.id} already exists.`);
     }
-    transaction.insert(sqlite.capletRecords).values(recordValues(bundle)).run();
     transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle)).run();
     if (bundle.tags.length > 0) {
       transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
@@ -1140,15 +1519,14 @@ async function importManyPostgresTransaction(
   bundles: PreparedBundle[],
 ): Promise<void> {
   for (const bundle of bundles) {
-    const [existing] = await transaction
-      .select()
-      .from(postgres.capletRecords)
-      .where(eq(postgres.capletRecords.capletId, bundle.id))
-      .limit(1);
-    if (existing) {
-      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${bundle.id} already exists.`);
+    const inserted = await transaction
+      .insert(postgres.capletRecords)
+      .values(recordValues(bundle))
+      .onConflictDoNothing()
+      .returning({ recordKey: postgres.capletRecords.recordKey });
+    if (inserted.length !== 1) {
+      throw new CapletsError("CONFIG_EXISTS", `Caplet Record ${bundle.id} already exists.`);
     }
-    await transaction.insert(postgres.capletRecords).values(recordValues(bundle));
     await transaction.insert(postgres.capletRevisions).values(revisionValues(bundle));
     if (bundle.tags.length > 0) {
       await transaction.insert(postgres.capletRevisionTags).values(tagValues(bundle));
@@ -1372,7 +1750,7 @@ async function updatePostgres(
 function updateFromSourceSqlite(
   db: SqliteHostDatabase,
   bundle: PreparedBundle,
-  input: UpdateCapletFromSourceInput,
+  input: SourceUpdateMetadata,
 ): void {
   db.transaction((transaction) => {
     const record = transaction
@@ -1496,7 +1874,7 @@ function updateFromSourceSqlite(
 async function updateFromSourcePostgres(
   db: PostgresHostDatabase,
   bundle: PreparedBundle,
-  input: UpdateCapletFromSourceInput,
+  input: SourceUpdateMetadata,
 ): Promise<void> {
   await db.transaction(async (transaction) => {
     const [record] = await transaction
@@ -1623,8 +2001,7 @@ function deleteRevisionSqlite(db: SqliteHostDatabase, input: DeleteCapletRevisio
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.id))
       .get();
-    if (!record)
-      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${input.id} was not found.`);
+    if (!record) throw missingCapletRecord(input.id);
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
@@ -1634,10 +2011,7 @@ function deleteRevisionSqlite(db: SqliteHostDatabase, input: DeleteCapletRevisio
       .where(eq(sqlite.capletRevisions.revisionKey, input.revisionKey))
       .get();
     if (!revision || revision.recordKey !== record.recordKey) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        `Caplet Revision ${input.revisionKey} was not found.`,
-      );
+      throw missingCapletRevision(input.revisionKey);
     }
     transaction
       .delete(sqlite.capletRevisions)
@@ -1697,8 +2071,7 @@ async function deleteRevisionPostgres(
       .where(eq(postgres.capletRecords.capletId, input.id))
       .for("update")
       .limit(1);
-    if (!record)
-      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${input.id} was not found.`);
+    if (!record) throw missingCapletRecord(input.id);
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
@@ -1708,10 +2081,7 @@ async function deleteRevisionPostgres(
       .where(eq(postgres.capletRevisions.revisionKey, input.revisionKey))
       .limit(1);
     if (!revision || revision.recordKey !== record.recordKey) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        `Caplet Revision ${input.revisionKey} was not found.`,
-      );
+      throw missingCapletRevision(input.revisionKey);
     }
     await transaction
       .delete(postgres.capletRevisions)
@@ -1764,8 +2134,7 @@ function restoreRevisionSqlite(db: SqliteHostDatabase, input: RestoreCapletRevis
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.id))
       .get();
-    if (!record)
-      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${input.id} was not found.`);
+    if (!record) throw missingCapletRecord(input.id);
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
@@ -1780,10 +2149,7 @@ function restoreRevisionSqlite(db: SqliteHostDatabase, input: RestoreCapletRevis
       )
       .get();
     if (!source) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        `Caplet Revision ${input.revisionKey} was not found.`,
-      );
+      throw missingCapletRevision(input.revisionKey);
     }
     const revisionKey = randomUUID();
     const sequence = record.headGeneration + 1;
@@ -1859,8 +2225,7 @@ async function restoreRevisionPostgres(
       .where(eq(postgres.capletRecords.capletId, input.id))
       .for("update")
       .limit(1);
-    if (!record)
-      throw new CapletsError("CONFIG_INVALID", `Caplet Record ${input.id} was not found.`);
+    if (!record) throw missingCapletRecord(input.id);
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
@@ -1875,10 +2240,7 @@ async function restoreRevisionPostgres(
       )
       .limit(1);
     if (!source) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        `Caplet Revision ${input.revisionKey} was not found.`,
-      );
+      throw missingCapletRevision(input.revisionKey);
     }
     const revisionKey = randomUUID();
     const sequence = record.headGeneration + 1;
@@ -2281,7 +2643,7 @@ async function pruneSourceRevisionsPostgres(
 }
 
 function validateCapletRecordId(id: string): void {
-  if (!/^[A-Za-z0-9_-]+$/u.test(id)) {
+  if (!/^[A-Za-z0-9_-]{1,64}$/u.test(id)) {
     throw new CapletsError("CONFIG_INVALID", `Invalid Caplet ID ${id}.`);
   }
 }
@@ -2444,17 +2806,6 @@ function backendValues(bundle: PreparedBundle) {
   }));
 }
 
-function blobValues(bundle: PreparedBundle, entry: PreparedBundle["entries"][number]) {
-  return {
-    hash: entry.hash,
-    size: entry.size,
-    payload: entry.sqlPayload,
-    objectKey: entry.objectKey,
-    verificationStatus: "verified",
-    createdAt: bundle.now,
-  };
-}
-
 function entryValues(bundle: PreparedBundle, entry: PreparedBundle["entries"][number]) {
   return {
     revisionKey: bundle.revisionKey,
@@ -2466,110 +2817,445 @@ function entryValues(bundle: PreparedBundle, entry: PreparedBundle["entries"][nu
   };
 }
 
-function listSqlite(db: SqliteHostDatabase): CapletRecordView[] {
-  const records = db
-    .select()
-    .from(sqlite.capletRecords)
-    .orderBy(asc(sqlite.capletRecords.capletId))
-    .all();
-  const revisionKeys = records.flatMap(({ currentRevisionKey }) =>
-    currentRevisionKey === null ? [] : [currentRevisionKey],
-  );
-  if (revisionKeys.length === 0) return [];
-  const revisions = db
-    .select()
-    .from(sqlite.capletRevisions)
-    .where(inArray(sqlite.capletRevisions.revisionKey, revisionKeys))
-    .all();
-  const tags = db
-    .select()
-    .from(sqlite.capletRevisionTags)
-    .where(inArray(sqlite.capletRevisionTags.revisionKey, revisionKeys))
-    .orderBy(asc(sqlite.capletRevisionTags.position))
-    .all();
-  const backends = db
-    .select()
-    .from(sqlite.capletRevisionBackends)
-    .where(inArray(sqlite.capletRevisionBackends.revisionKey, revisionKeys))
-    .orderBy(asc(sqlite.capletRevisionBackends.position))
-    .all();
-  const entries = db
-    .select()
-    .from(sqlite.capletBundleEntries)
-    .where(inArray(sqlite.capletBundleEntries.revisionKey, revisionKeys))
-    .orderBy(asc(sqlite.capletBundleEntries.path))
-    .all();
-  return recordViews(records, revisions, tags, backends, entries);
-}
+type NormalizedCapletRevisionPageOptions = {
+  limit: number;
+  sort: KeysetSortDirection;
+  after: CapletRevisionPageKey | undefined;
+};
 
-async function listPostgres(db: PostgresHostDatabase): Promise<CapletRecordView[]> {
-  const records = await db
-    .select()
-    .from(postgres.capletRecords)
-    .orderBy(asc(postgres.capletRecords.capletId));
-  const revisionKeys = records.flatMap(({ currentRevisionKey }) =>
-    currentRevisionKey === null ? [] : [currentRevisionKey],
-  );
-  if (revisionKeys.length === 0) return [];
-  const revisions = await db
-    .select()
-    .from(postgres.capletRevisions)
-    .where(inArray(postgres.capletRevisions.revisionKey, revisionKeys));
-  const [tags, backends, entries] = await Promise.all([
-    db
-      .select()
-      .from(postgres.capletRevisionTags)
-      .where(inArray(postgres.capletRevisionTags.revisionKey, revisionKeys))
-      .orderBy(asc(postgres.capletRevisionTags.position)),
-    db
-      .select()
-      .from(postgres.capletRevisionBackends)
-      .where(inArray(postgres.capletRevisionBackends.revisionKey, revisionKeys))
-      .orderBy(asc(postgres.capletRevisionBackends.position)),
-    db
-      .select()
-      .from(postgres.capletBundleEntries)
-      .where(inArray(postgres.capletBundleEntries.revisionKey, revisionKeys))
-      .orderBy(asc(postgres.capletBundleEntries.path)),
-  ]);
-  return recordViews(records, revisions, tags, backends, entries);
-}
+type CapletRevisionPageQueryResult = {
+  recordKey?: string | undefined;
+  page: StorageKeysetPage<CapletRevisionSummaryView, CapletRevisionPageKey>;
+};
 
-function recordViews(
-  records: Array<typeof sqlite.capletRecords.$inferSelect>,
-  revisions: Array<typeof sqlite.capletRevisions.$inferSelect>,
-  tags: Array<typeof sqlite.capletRevisionTags.$inferSelect>,
-  backends: Array<typeof sqlite.capletRevisionBackends.$inferSelect>,
-  entries: Array<typeof sqlite.capletBundleEntries.$inferSelect>,
-): CapletRecordView[] {
-  const revisionsByKey = new Map(revisions.map((revision) => [revision.revisionKey, revision]));
-  const tagsByRevision = groupByRevisionKey(tags);
-  const backendsByRevision = groupByRevisionKey(backends);
-  const entriesByRevision = groupByRevisionKey(entries);
-  return records.flatMap((record) => {
-    if (record.currentRevisionKey === null) return [];
-    const revision = revisionsByKey.get(record.currentRevisionKey);
-    if (!revision) throw missingCurrentRevision(record.capletId);
-    return [
-      recordView(
-        record,
-        revision,
-        tagsByRevision.get(revision.revisionKey) ?? [],
-        backendsByRevision.get(revision.revisionKey) ?? [],
-        entriesByRevision.get(revision.revisionKey) ?? [],
-      ),
-    ];
-  });
-}
-
-function groupByRevisionKey<T extends { revisionKey: string }>(rows: T[]): Map<string, T[]> {
-  const grouped = new Map<string, T[]>();
-  for (const row of rows) {
-    const group = grouped.get(row.revisionKey);
-    if (group) group.push(row);
-    else grouped.set(row.revisionKey, [row]);
+function normalizeRevisionPageOptions(
+  options: CapletRevisionPageOptions,
+): NormalizedCapletRevisionPageOptions {
+  if (
+    options.after !== undefined &&
+    (typeof options.after.createdAt !== "string" ||
+      typeof options.after.revisionKey !== "string" ||
+      !options.after.createdAt ||
+      !options.after.revisionKey)
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Caplet revision page key is invalid.");
   }
-  return grouped;
+  return {
+    limit: storagePageLimit(options.limit),
+    sort: options.sort ?? "desc",
+    after: options.after,
+  };
+}
+
+function listRevisionsPageSqlite(
+  db: SqliteHostDatabase,
+  id: string,
+  options: NormalizedCapletRevisionPageOptions,
+): CapletRevisionPageQueryResult {
+  const record = db
+    .select({ recordKey: sqlite.capletRecords.recordKey })
+    .from(sqlite.capletRecords)
+    .where(eq(sqlite.capletRecords.capletId, id))
+    .get();
+  if (!record) return { page: { items: [] } };
+  const rows = db
+    .select({
+      revisionKey: sqlite.capletRevisions.revisionKey,
+      sequence: sqlite.capletRevisions.sequence,
+      name: sqlite.capletRevisions.name,
+      createdAt: sqlite.capletRevisions.createdAt,
+    })
+    .from(sqlite.capletRevisions)
+    .where(
+      and(
+        eq(sqlite.capletRevisions.recordKey, record.recordKey),
+        options.after
+          ? options.sort === "asc"
+            ? or(
+                gt(sqlite.capletRevisions.createdAt, options.after.createdAt),
+                and(
+                  eq(sqlite.capletRevisions.createdAt, options.after.createdAt),
+                  gt(sqlite.capletRevisions.revisionKey, options.after.revisionKey),
+                ),
+              )
+            : or(
+                lt(sqlite.capletRevisions.createdAt, options.after.createdAt),
+                and(
+                  eq(sqlite.capletRevisions.createdAt, options.after.createdAt),
+                  lt(sqlite.capletRevisions.revisionKey, options.after.revisionKey),
+                ),
+              )
+          : undefined,
+      ),
+    )
+    .orderBy(
+      options.sort === "asc"
+        ? asc(sqlite.capletRevisions.createdAt)
+        : desc(sqlite.capletRevisions.createdAt),
+      options.sort === "asc"
+        ? asc(sqlite.capletRevisions.revisionKey)
+        : desc(sqlite.capletRevisions.revisionKey),
+    )
+    .limit(options.limit + 1)
+    .all();
+  return { recordKey: record.recordKey, page: revisionKeysetPage(rows, options.limit) };
+}
+
+async function listRevisionsPagePostgres(
+  db: PostgresHostDatabase,
+  id: string,
+  options: NormalizedCapletRevisionPageOptions,
+): Promise<CapletRevisionPageQueryResult> {
+  const [record] = await db
+    .select({ recordKey: postgres.capletRecords.recordKey })
+    .from(postgres.capletRecords)
+    .where(eq(postgres.capletRecords.capletId, id))
+    .limit(1);
+  if (!record) return { page: { items: [] } };
+  const rows = await db
+    .select({
+      revisionKey: postgres.capletRevisions.revisionKey,
+      sequence: postgres.capletRevisions.sequence,
+      name: postgres.capletRevisions.name,
+      createdAt: postgres.capletRevisions.createdAt,
+    })
+    .from(postgres.capletRevisions)
+    .where(
+      and(
+        eq(postgres.capletRevisions.recordKey, record.recordKey),
+        options.after
+          ? options.sort === "asc"
+            ? or(
+                gt(postgres.capletRevisions.createdAt, options.after.createdAt),
+                and(
+                  eq(postgres.capletRevisions.createdAt, options.after.createdAt),
+                  gt(postgres.capletRevisions.revisionKey, options.after.revisionKey),
+                ),
+              )
+            : or(
+                lt(postgres.capletRevisions.createdAt, options.after.createdAt),
+                and(
+                  eq(postgres.capletRevisions.createdAt, options.after.createdAt),
+                  lt(postgres.capletRevisions.revisionKey, options.after.revisionKey),
+                ),
+              )
+          : undefined,
+      ),
+    )
+    .orderBy(
+      options.sort === "asc"
+        ? asc(postgres.capletRevisions.createdAt)
+        : desc(postgres.capletRevisions.createdAt),
+      options.sort === "asc"
+        ? asc(postgres.capletRevisions.revisionKey)
+        : desc(postgres.capletRevisions.revisionKey),
+    )
+    .limit(options.limit + 1);
+  return { recordKey: record.recordKey, page: revisionKeysetPage(rows, options.limit) };
+}
+
+function revisionKeysetPage(
+  items: CapletRevisionSummaryView[],
+  limit: number,
+): StorageKeysetPage<CapletRevisionSummaryView, CapletRevisionPageKey> {
+  if (items.length <= limit) return { items };
+  items.pop();
+  const last = items[items.length - 1]!;
+  return {
+    items,
+    nextKey: { createdAt: last.createdAt, revisionKey: last.revisionKey },
+  };
+}
+
+type NormalizedCapletRecordPageOptions = {
+  limit: number;
+  sort: KeysetSortDirection;
+  after: CapletRecordPageKey | undefined;
+  source: string | undefined;
+  status: "active" | "detached" | undefined;
+  tag: string | undefined;
+  searchPattern: string | undefined;
+};
+
+function normalizeRecordPageOptions(
+  options: CapletRecordPageOptions,
+): NormalizedCapletRecordPageOptions {
+  if (
+    options.status !== undefined &&
+    options.status !== "active" &&
+    options.status !== "detached"
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Caplet Record status filter is invalid.");
+  }
+  if (
+    options.after !== undefined &&
+    (typeof options.after.updatedAt !== "string" ||
+      typeof options.after.recordKey !== "string" ||
+      !options.after.updatedAt ||
+      !options.after.recordKey)
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Caplet Record page key is invalid.");
+  }
+  if (options.sort !== undefined && options.sort !== "asc" && options.sort !== "desc") {
+    throw new CapletsError("REQUEST_INVALID", "Caplet Record sort direction is invalid.");
+  }
+  const search = optionalPageFilter(options.search)?.toLowerCase();
+  return {
+    limit: storagePageLimit(options.limit),
+    sort: options.sort ?? "desc",
+    after: options.after,
+    source: optionalPageFilter(options.source),
+    status: options.status,
+    tag: optionalPageFilter(options.tag),
+    searchPattern:
+      search === undefined
+        ? undefined
+        : `%${search.replaceAll("!", "!!").replaceAll("%", "!%").replaceAll("_", "!_")}%`,
+  };
+}
+
+function optionalPageFilter(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function listRecordsPageSqlite(
+  db: SqliteHostDatabase,
+  options: NormalizedCapletRecordPageOptions,
+): StorageKeysetPage<CapletRecordSummaryView, CapletRecordPageKey> {
+  const latestInstallation = db
+    .select({ installationKey: sqlite.capletInstallations.installationKey })
+    .from(sqlite.capletInstallations)
+    .where(eq(sqlite.capletInstallations.recordKey, sqlite.capletRecords.recordKey))
+    .orderBy(
+      desc(sqlite.capletInstallations.updatedAt),
+      desc(sqlite.capletInstallations.installationKey),
+    )
+    .limit(1);
+  const installationFilter =
+    options.source === undefined && options.status === undefined
+      ? undefined
+      : exists(
+          db
+            .select({ installationKey: sqlite.capletInstallations.installationKey })
+            .from(sqlite.capletInstallations)
+            .where(
+              and(
+                inArray(sqlite.capletInstallations.installationKey, latestInstallation),
+                options.source === undefined
+                  ? undefined
+                  : eq(sqlite.capletInstallations.sourceKind, options.source),
+                options.status === undefined
+                  ? undefined
+                  : eq(sqlite.capletInstallations.status, options.status),
+              ),
+            ),
+        );
+  const tagFilter =
+    options.tag === undefined
+      ? undefined
+      : exists(
+          db
+            .select({ revisionKey: sqlite.capletRevisionTags.revisionKey })
+            .from(sqlite.capletRevisionTags)
+            .where(
+              and(
+                eq(sqlite.capletRevisionTags.revisionKey, sqlite.capletRecords.currentRevisionKey),
+                eq(sqlite.capletRevisionTags.value, options.tag),
+              ),
+            ),
+        );
+  const searchFilter =
+    options.searchPattern === undefined
+      ? undefined
+      : or(
+          sql`lower(${sqlite.capletRecords.capletId}) like ${options.searchPattern} escape '!'`,
+          sql`lower(${sqlite.capletRevisions.name}) like ${options.searchPattern} escape '!'`,
+          sql`lower(${sqlite.capletRevisions.description}) like ${options.searchPattern} escape '!'`,
+        );
+  const compare = options.sort === "asc" ? gt : lt;
+  const order = options.sort === "asc" ? asc : desc;
+  const rows = db
+    .select({
+      record: {
+        recordKey: sqlite.capletRecords.recordKey,
+        capletId: sqlite.capletRecords.capletId,
+        headGeneration: sqlite.capletRecords.headGeneration,
+        historyLimit: sqlite.capletRecords.historyLimit,
+        createdAt: sqlite.capletRecords.createdAt,
+        updatedAt: sqlite.capletRecords.updatedAt,
+      },
+      revision: {
+        revisionKey: sqlite.capletRevisions.revisionKey,
+        sequence: sqlite.capletRevisions.sequence,
+        name: sqlite.capletRevisions.name,
+        createdAt: sqlite.capletRevisions.createdAt,
+      },
+    })
+    .from(sqlite.capletRecords)
+    .innerJoin(
+      sqlite.capletRevisions,
+      eq(sqlite.capletRevisions.revisionKey, sqlite.capletRecords.currentRevisionKey),
+    )
+    .where(
+      and(
+        options.after
+          ? or(
+              compare(sqlite.capletRecords.updatedAt, options.after.updatedAt),
+              and(
+                eq(sqlite.capletRecords.updatedAt, options.after.updatedAt),
+                compare(sqlite.capletRecords.recordKey, options.after.recordKey),
+              ),
+            )
+          : undefined,
+        installationFilter,
+        tagFilter,
+        searchFilter,
+      ),
+    )
+    .orderBy(order(sqlite.capletRecords.updatedAt), order(sqlite.capletRecords.recordKey))
+    .limit(options.limit + 1)
+    .all();
+  return recordKeysetPage(rows.map(recordSummaryView), options.limit);
+}
+
+async function listRecordsPagePostgres(
+  db: PostgresHostDatabase,
+  options: NormalizedCapletRecordPageOptions,
+): Promise<StorageKeysetPage<CapletRecordSummaryView, CapletRecordPageKey>> {
+  const latestInstallation = db
+    .select({ installationKey: postgres.capletInstallations.installationKey })
+    .from(postgres.capletInstallations)
+    .where(eq(postgres.capletInstallations.recordKey, postgres.capletRecords.recordKey))
+    .orderBy(
+      desc(postgres.capletInstallations.updatedAt),
+      desc(postgres.capletInstallations.installationKey),
+    )
+    .limit(1);
+  const installationFilter =
+    options.source === undefined && options.status === undefined
+      ? undefined
+      : exists(
+          db
+            .select({ installationKey: postgres.capletInstallations.installationKey })
+            .from(postgres.capletInstallations)
+            .where(
+              and(
+                inArray(postgres.capletInstallations.installationKey, latestInstallation),
+                options.source === undefined
+                  ? undefined
+                  : eq(postgres.capletInstallations.sourceKind, options.source),
+                options.status === undefined
+                  ? undefined
+                  : eq(postgres.capletInstallations.status, options.status),
+              ),
+            ),
+        );
+  const tagFilter =
+    options.tag === undefined
+      ? undefined
+      : exists(
+          db
+            .select({ revisionKey: postgres.capletRevisionTags.revisionKey })
+            .from(postgres.capletRevisionTags)
+            .where(
+              and(
+                eq(
+                  postgres.capletRevisionTags.revisionKey,
+                  postgres.capletRecords.currentRevisionKey,
+                ),
+                eq(postgres.capletRevisionTags.value, options.tag),
+              ),
+            ),
+        );
+  const searchFilter =
+    options.searchPattern === undefined
+      ? undefined
+      : or(
+          sql`lower(${postgres.capletRecords.capletId}) like ${options.searchPattern} escape '!'`,
+          sql`lower(${postgres.capletRevisions.name}) like ${options.searchPattern} escape '!'`,
+          sql`lower(${postgres.capletRevisions.description}) like ${options.searchPattern} escape '!'`,
+        );
+  const compare = options.sort === "asc" ? gt : lt;
+  const order = options.sort === "asc" ? asc : desc;
+  const rows = await db
+    .select({
+      record: {
+        recordKey: postgres.capletRecords.recordKey,
+        capletId: postgres.capletRecords.capletId,
+        headGeneration: postgres.capletRecords.headGeneration,
+        historyLimit: postgres.capletRecords.historyLimit,
+        createdAt: postgres.capletRecords.createdAt,
+        updatedAt: postgres.capletRecords.updatedAt,
+      },
+      revision: {
+        revisionKey: postgres.capletRevisions.revisionKey,
+        sequence: postgres.capletRevisions.sequence,
+        name: postgres.capletRevisions.name,
+        createdAt: postgres.capletRevisions.createdAt,
+      },
+    })
+    .from(postgres.capletRecords)
+    .innerJoin(
+      postgres.capletRevisions,
+      eq(postgres.capletRevisions.revisionKey, postgres.capletRecords.currentRevisionKey),
+    )
+    .where(
+      and(
+        options.after
+          ? or(
+              compare(postgres.capletRecords.updatedAt, options.after.updatedAt),
+              and(
+                eq(postgres.capletRecords.updatedAt, options.after.updatedAt),
+                compare(postgres.capletRecords.recordKey, options.after.recordKey),
+              ),
+            )
+          : undefined,
+        installationFilter,
+        tagFilter,
+        searchFilter,
+      ),
+    )
+    .orderBy(order(postgres.capletRecords.updatedAt), order(postgres.capletRecords.recordKey))
+    .limit(options.limit + 1);
+  return recordKeysetPage(rows.map(recordSummaryView), options.limit);
+}
+
+type CapletRecordSummaryRow = {
+  record: {
+    recordKey: string;
+    capletId: string;
+    headGeneration: number;
+    historyLimit: number | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  revision: CapletRevisionSummaryView;
+};
+
+function recordSummaryView(row: CapletRecordSummaryRow): CapletRecordSummaryView {
+  return {
+    recordKey: row.record.recordKey,
+    id: row.record.capletId,
+    headGeneration: row.record.headGeneration,
+    historyLimit: row.record.historyLimit,
+    createdAt: row.record.createdAt,
+    updatedAt: row.record.updatedAt,
+    currentRevision: row.revision,
+  };
+}
+
+function recordKeysetPage(
+  rows: CapletRecordSummaryView[],
+  limit: number,
+): StorageKeysetPage<CapletRecordSummaryView, CapletRecordPageKey> {
+  if (rows.length <= limit) return { items: rows };
+  rows.pop();
+  const last = rows[rows.length - 1]!;
+  return {
+    items: rows,
+    nextKey: { updatedAt: last.updatedAt, recordKey: last.recordKey },
+  };
 }
 
 function getSqlite(
@@ -2729,6 +3415,14 @@ function missingCurrentRevision(id: string): CapletsError {
   return new CapletsError("INTERNAL_ERROR", `Caplet Record ${id} has a missing current revision.`);
 }
 
+function missingCapletRecord(id: string): CapletsError {
+  return new CapletsError("CONFIG_NOT_FOUND", `Caplet Record ${id} was not found.`);
+}
+
+function missingCapletRevision(revisionKey: string): CapletsError {
+  return new CapletsError("CONFIG_NOT_FOUND", `Caplet Revision ${revisionKey} was not found.`);
+}
+
 function staleGeneration(
   id: string,
   expectedGeneration: number,
@@ -2791,53 +3485,46 @@ async function deleteUnreferencedPostgresBlob(
 
 function ensureSqliteBlob(
   transaction: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
-  bundle: PreparedBundle,
+  _bundle: PreparedBundle,
   entry: PreparedBundle["entries"][number],
 ): void {
-  if (entry.assetWasExisting) {
-    const row = transaction
-      .select({ hash: sqlite.capletAssetBlobs.hash })
-      .from(sqlite.capletAssetBlobs)
-      .where(eq(sqlite.capletAssetBlobs.hash, entry.hash))
-      .get();
-    if (!row) {
-      throw new CapletsError(
-        "SERVER_UNAVAILABLE",
-        `Caplet asset ${entry.hash} changed during import; retry the operation.`,
-      );
-    }
-    return;
+  const row = transaction
+    .select({
+      hash: sqlite.capletAssetBlobs.hash,
+      size: sqlite.capletAssetBlobs.size,
+      verificationStatus: sqlite.capletAssetBlobs.verificationStatus,
+    })
+    .from(sqlite.capletAssetBlobs)
+    .where(eq(sqlite.capletAssetBlobs.hash, entry.hash))
+    .get();
+  if (!row || row.size !== entry.size || row.verificationStatus !== "verified") {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `Caplet asset ${entry.hash} changed during import; retry the operation.`,
+    );
   }
-  transaction
-    .insert(sqlite.capletAssetBlobs)
-    .values(blobValues(bundle, entry))
-    .onConflictDoNothing()
-    .run();
 }
 
 async function ensurePostgresBlob(
   transaction: Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0],
-  bundle: PreparedBundle,
+  _bundle: PreparedBundle,
   entry: PreparedBundle["entries"][number],
 ): Promise<void> {
-  if (entry.assetWasExisting) {
-    const [row] = await transaction
-      .select({ hash: postgres.capletAssetBlobs.hash })
-      .from(postgres.capletAssetBlobs)
-      .where(eq(postgres.capletAssetBlobs.hash, entry.hash))
-      .limit(1);
-    if (!row) {
-      throw new CapletsError(
-        "SERVER_UNAVAILABLE",
-        `Caplet asset ${entry.hash} changed during import; retry the operation.`,
-      );
-    }
-    return;
+  const [row] = await transaction
+    .select({
+      hash: postgres.capletAssetBlobs.hash,
+      size: postgres.capletAssetBlobs.size,
+      verificationStatus: postgres.capletAssetBlobs.verificationStatus,
+    })
+    .from(postgres.capletAssetBlobs)
+    .where(eq(postgres.capletAssetBlobs.hash, entry.hash))
+    .limit(1);
+  if (!row || row.size !== entry.size || row.verificationStatus !== "verified") {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `Caplet asset ${entry.hash} changed during import; retry the operation.`,
+    );
   }
-  await transaction
-    .insert(postgres.capletAssetBlobs)
-    .values(blobValues(bundle, entry))
-    .onConflictDoNothing();
 }
 
 function trackedInstallation(id: string): CapletsError {
@@ -2881,7 +3568,7 @@ function sourceObservationTime(candidate: string, previous: string | undefined):
 
 function sourceObservationValues(
   installationKey: string,
-  input: UpdateCapletFromSourceInput,
+  input: SourceUpdateMetadata,
   observedAt: string,
 ) {
   return {
@@ -2898,7 +3585,7 @@ function sourceObservationValues(
 function sourceUpdateActivity(
   bundle: PreparedBundle,
   installationKey: string,
-  input: UpdateCapletFromSourceInput,
+  input: SourceUpdateMetadata,
   contentChanged: boolean,
   revisionCreated: boolean,
   createdAt: string,

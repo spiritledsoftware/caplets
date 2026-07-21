@@ -1,7 +1,8 @@
 import { roleChangeMetadata } from "../dashboard/activity-log";
 import { CapletsError } from "../errors";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
-import { RemoteSecurityStore } from "../storage/remote-security";
+import type { RemotePendingLoginStatus } from "../remote/server-credentials";
+import { remoteClientById, RemoteSecurityStore } from "../storage/remote-security";
 import type {
   CurrentHostOperation,
   CurrentHostOperationOutcome,
@@ -9,11 +10,37 @@ import type {
   CurrentHostOperationsDependencies,
 } from "./operations";
 
+/** Maximum number of actionable entries returned by the Current Host summary. */
+const CURRENT_HOST_SUMMARY_ATTENTION_LIMIT = 10;
+
 type SummaryOperation = Extract<CurrentHostOperation, { kind: "summary" }>;
 type ClientsListOutcome = Extract<CurrentHostOperationOutcome, { kind: "clients_list" }>;
+type RemoteClientsPageOperation = Extract<CurrentHostOperation, { kind: "remote_clients_page" }>;
+type RemoteClientsPageOutcome = Extract<
+  CurrentHostOperationOutcome,
+  { kind: "remote_clients_page" }
+>;
+type RemoteClientGetOperation = Extract<CurrentHostOperation, { kind: "remote_client_get" }>;
+type RemoteClientGetOutcome = Extract<CurrentHostOperationOutcome, { kind: "remote_client_get" }>;
 type PendingLoginsListOutcome = Extract<
   CurrentHostOperationOutcome,
   { kind: "pending_logins_list" }
+>;
+type RemoteLoginRequestsPageOperation = Extract<
+  CurrentHostOperation,
+  { kind: "remote_login_requests_page" }
+>;
+type RemoteLoginRequestsPageOutcome = Extract<
+  CurrentHostOperationOutcome,
+  { kind: "remote_login_requests_page" }
+>;
+type RemoteLoginRequestGetOperation = Extract<
+  CurrentHostOperation,
+  { kind: "remote_login_request_get" }
+>;
+type RemoteLoginRequestGetOutcome = Extract<
+  CurrentHostOperationOutcome,
+  { kind: "remote_login_request_get" }
 >;
 type PendingLoginApproveOperation = Extract<
   CurrentHostOperation,
@@ -40,12 +67,58 @@ export function createCurrentHostClientOperations(dependencies: CurrentHostOpera
       kind: "clients_list",
       clients: (await dependencies.remoteCredentialStore?.listClients()) ?? [],
     }),
+    listClientsPage: async (
+      operation: RemoteClientsPageOperation,
+    ): Promise<RemoteClientsPageOutcome> => {
+      const store = authoritativeRemoteSecurityStore(dependencies);
+      return {
+        kind: "remote_clients_page",
+        page: await store.listClientsPage({
+          limit: operation.limit,
+          sort: operation.sort,
+          ...(operation.after === undefined ? {} : { after: operation.after }),
+          ...(operation.role === undefined ? {} : { role: operation.role }),
+          ...(operation.revoked === undefined ? {} : { revoked: operation.revoked }),
+        }),
+      };
+    },
+    getClient: async (operation: RemoteClientGetOperation): Promise<RemoteClientGetOutcome> => {
+      const clientId = requiredRemoteClientId(operation.clientId);
+      const client = await authoritativeRemoteSecurityStore(dependencies).getClient(clientId);
+      return client
+        ? { kind: "remote_client_get", status: "found", client }
+        : { kind: "remote_client_get", status: "not_found", clientId };
+    },
     listPendingLogins: async (): Promise<PendingLoginsListOutcome> => ({
       kind: "pending_logins_list",
       pendingLogins: ((await dependencies.remoteCredentialStore?.listPendingLogins()) ?? []).filter(
         (login) => login.status === "pending" || login.status === "approved",
       ),
     }),
+    listPendingLoginsPage: async (
+      operation: RemoteLoginRequestsPageOperation,
+    ): Promise<RemoteLoginRequestsPageOutcome> => {
+      const store = authoritativeRemoteSecurityStore(dependencies);
+      return {
+        kind: "remote_login_requests_page",
+        page: await store.listPendingLoginsPage({
+          limit: operation.limit,
+          sort: operation.sort,
+          ...(operation.after === undefined ? {} : { after: operation.after }),
+          ...(operation.statuses === undefined ? {} : { statuses: operation.statuses }),
+        }),
+      };
+    },
+    getPendingLogin: async (
+      operation: RemoteLoginRequestGetOperation,
+    ): Promise<RemoteLoginRequestGetOutcome> => {
+      const flowId = requiredPendingLoginFlowId(operation.flowId);
+      const pendingLogin =
+        await authoritativeRemoteSecurityStore(dependencies).getPendingLogin(flowId);
+      return pendingLogin
+        ? { kind: "remote_login_request_get", status: "found", pendingLogin }
+        : { kind: "remote_login_request_get", status: "not_found", flowId };
+    },
     approvePendingLogin: async (
       principal: CurrentHostOperatorPrincipal,
       operation: PendingLoginApproveOperation,
@@ -74,9 +147,42 @@ async function summaryOutcome(
   vaultCount: number,
   operation: SummaryOperation,
 ): Promise<SummaryOutcome> {
-  const pendingLogins = (await dependencies.remoteCredentialStore?.listPendingLogins()) ?? [];
-  const clients = (await dependencies.remoteCredentialStore?.listClients()) ?? [];
-  const pending = pendingLogins.filter((login) => login.status === "pending");
+  if (!dependencies.runtimeState) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Authoritative runtime state is unavailable.");
+  }
+  if (!dependencies.projectBindingState) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Authoritative Project Binding state is unavailable.",
+    );
+  }
+  const [runtime, projectBinding] = await Promise.all([
+    dependencies.runtimeState.read(),
+    dependencies.projectBindingState.read(),
+  ]);
+  const credentialStore = dependencies.remoteCredentialStore;
+  let clientCount = 0;
+  let pendingCount = 0;
+  let pending: RemotePendingLoginStatus[] = [];
+  if (credentialStore instanceof RemoteSecurityStore) {
+    const [clients, pendingTotal, pendingPage] = await Promise.all([
+      credentialStore.countClients(),
+      credentialStore.countPendingLogins(["pending"]),
+      credentialStore.listPendingLoginsPage({
+        limit: CURRENT_HOST_SUMMARY_ATTENTION_LIMIT,
+        statuses: ["pending"],
+      }),
+    ]);
+    clientCount = clients;
+    pendingCount = pendingTotal;
+    pending = pendingPage.items;
+  } else if (credentialStore) {
+    [clientCount, pendingCount, pending] = await Promise.all([
+      credentialStore.countClients(),
+      credentialStore.countPendingLogins(["pending"]),
+      credentialStore.listPendingLoginsBounded(CURRENT_HOST_SUMMARY_ATTENTION_LIMIT, ["pending"]),
+    ]);
+  }
   return {
     kind: "summary",
     summary: {
@@ -100,16 +206,16 @@ async function summaryOutcome(
         },
         catalog: { href: `${operation.dashboardPath}#catalog` },
         access: {
-          clients: clients.length,
-          pending: pending.length,
+          clients: clientCount,
+          pending: pendingCount,
           href: `${operation.dashboardPath}#access`,
         },
         vault: { count: vaultCount, href: `${operation.dashboardPath}#vault` },
         projectBinding: {
-          state: "disconnected",
+          state: projectBinding.state,
           href: `${operation.dashboardPath}#project-binding`,
         },
-        runtime: { status: "ok", href: `${operation.dashboardPath}#runtime` },
+        runtime: { status: runtime.status, href: `${operation.dashboardPath}#runtime` },
         logs: { href: `${operation.dashboardPath}#logs` },
         diagnostics: { href: `${operation.dashboardPath}#diagnostics` },
         activity: { href: `${operation.dashboardPath}#activity` },
@@ -126,7 +232,10 @@ async function pendingLoginApprovalOutcome(
 ): Promise<PendingLoginApproveOutcome> {
   const flowId = requiredPendingLoginFlowId(operation.flowId);
   if (operation.grantedRole !== undefined) assertRemoteClientRole(operation.grantedRole);
-  const store = dependencies.remoteCredentialStore;
+  const store =
+    operation.expectedGeneration === undefined
+      ? dependencies.remoteCredentialStore
+      : authoritativeRemoteSecurityStore(dependencies);
   if (!store) {
     appendFailureActivity(dependencies, principal, "pending_login_approved", {
       type: "pending_login",
@@ -141,20 +250,25 @@ async function pendingLoginApprovalOutcome(
             operatorClientId: principal.clientId,
             flowId,
             ...(operation.grantedRole === undefined ? {} : { grantedRole: operation.grantedRole }),
+            ...(operation.expectedGeneration === undefined
+              ? {}
+              : { expectedGeneration: operation.expectedGeneration }),
           })
         : store.approvePendingLoginFlow({
             flowId,
             ...(operation.grantedRole === undefined ? {} : { grantedRole: operation.grantedRole }),
           });
-    dependencies.activityLog.append({
-      actorClientId: principal.clientId,
-      action: "pending_login_approved",
-      target: { type: "pending_login", id: pendingLogin.flowId },
-      metadata: {
-        requestedRole: pendingLogin.requestedRole,
-        grantedRole: pendingLogin.grantedRole ?? pendingLogin.requestedRole,
-      },
-    });
+    if (!(store instanceof RemoteSecurityStore)) {
+      dependencies.activityLog.append({
+        actorClientId: principal.clientId,
+        action: "pending_login_approved",
+        target: { type: "pending_login", id: pendingLogin.flowId },
+        metadata: {
+          requestedRole: pendingLogin.requestedRole,
+          grantedRole: pendingLogin.grantedRole ?? pendingLogin.requestedRole,
+        },
+      });
+    }
     return { kind: "pending_login_approve", pendingLogin };
   } catch (error) {
     appendFailureActivity(dependencies, principal, "pending_login_approved", {
@@ -171,7 +285,10 @@ async function pendingLoginDenialOutcome(
   operation: PendingLoginDenyOperation,
 ): Promise<PendingLoginDenyOutcome> {
   const flowId = requiredPendingLoginFlowId(operation.flowId);
-  const store = dependencies.remoteCredentialStore;
+  const store =
+    operation.expectedGeneration === undefined
+      ? dependencies.remoteCredentialStore
+      : authoritativeRemoteSecurityStore(dependencies);
   if (!store) {
     appendFailureActivity(dependencies, principal, "pending_login_denied", {
       type: "pending_login",
@@ -182,14 +299,22 @@ async function pendingLoginDenialOutcome(
   try {
     const pendingLogin =
       store instanceof RemoteSecurityStore
-        ? await store.denyPendingLoginFlow({ operatorClientId: principal.clientId, flowId })
+        ? await store.denyPendingLoginFlow({
+            operatorClientId: principal.clientId,
+            flowId,
+            ...(operation.expectedGeneration === undefined
+              ? {}
+              : { expectedGeneration: operation.expectedGeneration }),
+          })
         : store.denyPendingLoginFlow({ flowId });
-    dependencies.activityLog.append({
-      actorClientId: principal.clientId,
-      action: "pending_login_denied",
-      target: { type: "pending_login", id: pendingLogin.flowId },
-      metadata: { requestedRole: pendingLogin.requestedRole },
-    });
+    if (!(store instanceof RemoteSecurityStore)) {
+      dependencies.activityLog.append({
+        actorClientId: principal.clientId,
+        action: "pending_login_denied",
+        target: { type: "pending_login", id: pendingLogin.flowId },
+        metadata: { requestedRole: pendingLogin.requestedRole },
+      });
+    }
     return { kind: "pending_login_deny", pendingLogin };
   } catch (error) {
     appendFailureActivity(dependencies, principal, "pending_login_denied", {
@@ -206,6 +331,23 @@ async function clientRevokeOutcome(
   operation: ClientRevokeOperation,
 ): Promise<ClientRevokeOutcome> {
   const clientId = requiredRemoteClientId(operation.clientId);
+  if (operation.expectedGeneration !== undefined) {
+    const store = authoritativeRemoteSecurityStore(dependencies);
+    const client = await store.revokeClient({
+      operatorClientId: principal.clientId,
+      clientId,
+      expectedGeneration: operation.expectedGeneration,
+    });
+    if (!client) {
+      return { kind: "client_revoke", status: "not_found", clientId, sessionEnded: false };
+    }
+    return {
+      kind: "client_revoke",
+      status: "revoked",
+      client,
+      sessionEnded: clientId === principal.clientId,
+    };
+  }
   const store = dependencies.remoteCredentialStore;
   if (!store) {
     appendFailureActivity(dependencies, principal, "remote_client_revoked", {
@@ -215,12 +357,12 @@ async function clientRevokeOutcome(
     return { kind: "client_revoke", status: "credential_store_unavailable", clientId };
   }
   try {
-    const client = (await store.listClients()).find((candidate) => candidate.clientId === clientId);
+    const client = await remoteClientById(store, clientId);
     const revoked =
       store instanceof RemoteServerCredentialStore
         ? store.revokeClient(clientId)
         : await store.revokeClient({ operatorClientId: principal.clientId, clientId });
-    if (revoked && !client?.revokedAt) {
+    if (revoked && !client?.revokedAt && !(store instanceof RemoteSecurityStore)) {
       dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "remote_client_revoked",
@@ -250,6 +392,23 @@ async function clientRoleOutcome(
 ): Promise<ClientChangeRoleOutcome> {
   const clientId = requiredRemoteClientId(operation.clientId);
   assertRemoteClientRole(operation.role);
+  if (operation.expectedGeneration !== undefined) {
+    const client = await authoritativeRemoteSecurityStore(dependencies).changeClientRole({
+      operatorClientId: principal.clientId,
+      clientId,
+      role: operation.role,
+      expectedGeneration: operation.expectedGeneration,
+    });
+    if (!client) {
+      return { kind: "client_change_role", status: "not_found", clientId, sessionEnded: false };
+    }
+    return {
+      kind: "client_change_role",
+      status: "changed",
+      client,
+      sessionEnded: client.clientId === principal.clientId && client.role !== "operator",
+    };
+  }
   const store = dependencies.remoteCredentialStore;
   if (!store) {
     appendFailureActivity(dependencies, principal, "remote_client_role_changed", {
@@ -259,7 +418,7 @@ async function clientRoleOutcome(
     return { kind: "client_change_role", status: "credential_store_unavailable", clientId };
   }
   try {
-    const before = (await store.listClients()).find((candidate) => candidate.clientId === clientId);
+    const before = await remoteClientById(store, clientId);
     const client =
       store instanceof RemoteServerCredentialStore
         ? store.changeClientRole(clientId, operation.role)
@@ -272,12 +431,14 @@ async function clientRoleOutcome(
       return { kind: "client_change_role", status: "not_found", clientId, sessionEnded: false };
     }
     const sessionEnded = client.clientId === principal.clientId && client.role !== "operator";
-    dependencies.activityLog.append({
-      actorClientId: principal.clientId,
-      action: "remote_client_role_changed",
-      target: { type: "remote_client", id: client.clientId },
-      metadata: roleChangeMetadata(before?.role ?? client.role, client.role),
-    });
+    if (!(store instanceof RemoteSecurityStore)) {
+      dependencies.activityLog.append({
+        actorClientId: principal.clientId,
+        action: "remote_client_role_changed",
+        target: { type: "remote_client", id: client.clientId },
+        metadata: roleChangeMetadata(before?.role ?? client.role, client.role),
+      });
+    }
     return { kind: "client_change_role", status: "changed", client, sessionEnded };
   } catch (error) {
     appendFailureActivity(dependencies, principal, "remote_client_role_changed", {
@@ -286,6 +447,18 @@ async function clientRoleOutcome(
     });
     throw error;
   }
+}
+
+function authoritativeRemoteSecurityStore(
+  dependencies: CurrentHostOperationsDependencies,
+): RemoteSecurityStore {
+  if (dependencies.remoteCredentialStore instanceof RemoteSecurityStore) {
+    return dependencies.remoteCredentialStore;
+  }
+  throw new CapletsError(
+    "SERVER_UNAVAILABLE",
+    "Authoritative remote security state is unavailable.",
+  );
 }
 
 function requiredRemoteClientId(value: unknown): string {

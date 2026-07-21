@@ -33,6 +33,10 @@
     "lint:fix": "oxlint --fix .",
     "lint:staged": "lint-staged",
     "prepare": "husky",
+    "openapi:check": "tsx ./scripts/generate-openapi.ts --check && vitest run ./scripts/sdk-artifacts.test.ts",
+    "openapi:generate": "tsx ./scripts/generate-openapi.ts",
+    "postgres:contracts": "tsx ./scripts/postgres-contract-tests.ts",
+    "postgres:contracts:check": "vitest run ./scripts/postgres-contract-tests.test.ts && tsx ./scripts/postgres-contract-tests.ts --check",
     "release": "turbo build --force && node scripts/check-package-runtime.mjs && changeset publish",
     "release:publish": "pnpm telemetry:prepare-release-env && pnpm release",
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
@@ -44,10 +48,11 @@
     "telemetry:check-web-env": "tsx ./scripts/check-web-observability-env.ts",
     "telemetry:prepare-release-env": "tsx ./scripts/check-telemetry-release-env.ts --write-bundled-intake",
     "typecheck": "tsc --noEmit && turbo typecheck",
-    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm storage:check && pnpm compose:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
+    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm storage:check && pnpm compose:check && pnpm docs:check && pnpm openapi:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
     "version-packages": "changeset version && node scripts/sync-compose-image-version.mjs --write && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {
+    "@caplets/sdk": "workspace:*",
     "@changesets/cli": "^2.31.1",
     "@cloudflare/workers-types": "^5.20260719.1",
     "@sentry/rollup-plugin": "^5.4.0",

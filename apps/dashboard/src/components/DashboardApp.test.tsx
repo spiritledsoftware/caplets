@@ -5,8 +5,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-  dashboardApi,
-  dashboardApiAdapter,
   dashboardClient,
   isDashboardUnauthorized,
   unauthorizedPredicate,
@@ -15,6 +13,7 @@ const {
 } = vi.hoisted(() => {
   const dashboardClient = {
     changeRemoteClientRole: vi.fn(),
+    completeDashboardLogin: vi.fn(),
     fetchActivity: vi.fn(),
     fetchCaplets: vi.fn(),
     fetchCatalogUpdates: vi.fn(),
@@ -25,67 +24,19 @@ const {
     fetchSummary: vi.fn(),
     listPendingLogins: vi.fn(),
     listRemoteClients: vi.fn(),
+    listVaultGrants: vi.fn(),
     listVaultValues: vi.fn(),
+    logoutDashboardSession: vi.fn(),
+    pollDashboardLogin: vi.fn(),
     restartRuntime: vi.fn(),
     restoreSession: vi.fn(),
     revealVaultValue: vi.fn(),
+    startDashboardLogin: vi.fn(),
     revokeRemoteClient: vi.fn(),
   };
-  // Plan 000 should replace only this legacy identity table/adapter with generated operations.
-  const legacyOperations = {
-    activity: "activity?limit=50",
-    caplets: "caplets",
-    catalogUpdates: "catalog/updates",
-    changeRemoteClientRole: /^access\/clients\/([^/]+)\/role$/u,
-    diagnostics: "diagnostics",
-    logs: "logs?limit=100",
-    pendingLogins: "access/pending-logins",
-    projectBinding: "project-binding",
-    remoteClients: "access/clients",
-    restartRuntime: "runtime/restart",
-    revealVaultValue: "vault/reveal",
-    runtime: "runtime",
-    session: "session",
-    summary: "summary",
-    vaultValues: "vault",
-    revokeRemoteClient: /^access\/clients\/([^/]+)\/revoke$/u,
-  } as const;
-  const dashboardApiAdapter = (path: string, options: RequestInit = {}) => {
-    if (path === legacyOperations.session) return dashboardClient.restoreSession();
-    if (path === legacyOperations.summary) return dashboardClient.fetchSummary();
-    if (path === legacyOperations.caplets) return dashboardClient.fetchCaplets();
-    if (path === legacyOperations.remoteClients) return dashboardClient.listRemoteClients();
-    if (path === legacyOperations.pendingLogins) return dashboardClient.listPendingLogins();
-    if (path === legacyOperations.vaultValues) return dashboardClient.listVaultValues();
-    if (path === legacyOperations.runtime) return dashboardClient.fetchRuntime();
-    if (path === legacyOperations.diagnostics) return dashboardClient.fetchDiagnostics();
-    if (path === legacyOperations.activity) return dashboardClient.fetchActivity();
-    if (path === legacyOperations.logs) return dashboardClient.fetchLogs();
-    if (path === legacyOperations.projectBinding) return dashboardClient.fetchProjectBinding();
-    if (path === legacyOperations.catalogUpdates) return dashboardClient.fetchCatalogUpdates();
-    if (path === legacyOperations.restartRuntime) return dashboardClient.restartRuntime();
-    if (path === legacyOperations.revealVaultValue) {
-      const body = JSON.parse(String(options.body ?? "{}")) as {
-        confirmation?: string;
-        key?: string;
-      };
-      return dashboardClient.revealVaultValue(body.key, body.confirmation);
-    }
-    const roleMatch = legacyOperations.changeRemoteClientRole.exec(path);
-    if (roleMatch) {
-      const body = JSON.parse(String(options.body ?? "{}")) as { role?: string };
-      return dashboardClient.changeRemoteClientRole(roleMatch[1], body.role);
-    }
-    const revokeMatch = legacyOperations.revokeRemoteClient.exec(path);
-    if (revokeMatch) return dashboardClient.revokeRemoteClient(revokeMatch[1]);
-    throw new Error(`Unexpected dashboard operation: ${path}`);
-  };
-  const dashboardApi = vi.fn(dashboardApiAdapter);
   const unauthorizedPredicate = (error: unknown) =>
     typeof error === "object" && error !== null && "status" in error && error.status === 401;
   return {
-    dashboardApi,
-    dashboardApiAdapter,
     dashboardClient,
     isDashboardUnauthorized: vi.fn(unauthorizedPredicate),
     unauthorizedPredicate,
@@ -99,15 +50,75 @@ const {
 });
 
 vi.mock("@/lib/api", () => ({
-  dashboardApi,
+  adminV2CreateRuntimeRestart: () => dashboardClient.restartRuntime(),
+  adminV2DeleteRemoteClient: (clientId: string) => dashboardClient.revokeRemoteClient(clientId),
+  adminV2GetDiagnostics: () => dashboardClient.fetchDiagnostics(),
+  adminV2GetHost: () => dashboardClient.fetchSummary(),
+  adminV2GetProjectBinding: () => dashboardClient.fetchProjectBinding(),
+  adminV2GetRemoteClient: (clientId: string) =>
+    Promise.resolve({ data: { clientId }, etag: '"client"' }),
+  adminV2GetRemoteLoginRequest: (flowId: string) =>
+    Promise.resolve({ data: { flowId }, etag: '"login"' }),
+  adminV2GetRuntime: () => dashboardClient.fetchRuntime(),
+  adminV2GetVaultValue: (key: string) => Promise.resolve({ data: { key }, etag: '"vault"' }),
+  adminV2ListActivity: async () => {
+    const response = await dashboardClient.fetchActivity();
+    return { items: response.entries ?? [] };
+  },
+  adminV2ListCatalogUpdateCandidates: async (options?: { cursor?: string }) => {
+    const response = await dashboardClient.fetchCatalogUpdates(options);
+    return { items: response.updates ?? [], nextCursor: response.nextCursor };
+  },
+  adminV2ListEffectiveCaplets: async (options?: { cursor?: string }) => {
+    const response = await dashboardClient.fetchCaplets(options);
+    return { items: response.caplets ?? [], nextCursor: response.nextCursor };
+  },
+  adminV2ListLogs: async () => {
+    const response = await dashboardClient.fetchLogs();
+    return { items: response.entries ?? [] };
+  },
+  adminV2ListRemoteClients: async (options?: { cursor?: string }) => {
+    const response = await dashboardClient.listRemoteClients(options);
+    return { items: response.clients ?? [], nextCursor: response.nextCursor };
+  },
+  adminV2ListRemoteLoginRequests: async (options?: { cursor?: string }) => {
+    const response = await dashboardClient.listPendingLogins(options);
+    return { items: response.pendingLogins ?? [], nextCursor: response.nextCursor };
+  },
+  adminV2ListVaultGrants: async (options?: { cursor?: string }) => {
+    const response = await dashboardClient.listVaultGrants(options);
+    return { items: response.grants ?? [], nextCursor: response.nextCursor };
+  },
+  adminV2ListVaultValues: async (options?: { cursor?: string }) => {
+    const response = await dashboardClient.listVaultValues(options);
+    return { items: response.values ?? [], nextCursor: response.nextCursor };
+  },
+  adminV2UpdateRemoteClient: (clientId: string, body: { role: string }) =>
+    dashboardClient.changeRemoteClientRole(clientId, body.role),
+  adminV2UpdateRemoteLoginRequest: vi.fn(),
+  adminV2UpdateCatalogCaplets: vi.fn(),
+  adminV2PutVaultValue: vi.fn(),
+  adminV2DeleteVaultValue: vi.fn(),
+  completeDashboardLogin: dashboardClient.completeDashboardLogin,
+  createDashboardMutationIntent: () => ({ idempotencyKey: "test-intent" }),
   isDashboardUnauthorized,
+  logoutDashboardSession: dashboardClient.logoutDashboardSession,
+  pollDashboardLogin: dashboardClient.pollDashboardLogin,
+  restoreDashboardSession: dashboardClient.restoreSession,
+  revealVaultValue: dashboardClient.revealVaultValue,
   setDashboardSession,
+  startDashboardLogin: dashboardClient.startDashboardLogin,
 }));
 
 vi.mock("@/components/ui/sonner", () => ({ Toaster: () => null }));
 vi.mock("sonner", () => ({ toast }));
 
-import { DashboardApp, catalogMutationLabel, routeFromPath } from "./DashboardApp";
+import {
+  DashboardApp,
+  DashboardPaginationLocks,
+  catalogMutationLabel,
+  routeFromPath,
+} from "./DashboardApp";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -196,7 +207,10 @@ async function enterConfirmation(phrase: string) {
   });
 }
 
-async function mountDashboard(initialRoute: "access" | "runtime" | "vault", readyButton: string) {
+async function mountDashboard(
+  initialRoute: "overview" | "access" | "caplets" | "runtime" | "vault",
+  readyButton: string,
+) {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -204,6 +218,19 @@ async function mountDashboard(initialRoute: "access" | "runtime" | "vault", read
     root?.render(<DashboardApp initialRoute={initialRoute} />);
   });
   await waitFor(() => findButton(readyButton));
+}
+
+async function mountOverview() {
+  await mountDashboard("overview", "Refresh dashboard");
+  await waitFor(() =>
+    document.body.textContent?.includes("Operator attention") ? true : undefined,
+  );
+}
+
+function cardWithTitle(title: string): HTMLElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-slot="card"]')).find(
+    (card) => card.querySelector('[data-slot="card-title"]')?.textContent?.trim() === title,
+  );
 }
 
 async function mountVault() {
@@ -247,6 +274,7 @@ beforeEach(() => {
   dashboardClient.listVaultValues.mockResolvedValue({
     values: [{ key: vaultKey, valueBytes: 12 }],
   });
+  dashboardClient.listVaultGrants.mockResolvedValue({ grants: [] });
   dashboardClient.fetchRuntime.mockResolvedValue({
     runtime: { status: "healthy", version: "1.0.0" },
   });
@@ -259,8 +287,6 @@ beforeEach(() => {
   dashboardClient.revokeRemoteClient.mockResolvedValue({});
   dashboardClient.restartRuntime.mockResolvedValue({});
   dashboardClient.revealVaultValue.mockResolvedValue({ value: "default secret" });
-  dashboardApi.mockReset();
-  dashboardApi.mockImplementation(dashboardApiAdapter);
   isDashboardUnauthorized.mockReset();
   isDashboardUnauthorized.mockImplementation(unauthorizedPredicate);
   setDashboardSession.mockReset();
@@ -304,6 +330,225 @@ describe("catalog update presentation", () => {
 describe("dashboard routing", () => {
   it("recognizes the Stored Caplets route", () => {
     expect(routeFromPath("/dashboard/stored-caplets")).toBe("stored-caplets");
+  });
+});
+
+describe("Project Binding health", () => {
+  it("renders canonical connected state as healthy without false operator attention", async () => {
+    dashboardClient.fetchProjectBinding.mockResolvedValue({
+      state: "connected",
+      affectedCaplets: [],
+      actions: [],
+    });
+
+    await mountOverview();
+
+    const attentionCard = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-slot="card"]'),
+    ).find((card) => card.textContent?.includes("Operator attention"));
+    const bindingCard = cardWithTitle("Project Binding");
+    const bindingStatus = bindingCard?.querySelector<HTMLElement>('[data-slot="badge"]');
+
+    expect(attentionCard?.textContent).toContain("All clear");
+    expect(attentionCard?.textContent).not.toContain("Project Binding connected");
+    expect(bindingStatus?.textContent).toBe("connected");
+    expect(bindingStatus?.className).toContain("bg-secondary");
+  });
+
+  it("renders disconnected state as non-healthy in attention and card severity", async () => {
+    dashboardClient.fetchProjectBinding.mockResolvedValue({
+      state: "disconnected",
+      affectedCaplets: ["catalog"],
+      actions: [],
+    });
+
+    await mountOverview();
+
+    const attentionCard = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-slot="card"]'),
+    ).find((card) => card.textContent?.includes("Operator attention"));
+    const bindingCard = cardWithTitle("Project Binding");
+    const bindingStatus = bindingCard?.querySelector<HTMLElement>('[data-slot="badge"]');
+
+    expect(attentionCard?.textContent).toContain("Project Binding disconnected");
+    expect(bindingStatus?.textContent).toBe("disconnected");
+    expect(bindingStatus?.className).toContain("border-border");
+    expect(bindingStatus?.className).not.toContain("bg-secondary");
+  });
+});
+
+describe("dashboard pagination lock ownership", () => {
+  it("keeps a newer same-key request locked when a stale request settles after reset", () => {
+    const locks = new DashboardPaginationLocks();
+    const ownerA = locks.tryAcquire("clients");
+    expect(ownerA).toBeTypeOf("symbol");
+
+    locks.reset();
+    const ownerB = locks.tryAcquire("clients");
+    expect(ownerB).toBeTypeOf("symbol");
+
+    locks.release("clients", ownerA);
+    expect(locks.tryAcquire("clients")).toBeUndefined();
+
+    locks.release("clients", ownerB);
+    expect(locks.tryAcquire("clients")).toBeTypeOf("symbol");
+  });
+});
+
+describe("bounded dashboard collections", () => {
+  it("loads one page initially and exposes later Access records only after keyboard-reachable actions", async () => {
+    dashboardClient.listRemoteClients.mockImplementation(
+      async ({ cursor }: { cursor?: string } = {}) =>
+        cursor === "clients-next"
+          ? {
+              clients: [{ clientId: "client-100", clientLabel: "Later client", role: "access" }],
+            }
+          : {
+              clients: Array.from({ length: 100 }, (_, index) => ({
+                clientId: `client-${index}`,
+                clientLabel: `Client ${index}`,
+                role: "access",
+              })),
+              nextCursor: "clients-next",
+            },
+    );
+    dashboardClient.listPendingLogins.mockImplementation(
+      async ({ cursor }: { cursor?: string } = {}) =>
+        cursor === "pending-next"
+          ? {
+              pendingLogins: [
+                {
+                  flowId: "flow-100",
+                  clientLabel: "Later login",
+                  requestedRole: "access",
+                  status: "pending",
+                },
+              ],
+            }
+          : {
+              pendingLogins: Array.from({ length: 100 }, (_, index) => ({
+                flowId: `flow-${index}`,
+                clientLabel: `Login ${index}`,
+                requestedRole: "access",
+                status: "pending",
+              })),
+              nextCursor: "pending-next",
+            },
+    );
+
+    await mountDashboard("access", "Load more clients");
+
+    expect(dashboardClient.fetchCaplets).toHaveBeenCalledOnce();
+    expect(dashboardClient.listRemoteClients).toHaveBeenCalledOnce();
+    expect(dashboardClient.listPendingLogins).toHaveBeenCalledOnce();
+    expect(dashboardClient.listVaultValues).toHaveBeenCalledOnce();
+    expect(dashboardClient.listVaultGrants).toHaveBeenCalledOnce();
+    expect(dashboardClient.fetchCatalogUpdates).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain("Later client");
+    expect(document.body.textContent).not.toContain("Later login");
+
+    await click(button("Load more clients"));
+    await click(button("Load more pending logins"));
+    await waitFor(() =>
+      document.body.textContent?.includes("Later client") &&
+      document.body.textContent.includes("Later login")
+        ? true
+        : undefined,
+    );
+
+    expect(dashboardClient.listRemoteClients).toHaveBeenNthCalledWith(2, {
+      cursor: "clients-next",
+    });
+    expect(dashboardClient.listPendingLogins).toHaveBeenNthCalledWith(2, {
+      cursor: "pending-next",
+    });
+  });
+
+  it("increments effective Caplets and update candidates one page per action", async () => {
+    dashboardClient.fetchCaplets.mockImplementation(async ({ cursor }: { cursor?: string } = {}) =>
+      cursor === "caplets-next"
+        ? { caplets: [{ id: "caplet-100" }] }
+        : {
+            caplets: Array.from({ length: 100 }, (_, index) => ({ id: `caplet-${index}` })),
+            nextCursor: "caplets-next",
+          },
+    );
+    dashboardClient.fetchCatalogUpdates.mockImplementation(
+      async ({ cursor }: { cursor?: string } = {}) =>
+        cursor === "updates-next"
+          ? { updates: [{ id: "caplet-100", status: "ready" }] }
+          : {
+              updates: Array.from({ length: 100 }, (_, index) => ({
+                id: `caplet-${index}`,
+                status: "ready",
+              })),
+              nextCursor: "updates-next",
+            },
+    );
+
+    await mountDashboard("caplets", "Load more effective Caplets");
+    expect(dashboardClient.fetchCaplets).toHaveBeenCalledOnce();
+    expect(dashboardClient.fetchCatalogUpdates).toHaveBeenCalledOnce();
+
+    await click(button("Load more effective Caplets"));
+    await click(button("Load more update candidates"));
+    await waitFor(() =>
+      document.body.textContent?.includes("101 effective Caplets loaded") &&
+      document.body.textContent.includes("101 update candidates loaded")
+        ? true
+        : undefined,
+    );
+  });
+
+  it("increments Vault values and grants independently without auto-draining", async () => {
+    dashboardClient.listVaultValues.mockImplementation(
+      async ({ cursor }: { cursor?: string } = {}) =>
+        cursor === "values-next"
+          ? { values: [{ key: "LATER_SECRET", valueBytes: 1 }] }
+          : {
+              values: Array.from({ length: 100 }, (_, index) => ({
+                key: `SECRET_${index}`,
+                valueBytes: 1,
+              })),
+              nextCursor: "values-next",
+            },
+    );
+    dashboardClient.listVaultGrants.mockImplementation(
+      async ({ cursor }: { cursor?: string } = {}) =>
+        cursor === "grants-next"
+          ? {
+              grants: [
+                {
+                  storedKey: "LATER_SECRET",
+                  capletId: "later-caplet",
+                  referenceName: "TOKEN",
+                  origin: { kind: "stored-record" },
+                },
+              ],
+            }
+          : {
+              grants: Array.from({ length: 100 }, (_, index) => ({
+                storedKey: `SECRET_${index}`,
+                capletId: `caplet-${index}`,
+                referenceName: `TOKEN_${index}`,
+                origin: { kind: "stored-record" },
+              })),
+              nextCursor: "grants-next",
+            },
+    );
+
+    await mountDashboard("vault", "Load more Vault values");
+    expect(dashboardClient.listVaultValues).toHaveBeenCalledOnce();
+    expect(dashboardClient.listVaultGrants).toHaveBeenCalledOnce();
+
+    await click(button("Load more Vault values"));
+    await click(button("Load more Vault grants"));
+    await waitFor(() =>
+      document.body.textContent?.includes("101 Vault values loaded") &&
+      document.body.textContent.includes("101 Vault grants loaded")
+        ? true
+        : undefined,
+    );
   });
 });
 

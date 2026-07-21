@@ -1,12 +1,22 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { serve, type WebSocketServerLike } from "@hono/node-server";
+import { serve, type ServerType, type WebSocketServerLike } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { backendAuthCompletionCorrelation } from "../src/auth";
+import { canonicalRootOpenApiJson } from "../src/admin-api/openapi-representation";
+import { attachManifestRevisionEventSchema } from "../src/admin-api/openapi";
 import { CapletsEngine } from "../src/engine";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import type { CapletsEngineOptions } from "../src/engine";
@@ -14,8 +24,18 @@ import { CapletsError } from "../src/errors";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import type { ProjectBindingLease } from "../src/project-binding";
+import { PROJECT_BINDING_SOCKET_PROTOCOL } from "../src/project-binding/protocol";
 import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
+import {
+  LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES,
+  maximumBase64EncodedBytes,
+} from "../src/remote-control/dispatch";
 import { createHostStorage } from "../src/storage";
+import {
+  MAX_BUNDLE_FILES,
+  MAX_BUNDLE_FILE_BYTES,
+  MAX_BUNDLE_TOTAL_BYTES,
+} from "../src/storage/caplet-records";
 import {
   ATTACH_INVOKE_REQUEST_MAX_BYTES,
   AUTH_REQUEST_MAX_BYTES,
@@ -23,7 +43,10 @@ import {
   CONTROL_REQUEST_MAX_BYTES,
   createHttpServeApp,
   LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES,
+  PROJECT_BINDING_STATE_POLL_INTERVAL_MS,
   sanitizeRemoteEngineOptions,
+  servicePaths,
+  shutdownHttpServer,
 } from "../src/serve/http";
 import * as serveHttpModule from "../src/serve/http";
 import type {
@@ -231,6 +254,15 @@ describe("readLimitedJsonObject", () => {
 });
 
 describe("createHttpServeApp", () => {
+  it("admits the frozen v1 maximum document in addition to maximum auxiliary bytes", () => {
+    expect(LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES).toBe(
+      maximumBase64EncodedBytes(
+        MAX_BUNDLE_TOTAL_BYTES + MAX_BUNDLE_FILE_BYTES,
+        MAX_BUNDLE_FILES + 1,
+      ) + LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES,
+    );
+  });
+
   it("serves root info and health without auth", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
@@ -254,10 +286,22 @@ describe("createHttpServeApp", () => {
             health: "/v1/healthz",
           },
         },
+        {
+          version: 2,
+          path: "/v2",
+          links: { admin: "/v2/admin" },
+        },
       ],
       auth: { type: "development_unauthenticated" },
     });
 
+    const v2 = await app.request("http://127.0.0.1:5387/v2");
+    expect(v2.status).toBe(200);
+    await expect(v2.json()).resolves.toEqual({
+      version: 2,
+      path: "/v2",
+      links: { admin: "/v2/admin" },
+    });
     const v1 = await app.request("http://127.0.0.1:5387/v1");
     expect(v1.status).toBe(200);
     await expect(v1.json()).resolves.toMatchObject({
@@ -280,6 +324,563 @@ describe("createHttpServeApp", () => {
     });
 
     await engine.close();
+  });
+
+  it("derives exact root and custom Admin v2 service paths", () => {
+    expect(servicePaths("/")).toMatchObject({
+      adminV2: "/v2/admin",
+      dashboardV2: "/dashboard/api/v2",
+      dashboardPrivate: "/dashboard/api/private",
+      adminV2Callback: "/v2/admin/backend-auth-flows/:flowId/callback",
+    });
+    expect(servicePaths("/tenant/tools")).toMatchObject({
+      adminV2: "/tenant/tools/v2/admin",
+      dashboardV2: "/tenant/tools/dashboard/api/v2",
+      dashboardPrivate: "/tenant/tools/dashboard/api/private",
+      adminV2Callback: "/tenant/tools/v2/admin/backend-auth-flows/:flowId/callback",
+    });
+  });
+
+  it("mounts the Admin resource surface behind exact Operator bearer authority", async () => {
+    const credentialStore = remoteCredentialStore();
+    const accessCredentials = pairedClient(credentialStore, "http://127.0.0.1:5387/tenant/tools");
+    const operatorCredentials = pairedClient(
+      credentialStore,
+      "http://127.0.0.1:5387/tenant/tools",
+      "operator",
+    );
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({
+        path: "/tenant/tools",
+        auth: { type: "remote_credentials" },
+      }),
+      engine,
+      { writeErr: () => {}, remoteCredentialStore: credentialStore },
+    );
+
+    const bearer = await app.request("http://127.0.0.1:5387/tenant/tools/v2/admin/host", {
+      headers: {
+        authorization: `Bearer ${operatorCredentials.accessToken}`,
+        "x-caplets-csrf": "ignored-by-bearer",
+      },
+    });
+    expect(bearer.status).toBe(200);
+    expect(bearer.headers.get("cache-control")).toBe("no-store");
+
+    for (const [name, headers, status, code, type] of [
+      [
+        "missing bearer",
+        undefined,
+        401,
+        "AUTH_REQUIRED",
+        "urn:caplets:problem:authentication-required",
+      ],
+      [
+        "malformed bearer",
+        { authorization: "Bearer" },
+        401,
+        "AUTH_REQUIRED",
+        "urn:caplets:problem:authentication-required",
+      ],
+      [
+        "Access Client bearer",
+        { authorization: `Bearer ${accessCredentials.accessToken}` },
+        403,
+        "AUTH_FAILED",
+        "urn:caplets:problem:forbidden",
+      ],
+      [
+        "dashboard cookie",
+        { cookie: "caplets_dashboard_session=not-bearer-authority" },
+        401,
+        "AUTH_REQUIRED",
+        "urn:caplets:problem:authentication-required",
+      ],
+    ] as const) {
+      const response = await app.request(
+        "http://127.0.0.1:5387/tenant/tools/v2/admin/host",
+        headers ? { headers } : undefined,
+      );
+      expect(response.status, name).toBe(status);
+      expect(response.headers.get("content-type"), name).toBe("application/problem+json");
+      expect(response.headers.get("cache-control"), name).toBe("no-store");
+      await expect(response.json(), name).resolves.toMatchObject({ status, code, type });
+    }
+
+    expect(
+      (await app.request("http://127.0.0.1:5387/tenant/tools/dashboard/api/summary")).status,
+    ).toBe(404);
+    expect((await app.request("http://127.0.0.1:5387/v2/admin/host")).status).toBe(404);
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("projects authoritative Host runtime, logs, and active Project Binding state", async () => {
+    const credentialStore = remoteCredentialStore();
+    const operatorCredentials = pairedClient(
+      credentialStore,
+      "http://127.0.0.1:5387/tenant/tools",
+      "operator",
+    );
+    const { engine } = testEngine();
+    vi.spyOn(engine, "readiness").mockResolvedValue({
+      ready: false,
+      reason: "database_unavailable",
+    });
+    const listPage = vi.fn().mockResolvedValue({
+      items: [
+        {
+          timestamp: "2026-07-20T12:00:00.000Z",
+          level: "error",
+          message: "Runtime storage probe failed.",
+          source: "runtime",
+        },
+      ],
+    });
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-host-state-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(
+      httpOptions({
+        path: "/tenant/tools",
+        auth: { type: "remote_credentials" },
+      }),
+      engine,
+      {
+        writeErr: () => {},
+        remoteCredentialStore: credentialStore,
+        currentHostLogState: { listPage },
+        projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+      },
+    );
+    const authorization = `Bearer ${operatorCredentials.accessToken}`;
+
+    const binding = await app.request(
+      "http://127.0.0.1:5387/tenant/tools/v1/attach/project-bindings/sessions",
+      {
+        method: "POST",
+        headers: { authorization, "content-type": "application/json" },
+        body: JSON.stringify({
+          projectRoot: "/repo",
+          projectFingerprint: "sha256_host_state",
+        }),
+      },
+    );
+    expect(binding.status).toBe(201);
+
+    const host = await app.request("http://127.0.0.1:5387/tenant/tools/v2/admin/host", {
+      headers: { authorization },
+    });
+    expect(host.status).toBe(200);
+    await expect(host.json()).resolves.toMatchObject({
+      sections: {
+        runtime: { status: "error" },
+        projectBinding: { state: "connected" },
+      },
+    });
+
+    const runtime = await app.request("http://127.0.0.1:5387/tenant/tools/v2/admin/runtime", {
+      headers: { authorization },
+    });
+    expect(runtime.status).toBe(200);
+    await expect(runtime.json()).resolves.toMatchObject({
+      runtime: { status: "error", reason: "database_unavailable" },
+    });
+
+    const diagnostics = await app.request(
+      "http://127.0.0.1:5387/tenant/tools/v2/admin/diagnostics",
+      { headers: { authorization } },
+    );
+    expect(diagnostics.status).toBe(200);
+    await expect(diagnostics.json()).resolves.toMatchObject({
+      status: "error",
+      checks: [{ id: "runtime", status: "error", detail: "database_unavailable" }],
+    });
+
+    const projectBinding = await app.request(
+      "http://127.0.0.1:5387/tenant/tools/v2/admin/project-binding",
+      { headers: { authorization } },
+    );
+    expect(projectBinding.status).toBe(200);
+    await expect(projectBinding.json()).resolves.toMatchObject({ state: "connected" });
+
+    const logs = await app.request("http://127.0.0.1:5387/tenant/tools/v2/admin/logs", {
+      headers: { authorization },
+    });
+    expect(logs.status).toBe(200);
+    await expect(logs.json()).resolves.toMatchObject({
+      items: [{ message: "Runtime storage probe failed." }],
+    });
+    expect(listPage).toHaveBeenCalledWith({ sort: "asc" });
+
+    const events = await app.request("http://127.0.0.1:5387/tenant/tools/v2/admin/events", {
+      headers: { authorization },
+    });
+    expect(events.status).toBe(200);
+    const reader = events.body?.getReader();
+    const eventChunk = await reader?.read();
+    await reader?.cancel();
+    const eventBody = new TextDecoder().decode(eventChunk?.value);
+    expect(eventBody).toContain('"status":"error"');
+    expect(eventBody).toContain('"state":"connected"');
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("answers Current Host Project Binding state with a bounded repository lookup", async () => {
+    const context = testContext();
+    const storage = await testAuthoritativeHostStorage(context.configPath);
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: storage,
+      watch: false,
+    });
+    const existsActive = vi.spyOn(storage.projectBindings, "existsActive").mockResolvedValue(true);
+    const list = vi
+      .spyOn(storage.projectBindings, "list")
+      .mockRejectedValue(new Error("Current Host state must not scan binding history."));
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: storage,
+    });
+
+    try {
+      const response = await app.request("http://127.0.0.1:5387/v2/admin/project-binding");
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ state: "connected" });
+      expect(existsActive).toHaveBeenCalledOnce();
+      expect(existsActive).toHaveBeenCalledWith(expect.any(Date));
+      expect(list).not.toHaveBeenCalled();
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+    }
+  });
+
+  it("bounds active request drain and rejects work admitted after shutdown starts", async () => {
+    const { engine } = testEngine();
+    const closeEngine = vi.spyOn(engine, "close");
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+    const requestStarted = Promise.withResolvers<void>();
+    const releaseRequest = Promise.withResolvers<void>();
+    app.get("/shutdown-hang", async (c) => {
+      requestStarted.resolve();
+      await releaseRequest.promise;
+      return c.text("completed");
+    });
+    app.get("/shutdown-late", (c) => c.text("admitted"));
+    const server = await startTestHttpServer(app);
+    const hangingRequest = fetch(`${server.origin}/shutdown-hang`).then(
+      () => "completed",
+      () => "closed",
+    );
+    let shutdown: Promise<void> | undefined;
+
+    try {
+      await requestStarted.promise;
+      shutdown = shutdownHttpServer(server.server, app, engine, { activeRequestGraceMs: 25 });
+      const lateAppResponse = await app.request("http://127.0.0.1/shutdown-late");
+      const lateNetwork = fetch(`${server.origin}/shutdown-late`).then(
+        () => "admitted",
+        () => "rejected",
+      );
+      // This live-server regression deliberately observes the real shutdown grace deadline.
+      const settledWithinGrace = await Promise.race([
+        shutdown.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+      ]);
+      const lateNetworkResult = await lateNetwork;
+
+      expect(settledWithinGrace).toBe(true);
+      expect(lateAppResponse.status).toBe(503);
+      expect(lateNetworkResult).toBe("rejected");
+      await expect(hangingRequest).resolves.toBe("closed");
+      expect(closeEngine).toHaveBeenCalledOnce();
+    } finally {
+      releaseRequest.resolve();
+      await shutdown?.catch(() => undefined);
+      if (!shutdown) {
+        await server.close();
+        await engine.close();
+      }
+    }
+  });
+
+  it("refreshes an initial stream when its first durable poll resolves with newer state", async () => {
+    const context = testContext();
+    const storage = await testAuthoritativeHostStorage(context.configPath);
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: storage,
+      watch: false,
+    });
+    const pollRead = Promise.withResolvers<boolean>();
+    const initialRead = Promise.withResolvers<boolean>();
+    vi.spyOn(storage.projectBindings, "existsActive")
+      .mockImplementationOnce(() => pollRead.promise)
+      .mockImplementationOnce(() => initialRead.promise)
+      .mockResolvedValue(true);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: storage,
+    });
+
+    try {
+      const response = await app.request("http://127.0.0.1:5387/v2/admin/events");
+      const reader = response.body!.getReader();
+      initialRead.resolve(false);
+      const initial = await reader.read();
+      expect(new TextDecoder().decode(initial.value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      const changed = reader.read();
+      pollRead.resolve(true);
+      const closing = Promise.withResolvers<void>();
+      setImmediate(() => {
+        void app.closeCapletsSessions().then(closing.resolve, closing.reject);
+      });
+      const next = await changed;
+      expect(next.done).toBe(false);
+      expect(new TextDecoder().decode(next.value)).toContain(
+        '"projectBinding":{"state":"connected"}',
+      );
+      await closing.promise;
+      await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+    }
+  });
+
+  it("streams cross-Host-Node durable Project Binding changes without duplicate snapshots or orphan polling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-21T12:00:00.000Z"));
+    const context = testContext();
+    const observerStorage = await testAuthoritativeHostStorage(context.configPath);
+    const writerStorage = await testAuthoritativeHostStorage(context.configPath);
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: observerStorage,
+      watch: false,
+    });
+    const existsActive = vi.spyOn(observerStorage.projectBindings, "existsActive");
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: observerStorage,
+    });
+
+    try {
+      const response = await app.request("http://127.0.0.1:5387/v2/admin/events");
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const initial = await reader.read();
+      expect(new TextDecoder().decode(initial.value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      const first = await writerStorage.projectBindings.create({
+        bindingId: "binding-cross-node-expiry",
+        sessionId: "session-cross-node-expiry",
+        projectFingerprint: "sha256:cross-node-expiry",
+        projectRoot: "/client/cross-node-expiry",
+        serverProjectRoot: "/host/cross-node-expiry",
+        ownerNodeId: "writer-node",
+        leaseTtlMs: 2_000,
+      });
+      const connected = reader.read();
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await connected).value)).toContain(
+        '"projectBinding":{"state":"connected"}',
+      );
+
+      await writerStorage.projectBindings.heartbeat({
+        bindingId: first.bindingId,
+        ownerNodeId: first.ownerNodeId,
+        sessionId: first.sessionId,
+        expectedGeneration: first.generation,
+        state: "ready",
+        syncState: "idle",
+        leaseTtlMs: 2_000,
+      });
+      let unchangedSettled = false;
+      const expired = reader.read().finally(() => {
+        unchangedSettled = true;
+      });
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(unchangedSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await expired).value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      const second = await writerStorage.projectBindings.create({
+        bindingId: "binding-cross-node-end",
+        sessionId: "session-cross-node-end",
+        projectFingerprint: "sha256:cross-node-end",
+        projectRoot: "/client/cross-node-end",
+        serverProjectRoot: "/host/cross-node-end",
+        ownerNodeId: "writer-node",
+        leaseTtlMs: 2_000,
+      });
+      const reconnected = reader.read();
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await reconnected).value)).toContain(
+        '"projectBinding":{"state":"connected"}',
+      );
+
+      await writerStorage.projectBindings.end({
+        bindingId: second.bindingId,
+        ownerNodeId: second.ownerNodeId,
+        expectedGeneration: second.generation,
+      });
+      const ended = reader.read();
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await ended).value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      await reader.cancel("subscriber disconnected");
+      const callsAfterCancel = existsActive.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS * 5);
+      expect(existsActive).toHaveBeenCalledTimes(callsAfterCancel);
+
+      const closingResponse = await app.request("http://127.0.0.1:5387/v2/admin/events");
+      const closingReader = closingResponse.body!.getReader();
+      await closingReader.read();
+      await app.closeCapletsSessions();
+      const callsAfterClose = existsActive.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS * 5);
+      expect(existsActive).toHaveBeenCalledTimes(callsAfterClose);
+      await expect(closingReader.read()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+      await writerStorage.close();
+      await observerStorage.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("serves the canonical root OpenAPI bytes publicly with conditional caching", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+      writeErr: () => {},
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/caplets/openapi.json");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(
+      "application/vnd.oai.openapi+json;version=3.1",
+    );
+    expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(await response.text()).toBe(canonicalRootOpenApiJson());
+    const etag = response.headers.get("etag");
+    expect(etag).toMatch(/^"[A-Za-z0-9_-]+"$/u);
+
+    const conditional = await app.request("http://127.0.0.1:5387/caplets/openapi.json", {
+      headers: { "If-None-Match": `W/${etag}` },
+    });
+    expect(conditional.status).toBe(304);
+    expect(await conditional.text()).toBe("");
+    expect(conditional.headers.get("etag")).toBe(etag);
+    expect((await app.request("http://127.0.0.1:5387/openapi.json")).status).toBe(404);
+
+    await engine.close();
+  });
+
+  it("applies upload admission configuration and drains active requests before clean close", async () => {
+    const context = testContext();
+    const storage = await testAuthoritativeHostStorage(context.configPath);
+    const stagingRoot = tempDir("caplets-admin-upload-serve-");
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: storage,
+      watch: false,
+    });
+    const app = createHttpServeApp(
+      httpOptions({
+        adminUploads: {
+          stagingDir: stagingRoot,
+          maxConcurrent: 1,
+          maxStagedBytes: 400_000_000,
+        },
+      }),
+      engine,
+      { writeErr: () => {}, control: context, authoritativeStorage: storage },
+    );
+
+    const requestStarted = Promise.withResolvers<void>();
+    const releaseRequest = Promise.withResolvers<void>();
+    let pulled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          if (pulled) return;
+          pulled = true;
+          requestStarted.resolve();
+          await releaseRequest.promise;
+          controller.enqueue(new TextEncoder().encode("--empty-upload--\r\n"));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const activeRequest = Promise.resolve(
+      app.fetch(
+        new Request("http://127.0.0.1:5387/v2/admin/caplet-records/upload-test/bundle", {
+          method: "PUT",
+          headers: {
+            "content-type": "multipart/form-data; boundary=empty-upload",
+            "idempotency-key": "empty-upload",
+            "if-none-match": "*",
+          },
+          body,
+          duplex: "half",
+        } as RequestInit & { duplex: "half" }),
+      ),
+    );
+    await requestStarted.promise;
+    expect(
+      readdirSync(stagingRoot).filter((entry) => entry.startsWith("caplets-admin-upload-")),
+    ).toHaveLength(1);
+    const concurrentUpload = await app.request(
+      "http://127.0.0.1:5387/v2/admin/caplet-records/upload-capacity/bundle",
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "multipart/form-data; boundary=capacity-upload",
+          "idempotency-key": "capacity-upload",
+          "if-none-match": "*",
+        },
+        body: "--capacity-upload--\r\n",
+      },
+    );
+    expect(concurrentUpload.status).toBe(429);
+    expect(concurrentUpload.headers.get("retry-after")).toBe("1");
+    let closed = false;
+    const closing = app.closeCapletsSessions().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    releaseRequest.resolve();
+    const upload = await activeRequest;
+    expect(upload.status).toBe(400);
+    await closing;
+    expect(readdirSync(stagingRoot)).toEqual([]);
+
+    await engine.close();
+    await storage.close();
   });
 
   it("applies the named body class to representative auth, dashboard, attach, and v1 bundle routes", async () => {
@@ -332,7 +933,7 @@ describe("createHttpServeApp", () => {
       {
         app,
         name: "dashboard",
-        url: "http://127.0.0.1:5387/dashboard/api/stored-caplets",
+        url: "http://127.0.0.1:5387/dashboard/api/private/vault-reveals",
         maxBytes: CONTROL_REQUEST_MAX_BYTES,
         headers: {
           "content-type": "application/json",
@@ -342,7 +943,7 @@ describe("createHttpServeApp", () => {
         status: 400,
         expected: {
           ok: false,
-          error: { code: "REQUEST_INVALID", message: "id must be a non-empty string." },
+          error: { code: "REQUEST_INVALID", message: "key must be a non-empty string." },
         },
       },
       {
@@ -493,6 +1094,7 @@ describe("createHttpServeApp", () => {
         arguments: {
           id: "x".repeat(CONTROL_REQUEST_MAX_BYTES),
           files: [{ path: "CAPLET.md", contentBase64: "", executable: false }],
+          ...(command === "storage_records_update" ? { expectedGeneration: 1 } : {}),
         },
       });
       expect(encoder.encode(body).byteLength).toBeGreaterThan(CONTROL_REQUEST_MAX_BYTES);
@@ -690,6 +1292,11 @@ describe("createHttpServeApp", () => {
             audience: "https://caplets.example.com/",
           },
         }),
+        {
+          version: 2,
+          path: "/v2",
+          links: { admin: "/v2/admin" },
+        },
       ],
     });
 
@@ -1170,6 +1777,8 @@ describe("createHttpServeApp", () => {
     const missing = await app.request("http://127.0.0.1:5387/v1/admin", { method: "POST" });
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toBeNull();
+    expect(missing.headers.get("deprecation")).toBe("true");
+    expect(missing.headers.get("link")).toBe('</v2/admin/host>; rel="successor-version"');
 
     const denied = await app.request("http://127.0.0.1:5387/v1/admin", {
       method: "POST",
@@ -1181,6 +1790,8 @@ describe("createHttpServeApp", () => {
     });
     expect(denied.status).toBe(403);
     await expect(denied.text()).resolves.toContain("operator role required");
+    expect(denied.headers.get("deprecation")).toBe("true");
+    expect(denied.headers.get("link")).toBe('</v2/admin/host>; rel="successor-version"');
 
     const listed = await app.request("http://127.0.0.1:5387/v1/admin", {
       method: "POST",
@@ -1192,6 +1803,8 @@ describe("createHttpServeApp", () => {
     });
     expect(listed.status).toBe(200);
     await expect(listed.json()).resolves.toMatchObject({ ok: true });
+    expect(listed.headers.get("deprecation")).toBe("true");
+    expect(listed.headers.get("link")).toBe('</v2/admin/host>; rel="successor-version"');
 
     await engine.close();
   });
@@ -1297,6 +1910,13 @@ describe("createHttpServeApp", () => {
       writeErr: () => {},
       projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
     });
+    const events = await app.request("http://127.0.0.1:5387/v2/admin/events");
+    expect(events.status).toBe(200);
+    const eventReader = events.body!.getReader();
+    const initialEvent = await eventReader.read();
+    expect(new TextDecoder().decode(initialEvent.value)).toContain(
+      '"projectBinding":{"state":"disconnected"}',
+    );
 
     const session = await app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
       method: "POST",
@@ -1323,6 +1943,14 @@ describe("createHttpServeApp", () => {
       },
       sessionId: expect.any(String),
     });
+    const connectedEvent = await eventReader.read();
+    expect(new TextDecoder().decode(connectedEvent.value)).toContain(
+      '"projectBinding":{"state":"connected"}',
+    );
+    let nextEventSettled = false;
+    const nextEvent = eventReader.read().finally(() => {
+      nextEventSettled = true;
+    });
 
     const heartbeat = await app.request(
       `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
@@ -1341,6 +1969,8 @@ describe("createHttpServeApp", () => {
       ok: true,
       binding: { bindingId: created.binding.bindingId, state: "ready", syncState: "idle" },
     });
+    await Promise.resolve();
+    expect(nextEventSettled).toBe(false);
 
     const status = await app.request(
       `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
@@ -1361,6 +1991,11 @@ describe("createHttpServeApp", () => {
       ok: true,
       binding: { bindingId: created.binding.bindingId, state: "ended", syncState: "not_started" },
     });
+    const disconnectedEvent = await nextEvent;
+    expect(new TextDecoder().decode(disconnectedEvent.value)).toContain(
+      '"projectBinding":{"state":"disconnected"}',
+    );
+    await eventReader.cancel("test complete");
 
     await engine.close();
   });
@@ -1520,6 +2155,40 @@ describe("createHttpServeApp", () => {
       app = undefined;
       await vi.advanceTimersByTimeAsync(60_000);
       expect(expireDue).toHaveBeenCalledTimes(2);
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally {
+      await app?.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("maintains durable Admin idempotency records until the HTTP lifecycle closes", async () => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), "caplets-idempotency-maintenance-"));
+    dirs.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "host-state.sqlite3"),
+    });
+    const prune = vi.spyOn(storage.idempotency, "prune");
+    const { engine } = testEngine();
+    let app: CapletsHttpApp | undefined;
+    try {
+      app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        authoritativeStorage: storage,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prune).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(prune).toHaveBeenCalledTimes(2);
+
+      await app.closeCapletsSessions();
+      app = undefined;
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(prune).toHaveBeenCalledTimes(2);
     } finally {
       await app?.closeCapletsSessions();
@@ -2060,6 +2729,66 @@ describe("createHttpServeApp", () => {
     }
   });
 
+  it("retries durable cleanup when a just-admitted create races shutdown", async () => {
+    const { engine } = testEngine();
+    vi.spyOn(engine, "hostNodeIdentity").mockReturnValue("node-race");
+    const storageRoot = mkdtempSync(join(tmpdir(), "caplets-binding-state-"));
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(storageRoot, workspaceRoot);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(storageRoot, "host-state.sqlite3"),
+    });
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const endDurableBinding = storage.projectBindings.end.bind(storage.projectBindings);
+    let endAttempts = 0;
+    let successfulEnds = 0;
+    vi.spyOn(storage.projectBindings, "end").mockImplementation(async (input) => {
+      endAttempts += 1;
+      if (endAttempts === 1) {
+        throw new Error("transient durable end failure");
+      }
+      const ended = await endDurableBinding(input);
+      successfulEnds += 1;
+      return ended;
+    });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: storage,
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      workspaces.deferNextWrite();
+      const creating = app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_race" }),
+      });
+      await workspaces.nextWriteStarted;
+      const closing = app.closeCapletsSessions();
+      workspaces.releaseNextWrite();
+
+      expect((await creating).status).not.toBe(201);
+      await closing;
+      await expect(storage.projectBindings.list()).resolves.toEqual([
+        expect.objectContaining({ active: false, generation: 2, state: "ended" }),
+      ]);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_race"),
+        ),
+      ).resolves.toEqual([expect.objectContaining({ active: false, state: "ended" })]);
+
+      await app.closeCapletsSessions();
+      expect(successfulEnds).toBe(1);
+    } finally {
+      await app.closeCapletsSessions().catch(() => undefined);
+      await engine.close();
+      await storage.close();
+    }
+  });
+
   it("accepts Project Binding WebSocket connections for owned sessions", async () => {
     const { engine } = testEngine();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -2084,11 +2813,10 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string; state: string; syncState: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
-      );
+      const socket = openProjectBindingSocket(server.origin, created);
       try {
         await withTimeout(waitForSocketOpen(socket), "open Project Binding WebSocket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await expect(
           withTimeout(nextSocketJson(socket), "receive Project Binding ready"),
         ).resolves.toMatchObject({
@@ -2120,55 +2848,116 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
   });
 
-  it("ends Project Binding sessions when sockets close without an explicit end message", async () => {
+  it("retains an unexpectedly closed socket for one reconnect and terminalizes explicit end once", async () => {
     const { engine } = testEngine();
+    const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
     dirs.push(workspaceRoot);
-    const app = createHttpServeApp(httpOptions(), engine, {
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
       writeErr: () => {},
-      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
     });
     const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
-
+    const credentials = pairedClient(store, `${server.origin}/`);
     try {
       const session = await withTimeout(
         fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            projectRoot: "/repo",
+            projectFingerprint: TEST_PROJECT_FINGERPRINT,
+          }),
         }),
-        "create Project Binding session",
+        "create authenticated Project Binding session",
       );
       expect(session.status).toBe(201);
       const created = (await session.json()) as {
-        binding: { bindingId: string };
+        binding: { bindingId: string; expiresAt: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
+      const socketOptions = {
+        projectFingerprint: TEST_PROJECT_FINGERPRINT,
+        accessToken: credentials.accessToken,
+      };
+      const first = openProjectBindingSocket(server.origin, created, socketOptions);
+      try {
+        await withTimeout(waitForSocketOpen(first), "open first Project Binding socket");
+        expect(first.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+        await withTimeout(nextSocketJson(first), "receive first Project Binding ready");
+        const closed = waitForSocketClose(first);
+        first.terminate();
+        await withTimeout(closed, "observe unexpected first socket close");
+      } finally {
+        first.terminate();
+      }
+      const retained = await fetch(
+        `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+        { headers: { authorization: `Bearer ${credentials.accessToken}` } },
       );
-      await withTimeout(waitForSocketOpen(socket), "open Project Binding WebSocket");
-      await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
-      socket.close();
-
-      await withTimeout(
-        waitFor(async () => {
-          const status = await fetch(
-            `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
-          );
-          await expect(status.json()).resolves.toMatchObject({
+      await expect(retained.json()).resolves.toMatchObject({
+        bindingId: created.binding.bindingId,
+        state: "attaching",
+        expiresAt: created.binding.expiresAt,
+      });
+      expect(Date.now()).toBeLessThan(Date.parse(created.binding.expiresAt));
+      const second = openProjectBindingSocket(server.origin, created, socketOptions);
+      try {
+        await withTimeout(waitForSocketOpen(second), "open reconnected Project Binding socket");
+        expect(second.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+        await expect(
+          withTimeout(nextSocketJson(second), "receive reconnected Project Binding ready"),
+        ).resolves.toMatchObject({
+          type: "ready",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+        });
+        const ended = nextSocketJson(second);
+        const closed = waitForSocketClose(second);
+        second.send(
+          JSON.stringify({
+            type: "end",
             bindingId: created.binding.bindingId,
-            state: "not_attached",
-          });
-        }),
-        "observe Project Binding close cleanup",
+            sessionId: created.sessionId,
+            reason: { code: "completed", message: "Project Binding completed." },
+          }),
+        );
+        await expect(withTimeout(ended, "receive explicit Project Binding end")).resolves.toEqual({
+          type: "ended",
+          reason: { code: "completed", message: "Project Binding completed." },
+        });
+        await expect(
+          withTimeout(closed, "close explicitly ended Project Binding socket"),
+        ).resolves.toMatchObject({ code: 1000 });
+      } finally {
+        second.terminate();
+      }
+      expect(
+        workspaces.writeLeases.filter(
+          (lease) => lease.bindingId === created.binding.bindingId && !lease.active,
+        ),
+      ).toHaveLength(1);
+      const status = await fetch(
+        `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+        { headers: { authorization: `Bearer ${credentials.accessToken}` } },
       );
+      await expect(status.json()).resolves.toEqual({
+        bindingId: created.binding.bindingId,
+        state: "not_attached",
+      });
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2196,16 +2985,17 @@ describe("createHttpServeApp", () => {
           binding: { bindingId: string };
           sessionId: string;
         };
-        const socketUrl =
-          `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=` +
-          `${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`;
-        const first = new WebSocket(socketUrl);
-        const second = new WebSocket(socketUrl);
+        const first = openProjectBindingSocket(server.origin, created);
+        const second = openProjectBindingSocket(server.origin, created);
+        const firstReady = nextSocketJson(first);
+        const secondReady = nextSocketJson(second);
         try {
           await withTimeout(waitForSocketOpen(first), "open first Project Binding socket");
           await withTimeout(waitForSocketOpen(second), "open second Project Binding socket");
-          await withTimeout(nextSocketJson(first), "receive first Project Binding ready");
-          await withTimeout(nextSocketJson(second), "receive second Project Binding ready");
+          expect(first.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+          expect(second.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+          await withTimeout(firstReady, "receive first Project Binding ready");
+          await withTimeout(secondReady, "receive second Project Binding ready");
 
           const heartbeatSocket = heartbeatFirst ? first : second;
           const endingSocket = heartbeatFirst ? second : first;
@@ -2281,12 +3071,13 @@ describe("createHttpServeApp", () => {
         }
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
   }, 30_000);
 
-  it("makes a peer socket close terminal against a deferred heartbeat", async () => {
+  it("keeps a queued heartbeat authoritative when its peer socket closes", async () => {
     const { engine } = testEngine();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
     dirs.push(workspaceRoot);
@@ -2296,25 +3087,26 @@ describe("createHttpServeApp", () => {
       projectBindingWorkspaceStore: workspaces,
     });
     const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
-
     try {
       const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        body: JSON.stringify({
+          projectRoot: "/repo",
+          projectFingerprint: TEST_PROJECT_FINGERPRINT,
+        }),
       });
       const created = (await session.json()) as {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socketUrl =
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=` +
-        `${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`;
-      const heartbeatSocket = new WebSocket(socketUrl);
-      const peer = new WebSocket(socketUrl);
+      const heartbeatSocket = openProjectBindingSocket(server.origin, created);
+      const peer = openProjectBindingSocket(server.origin, created);
       try {
         await withTimeout(waitForSocketOpen(heartbeatSocket), "open heartbeat socket");
         await withTimeout(waitForSocketOpen(peer), "open peer socket");
+        expect(heartbeatSocket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+        expect(peer.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(heartbeatSocket), "receive heartbeat socket ready");
         await withTimeout(nextSocketJson(peer), "receive peer socket ready");
         workspaces.deferNextWrite();
@@ -2329,16 +3121,9 @@ describe("createHttpServeApp", () => {
         );
         await withTimeout(workspaces.nextWriteStarted, "start deferred heartbeat");
         const peerClosed = waitForSocketClose(peer);
-        peer.close();
-        await withTimeout(peerClosed, "close peer socket");
-        const firstIoTurn = Promise.withResolvers<void>();
-        setImmediate(firstIoTurn.resolve);
-        await firstIoTurn.promise;
-        const secondIoTurn = Promise.withResolvers<void>();
-        setImmediate(secondIoTurn.resolve);
-        await secondIoTurn.promise;
+        peer.terminate();
+        await withTimeout(peerClosed, "close peer socket unexpectedly");
         workspaces.releaseNextWrite();
-
         await withTimeout(
           waitFor(async () => {
             const status = await app.request(
@@ -2346,38 +3131,65 @@ describe("createHttpServeApp", () => {
             );
             await expect(status.json()).resolves.toMatchObject({
               bindingId: created.binding.bindingId,
-              state: "not_attached",
+              state: "ready",
+              syncState: "idle",
             });
           }),
-          "observe peer close terminal cleanup",
+          "observe heartbeat retained after peer close",
         );
         await expect(
           workspaces.listLeases(
-            projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+            projectBindingWorkspaceFingerprintForTest(
+              "development_unauthenticated",
+              TEST_PROJECT_FINGERPRINT,
+            ),
           ),
         ).resolves.toContainEqual(
-          expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+          expect.objectContaining({
+            bindingId: created.binding.bindingId,
+            state: "ready",
+            active: true,
+          }),
         );
-        const staleClose = waitForSocketClose(heartbeatSocket);
         heartbeatSocket.send(
           JSON.stringify({
             type: "heartbeat",
             bindingId: created.binding.bindingId,
             sessionId: created.sessionId,
-            state: "ready",
-            syncState: "idle",
+            state: "degraded",
+            syncState: "failed",
           }),
         );
-        await expect(
-          withTimeout(staleClose, "close stale heartbeat socket"),
-        ).resolves.toMatchObject({
-          code: 1008,
+        await withTimeout(
+          waitFor(async () => {
+            const status = await app.request(
+              `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+            );
+            await expect(status.json()).resolves.toMatchObject({
+              state: "degraded",
+              syncState: "failed",
+            });
+          }),
+          "observe surviving socket heartbeat",
+        );
+        const ended = nextSocketJson(heartbeatSocket);
+        heartbeatSocket.send(
+          JSON.stringify({
+            type: "end",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            reason: { code: "completed", message: "Project Binding completed." },
+          }),
+        );
+        await expect(withTimeout(ended, "receive surviving socket end")).resolves.toMatchObject({
+          type: "ended",
         });
       } finally {
         heartbeatSocket.terminate();
         peer.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2413,15 +3225,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open authenticated Project Binding socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await expect(
           withTimeout(nextSocketJson(socket), "receive authenticated Project Binding ready"),
         ).resolves.toMatchObject({
@@ -2433,6 +3242,83 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("rejects missing or wrong Project Binding versions and malformed strict messages", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+
+    try {
+      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectRoot: "/repo",
+          projectFingerprint: TEST_PROJECT_FINGERPRINT,
+        }),
+      });
+      expect(session.status).toBe(201);
+      const created = (await session.json()) as ProjectBindingSocketSession;
+
+      for (const protocols of [[], ["caplets.project-binding.v2"]]) {
+        const rejected = openProjectBindingSocket(server.origin, created, { protocols });
+        await expect(
+          withTimeout(rejectedSocketUpgradeStatus(rejected), "reject Project Binding version"),
+        ).resolves.toBe(400);
+      }
+
+      const invalidMessages = [
+        "{",
+        JSON.stringify({
+          type: "heartbeat",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+          state: "ready",
+        }),
+        JSON.stringify({
+          type: "heartbeat",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+          state: "ready",
+          syncState: "idle",
+          unexpected: true,
+        }),
+        JSON.stringify({
+          type: "unknown",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+        }),
+      ];
+      for (const invalidMessage of invalidMessages) {
+        const socket = openProjectBindingSocket(server.origin, created);
+        try {
+          await withTimeout(waitForSocketOpen(socket), "open strict Project Binding socket");
+          expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+          await withTimeout(nextSocketJson(socket), "receive strict Project Binding ready");
+          const closed = waitForSocketClose(socket);
+          socket.send(invalidMessage);
+          await expect(
+            withTimeout(closed, "reject malformed Project Binding message"),
+          ).resolves.toMatchObject({
+            code: 1008,
+            reason: "Project Binding message is invalid.",
+          });
+        } finally {
+          socket.terminate();
+        }
+      }
+    } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2468,15 +3354,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open authenticated Project Binding socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
 
         const rotated = store.refreshClientCredentials({
@@ -2509,6 +3392,7 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2541,15 +3425,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open queued authorization socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         workspaces.deferNextWrite();
         workspaces.runAfterNextWritePostCommit(() => {
@@ -2613,6 +3494,7 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2645,15 +3527,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string; expiresAt: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open post-write authorization socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         workspaces.deferNextWrite();
         const closed = waitForSocketClose(socket);
@@ -2851,15 +3730,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open end authorization socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         const messages: unknown[] = [];
         socket.on("message", (data) => {
@@ -2921,15 +3797,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open revocable Project Binding socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         store.revokeClient(credentials.clientId);
         const closed = waitForSocketClose(socket);
@@ -3080,11 +3953,14 @@ describe("createHttpServeApp", () => {
       ok: false,
       error: { code: "REQUEST_INVALID", message: expect.stringContaining("JSON") },
     });
+    expect(response.headers.get("deprecation")).toBe("true");
+    expect(response.headers.get("link")).toBe('</v2/admin/host>; rel="successor-version"');
+    expect(response.headers.get("sunset")).toBeNull();
 
     await engine.close();
   });
 
-  it("completes durable backend OAuth across Host Nodes through public HTTP and rejects replay", async () => {
+  it("completes durable backend OAuth through the unauthenticated canonical v2 callback", async () => {
     const context = testContext({ oauth: true });
     const firstStorage = await testAuthoritativeHostStorage(context.configPath);
     const secondStorage = await testAuthoritativeHostStorage(context.configPath);
@@ -3124,8 +4000,11 @@ describe("createHttpServeApp", () => {
     });
 
     try {
-      const started = await startBackendOAuthOverHttp(firstServer.origin, "/caplets");
+      const started = await startBackendOAuthV2OverHttp(firstServer.origin, "/caplets");
       const authorizationUrl = new URL(started.authorizationUrl);
+      expect(new URL(authorizationUrl.searchParams.get("redirect_uri")!).pathname).toBe(
+        `/caplets/v2/admin/backend-auth-flows/${started.flowId}/callback`,
+      );
       const state = authorizationUrl.searchParams.get("state");
       if (!state) throw new Error("Expected OAuth authorization state.");
       const callbackCode = "cross-node-provider-code";
@@ -3137,10 +4016,12 @@ describe("createHttpServeApp", () => {
       const completed = await fetch(callbackUrl);
 
       expect(completed.status).toBe(200);
+      expect(completed.headers.get("cache-control")).toBe("no-store");
       const completedText = await completed.text();
-      expect(completedText).toBe(
-        "Caplets authentication complete. You can return to your terminal.",
-      );
+      expect(JSON.parse(completedText)).toEqual({
+        server: "remote",
+        authenticated: true,
+      });
       for (const secret of [callbackCode, state, "remote-access-token", "remote-refresh-token"]) {
         expect(completedText).not.toContain(secret);
       }
@@ -3163,9 +4044,13 @@ describe("createHttpServeApp", () => {
       replayUrl.search = callbackUrl.search;
       const replay = await fetch(replayUrl);
 
-      expect(replay.status).toBe(400);
+      expect(replay.status).toBe(401);
+      expect(replay.headers.get("cache-control")).toBe("no-store");
       const replayText = await replay.text();
-      expect(replayText).toBe("Caplets authentication failed. Check server logs for details.");
+      expect(JSON.parse(replayText)).toMatchObject({
+        status: 401,
+        code: expect.any(String),
+      });
       for (const secret of [callbackCode, state, "remote-access-token", "remote-refresh-token"]) {
         expect(replayText).not.toContain(secret);
       }
@@ -3817,7 +4702,19 @@ describe("createHttpServeApp", () => {
     await expect(reader.read()).resolves.toMatchObject({ done: false });
     eventListener?.();
     const changed = await reader.read();
-    expect(new TextDecoder().decode(changed.value)).toContain("session-rev");
+    const changedText = new TextDecoder().decode(changed.value);
+    expect(changedText).toContain("session-rev");
+    const dataLine = changedText.split("\n").find((line) => line.startsWith("data: "));
+    if (!dataLine) throw new Error("Expected Attach manifest event data.");
+    expect(attachManifestRevisionEventSchema.parse(JSON.parse(dataLine.slice(6)))).toEqual({
+      revision: "session-rev",
+    });
+    expect(
+      attachManifestRevisionEventSchema.safeParse({
+        revision: "session-rev",
+        unexpected: true,
+      }).success,
+    ).toBe(false);
     await reader.cancel();
 
     await app.closeCapletsSessions();
@@ -4816,6 +5713,7 @@ async function listMcpTools(
 async function startTestHttpServer(app: ReturnType<typeof createHttpServeApp>): Promise<{
   origin: string;
   close: () => Promise<void>;
+  server: ServerType;
 }> {
   return await new Promise((resolve) => {
     const websocketServer = new WebSocketServer({ noServer: true });
@@ -4831,6 +5729,7 @@ async function startTestHttpServer(app: ReturnType<typeof createHttpServeApp>): 
       (info) => {
         resolve({
           origin: `http://127.0.0.1:${info.port}`,
+          server,
           close: async () => {
             for (const client of websocketServer.clients) {
               client.terminate();
@@ -4874,6 +5773,33 @@ async function startBackendOAuthOverHttp(
   return body.result;
 }
 
+async function startBackendOAuthV2OverHttp(
+  origin: string,
+  basePath = "",
+): Promise<{ flowId: string; authorizationUrl: string }> {
+  const response = await fetch(`${origin}${basePath}/v2/admin/backend-auth-flows`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "backend-oauth-v2-smoke",
+      "if-none-match": "*",
+    },
+    body: JSON.stringify({ serverId: "remote" }),
+  });
+  expect(response.status).toBe(201);
+  const body = (await response.json()) as {
+    server: string;
+    flowId: string;
+    authorizationUrl: string;
+  };
+  expect(body).toEqual({
+    server: "remote",
+    flowId: expect.any(String),
+    authorizationUrl: expect.any(String),
+  });
+  return body;
+}
+
 function backendOAuthCallbackUrl(
   origin: string,
   authorizationUrl: URL,
@@ -4896,6 +5822,68 @@ function testOAuthTokenResponse(): Response {
     refresh_token: "remote-refresh-token",
     token_type: "Bearer",
     expires_in: 3600,
+  });
+}
+
+const TEST_PROJECT_FINGERPRINT = "sha256_repo";
+
+type ProjectBindingSocketSession = {
+  binding: { bindingId: string };
+  sessionId: string;
+};
+
+function projectBindingSocketUrl(
+  origin: string,
+  session: ProjectBindingSocketSession,
+  projectFingerprint = TEST_PROJECT_FINGERPRINT,
+): URL {
+  const url = new URL("/v1/attach/project-bindings/connect", origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("bindingId", session.binding.bindingId);
+  url.searchParams.set("sessionId", session.sessionId);
+  url.searchParams.set("projectFingerprint", projectFingerprint);
+  return url;
+}
+
+function openProjectBindingSocket(
+  origin: string,
+  session: ProjectBindingSocketSession,
+  options: {
+    projectFingerprint?: string;
+    accessToken?: string;
+    protocols?: string[];
+  } = {},
+): WebSocket {
+  const protocols = options.protocols ?? [
+    PROJECT_BINDING_SOCKET_PROTOCOL,
+    ...(options.accessToken
+      ? [`caplets.bearer.${Buffer.from(options.accessToken).toString("base64url")}`]
+      : []),
+  ];
+  const url = projectBindingSocketUrl(
+    origin,
+    session,
+    options.projectFingerprint ?? TEST_PROJECT_FINGERPRINT,
+  );
+  return protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+}
+
+async function rejectedSocketUpgradeStatus(socket: WebSocket): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    let rejected = false;
+    socket.on("error", (error) => {
+      if (!rejected) reject(error);
+    });
+    socket.once("open", () => reject(new Error("Project Binding socket unexpectedly opened.")));
+    socket.once("unexpected-response", (_request, response) => {
+      rejected = true;
+      const status = response.statusCode ?? 0;
+      response.resume();
+      response.once("end", () => {
+        socket.terminate();
+        resolve(status);
+      });
+    });
   });
 }
 
@@ -4984,6 +5972,11 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
     ...overrides,
   };
 }

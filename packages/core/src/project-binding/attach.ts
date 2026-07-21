@@ -1,3 +1,10 @@
+import { createClient } from "@caplets/sdk";
+import {
+  runProjectBindingSession,
+  type ProjectBindingSessionEvent,
+  type ProjectBindingWebSocketFactory,
+} from "@caplets/sdk/project-binding";
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
 import { existsSync } from "node:fs";
 import { CapletsError } from "../errors";
 import type { ResolvedCapletsRemote } from "../remote/options";
@@ -5,10 +12,8 @@ import { resolveRemoteSelection } from "../remote/selection";
 import { ProjectBindingError } from "./errors";
 import { bootstrapProjectBindingGitignore } from "./gitignore";
 import { buildMutagenSyncPolicy, type MutagenSyncPolicy } from "./mutagen";
-import { runProjectBindingSession, type ProjectBindingSessionEvent } from "./session";
 import { buildProjectSyncManifest } from "./sync-filter";
 import { enforceProjectSyncSizeLimits, type ProjectSyncTier } from "./sync-size";
-import type { ProjectBindingWebSocketFactory } from "./transport";
 
 export type RawAttachOptions = {
   remoteUrl?: string;
@@ -97,7 +102,6 @@ export async function attachProjectSession(
   raw: RawAttachOptions = {},
   env: Record<string, string | undefined> = process.env,
   options: {
-    heartbeatIntervalMs?: number | undefined;
     signal?: AbortSignal | undefined;
     webSocketFactory?: ProjectBindingWebSocketFactory | undefined;
     onEvent?: (event: AttachSessionEvent) => void;
@@ -107,22 +111,35 @@ export async function attachProjectSession(
   const pinnedRaw = resolved.selectedWorkspace
     ? { ...raw, workspace: resolved.selectedWorkspace }
     : raw;
-  const remoteResolver =
+  const resolveSessionRemote = async (): Promise<ResolvedCapletsRemote> =>
     resolved.authMode === "local_daemon"
-      ? undefined
-      : async () => (await resolveAttachOptionsForRun(pinnedRaw, env)).remote;
+      ? resolved.remote
+      : (await resolveAttachOptionsForRun(pinnedRaw, env)).remote;
+  const headers = new Headers(resolved.remote.requestInit.headers);
+  headers.delete("authorization");
+  const client = createClient({
+    baseUrl: resolved.remote.baseUrl.toString(),
+    auth: async () => {
+      const remote = await resolveSessionRemote();
+      return remote.auth.type === "bearer" ? remote.auth.token : undefined;
+    },
+    fetch: resolved.remote.fetch ?? globalThis.fetch,
+    headers,
+  });
+
   bootstrapProjectBindingGitignore(resolved.projectRoot);
   assertSyncPolicy(resolved.syncPolicy);
-  return await runProjectBindingSession({
+  const session = await runProjectBindingSession({
+    client,
+    webSocketUrl: resolved.remote.projectBindingWebSocketUrl,
     projectRoot: resolved.projectRoot,
-    remote: resolved.remote,
-    ...(remoteResolver ? { remoteResolver } : {}),
-    fetch: resolved.remote.fetch,
-    signal: options.signal,
-    heartbeatIntervalMs: options.heartbeatIntervalMs,
-    webSocketFactory: options.webSocketFactory,
-    onEvent: options.onEvent,
+    projectFingerprint: fingerprintProjectRoot(resolved.projectRoot),
+    throwOnError: true,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
+    ...(options.onEvent ? { onEvent: options.onEvent } : {}),
   });
+  return { ok: true as const, ...session };
 }
 
 function projectBindingProbeUrl(remote: ResolvedCapletsRemote): URL {

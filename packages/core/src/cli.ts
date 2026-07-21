@@ -1,3 +1,4 @@
+import type { ProjectBindingWebSocketFactory } from "@caplets/sdk/project-binding";
 import { Command, CommanderError, Option } from "commander";
 import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -98,9 +99,14 @@ import { resolveAttachServeOptions, type AttachServeOptions } from "./attach/opt
 import { attachResolvedCaplets } from "./attach/server";
 import { attachProjectOnce } from "./project-binding/attach";
 import { ProjectBindingError } from "./project-binding/errors";
-import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
-import type { RemoteCapletBundleFile, RemoteCliCommand } from "./remote-control/types";
+import { createSdkRemoteCapletsClient } from "./native/remote";
+import { createRemoteAdminCommandAdapter } from "./remote-cli/admin";
+import { createRemoteAttachCommandAdapter } from "./remote-cli/attach";
+import { MigratingRemoteCliClient, type RemoteCliCommandAdapter } from "./remote-cli/client";
+import { createRemotePublicAuthAdapter } from "./remote-cli/public-auth";
+import { materializeRemoteBundleDownload, type RemoteBundleDownload } from "./remote-cli/bundle";
+import type { RemoteCliCommand } from "./remote-control/types";
 import {
   cloudCredentialsFromRemoteProfile,
   createRemoteProfileStore,
@@ -179,13 +185,10 @@ import {
   type RemoteSecurityStore,
   type StoredVaultGrant,
 } from "./storage";
-import {
-  materializeCapletBundleFiles,
-  type CapletBundleInputFile,
-  type CapletRecordView,
-} from "./storage/caplet-records";
+import { type CapletRecordView } from "./storage/caplet-records";
 import {
   installSqlCatalogCaplets,
+  inspectCapletBundleFiles,
   readCapletBundleFiles,
   updateSqlCatalogCaplets,
 } from "./storage/catalog-lifecycle";
@@ -331,6 +334,9 @@ type DaemonInstallCommandOptions = {
   upstreamUrl?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
+  adminUploadStagingDir?: string;
+  adminUploadMaxConcurrent?: string;
+  adminUploadMaxStagedBytes?: string;
   json?: boolean;
   reset?: boolean;
   env?: string[];
@@ -372,6 +378,15 @@ function addDaemonInstallOptions(command: Command): Command {
       "allow unauthenticated HTTP serving on non-loopback hosts",
     )
     .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
+    .option("--admin-upload-staging-dir <path>", "directory used to stage Admin API bundle uploads")
+    .option(
+      "--admin-upload-max-concurrent <count>",
+      "maximum number of active Admin API bundle uploads",
+    )
+    .option(
+      "--admin-upload-max-staged-bytes <bytes>",
+      "maximum aggregate bytes reserved by staged Admin API bundle uploads",
+    )
     .option("--reset", "rebuild daemon configuration from defaults")
     .option("--env <KEY=VALUE>", "set an environment variable for the service", collectValues, [])
     .option(
@@ -855,6 +870,15 @@ function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInsta
       ? { allowUnauthenticatedHttp: options.allowUnauthenticatedHttp }
       : {}),
     ...(options.trustProxy !== undefined ? { trustProxy: options.trustProxy } : {}),
+    ...(options.adminUploadStagingDir !== undefined
+      ? { adminUploadStagingDir: options.adminUploadStagingDir }
+      : {}),
+    ...(options.adminUploadMaxConcurrent !== undefined
+      ? { adminUploadMaxConcurrent: options.adminUploadMaxConcurrent }
+      : {}),
+    ...(options.adminUploadMaxStagedBytes !== undefined
+      ? { adminUploadMaxStagedBytes: options.adminUploadMaxStagedBytes }
+      : {}),
     ...(options.reset !== undefined ? { reset: options.reset } : {}),
     ...(options.env !== undefined ? { env: options.env } : {}),
     ...(options.unsetEnv !== undefined ? { unsetEnv: options.unsetEnv } : {}),
@@ -1788,6 +1812,15 @@ export function createProgram(io: CliIO = {}): Command {
       "allow unauthenticated HTTP serving on non-loopback hosts",
     )
     .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
+    .option("--admin-upload-staging-dir <path>", "directory used to stage Admin API bundle uploads")
+    .option(
+      "--admin-upload-max-concurrent <count>",
+      "maximum number of active Admin API bundle uploads",
+    )
+    .option(
+      "--admin-upload-max-staged-bytes <bytes>",
+      "maximum aggregate bytes reserved by staged Admin API bundle uploads",
+    )
     .action(
       async (options: {
         transport?: string;
@@ -1798,6 +1831,9 @@ export function createProgram(io: CliIO = {}): Command {
         upstreamUrl?: string;
         allowUnauthenticatedHttp?: boolean;
         trustProxy?: boolean;
+        adminUploadStagingDir?: string;
+        adminUploadMaxConcurrent?: string;
+        adminUploadMaxStagedBytes?: string;
       }) => {
         printTelemetryNotice("serve");
         const defaults = options.transport === "http" ? currentServeDefaults() : undefined;
@@ -4225,7 +4261,7 @@ function configureStorageCommands(
     .action(async (id: string, options: StorageRemoteOptions) => {
       const remote = remoteClientForStorageOptions(context.io, options);
       const record = remote
-        ? parseRemoteCapletBundleResult(await remote.request("storage_records_get", { id })).record
+        ? parseRemoteStoredRecord(await remote.request("storage_records_get", { id }))
         : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
             hostStorage.caplets.getStored(id, operator),
           );
@@ -4254,27 +4290,29 @@ function configureStorageCommands(
           channel?: string;
         },
       ) => {
-        const bundle = readCapletBundleFiles(bundlePath);
         const installation = installationSourceOptions(options);
         const remote = remoteClientForStorageOptions(context.io, options);
-        const record = remote
-          ? await remote.request("storage_records_import", {
+        let record: unknown;
+        if (remote) {
+          const bundle = inspectCapletBundleFiles(bundlePath);
+          record = await remote.request("storage_records_import", {
+            id: options.id ?? bundle.id,
+            files: bundle.files,
+            ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),
+            ...installation,
+          });
+        } else {
+          const bundle = readCapletBundleFiles(bundlePath);
+          record = await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+            hostStorage.caplets.importBundle({
               id: options.id ?? bundle.id,
-              files: encodeRemoteCapletBundleFiles(bundle.files),
+              files: bundle.files,
+              operator,
               ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),
-              ...installation,
-            })
-          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
-              hostStorage.caplets.importBundle({
-                id: options.id ?? bundle.id,
-                files: bundle.files,
-                operator,
-                ...(options.historyLimit === undefined
-                  ? {}
-                  : { historyLimit: options.historyLimit }),
-                ...(installation ? { installation } : {}),
-              }),
-            );
+              ...(installation ? { installation } : {}),
+            }),
+          );
+        }
         context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
       },
     );
@@ -4293,24 +4331,28 @@ function configureStorageCommands(
         bundlePath: string,
         options: StorageRemoteOptions & { generation: number; detachInstallation?: boolean },
       ) => {
-        const bundle = readCapletBundleFiles(bundlePath);
         const remote = remoteClientForStorageOptions(context.io, options);
-        const record = remote
-          ? await remote.request("storage_records_update", {
+        let record: unknown;
+        if (remote) {
+          const bundle = inspectCapletBundleFiles(bundlePath);
+          record = await remote.request("storage_records_update", {
+            id,
+            files: bundle.files,
+            expectedGeneration: options.generation,
+            ...(options.detachInstallation ? { detachInstallation: true } : {}),
+          });
+        } else {
+          const bundle = readCapletBundleFiles(bundlePath);
+          record = await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
+            hostStorage.caplets.updateBundle({
               id,
-              files: encodeRemoteCapletBundleFiles(bundle.files),
+              files: bundle.files,
+              operator,
               expectedGeneration: options.generation,
               ...(options.detachInstallation ? { detachInstallation: true } : {}),
-            })
-          : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
-              hostStorage.caplets.updateBundle({
-                id,
-                files: bundle.files,
-                operator,
-                expectedGeneration: options.generation,
-                ...(options.detachInstallation ? { detachInstallation: true } : {}),
-              }),
-            );
+            }),
+          );
+        }
         context.writeOut(`${JSON.stringify(record, null, 2)}\n`);
       },
     );
@@ -4331,13 +4373,16 @@ function configureStorageCommands(
       ) => {
         const remote = remoteClientForStorageOptions(context.io, options);
         if (remote) {
-          const result = parseRemoteCapletBundleResult(
-            await remote.request("storage_records_export", {
-              id,
-              ...(options.revision ? { revisionKey: options.revision } : {}),
-            }),
-          );
-          materializeCapletBundleFiles(result.files, destination, options);
+          const result = await remote.request("storage_records_export", {
+            id,
+            ...(options.revision ? { revisionKey: options.revision } : {}),
+          });
+          const download = requireRemoteBundleDownload(result);
+          await materializeRemoteBundleDownload({
+            ...download,
+            destination,
+            ...(options.replace ? { replace: true } : {}),
+          });
         } else {
           await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
             hostStorage.caplets.exportBundle(id, destination, {
@@ -4549,13 +4594,16 @@ function configureStorageCommands(
             id,
             expectedGeneration: options.generation,
           })
-        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) =>
-            hostStorage.installations.detach({
+        : await useConfiguredHostStorage(context.configPath(), async (hostStorage) => {
+            const active = await hostStorage.installations.getActive(id);
+            if (!active) return undefined;
+            return await hostStorage.installations.detach({
               capletId: id,
+              installationKey: active.installationKey,
               expectedGeneration: options.generation,
               operator,
-            }),
-          );
+            });
+          });
       context.writeOut(`${JSON.stringify(result, null, 2)}\n`);
     });
 
@@ -4673,64 +4721,30 @@ type StorageRemoteOptions = {
 function remoteClientForStorageOptions(
   io: CliIO,
   options: StorageRemoteOptions,
-): RemoteControlClient | undefined {
+): RemoteCliCommandAdapter | undefined {
   if (options.remote === undefined || options.remote === false) return undefined;
   const remoteUrl = typeof options.remote === "string" ? options.remote : undefined;
   return requireRemoteClientForTarget(io, remoteUrl, true);
 }
 
-function encodeRemoteCapletBundleFiles(files: CapletBundleInputFile[]): RemoteCapletBundleFile[] {
-  return files.map((file) => ({
-    path: file.path,
-    contentBase64: file.content.toString("base64"),
-    executable: file.executable,
-  }));
+function requireRemoteBundleDownload(value: unknown): RemoteBundleDownload {
+  if (
+    !isCliRecord(value) ||
+    !(value.body instanceof ReadableStream) ||
+    typeof value.contentType !== "string"
+  ) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Remote Caplet Bundle response is malformed.",
+    );
+  }
+  return { body: value.body, contentType: value.contentType };
 }
 
-function parseRemoteCapletBundleResult(value: unknown): {
-  record: unknown;
-  files: CapletBundleInputFile[];
-} {
-  if (!isCliRecord(value) || !("record" in value) || !("files" in value)) {
-    throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
-  }
-  return { record: value.record, files: decodeRemoteCapletBundleFiles(value.files) };
-}
-
-function decodeRemoteCapletBundleFiles(value: unknown): CapletBundleInputFile[] {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 2_049) {
-    throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
-  }
-  const files: CapletBundleInputFile[] = [];
-  let totalBytes = 0;
-  for (const item of value) {
-    if (
-      !isCliRecord(item) ||
-      Object.keys(item).some(
-        (key) => key !== "path" && key !== "contentBase64" && key !== "executable",
-      ) ||
-      typeof item.path !== "string" ||
-      !item.path ||
-      typeof item.contentBase64 !== "string" ||
-      typeof item.executable !== "boolean" ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(item.contentBase64)
-    ) {
-      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
-    }
-    const content = Buffer.from(item.contentBase64, "base64");
-    if (
-      content.byteLength > 64 * 1024 * 1024 ||
-      content.toString("base64") !== item.contentBase64
-    ) {
-      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is malformed.");
-    }
-    totalBytes += content.byteLength;
-    if (totalBytes > 256 * 1024 * 1024) {
-      throw new CapletsError("REQUEST_INVALID", "Remote Caplet bundle response is too large.");
-    }
-    files.push({ path: item.path, content, executable: item.executable });
-  }
-  return files;
+function parseRemoteStoredRecord(value: unknown): unknown {
+  if (isCliRecord(value) && "record" in value) return value.record;
+  if (isCliRecord(value) && "currentRevision" in value) return value;
+  throw new CapletsError("REQUEST_INVALID", "Remote Caplet Record response is malformed.");
 }
 
 function isCliRecord(value: unknown): value is Record<string, unknown> {
@@ -4814,12 +4828,12 @@ function remoteClientForCli(
   io: CliIO,
   remoteUrl?: string | undefined,
   forceRemote = false,
-): RemoteControlClient | undefined {
+): RemoteCliCommandAdapter | undefined {
   const env = io.env ?? process.env;
   if (!forceRemote && remoteUrl === undefined && resolveRemoteMode({}, env).mode !== "remote") {
     return undefined;
   }
-  return new RemoteControlClient({
+  return new MigratingRemoteCliClient({
     resolve: async () => {
       const selection = await resolveRemoteSelection(
         {
@@ -4835,10 +4849,34 @@ function remoteClientForCli(
       }
       return {
         baseUrl: selection.remote.baseUrl,
+        attachUrl: selection.remote.attachUrl,
         requestInit: selection.remote.requestInit,
         ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
       };
     },
+    createAdmin: (resolved, bearerToken) =>
+      createRemoteAdminCommandAdapter({
+        baseUrl: resolved.baseUrl,
+        bearerToken,
+        ...(resolved.fetch ? { fetch: resolved.fetch } : {}),
+      }),
+    createLegacy: (resolved) =>
+      new RemoteControlClient({
+        baseUrl: resolved.baseUrl,
+        requestInit: resolved.requestInit,
+        ...(resolved.fetch ? { fetch: resolved.fetch } : {}),
+      }),
+    createAttach: (resolved) =>
+      createRemoteAttachCommandAdapter({
+        client: createSdkRemoteCapletsClient({
+          url: resolved.attachUrl,
+          auth: { enabled: false, user: "caplets" },
+          pollIntervalMs: 60_000,
+          requestInit: resolved.requestInit,
+          ...(resolved.fetch ? { fetch: resolved.fetch } : {}),
+        }),
+      }),
+    createPublicAuth: createRemotePublicAuthAdapter,
   });
 }
 
@@ -4900,7 +4938,7 @@ type VaultTargetOptions = {
 };
 
 type VaultRemoteTarget =
-  | { kind: "self_hosted"; client: RemoteControlClient }
+  | { kind: "self_hosted"; client: RemoteCliCommandAdapter }
   | { kind: "cloud"; client: CapletsCloudClient; workspace: string };
 
 type AddCliResult = { path?: string; text: string; remote?: boolean };
@@ -5418,13 +5456,13 @@ async function authListRowsForCli(
   );
 }
 
-async function remoteAuthRows(remote: RemoteControlClient): Promise<AuthStatusRow[]> {
+async function remoteAuthRows(remote: RemoteCliCommandAdapter): Promise<AuthStatusRow[]> {
   const rows = (await remote.request("auth_list", {})) as AuthStatusRow[];
   return rows.map((row) => ({ ...row, source: "remote" }));
 }
 
 async function remoteAuthLogin(
-  remote: RemoteControlClient,
+  remote: RemoteCliCommandAdapter,
   serverId: string,
   open: boolean,
   writeOut: (value: string) => void,
@@ -5454,7 +5492,7 @@ function requireRemoteClientForTarget(
   io: CliIO,
   remoteUrl?: string | undefined,
   forceRemote = false,
-): RemoteControlClient {
+): RemoteCliCommandAdapter {
   const remote = remoteClientForCli(io, remoteUrl, forceRemote);
   if (!remote) {
     throw new CapletsError(
@@ -5679,7 +5717,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 type ExecuteOperationIO = Required<Pick<CliIO, "writeOut" | "writeErr" | "setExitCode">> & {
   authDir?: string | undefined;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
-  remote?: RemoteControlClient | undefined;
+  remote?: RemoteCliCommandAdapter | undefined;
   format?: CliOutputFormat | undefined;
   telemetryStateDir?: string | undefined;
   telemetryDebugSink?: TelemetryDebugSink | undefined;

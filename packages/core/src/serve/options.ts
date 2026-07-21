@@ -1,8 +1,10 @@
+import { tmpdir } from "node:os";
 import { CapletsError } from "../errors";
 import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
 import { DEFAULT_AUTH_DIR } from "../config/paths";
 import { join } from "node:path";
 import type { ServeConfig } from "../config";
+import { DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES } from "../admin-api/bundle-contract";
 
 export type ServeTransport = "stdio" | "http";
 
@@ -15,6 +17,9 @@ export type RawServeOptions = {
   upstreamUrl?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
+  adminUploadStagingDir?: string;
+  adminUploadMaxConcurrent?: string | number;
+  adminUploadMaxStagedBytes?: string | number;
 };
 
 export type StdioServeOptions = {
@@ -35,6 +40,11 @@ export type HttpServeOptions = {
   warnUnauthenticatedNetwork: boolean;
   loopback: boolean;
   trustProxy: boolean;
+  adminUploads: {
+    stagingDir: string;
+    maxConcurrent: number;
+    maxStagedBytes: number;
+  };
 };
 
 export type HttpServeAuthOptions =
@@ -44,7 +54,14 @@ export type HttpServeAuthOptions =
 export type ServeOptions = StdioServeOptions | HttpServeOptions;
 
 export type ServeEnv = Partial<
-  Record<"CAPLETS_SERVER_URL" | "CAPLETS_REMOTE_SERVER_STATE_DIR", string>
+  Record<
+    | "CAPLETS_SERVER_URL"
+    | "CAPLETS_REMOTE_SERVER_STATE_DIR"
+    | "CAPLETS_ADMIN_UPLOAD_STAGING_DIR"
+    | "CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT"
+    | "CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES",
+    string
+  >
 >;
 
 export type ServeDefaults = Partial<ServeConfig>;
@@ -57,6 +74,9 @@ const HTTP_ONLY_OPTIONS = [
   "upstreamUrl",
   "allowUnauthenticatedHttp",
   "trustProxy",
+  "adminUploadStagingDir",
+  "adminUploadMaxConcurrent",
+  "adminUploadMaxStagedBytes",
 ] as const;
 
 const HTTP_ONLY_OPTION_FLAGS = {
@@ -67,6 +87,9 @@ const HTTP_ONLY_OPTION_FLAGS = {
   upstreamUrl: "--upstream-url",
   allowUnauthenticatedHttp: "--allow-unauthenticated-http",
   trustProxy: "--trust-proxy",
+  adminUploadStagingDir: "--admin-upload-staging-dir",
+  adminUploadMaxConcurrent: "--admin-upload-max-concurrent",
+  adminUploadMaxStagedBytes: "--admin-upload-max-staged-bytes",
 } as const satisfies Record<(typeof HTTP_ONLY_OPTIONS)[number], string>;
 
 export function resolveServeOptions(
@@ -116,6 +139,45 @@ export function resolveServeOptions(
       path,
     });
   }
+  const adminUploadStagingDir =
+    nonEmpty(raw.adminUploadStagingDir, "--admin-upload-staging-dir") ??
+    nonEmpty(env.CAPLETS_ADMIN_UPLOAD_STAGING_DIR, "CAPLETS_ADMIN_UPLOAD_STAGING_DIR") ??
+    nonEmpty(defaults?.adminUploadStagingDir, "serve.adminUploadStagingDir") ??
+    join(tmpdir(), "caplets-uploads");
+  const adminUploadMaxConcurrent =
+    raw.adminUploadMaxConcurrent !== undefined
+      ? parsePositiveSafeInteger(raw.adminUploadMaxConcurrent, "--admin-upload-max-concurrent")
+      : env.CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT !== undefined
+        ? parsePositiveSafeInteger(
+            env.CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT,
+            "CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT",
+          )
+        : defaults?.adminUploadMaxConcurrent !== undefined
+          ? parsePositiveSafeInteger(
+              defaults.adminUploadMaxConcurrent,
+              "serve.adminUploadMaxConcurrent",
+            )
+          : 1;
+  const adminUploadMaxStagedBytes =
+    raw.adminUploadMaxStagedBytes !== undefined
+      ? parsePositiveSafeInteger(
+          raw.adminUploadMaxStagedBytes,
+          "--admin-upload-max-staged-bytes",
+          DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES,
+        )
+      : env.CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES !== undefined
+        ? parsePositiveSafeInteger(
+            env.CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES,
+            "CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES",
+            DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES,
+          )
+        : defaults?.adminUploadMaxStagedBytes !== undefined
+          ? parsePositiveSafeInteger(
+              defaults.adminUploadMaxStagedBytes,
+              "serve.adminUploadMaxStagedBytes",
+              DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES,
+            )
+          : DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES;
 
   const loopback = isLoopbackHost(host);
   const allowUnauthenticatedHttp =
@@ -139,6 +201,11 @@ export function resolveServeOptions(
     warnUnauthenticatedNetwork: !loopback && auth.type === "development_unauthenticated",
     loopback,
     trustProxy,
+    adminUploads: {
+      stagingDir: adminUploadStagingDir,
+      maxConcurrent: adminUploadMaxConcurrent,
+      maxStagedBytes: adminUploadMaxStagedBytes,
+    },
   };
 }
 
@@ -176,6 +243,16 @@ function parsePort(value: string | number): number {
       "REQUEST_INVALID",
       `Expected --port to be a valid TCP port, got ${value}`,
     );
+  }
+  return parsed;
+}
+
+function parsePositiveSafeInteger(value: string | number, label: string, minimum = 1): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    const requirement =
+      minimum === 1 ? "a positive safe integer" : `a positive safe integer of at least ${minimum}`;
+    throw new CapletsError("REQUEST_INVALID", `${label} must be ${requirement}, got ${value}`);
   }
   return parsed;
 }

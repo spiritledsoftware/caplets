@@ -1,0 +1,268 @@
+---
+title: JavaScript and TypeScript SDK
+description: Use the public Caplets HTTP client and Project Binding coordinator from Node.js or a browser.
+---
+
+`@caplets/sdk` is an ESM, Fetch-first client for the public Caplets HTTP API. The root package and
+Project Binding coordinator work in Node.js 22+ and modern browsers.
+
+## Install
+
+```sh
+npm install @caplets/sdk
+```
+
+## Create a client
+
+Create an isolated client with the absolute HTTP(S) **service root**, including any deployment
+prefix:
+
+```ts
+import { createClient, getServiceDiscovery } from "@caplets/sdk";
+
+const client = createClient({
+  baseUrl: "https://host.example/caplets",
+});
+
+const result = await getServiceDiscovery({ client });
+if (result.error) {
+  showRequestFailure(result.error, result.response);
+} else {
+  showService(result.data);
+}
+```
+
+The SDK does not infer the service root from dashboard, MCP, Attach, or Cloud URLs, and it does not
+keep a global client. `fetch` defaults to `globalThis.fetch`; pass `fetch` in the factory only when
+you need another Fetch-compatible implementation.
+
+### Unauthenticated and bearer clients
+
+Authentication is optional. A static token or async provider returns the bare token; the SDK adds
+the bearer header for secured operations.
+
+```ts
+import { createClient } from "@caplets/sdk";
+
+const publicClient = createClient({
+  baseUrl: "https://host.example/caplets",
+});
+
+const staticClient = createClient({
+  baseUrl: "https://host.example/caplets",
+  auth: accessToken,
+});
+
+const asyncClient = createClient({
+  baseUrl: "https://host.example/caplets",
+  auth: async () => getCurrentAccessToken(),
+});
+```
+
+Token storage, Remote Login, refresh, and revocation policy stay with the caller. Never put a bearer
+credential in a service or WebSocket URL.
+
+## Call generated operation families
+
+All generated operations and public request, response, and schema types are root exports. Do not
+import generated files directly.
+
+```ts
+import { adminV2GetHost, getHealth, type AdminV2GetHostResponse, type Problem } from "@caplets/sdk";
+
+const healthResult = await getHealth({ client });
+const hostResult = await adminV2GetHost({ client });
+
+if (hostResult.error) {
+  const problem: Problem = hostResult.error;
+  showProblem(problem);
+} else {
+  const host: AdminV2GetHostResponse = hostResult.data;
+  showHost(host);
+}
+```
+
+Clients default to `responseStyle: "fields"` and `throwOnError: false`. The fields result has
+`data`, `error`, and optional `request` and `response`; network failures may not have a response.
+Opt into throwing per operation when exception flow is appropriate:
+
+```ts
+const { data: host, response } = await adminV2GetHost({
+  client,
+  throwOnError: true,
+});
+```
+
+A successful throwing call remains in fields mode and returns `data`, `request`, and `response`.
+Configure `throwOnError` on the isolated client to change its default for all calls.
+
+## Stream Caplet Bundles
+
+Bundle helpers at the package root preserve ordered, manifest-first multipart behavior and avoid
+buffering file bodies.
+
+### Download without buffering
+
+```ts
+import { adminV2GetCapletRecordBundleStream } from "@caplets/sdk";
+
+const result = await adminV2GetCapletRecordBundleStream({
+  client,
+  path: { id: recordId },
+  signal,
+});
+
+if (result.error) {
+  showProblem(result.error);
+} else if (result.data) {
+  const reader = result.data.getReader();
+  // Consume reader.read() chunks, or call reader.cancel().
+}
+```
+
+### Upload browser files
+
+The FormData helper keeps manifest-first ordering. Do not set `Content-Type`; Fetch owns the
+multipart boundary.
+
+```ts
+import { adminV2PutCapletRecordBundleFormData, createOrderedBundleFormData } from "@caplets/sdk";
+
+const body = createOrderedBundleFormData(manifestJson, selectedFiles);
+const result = await adminV2PutCapletRecordBundleFormData({
+  client,
+  path: { id: recordId },
+  headers: { "Idempotency-Key": idempotencyKey },
+  body,
+});
+```
+
+### Upload async byte streams
+
+Provide repeatable async chunk sources and a caller-generated unique multipart boundary. Each
+`open` callback receives the multipart body's `AbortSignal`; the source must stop pending reads and
+release resources when that signal is aborted. Zero-argument `open` callbacks remain compatible.
+
+```ts
+import { adminV2PutCapletRecordBundleStream, createOrderedBundleMultipartBody } from "@caplets/sdk";
+
+const multipart = createOrderedBundleMultipartBody(
+  manifestJson,
+  [{ open: (bodySignal) => openFileChunks({ signal: bodySignal }) }],
+  multipartBoundary,
+);
+
+const result = await adminV2PutCapletRecordBundleStream({
+  client,
+  path: { id: recordId },
+  headers: { "Idempotency-Key": idempotencyKey },
+  ...multipart,
+});
+```
+
+The stream upload helper applies Node Fetch's required half-duplex request option. Canceling the
+multipart body aborts its chunk-source signal before closing the active iterator. Pass an
+`AbortSignal` to the operation to cancel the HTTP upload or download.
+
+## Run a Project Binding session
+
+`@caplets/sdk/project-binding` is browser-safe. It requires both the HTTP client and the exact
+`ws:` or `wss:` Project Binding connect endpoint. The WebSocket endpoint is independent input, not
+something the SDK derives from the service root.
+
+```ts
+import { createClient } from "@caplets/sdk";
+import { runProjectBindingSession } from "@caplets/sdk/project-binding";
+
+const client = createClient({
+  baseUrl: "https://host.example/caplets",
+  auth: async () => getCurrentAccessToken(),
+});
+
+const result = await runProjectBindingSession({
+  client,
+  webSocketUrl: "wss://host.example/caplets/v1/attach/project-bindings/connect",
+  projectRoot: selectedProjectRoot,
+  projectFingerprint,
+  signal,
+  onEvent(event) {
+    switch (event.type) {
+      case "state":
+        showState(event.state, event.syncState);
+        break;
+      case "ready":
+        showReady(event.bindingId, event.syncState);
+        break;
+      case "reconnecting":
+        showReconnect(event.attempt);
+        break;
+      case "heartbeat":
+        showHeartbeat(event.state, event.syncState);
+        break;
+      case "ended":
+        showEnded(event.reason);
+        break;
+    }
+  },
+});
+
+if (result.error) {
+  showBindingFailure(result.error.kind, result.error.cleanup);
+} else {
+  showCompletedBinding(result.data.bindingId);
+}
+```
+
+A browser caller must supply a stable project fingerprint from its project-selection boundary. The
+filesystem helper is deliberately Node-only; compute there, then pass the result to the same
+browser-safe coordinator:
+
+```ts
+import { runProjectBindingSession } from "@caplets/sdk/project-binding";
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
+
+const projectRoot = process.cwd();
+const projectFingerprint = fingerprintProjectRoot(projectRoot);
+
+const result = await runProjectBindingSession({
+  client,
+  webSocketUrl: "wss://host.example/caplets/v1/attach/project-bindings/connect",
+  projectRoot,
+  projectFingerprint,
+});
+```
+
+The coordinator emits `state`, `ready`, `reconnecting`, `heartbeat`, and `ended`. It strictly
+validates messages, sends HTTP and WebSocket heartbeats every 15 seconds, reconnects once after an
+unexpected socket close or error, and runs guarded finalization once. These protocol timings are not
+configuration knobs.
+
+By default, the terminal promise returns fields-style session data or a
+`ProjectBindingSessionError`. Error kinds cover `http`, `protocol`, `socket`, `callback`, `aborted`,
+and `cleanup`. An initiating error remains primary; a safe cleanup failure can be attached as
+secondary detail. With `throwOnError: true`, the promise returns session data directly or rejects.
+Success is reported only after remote terminal state is confirmed; abort is a typed failure after
+cleanup.
+
+Bearer authentication uses HTTP headers and WebSocket subprotocol negotiation. It is never added to
+the URL, event data, or error messages.
+
+## Runtime support and scope
+
+| Export                              | Runtime                                             |
+| ----------------------------------- | --------------------------------------------------- |
+| `@caplets/sdk`                      | Node.js 22+ and modern browsers with Fetch APIs     |
+| `@caplets/sdk/project-binding`      | Node.js 22+ and modern browsers with WebSocket APIs |
+| `@caplets/sdk/project-binding/node` | Node.js 22+ only; uses filesystem and crypto APIs   |
+
+The generated root client covers public service/version discovery, health, Remote Login, Attach,
+Project Binding HTTP controls, frozen v1 Admin, and v2 Admin routes in the canonical OpenAPI
+contract. It does **not** generate MCP operations, AsyncAPI clients, dashboard-private
+cookie/session/CSRF routes, or Raw Vault Reveal. It also does not provide a credential store,
+automatic endpoint discovery, or retry policy.
+
+Use public root exports. There is no `@caplets/core/admin-client` compatibility alias, and generated
+internal paths are not a supported API.
+
+See [Project Binding](/project-binding/) for host behavior, synchronization, and operational
+failures.

@@ -90,6 +90,103 @@ describe("Caplets Vault local store", () => {
     expect(store.resolveValue("GH_TOKEN")).toBe("env_key_secret");
   });
 
+  it("loads exact base64url encryption key material from CAPLETS_ENCRYPTION_KEY_FILE", () => {
+    const dir = tempDir();
+    const externalKeyFile = join(dir, "shared-encryption-key");
+    writeFileSync(externalKeyFile, `${Buffer.alloc(32, 8).toString("base64url")}\n`, {
+      mode: 0o600,
+    });
+    const store = new FileVaultStore({
+      root: join(dir, "vault"),
+      env: { CAPLETS_ENCRYPTION_KEY_FILE: externalKeyFile },
+    });
+
+    store.set("GH_TOKEN", "file_key_secret");
+
+    expect(existsSync(store.paths.keyFile)).toBe(false);
+    expect(store.resolveValue("GH_TOKEN")).toBe("file_key_secret");
+    expect(store.keySourceStatus()).toEqual({
+      available: true,
+      source: "file",
+      keyFile: externalKeyFile,
+    });
+  });
+
+  it("gives CAPLETS_ENCRYPTION_KEY strict precedence without falling through to the file", () => {
+    const dir = tempDir();
+    const externalKeyFile = join(dir, "shared-encryption-key");
+    writeFileSync(externalKeyFile, Buffer.alloc(32, 9).toString("base64url"), { mode: 0o600 });
+    const directKeyStore = new FileVaultStore({
+      root: join(dir, "direct"),
+      env: {
+        CAPLETS_ENCRYPTION_KEY: Buffer.alloc(32, 10).toString("base64url"),
+        CAPLETS_ENCRYPTION_KEY_FILE: join(dir, "missing-key-file"),
+      },
+    });
+
+    directKeyStore.set("GH_TOKEN", "direct_key_secret");
+    expect(directKeyStore.resolveValue("GH_TOKEN")).toBe("direct_key_secret");
+    expect(directKeyStore.keySourceStatus()).toEqual({ available: true, source: "env" });
+
+    const invalidDirectKeyStore = new FileVaultStore({
+      root: join(dir, "invalid-direct"),
+      env: {
+        CAPLETS_ENCRYPTION_KEY: "invalid-direct-key",
+        CAPLETS_ENCRYPTION_KEY_FILE: externalKeyFile,
+      },
+    });
+    expect(() => invalidDirectKeyStore.set("GH_TOKEN", "must-not-fall-through")).toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
+    );
+  });
+
+  it("fails closed for malformed or overexposed external encryption key files", () => {
+    const dir = tempDir();
+    const malformedKeyFile = join(dir, "malformed-key");
+    writeFileSync(malformedKeyFile, Buffer.alloc(31, 11).toString("base64url"), { mode: 0o600 });
+    const malformedStore = new FileVaultStore({
+      root: join(dir, "malformed"),
+      env: { CAPLETS_ENCRYPTION_KEY_FILE: malformedKeyFile },
+    });
+    expect(malformedStore.keySourceStatus()).toMatchObject({
+      available: false,
+      source: "file",
+      reason: "invalid",
+      keyFile: malformedKeyFile,
+    });
+    expect(() => malformedStore.set("GH_TOKEN", "secret")).toThrow(
+      expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+    );
+    writeFileSync(malformedKeyFile, `${Buffer.alloc(32, 11).toString("base64url")}=\n`, {
+      mode: 0o600,
+    });
+    expect(malformedStore.keySourceStatus()).toMatchObject({
+      available: false,
+      source: "file",
+      reason: "invalid",
+    });
+
+    if (process.platform === "win32") return;
+    const overexposedKeyFile = join(dir, "overexposed-key");
+    writeFileSync(overexposedKeyFile, Buffer.alloc(32, 12).toString("base64url"), {
+      mode: 0o644,
+    });
+    chmodSync(overexposedKeyFile, 0o644);
+    const overexposedStore = new FileVaultStore({
+      root: join(dir, "overexposed"),
+      env: { CAPLETS_ENCRYPTION_KEY_FILE: overexposedKeyFile },
+    });
+    expect(overexposedStore.keySourceStatus()).toMatchObject({
+      available: false,
+      source: "file",
+      reason: "wrong-permissions",
+      keyFile: overexposedKeyFile,
+    });
+    expect(() => overexposedStore.set("GH_TOKEN", "secret")).toThrow(
+      expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+    );
+  });
+
   it("fails closed for invalid key sources and tampered encrypted records", () => {
     const invalidKeyStore = new FileVaultStore({
       root: tempDir(),

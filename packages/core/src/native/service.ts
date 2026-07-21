@@ -1,3 +1,4 @@
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { isLoopbackHost } from "../server/options";
@@ -16,7 +17,7 @@ import {
   type ProjectBindingSessionAdapter,
 } from "./project-binding-lifecycle";
 import { projectSyncFiles } from "../cloud/sync";
-import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
+import { findProjectRoot } from "../cloud/project-root";
 import {
   createSdkRemoteCapletsClient,
   RemoteNativeCapletsService,
@@ -1574,8 +1575,8 @@ function createProjectBindingSessionManager(
   local: NativeCapletsService,
   options: NativeCapletsServiceOptions,
 ): ProjectBindingSessionAdapter | undefined {
-  const allowedCapletIds = local.listTools().map((tool) => tool.caplet);
   if (cloud) {
+    const allowedCapletIds = local.listTools().map((tool) => tool.caplet);
     const projectRoot = cloud.projectRoot ?? findProjectRoot();
     const cloudFetch = options.remote?.fetch;
     const clientOptions = {
@@ -1607,7 +1608,6 @@ function createProjectBindingSessionManager(
     requestInit: remoteOptions.requestInit,
     fetch: remoteOptions.fetch,
     projectRoot: options.projectRoot,
-    allowedCapletIds,
     heartbeatIntervalMs: 30_000,
     writeErr: options.writeErr,
   });
@@ -1616,7 +1616,6 @@ function createProjectBindingSessionManager(
 class RemoteProjectBindingSessionManager implements ProjectBindingSessionAdapter {
   private bindingId: string | undefined;
   private sessionId: string | undefined;
-  private allowedCapletIds: string[];
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private mutationChain: Promise<void> = Promise.resolve();
   private startInFlight: Promise<boolean> | undefined;
@@ -1635,20 +1634,16 @@ class RemoteProjectBindingSessionManager implements ProjectBindingSessionAdapter
       requestInit: RequestInit;
       fetch?: typeof fetch | undefined;
       projectRoot: string;
-      allowedCapletIds: string[];
       heartbeatIntervalMs: number;
       writeErr?: ((value: string) => void) | undefined;
     },
-  ) {
-    this.allowedCapletIds = [...options.allowedCapletIds];
-  }
+  ) {}
 
   hasActiveSession(): boolean {
     return this.bindingId !== undefined && this.sessionId !== undefined;
   }
 
-  async start(allowedCapletIds = this.allowedCapletIds): Promise<boolean> {
-    this.allowedCapletIds = [...allowedCapletIds];
+  async start(): Promise<boolean> {
     if (this.unsupported || this.closed || this.closing || this.bindingId) return false;
     if (this.startInFlight) {
       return await this.startInFlight;
@@ -1673,7 +1668,6 @@ class RemoteProjectBindingSessionManager implements ProjectBindingSessionAdapter
         body: {
           projectRoot: this.options.projectRoot,
           projectFingerprint,
-          allowedCapletIds: this.allowedCapletIds,
         },
       });
       if (!response.binding?.bindingId || !response.sessionId) {
@@ -1698,8 +1692,7 @@ class RemoteProjectBindingSessionManager implements ProjectBindingSessionAdapter
     }
   }
 
-  async updateAllowedCapletIds(allowedCapletIds: string[]): Promise<void> {
-    this.allowedCapletIds = [...allowedCapletIds];
+  async updateAllowedCapletIds(): Promise<void> {
     if (this.closed || this.closing) return;
     const mutationSequence = ++this.mutationSequence;
     try {
@@ -1823,7 +1816,6 @@ class RemoteProjectBindingSessionManager implements ProjectBindingSessionAdapter
         sessionId: this.sessionId,
         state: "ready",
         syncState: "idle",
-        allowedCapletIds: this.allowedCapletIds,
       },
     });
   }

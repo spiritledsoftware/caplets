@@ -174,6 +174,11 @@ function httpOptions(stateDir: string): HttpServeOptions {
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
   };
 }
 

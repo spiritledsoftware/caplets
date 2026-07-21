@@ -58,6 +58,8 @@ type SetVaultValueAndGrantInput = {
   key: string;
   value: string;
   force: boolean;
+  createOnly?: boolean;
+  expectedGeneration?: number;
   grant?: VaultGrantInput;
   operatorClientId: string;
 };
@@ -71,10 +73,10 @@ Rules:
 
 1. Validate key, value, grant origin, Caplet ID, reference name, and operator before starting the transaction.
 2. Encrypt the value before opening the transaction when safe; do not hold a PostgreSQL transaction while doing file/key I/O.
-3. In one SQLite/PostgreSQL transaction, enforce force/generation semantics, upsert the value, insert/upsert the grant if present, advance the affected mutation generations exactly once, and append both operator activity entries.
-4. Any grant failure rolls back the value and all activity rows.
+3. In one SQLite/PostgreSQL transaction, enforce force/generation semantics, upsert the value, insert/upsert the grant if present, advance the affected mutation generations exactly once, append one `vault.set` intent activity entry, and publish one config generation.
+4. Any grant, activity, or config-publication failure rolls back the value and every other write from the intent.
 5. The coordinator is wired from the same `HostDatabase` and key options as `VaultValueStore`; never introspect another store's private database.
-6. `invalidateConfig` runs once after commit. If activation fails, propagate the existing safe error and keep committed authoritative state. Do not compensate.
+6. Config activation runs once after commit. If activation fails, propagate the existing safe error and keep committed authoritative state. Do not compensate or publish a second generation.
 7. Operations without `grant` still use the same atomic storage path so behavior cannot diverge.
 
 Avoid widening `VaultValueRepository` with grant-specific responsibilities. Add a separate optional dependency to `CurrentHostOperationsDependencies`, while preserving fake repository tests that inject only value/grant interfaces.
@@ -168,6 +170,15 @@ Expected: exit 0.
 - If encryption currently requires a database read inside `values.set`, refactor only enough to separate deterministic preparation from transactional persistence; do not weaken encryption or hold the transaction during interactive/file operations.
 - If SQLite's synchronous transaction API cannot call an introduced async helper, create explicit sync/async dialect functions as existing stores do. Do not use an un-awaited Promise inside SQLite transactions.
 - If `invalidateConfig` is expected by a newer spec to roll back authoritative state, STOP and surface that conflicting contract; cross-resource rollback cannot be implemented safely as compensation.
+
+## Implementation notes (2026-07-20)
+
+- Added `VaultStateStore.setValueAndGrant`, accepting mutually exclusive value `createOnly`/`expectedGeneration` conditions and the grant's mutually exclusive `createOnly`/`expectedResourceVersion` conditions. Validation and Vault key I/O occur before the transaction; authenticated encryption occurs after reading and locking the current value row.
+- SQLite uses one `IMMEDIATE` write transaction. PostgreSQL uses one transaction, the existing same-key advisory lock and row lock for the value, grant CAS/upsert constraints, and the config-generation advisory lock.
+- Each successful intent commits the value generation, optional fresh grant resource version, one `vault.set` Operator Activity row, and one config generation. Value, grant, activity, and config-publication failures roll every write back.
+- Current Host invokes the coordinator once and activates the committed configuration afterward. Activation failure retains authoritative SQL state and is propagated without inverse writes.
+- Focused SQLite and required PostgreSQL runs cover validation failure, grant failure, activity failure, config-publication failure, create-only conflicts, stale value/grant versions, concurrent same-key writers, version increments, one activity/config generation, and activation-after-commit retention.
+- Verification: the focused SQLite/PostgreSQL matrix passed 42 tests; `pnpm storage:check` and the `@caplets/core` typecheck passed.
 
 ## Maintenance note
 

@@ -214,12 +214,14 @@ export class HostCoordinationStore {
     pollIntervalMs: number,
     signal: AbortSignal,
   ): Promise<number> {
-    if (!this.postgresListenerPool) {
+    if (this.database.dialect !== "postgres" || !this.postgresListenerPool) {
       throw new CapletsError(
         "INTERNAL_ERROR",
         "PostgreSQL config generation listener is unavailable.",
       );
     }
+    const channel = postgresConfigGenerationChannel(this.database.schema);
+    const quotedChannel = `"${channel.replaceAll('"', '""')}"`;
     const client = await connectPostgresListener(this.postgresListenerPool, signal);
     let listening = false;
     let notify: (() => void) | undefined;
@@ -227,11 +229,11 @@ export class HostCoordinationStore {
       notify = resolve;
     });
     const onNotification = (notification: PostgresNotification) => {
-      if (notification.channel === CONFIG_GENERATION_CHANNEL) notify?.();
+      if (notification.channel === channel) notify?.();
     };
     client.on("notification", onNotification);
     try {
-      await client.query(`LISTEN ${CONFIG_GENERATION_CHANNEL}`);
+      await client.query(`LISTEN ${quotedChannel}`);
       listening = true;
       const latest = await this.currentConfigGeneration();
       if (latest > afterGeneration) return latest;
@@ -240,7 +242,7 @@ export class HostCoordinationStore {
     } finally {
       client.removeListener("notification", onNotification);
       if (listening) {
-        await client.query(`UNLISTEN ${CONFIG_GENERATION_CHANNEL}`).catch(() => undefined);
+        await client.query(`UNLISTEN ${quotedChannel}`).catch(() => undefined);
       }
       client.release();
     }
@@ -350,9 +352,28 @@ export async function advancePostgresConfigGeneration(
     createdBy,
   });
   await transaction.execute(
-    sql`select pg_notify(${CONFIG_GENERATION_CHANNEL}, ${String(generation)})`,
+    sql`select pg_notify(${postgresConfigGenerationChannelSql()}, ${String(generation)})`,
   );
   return generation;
+}
+
+/**
+ * PostgreSQL notification channels are database-global, while HostStorage tables are isolated by
+ * schema. Keep the legacy channel for the default schema and swap the two reserved names so this
+ * remains a one-to-one mapping for every valid PostgreSQL schema without truncation or hashing.
+ */
+function postgresConfigGenerationChannel(schema: string): string {
+  if (schema === "caplets") return CONFIG_GENERATION_CHANNEL;
+  if (schema === CONFIG_GENERATION_CHANNEL) return "caplets";
+  return schema;
+}
+
+function postgresConfigGenerationChannelSql() {
+  return sql<string>`case current_schema()
+    when 'caplets' then ${CONFIG_GENERATION_CHANNEL}
+    when ${CONFIG_GENERATION_CHANNEL} then 'caplets'
+    else current_schema()
+  end`;
 }
 
 function waitForNotificationOrPoll(

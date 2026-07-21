@@ -1,8 +1,9 @@
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNativeCapletsService } from "../native/service";
-import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
+import { findProjectRoot } from "../cloud/project-root";
 import { CloudAuthStore } from "../cloud-auth/store";
 import { projectBindingWorkspacePaths } from "../project-binding/workspaces";
 import {

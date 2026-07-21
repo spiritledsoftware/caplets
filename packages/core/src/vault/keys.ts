@@ -26,6 +26,8 @@ export function loadVaultKey(input: {
 }): Buffer {
   const envKey = input.env?.CAPLETS_ENCRYPTION_KEY;
   if (envKey !== undefined) return decodeExactKey(envKey, "CAPLETS_ENCRYPTION_KEY");
+  const externalKeyFile = input.env?.CAPLETS_ENCRYPTION_KEY_FILE;
+  if (externalKeyFile !== undefined) return loadExternalKeyFile(externalKeyFile);
 
   const status = vaultKeySourceStatus(input);
   if (!status.available) {
@@ -41,6 +43,8 @@ export function ensureVaultKey(input: {
 }): Buffer {
   const envKey = input.env?.CAPLETS_ENCRYPTION_KEY;
   if (envKey !== undefined) return decodeExactKey(envKey, "CAPLETS_ENCRYPTION_KEY");
+  const externalKeyFile = input.env?.CAPLETS_ENCRYPTION_KEY_FILE;
+  if (externalKeyFile !== undefined) return loadExternalKeyFile(externalKeyFile);
 
   if (!existsSync(input.keyFile)) {
     ensurePrivateDir(dirname(input.keyFile));
@@ -68,39 +72,58 @@ export function vaultKeySourceStatus(input: {
       return { available: false, source: "env", reason: "invalid" };
     }
   }
+  const externalKeyFile = input.env?.CAPLETS_ENCRYPTION_KEY_FILE;
+  if (externalKeyFile !== undefined) {
+    if (!externalKeyFile) {
+      return {
+        available: false,
+        source: "file",
+        reason: "invalid",
+        keyFile: externalKeyFile,
+      };
+    }
+    return keyFileSourceStatus(externalKeyFile, parseExternalKeyFile);
+  }
 
-  if (!existsSync(input.keyFile)) {
-    return { available: false, source: "file", reason: "missing", keyFile: input.keyFile };
+  return keyFileSourceStatus(input.keyFile, parseKeyFile);
+}
+
+function keyFileSourceStatus(
+  keyFile: string,
+  parse: (contents: string) => Buffer,
+): VaultKeySourceStatus {
+  if (!existsSync(keyFile)) {
+    return { available: false, source: "file", reason: "missing", keyFile };
   }
   let mode: number;
   try {
-    mode = statSync(input.keyFile).mode;
+    mode = statSync(keyFile).mode;
   } catch (error) {
-    return unavailableKeyFileStatus(input.keyFile, error);
+    return unavailableKeyFileStatus(keyFile, error);
   }
   if (process.platform !== "win32" && (mode & 0o077) !== 0) {
     return {
       available: false,
       source: "file",
       reason: "wrong-permissions",
-      keyFile: input.keyFile,
+      keyFile,
     };
   }
   let contents: string;
   try {
-    contents = readFileSync(input.keyFile, "utf8");
+    contents = readFileSync(keyFile, "utf8");
   } catch (error) {
-    return unavailableKeyFileStatus(input.keyFile, error);
+    return unavailableKeyFileStatus(keyFile, error);
   }
   try {
-    parseKeyFile(contents);
-    return { available: true, source: "file", keyFile: input.keyFile };
+    parse(contents);
+    return { available: true, source: "file", keyFile };
   } catch (error) {
     const reason =
       error instanceof CapletsError && error.message.includes("unsupported")
         ? "unsupported-version"
         : "invalid";
-    return { available: false, source: "file", reason, keyFile: input.keyFile };
+    return { available: false, source: "file", reason, keyFile };
   }
 }
 
@@ -123,6 +146,36 @@ function parseKeyFile(contents: string): Buffer {
     throw new CapletsError("CONFIG_INVALID", "Vault key file has an unsupported format version.");
   }
   return decodeExactKey(trimmed.slice(KEY_FILE_PREFIX.length), "Vault key file");
+}
+
+function loadExternalKeyFile(keyFile: string): Buffer {
+  const status = keyFileSourceStatus(keyFile, parseExternalKeyFile);
+  if (!status.available) {
+    const reason = "reason" in status ? status.reason : "invalid";
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `CAPLETS_ENCRYPTION_KEY_FILE is unavailable: ${reason}`,
+    );
+  }
+  try {
+    return parseExternalKeyFile(readFileSync(keyFile, "utf8"));
+  } catch (error) {
+    if (error instanceof CapletsError) throw error;
+    throw new CapletsError("CONFIG_INVALID", "CAPLETS_ENCRYPTION_KEY_FILE is unreadable.");
+  }
+}
+
+function parseExternalKeyFile(contents: string): Buffer {
+  let withoutLineEnding = contents;
+  if (contents.endsWith("\r\n")) withoutLineEnding = contents.slice(0, -2);
+  else if (contents.endsWith("\n")) withoutLineEnding = contents.slice(0, -1);
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(withoutLineEnding)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "CAPLETS_ENCRYPTION_KEY_FILE contents must be a base64url-encoded 32-byte key.",
+    );
+  }
+  return decodeExactKey(withoutLineEnding, "CAPLETS_ENCRYPTION_KEY_FILE contents");
 }
 
 function decodeExactKey(encoded: string, label: string): Buffer {

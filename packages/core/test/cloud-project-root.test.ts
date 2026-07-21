@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { fingerprintProjectRoot, findProjectRoot } from "../src/cloud/project-root";
+import { findProjectRoot } from "../src/cloud/project-root";
 
 describe("project root detection", () => {
   const dirs: string[] = [];
@@ -18,17 +18,5 @@ describe("project root detection", () => {
     mkdirSync(join(root, "src", "nested"), { recursive: true });
 
     expect(findProjectRoot(join(root, "src", "nested"))).toBe(root);
-  });
-
-  it("creates a stable fingerprint from root path and marker files", () => {
-    const root = mkdtempSync(join(tmpdir(), "caplets-project-fingerprint-"));
-    dirs.push(root);
-    writeFileSync(join(root, "package.json"), '{"name":"demo"}');
-
-    const first = fingerprintProjectRoot(root);
-    const second = fingerprintProjectRoot(root);
-
-    expect(first).toMatch(/^sha256:/u);
-    expect(second).toBe(first);
   });
 });

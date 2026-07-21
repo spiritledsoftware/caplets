@@ -34,6 +34,7 @@ export type RemoteAuthFlowCoordinatorOptions = {
   repository: BackendAuthFlowRepository;
   authStore: BackendAuthStateStore;
   resolveTarget(server: string): RemoteAuthTarget | Promise<RemoteAuthTarget>;
+  callbackUrl?: ((flowId: string) => string) | undefined;
   operatorClientId?: string | undefined;
   now?: (() => Date) | undefined;
   ttlMs?: number | undefined;
@@ -76,11 +77,14 @@ export class RemoteAuthFlowCoordinator {
       now.getTime() + (this.options.ttlMs ?? DEFAULT_BACKEND_AUTH_FLOW_TTL_MS),
     );
     const flowId = randomUUID();
-    const baseUrl = input.callbackBaseUrl.endsWith("/")
-      ? input.callbackBaseUrl
-      : `${input.callbackBaseUrl}/`;
+    const redirectUri = this.options.callbackUrl
+      ? new URL(this.options.callbackUrl(flowId)).toString()
+      : new URL(
+          `auth/callback/${flowId}`,
+          input.callbackBaseUrl.endsWith("/") ? input.callbackBaseUrl : `${input.callbackBaseUrl}/`,
+        ).toString();
     const common = {
-      redirectUri: new URL(`auth/callback/${flowId}`, baseUrl).toString(),
+      redirectUri,
       flowId,
       authStore: this.options.authStore,
       ...(this.options.operatorClientId ? { operatorClientId: this.options.operatorClientId } : {}),
@@ -121,7 +125,7 @@ export class RemoteAuthFlowCoordinator {
       return await this.completeUnacquired(flowId, claimed, now);
     }
     const claim = claimed;
-    const stopHeartbeat = this.startHeartbeat(claim);
+    const heartbeat = this.startHeartbeat(claim);
     try {
       try {
         const target = await this.options.resolveTarget(claim.flow.server);
@@ -135,6 +139,7 @@ export class RemoteAuthFlowCoordinator {
               "Durable OAuth completion requires an explicit backend auth generation.",
             );
           }
+          await heartbeat.stop();
           return await this.options.repository.completeClaim({
             flowId,
             server: claim.flow.server,
@@ -171,6 +176,7 @@ export class RemoteAuthFlowCoordinator {
           );
         }
       } catch (error) {
+        await heartbeat.stop();
         const correlated = await this.correlatedCompletion(claim);
         if (correlated) {
           let flow: BackendAuthFlowView | undefined;
@@ -223,7 +229,7 @@ export class RemoteAuthFlowCoordinator {
       }
       return { server: claim.flow.server, authenticated: true };
     } finally {
-      stopHeartbeat();
+      await heartbeat.stop();
     }
   }
 
@@ -329,18 +335,54 @@ export class RemoteAuthFlowCoordinator {
     if (!finalized) throw unknownOutcomeError(claim.flow.flowId);
   }
 
-  private startHeartbeat(claim: BackendAuthFlowClaim<BackendAuthFlowState>): () => void {
-    const interval = setInterval(() => {
-      void this.options.repository
-        .heartbeat({
-          flowId: claim.flow.flowId,
-          claimToken: claim.claimToken,
-          now: this.now(),
-        })
-        .catch(() => undefined);
-    }, this.options.claimHeartbeatMs ?? DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS);
+  private startHeartbeat(claim: BackendAuthFlowClaim<BackendAuthFlowState>): {
+    stop(): Promise<void>;
+  } {
+    let stopped = false;
+    let queued = false;
+    let inFlight: Promise<void> | undefined;
+    const trigger = (): void => {
+      if (stopped) return;
+      if (inFlight) {
+        queued = true;
+        return;
+      }
+      const attempt = (async () => {
+        try {
+          await this.options.repository.heartbeat({
+            flowId: claim.flow.flowId,
+            claimToken: claim.claimToken,
+            now: this.now(),
+          });
+        } catch {
+          // A guarded completion mutation will determine whether the claim is still owned.
+        }
+      })();
+      inFlight = attempt;
+      void attempt.then(() => {
+        if (inFlight !== attempt) return;
+        inFlight = undefined;
+        if (queued && !stopped) {
+          queued = false;
+          trigger();
+        }
+      });
+    };
+    const interval = setInterval(
+      trigger,
+      this.options.claimHeartbeatMs ?? DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS,
+    );
     interval.unref?.();
-    return () => clearInterval(interval);
+    return {
+      stop: async () => {
+        if (!stopped) {
+          stopped = true;
+          queued = false;
+          clearInterval(interval);
+        }
+        if (inFlight) await inFlight;
+      },
+    };
   }
 
   private now(): Date {

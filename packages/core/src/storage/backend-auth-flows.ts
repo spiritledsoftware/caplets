@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { and, asc, eq, gt, inArray, isNull, lt, lte, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { defaultStateBaseDir } from "../config/paths";
 import { CapletsError } from "../errors";
 import type { StoredOAuthTokenBundle, StoredOAuthTokenBundleView } from "../auth/store";
@@ -9,6 +9,7 @@ import { ensureVaultKey, loadVaultKey } from "../vault/keys";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
 import { writeBackendAuthTokenBundleInTransaction } from "./backend-auth";
+import { MAX_STORAGE_PAGE_LIMIT, storagePageLimit, type StorageKeysetPage } from "./keyset-page";
 import type {
   PostgresHostDatabase,
   PostgresHostTransaction,
@@ -45,6 +46,19 @@ export type BackendAuthFlowView = {
   updatedAt: string;
   claimedAt?: string | undefined;
   terminalAt?: string | undefined;
+};
+export type BackendAuthFlowPageKey = {
+  server: string;
+  createdAt: string;
+  flowId: string;
+};
+
+export type BackendAuthFlowPageInput = {
+  server?: string | undefined;
+  status?: BackendAuthFlowStatus | undefined;
+  now?: Date | undefined;
+  limit?: number | undefined;
+  after?: BackendAuthFlowPageKey | undefined;
 };
 
 export type BackendAuthFlowClaim<T extends BackendAuthFlowSerializableState> = {
@@ -105,10 +119,14 @@ export class BackendAuthFlowRepository {
   }
 
   private flowEncryptionKey(create: boolean): Buffer {
-    if (this.database.dialect === "postgres" && this.env.CAPLETS_ENCRYPTION_KEY === undefined) {
+    if (
+      this.database.dialect === "postgres" &&
+      this.env.CAPLETS_ENCRYPTION_KEY === undefined &&
+      this.env.CAPLETS_ENCRYPTION_KEY_FILE === undefined
+    ) {
       throw new CapletsError(
         "CONFIG_INVALID",
-        "PostgreSQL backend auth flows require CAPLETS_ENCRYPTION_KEY.",
+        "PostgreSQL backend auth flows require CAPLETS_ENCRYPTION_KEY or CAPLETS_ENCRYPTION_KEY_FILE.",
       );
     }
     return create
@@ -177,20 +195,18 @@ export class BackendAuthFlowRepository {
     return row ? viewForRow(row) : undefined;
   }
 
-  async list(
-    input: {
-      server?: string | undefined;
-      status?: BackendAuthFlowStatus | undefined;
-      now?: Date | undefined;
-      limit?: number | undefined;
-    } = {},
-  ): Promise<BackendAuthFlowView[]> {
-    if (input.server !== undefined && (!input.server.trim() || input.server.length > 512)) {
-      throw new CapletsError("REQUEST_INVALID", "Backend auth flow server is invalid.");
-    }
+  async listPage(
+    input: BackendAuthFlowPageInput = {},
+  ): Promise<StorageKeysetPage<BackendAuthFlowView, BackendAuthFlowPageKey>> {
+    if (input.server !== undefined) validateFlowServer(input.server);
     const status = input.status === undefined ? undefined : parseStatus(input.status);
-    const limit = validateBatchLimit(input.limit);
-    await this.expireDue({ now: input.now, limit: MAX_BACKEND_AUTH_FLOW_PRUNE_BATCH });
+    const limit = storagePageLimit(input.limit);
+    if (input.after !== undefined) validateFlowPageKey(input.after, input.server);
+    const now = input.now ?? new Date();
+    if (!Number.isFinite(now.getTime())) {
+      throw new CapletsError("REQUEST_INVALID", "Backend auth flow timestamp is invalid.");
+    }
+    await this.expireDue({ now, limit: MAX_BACKEND_AUTH_FLOW_PRUNE_BATCH });
     const rows =
       this.database.dialect === "sqlite"
         ? this.database.db
@@ -198,25 +214,83 @@ export class BackendAuthFlowRepository {
             .from(sqlite.backendAuthFlows)
             .where(
               and(
-                input.server ? eq(sqlite.backendAuthFlows.server, input.server) : undefined,
-                status ? eq(sqlite.backendAuthFlows.status, status) : undefined,
+                input.server !== undefined
+                  ? eq(sqlite.backendAuthFlows.server, input.server)
+                  : undefined,
+                status !== undefined ? eq(sqlite.backendAuthFlows.status, status) : undefined,
+                input.after
+                  ? or(
+                      gt(sqlite.backendAuthFlows.createdAt, input.after.createdAt),
+                      and(
+                        eq(sqlite.backendAuthFlows.createdAt, input.after.createdAt),
+                        gt(sqlite.backendAuthFlows.flowId, input.after.flowId),
+                      ),
+                    )
+                  : undefined,
               ),
             )
-            .orderBy(asc(sqlite.backendAuthFlows.createdAt))
-            .limit(limit)
+            .orderBy(asc(sqlite.backendAuthFlows.createdAt), asc(sqlite.backendAuthFlows.flowId))
+            .limit(limit + 1)
             .all()
         : await this.database.db
             .select()
             .from(postgres.backendAuthFlows)
             .where(
               and(
-                input.server ? eq(postgres.backendAuthFlows.server, input.server) : undefined,
-                status ? eq(postgres.backendAuthFlows.status, status) : undefined,
+                input.server !== undefined
+                  ? eq(postgres.backendAuthFlows.server, input.server)
+                  : undefined,
+                status !== undefined ? eq(postgres.backendAuthFlows.status, status) : undefined,
+                input.after
+                  ? or(
+                      sql`${postgres.backendAuthFlows.createdAt} COLLATE "C" > ${input.after.createdAt}`,
+                      and(
+                        sql`${postgres.backendAuthFlows.createdAt} COLLATE "C" = ${input.after.createdAt}`,
+                        sql`${postgres.backendAuthFlows.flowId} COLLATE "C" > ${input.after.flowId}`,
+                      ),
+                    )
+                  : undefined,
               ),
             )
-            .orderBy(asc(postgres.backendAuthFlows.createdAt))
-            .limit(limit);
-    return rows.map(viewForRow);
+            .orderBy(
+              sql`${postgres.backendAuthFlows.createdAt} COLLATE "C" ASC`,
+              sql`${postgres.backendAuthFlows.flowId} COLLATE "C" ASC`,
+            )
+            .limit(limit + 1);
+    const hasNext = rows.length > limit;
+    if (hasNext) rows.pop();
+    const items = rows.map(viewForRow);
+    const last = rows[rows.length - 1];
+    return {
+      items,
+      ...(hasNext && last
+        ? {
+            nextKey: {
+              server: last.server,
+              createdAt: last.createdAt,
+              flowId: last.flowId,
+            },
+          }
+        : {}),
+    };
+  }
+
+  async list(input: Omit<BackendAuthFlowPageInput, "after"> = {}): Promise<BackendAuthFlowView[]> {
+    const requestedLimit = validateBatchLimit(input.limit);
+    const items: BackendAuthFlowView[] = [];
+    const now = input.now ?? new Date();
+    let after: BackendAuthFlowPageKey | undefined;
+    do {
+      const page = await this.listPage({
+        ...input,
+        now,
+        limit: Math.min(requestedLimit - items.length, MAX_STORAGE_PAGE_LIMIT),
+        ...(after ? { after } : {}),
+      });
+      items.push(...page.items);
+      after = page.nextKey;
+    } while (after && items.length < requestedLimit);
+    return items;
   }
 
   async claim<
@@ -1170,8 +1244,43 @@ function validateCompletionInput(input: BackendAuthFlowCompletionInput): void {
 
 function validateIdentity(flowId: string, server: string): void {
   validateFlowId(flowId);
+  validateFlowServer(server);
+}
+
+function validateFlowServer(server: string): void {
   if (!server.trim() || server.length > 512) {
     throw new CapletsError("REQUEST_INVALID", "Backend auth flow server is invalid.");
+  }
+}
+
+function validateFlowPageKey(
+  value: unknown,
+  expectedServer: string | undefined,
+): asserts value is BackendAuthFlowPageKey {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 3 ||
+    !("server" in value) ||
+    !("createdAt" in value) ||
+    !("flowId" in value) ||
+    typeof value.server !== "string" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.flowId !== "string"
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Backend auth flow page key is invalid.");
+  }
+  validateIdentity(value.flowId, value.server);
+  const createdAt = new Date(value.createdAt);
+  if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== value.createdAt) {
+    throw new CapletsError("REQUEST_INVALID", "Backend auth flow page key is invalid.");
+  }
+  if (expectedServer !== undefined && value.server !== expectedServer) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Backend auth flow page key belongs to a different server.",
+    );
   }
 }
 

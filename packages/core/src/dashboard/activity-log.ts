@@ -26,12 +26,20 @@ export type DashboardActivityAction =
   | "vault_grant_added"
   | "vault_grant_revoked"
   | "vault_value_revealed"
-  | "runtime_restart_requested";
+  | "runtime_restart_requested"
+  | "backend_auth_flow_started";
 
 export type DashboardActivityOutcome = "success" | "failure";
 
 export type DashboardActivityTarget = {
-  type: "dashboard_session" | "pending_login" | "remote_client" | "catalog" | "vault" | "runtime";
+  type:
+    | "dashboard_session"
+    | "pending_login"
+    | "remote_client"
+    | "catalog"
+    | "vault"
+    | "runtime"
+    | "backend_auth";
   id: string;
   label?: string | undefined;
 };
@@ -250,7 +258,8 @@ function isActivityAction(value: unknown): value is DashboardActivityAction {
     value === "vault_grant_added" ||
     value === "vault_grant_revoked" ||
     value === "vault_value_revealed" ||
-    value === "runtime_restart_requested"
+    value === "runtime_restart_requested" ||
+    value === "backend_auth_flow_started"
   );
 }
 
@@ -267,7 +276,8 @@ function isActivityTarget(value: unknown): value is DashboardActivityTarget {
       target.type === "remote_client" ||
       target.type === "catalog" ||
       target.type === "vault" ||
-      target.type === "runtime") &&
+      target.type === "runtime" ||
+      target.type === "backend_auth") &&
     typeof target.id === "string" &&
     (target.label === undefined || typeof target.label === "string")
   );

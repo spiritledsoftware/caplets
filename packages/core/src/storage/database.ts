@@ -7,6 +7,7 @@ import { drizzle as drizzlePostgres } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { defaultStateBaseDir } from "../config/paths";
 import { CapletsError } from "../errors";
+import { ensureVaultKey, loadVaultKey } from "../vault/keys";
 import { createAssetObjectStore, type AssetObjectStore } from "./asset-store";
 import { CapletRecordStore, type AssetGarbageCollectionResult } from "./caplet-records";
 import { CapletInstallationStore } from "./installations";
@@ -21,6 +22,7 @@ import { SetupStateStore } from "./setup-state";
 import { OperatorActivityStore } from "./operator-activity";
 import { VaultValueStore } from "./vault-values";
 import { VaultStateStore } from "./vault-state";
+import { IdempotencyStore, type IdempotencyStoreOptions } from "./idempotency";
 import { inspectHostDatabase, migrateHostDatabase } from "./migrations";
 import { postgresSchema } from "./schema/postgres";
 import { sqliteSchema } from "./schema/sqlite";
@@ -36,6 +38,8 @@ const POSTGRES_SCHEMA_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/u;
 
 export type HostStorageOptions = {
   vaultRoot?: string | undefined;
+  idempotency?: IdempotencyStoreOptions | undefined;
+  env?: Record<string, string | undefined> | undefined;
 };
 
 export class HostStorage {
@@ -53,6 +57,7 @@ export class HostStorage {
   readonly operatorActivity: OperatorActivityStore;
   readonly vaultValues: VaultValueStore;
   readonly vaultState: VaultStateStore;
+  readonly idempotency: IdempotencyStore;
   private readonly assetObjectStore: AssetObjectStore | undefined;
   private closed = false;
 
@@ -73,7 +78,10 @@ export class HostStorage {
     this.vaultGrants = new VaultGrantStore(database);
     this.coordination = new HostCoordinationStore(database, postgresListenerPool);
     this.backendAuth = new BackendAuthStateStore(database);
-    const vaultOptions = options.vaultRoot === undefined ? {} : { root: options.vaultRoot };
+    const vaultOptions = {
+      ...(options.vaultRoot === undefined ? {} : { root: options.vaultRoot }),
+      ...(options.env === undefined ? {} : { env: options.env }),
+    };
     this.backendAuthFlows = new BackendAuthFlowRepository(database, vaultOptions);
     this.dashboardSessions = new DashboardSessionRepository(database);
     this.projectBindings = new ProjectBindingStore(database);
@@ -82,6 +90,20 @@ export class HostStorage {
     this.operatorActivity = new OperatorActivityStore(database);
     this.vaultValues = new VaultValueStore(database, vaultOptions);
     this.vaultState = new VaultStateStore(database, vaultOptions);
+    const responseEncryptionKey = (create: boolean): Buffer => {
+      assertSharedPostgresEncryptionKeySource(database, this.vaultValues.env);
+      const input = { keyFile: this.vaultValues.keyFile, env: this.vaultValues.env };
+      return create ? ensureVaultKey(input) : loadVaultKey(input);
+    };
+    this.idempotency = new IdempotencyStore(
+      database,
+      (canonicalRequest) => {
+        assertSharedPostgresEncryptionKeySource(database, this.vaultValues.env);
+        return this.vaultValues.idempotencyRequestFingerprint(canonicalRequest);
+      },
+      responseEncryptionKey,
+      options.idempotency,
+    );
   }
 
   async health(): Promise<HostStorageHealth> {
@@ -287,6 +309,22 @@ function openPostgresStorage(
     options,
     client,
   );
+}
+
+function assertSharedPostgresEncryptionKeySource(
+  database: HostDatabase,
+  env: Record<string, string | undefined>,
+): void {
+  if (
+    database.dialect === "postgres" &&
+    env.CAPLETS_ENCRYPTION_KEY === undefined &&
+    env.CAPLETS_ENCRYPTION_KEY_FILE === undefined
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "PostgreSQL Host Storage requires CAPLETS_ENCRYPTION_KEY or CAPLETS_ENCRYPTION_KEY_FILE.",
+    );
+  }
 }
 
 function validatedPostgresSchema(config: PostgresHostStorageConfig): string {

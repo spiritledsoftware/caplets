@@ -7,6 +7,7 @@ import {
   loadCapletFilesWithPaths,
   loadCapletFilesWithPathsBestEffort,
 } from "./caplet-files";
+import { DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES } from "./admin-api/bundle-contract";
 import { FilesystemCapletSource } from "./caplet-source/filesystem";
 import {
   createRuntimeFingerprintSnapshot,
@@ -391,6 +392,9 @@ export type ServeConfig = {
   allowUnauthenticatedHttp?: boolean | undefined;
   trustProxy?: boolean | undefined;
   publicOrigins: string[];
+  adminUploadStagingDir?: string | undefined;
+  adminUploadMaxConcurrent?: number | undefined;
+  adminUploadMaxStagedBytes?: number | undefined;
 };
 
 export type CompletionConfig = {
@@ -1285,6 +1289,26 @@ const serveConfigSchema = z
       .boolean()
       .optional()
       .describe("Trust proxy headers when deriving public HTTP request URLs."),
+    adminUploadStagingDir: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe("Directory used to stage Admin API bundle uploads."),
+    adminUploadMaxConcurrent: z
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe("Maximum number of active Admin API bundle uploads."),
+    adminUploadMaxStagedBytes: z
+      .number()
+      .int()
+      .min(DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES)
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe("Maximum aggregate bytes reserved by staged Admin API bundle uploads."),
     publicOrigins: z
       .array(publicOriginSchema)
       .default([])
@@ -3428,6 +3452,9 @@ function normalizeServeConfig(raw: z.infer<typeof serveConfigSchema>): ServeConf
     upstreamUrl: raw.upstreamUrl,
     allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp,
     trustProxy: raw.trustProxy,
+    adminUploadStagingDir: raw.adminUploadStagingDir,
+    adminUploadMaxConcurrent: raw.adminUploadMaxConcurrent,
+    adminUploadMaxStagedBytes: raw.adminUploadMaxStagedBytes,
     publicOrigins: raw.publicOrigins,
   }) as ServeConfig;
 }

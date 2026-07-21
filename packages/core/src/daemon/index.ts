@@ -700,6 +700,21 @@ function mergeServeOverrides(
     "trustProxy",
     install.trustProxy ?? existingOverrides?.trustProxy,
   );
+  setDefinedServeOverride(
+    overrides,
+    "adminUploadStagingDir",
+    install.adminUploadStagingDir ?? existingOverrides?.adminUploadStagingDir,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "adminUploadMaxConcurrent",
+    install.adminUploadMaxConcurrent ?? existingOverrides?.adminUploadMaxConcurrent,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "adminUploadMaxStagedBytes",
+    install.adminUploadMaxStagedBytes ?? existingOverrides?.adminUploadMaxStagedBytes,
+  );
   if (
     existing &&
     existing.serve.auth.type === "development_unauthenticated" &&
@@ -732,6 +747,13 @@ function legacyServeOverrides(existing: DaemonConfig): RawDaemonServeOptions {
     ...(existing.serve.upstreamUrl ? { upstreamUrl: existing.serve.upstreamUrl } : {}),
     allowUnauthenticatedHttp: existing.serve.allowUnauthenticatedHttp,
     trustProxy: existing.serve.trustProxy,
+    ...(existing.serve.adminUploads
+      ? {
+          adminUploadStagingDir: existing.serve.adminUploads.stagingDir,
+          adminUploadMaxConcurrent: existing.serve.adminUploads.maxConcurrent,
+          adminUploadMaxStagedBytes: existing.serve.adminUploads.maxStagedBytes,
+        }
+      : {}),
   };
 }
 

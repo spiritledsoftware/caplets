@@ -1,59 +1,36 @@
-import {
-  addCliCaplet,
-  addGoogleDiscoveryCaplet,
-  addGraphqlCaplet,
-  addHttpCaplet,
-  addMcpCaplet,
-  addOpenApiCaplet,
-} from "./../cli/add";
-import {
-  assertLoginTarget,
-  listAuthRows,
-  logoutAuthResult,
-  refreshAuthResult,
-  resolveAuthTarget,
-} from "./../cli/auth";
 import { completionShells, type CompletionShell } from "./../cli/completion";
-import { initConfig } from "./../cli/init";
-import { listCaplets } from "./../cli/inspection";
-import { loadConfigWithSources, vaultBootstrapResolver, vaultResolverForAuthDir } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import { buildAttachProjection, invokeAttachExport, type AttachProjection } from "../attach/api";
+import {
+  capletRowsFromAttachManifest,
+  completionSuggestionsFromAttachManifest,
+} from "../remote-cli/attach";
 import { CapletsError, toSafeError } from "../errors";
-import { RemoteAuthFlowCoordinator } from "./auth-flow";
 import {
   toCurrentHostSafeError,
   type CurrentHostOperatorPrincipal,
   type CurrentHostOperations,
 } from "../current-host/operations";
 import type { RemoteCapletBundleFile, RemoteCliRequest, RemoteCliResponse } from "./types";
-import type { BackendAuthStateStore } from "../storage/backend-auth";
-import type { HostStorage } from "../storage/database";
-import type { BackendAuthFlowRepository } from "../storage/backend-auth-flows";
-import { createHostStorageVaultResolver } from "../storage/vault-resolver";
 import {
   MAX_BUNDLE_FILES,
   MAX_BUNDLE_FILE_BYTES,
   MAX_BUNDLE_TOTAL_BYTES,
   type CapletBundleInputFile,
 } from "../storage/caplet-records";
+import {
+  bufferBundleFileSource,
+  readVerifiedBundleFile,
+  type ReopenableBundleFileSource,
+} from "../storage/bundle-source";
 
 export type RemoteControlDispatchContext = CapletsEngineOptions & {
   projectCapletsRoot: string;
   globalCapletsRoot?: string | undefined;
   globalLockfilePath?: string | undefined;
-  backendAuthFlows?: BackendAuthFlowRepository;
   controlCallbackBaseUrl?: string;
-  backendAuthStore?: BackendAuthStateStore;
+  attachEngine?: CapletsEngine | undefined;
 };
-
-type AddKind =
-  | "cli"
-  | "mcp"
-  | "openapi"
-  | "google-discovery"
-  | "googleDiscovery"
-  | "graphql"
-  | "http";
 
 const ENGINE_COMMANDS = new Set<RemoteCliRequest["command"]>([
   "inspect",
@@ -133,9 +110,12 @@ function remoteBundleFileSerializedMetadataBytes(file: RemoteBundleMetadataFile)
 
 type CurrentHostRemoteAdministration = {
   operations: CurrentHostOperations;
+  principal?: CurrentHostOperatorPrincipal | undefined;
+};
+
+type CurrentHostOperatorAdministration = {
+  operations: CurrentHostOperations;
   principal: CurrentHostOperatorPrincipal;
-  storage?: HostStorage | undefined;
-  activateConfig?: (() => Promise<void>) | undefined;
 };
 
 export async function dispatchRemoteCliRequest(
@@ -154,11 +134,18 @@ export async function dispatchRemoteCliRequest(
       ok: false,
       error: {
         code: safe.code,
-        message: currentHostOperation ? safe.message : redactControlErrorMessage(safe.message),
+        message: currentHostOperation
+          ? frozenV1CurrentHostErrorMessage(request.command, safe.code, safe.message)
+          : redactControlErrorMessage(safe.message),
         ...(action ? { nextAction: action } : {}),
       },
     };
   }
+}
+function frozenV1CurrentHostErrorMessage(command: unknown, code: string, message: string): string {
+  return String(command).startsWith(STORAGE_RECORD_COMMAND_PREFIX) && code === "SERVER_UNAVAILABLE"
+    ? "Authoritative Host State storage is unavailable."
+    : message;
 }
 
 async function dispatch(
@@ -168,39 +155,36 @@ async function dispatch(
 ) {
   assertObject(request, "remote control request");
   assertObject(request.arguments, "remote control request arguments");
-
-  if (request.command === "list") {
-    const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
-      vaultResolver: vaultBootstrapResolver,
-    });
-    return listCaplets(config, {
-      includeDisabled: optionalBoolean(request.arguments, "includeDisabled") ?? false,
-    });
+  if (request.command === "init" || request.command === "add") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Remote ${request.command} is local-only. Run caplets ${request.command} on the machine whose files should change.`,
+    );
   }
-
+  if (request.command === "list") {
+    optionalBoolean(request.arguments, "includeDisabled");
+    return await withAttachProjection(context, async (_engine, projection) =>
+      capletRowsFromAttachManifest(projection.manifest),
+    );
+  }
   if (ENGINE_COMMANDS.has(request.command)) {
     const caplet = requiredString(request.arguments, "caplet");
-    const toolRequest = requiredEngineRequest(request.arguments, request.command);
-    const engine = await CapletsEngine.create(context);
-    try {
-      return await engine.execute(caplet, toolRequest);
-    } finally {
-      await engine.close();
-    }
-  }
-
-  if (request.command === "init") {
-    return {
-      remote: true,
-      path: initConfig({
-        ...optionalProp("path", context.configPath),
-        ...optionalProp("force", optionalBoolean(request.arguments, "force")),
-      }),
-    };
-  }
-
-  if (request.command === "add") {
-    return dispatchAdd(request.arguments, context);
+    const input = requiredEngineRequest(request.arguments, request.command);
+    return await withAttachProjection(context, async (engine, projection) => {
+      const exported = projection.manifest.caplets.find((entry) => entry.capletId === caplet);
+      if (!exported) {
+        throw new CapletsError(
+          "ATTACH_EXPORT_NOT_FOUND",
+          "The requested Attach Caplet is not exported.",
+        );
+      }
+      return await invokeAttachExport(engine, projection, {
+        revision: projection.manifest.revision,
+        kind: "caplet",
+        exportId: exported.exportId,
+        input,
+      });
+    });
   }
 
   if (request.command === "install") {
@@ -237,20 +221,13 @@ async function dispatch(
   if (request.command === "complete_cli") {
     const shell = optionalString(request.arguments, "shell") ?? "bash";
     if (!completionShells.includes(shell as CompletionShell)) return [];
-    const engine = await CapletsEngine.create(context);
-    try {
-      return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
-    } finally {
-      await engine.close();
-    }
+    return await withAttachProjection(context, async (_engine, projection) =>
+      completionSuggestionsFromAttachManifest(projection.manifest, request.arguments),
+    );
   }
 
-  if (request.command === "auth_list") {
-    return listAuthRows({
-      authStore: requireBackendAuthStore(context),
-      ...optionalProp("configPath", context.configPath),
-      ...optionalProp("authDir", context.authDir),
-    });
+  if (request.command.startsWith("auth_")) {
+    return await dispatchCurrentHostAuth(request, context, currentHostAdministration);
   }
 
   if (request.command.startsWith(STORAGE_RECORD_COMMAND_PREFIX)) {
@@ -276,44 +253,32 @@ async function dispatch(
     );
   }
 
-  if (request.command === "auth_logout") {
-    return logoutAuthResult(requiredString(request.arguments, "server"), {
-      authStore: requireBackendAuthStore(context),
-      ...optionalProp("configPath", context.configPath),
-      ...optionalProp("authDir", context.authDir),
-    });
-  }
-
-  if (request.command === "auth_refresh") {
-    return refreshAuthResult(requiredString(request.arguments, "server"), {
-      authStore: requireBackendAuthStore(context),
-      ...optionalProp("configPath", context.configPath),
-      ...optionalProp("authDir", context.authDir),
-    });
-  }
-
-  if (request.command === "auth_login_start") {
-    return startRemoteAuthLogin(requiredString(request.arguments, "server"), context);
-  }
-
-  if (request.command === "auth_login_complete") {
-    return completeRemoteAuthLogin(
-      requiredString(request.arguments, "flowId"),
-      requiredString(request.arguments, "callbackUrl"),
-      context,
-    );
-  }
-
   throw new CapletsError(
     "UNKNOWN_OPERATION",
     `Unsupported remote control command ${request.command}`,
   );
 }
 
+async function withAttachProjection<Result>(
+  context: RemoteControlDispatchContext,
+  operation: (engine: CapletsEngine, projection: AttachProjection) => Promise<Result>,
+): Promise<Result> {
+  if (context.attachEngine) {
+    return await operation(context.attachEngine, await buildAttachProjection(context.attachEngine));
+  }
+  const engine = await CapletsEngine.create(context);
+  try {
+    return await operation(engine, await buildAttachProjection(engine));
+  } finally {
+    await engine.close();
+  }
+}
+
 function isCurrentHostAdministrationCommand(command: unknown): boolean {
   return (
     command === "install" ||
     command === "update" ||
+    String(command).startsWith("auth_") ||
     String(command).startsWith("vault_") ||
     String(command).startsWith(STORAGE_RECORD_COMMAND_PREFIX)
   );
@@ -321,9 +286,9 @@ function isCurrentHostAdministrationCommand(command: unknown): boolean {
 
 function requireCurrentHostAdministration(
   administration: CurrentHostRemoteAdministration | undefined,
-): CurrentHostRemoteAdministration {
-  if (administration?.principal.role === "operator" && administration.principal.clientId.trim()) {
-    return administration;
+): CurrentHostOperatorAdministration {
+  if (administration?.principal?.role === "operator" && administration.principal.clientId.trim()) {
+    return { operations: administration.operations, principal: administration.principal };
   }
   throw new CapletsError(
     "AUTH_FAILED",
@@ -331,9 +296,90 @@ function requireCurrentHostAdministration(
   );
 }
 
+function requireCurrentHostOperations(
+  administration: CurrentHostRemoteAdministration | undefined,
+): CurrentHostOperations {
+  if (administration) return administration.operations;
+  throw new CapletsError("SERVER_UNAVAILABLE", "Current Host operations are unavailable.");
+}
+
+async function dispatchCurrentHostAuth(
+  request: RemoteCliRequest,
+  context: RemoteControlDispatchContext,
+  currentHostAdministration: CurrentHostRemoteAdministration | undefined,
+) {
+  if (request.command === "auth_login_complete") {
+    const flowId = requiredString(request.arguments, "flowId");
+    const outcome = await requireCurrentHostOperations(currentHostAdministration).execute(
+      { role: "backend_auth_callback", flowId },
+      {
+        kind: "backend_auth_flow_callback_complete",
+        flowId,
+        callbackUrl: requiredString(request.arguments, "callbackUrl"),
+      },
+    );
+    return { server: outcome.server, authenticated: outcome.authenticated };
+  }
+
+  const administration = requireCurrentHostAdministration(currentHostAdministration);
+  switch (request.command) {
+    case "auth_list": {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "backend_auth_configured_statuses",
+      });
+      return outcome.rows;
+    }
+    case "auth_logout": {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "backend_auth_connection_delete_if_present",
+        server: requiredString(request.arguments, "server"),
+      });
+      return { server: outcome.server, deleted: outcome.deleted };
+    }
+    case "auth_refresh": {
+      const server = requiredString(request.arguments, "server");
+      const current = await administration.operations.execute(administration.principal, {
+        kind: "backend_auth_connection_get",
+        server,
+      });
+      await administration.operations.execute(administration.principal, {
+        kind: "backend_auth_refresh",
+        server,
+        expectedGeneration: current.connection.generation,
+      });
+      return { server };
+    }
+    case "auth_login_start": {
+      if (!context.controlCallbackBaseUrl) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Remote auth login is not available on this server",
+        );
+      }
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "backend_auth_legacy_flow_start",
+        server: requiredString(request.arguments, "server"),
+        callbackBaseUrl: context.controlCallbackBaseUrl,
+      });
+      return "authenticated" in outcome
+        ? { server: outcome.server, authenticated: outcome.authenticated }
+        : {
+            server: outcome.server,
+            flowId: outcome.flowId,
+            authorizationUrl: outcome.authorizationUrl,
+          };
+    }
+    default:
+      throw new CapletsError(
+        "UNKNOWN_OPERATION",
+        `Unsupported remote control command ${request.command}`,
+      );
+  }
+}
+
 async function dispatchCurrentHostVault(
   request: RemoteCliRequest,
-  administration: CurrentHostRemoteAdministration,
+  administration: CurrentHostOperatorAdministration,
 ) {
   switch (request.command) {
     case "vault_set": {
@@ -404,33 +450,24 @@ async function dispatchCurrentHostVault(
 
 async function dispatchCurrentHostStorage(
   request: RemoteCliRequest,
-  administration: CurrentHostRemoteAdministration,
+  administration: CurrentHostOperatorAdministration,
 ) {
-  const storage = administration.storage;
-  if (!storage) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      "Authoritative Host State storage is unavailable.",
-    );
-  }
-  const operator = {
-    role: "operator" as const,
-    clientId: administration.principal.clientId,
-  };
   const args = request.arguments;
-  const activate = async (): Promise<void> => {
-    await administration.activateConfig?.();
-  };
-
   switch (request.command) {
-    case "storage_records_list":
+    case "storage_records_list": {
       assertOnlyKeys(args, []);
-      return await storage.caplets.listStored(operator);
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplets_list",
+      });
+      return outcome.records;
+    }
     case "storage_records_get": {
       assertOnlyKeys(args, ["id"]);
-      return encodeBundleResult(
-        await storage.caplets.readBundle(requiredString(args, "id"), { operator }),
-      );
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_bundle_get",
+        id: requiredString(args, "id"),
+      });
+      return await encodeBundleSourcesResult(outcome);
     }
     case "storage_records_import": {
       assertOnlyKeys(args, [
@@ -461,111 +498,121 @@ async function dispatchCurrentHostStorage(
               ),
               ...optionalProp("channel", optionalString(args, "channel")),
             };
-      const record = await storage.caplets.importBundle({
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_bundle_import",
         id: requiredString(args, "id"),
-        files: decodeBundleFiles(request),
-        operator,
+        sources: decodeBundleFiles(request).map(bufferBundleFileSource),
         ...optionalProp("historyLimit", optionalNonNegativeInteger(args, "historyLimit")),
         ...(installation ? { installation } : {}),
       });
-      await activate();
-      return record;
+      return outcome.record;
     }
     case "storage_records_update": {
       assertOnlyKeys(args, ["id", "files", "expectedGeneration", "detachInstallation"]);
-      const record = await storage.caplets.updateBundle({
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_bundle_update",
         id: requiredString(args, "id"),
-        files: decodeBundleFiles(request),
+        sources: decodeBundleFiles(request).map(bufferBundleFileSource),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
-        operator,
         ...optionalProp("detachInstallation", optionalBoolean(args, "detachInstallation")),
       });
-      await activate();
-      return record;
+      return outcome.record;
     }
     case "storage_records_export": {
       assertOnlyKeys(args, ["id", "revisionKey"]);
-      return encodeBundleResult(
-        await storage.caplets.readBundle(requiredString(args, "id"), {
-          operator,
-          ...optionalProp("revisionKey", optionalString(args, "revisionKey")),
-        }),
-      );
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_bundle_get",
+        id: requiredString(args, "id"),
+        ...optionalProp("revisionKey", optionalString(args, "revisionKey")),
+      });
+      return await encodeBundleSourcesResult(outcome);
     }
-    case "storage_records_revisions":
+    case "storage_records_revisions": {
       assertOnlyKeys(args, ["id"]);
-      return await storage.caplets.listRevisions(requiredString(args, "id"), operator);
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_revisions",
+        id: requiredString(args, "id"),
+      });
+      return outcome.revisions;
+    }
     case "storage_records_restore": {
       assertOnlyKeys(args, ["id", "revisionKey", "expectedGeneration"]);
-      const record = await storage.caplets.restoreRevision({
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_restore_revision",
         id: requiredString(args, "id"),
         revisionKey: requiredString(args, "revisionKey"),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
-        operator,
       });
-      await activate();
-      return record;
+      return outcome.record;
     }
     case "storage_records_delete_revision": {
       assertOnlyKeys(args, ["id", "revisionKey", "expectedGeneration"]);
-      const record = await storage.caplets.deleteRevision({
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_delete_revision",
         id: requiredString(args, "id"),
         revisionKey: requiredString(args, "revisionKey"),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
-        operator,
       });
-      await activate();
-      return { deleted: true, record };
+      return { deleted: true, record: outcome.record };
     }
     case "storage_records_retention": {
       assertOnlyKeys(args, ["id", "historyLimit", "expectedGeneration"]);
-      const record = await storage.caplets.setRetention({
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_update",
         id: requiredString(args, "id"),
         historyLimit: requiredNullableNonNegativeInteger(args, "historyLimit"),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
-        operator,
       });
-      await activate();
-      return record;
+      return outcome.record;
     }
     case "storage_records_rename": {
       assertOnlyKeys(args, ["id", "newId", "expectedGeneration"]);
-      const record = await storage.caplets.rename({
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_update",
         id: requiredString(args, "id"),
         newId: requiredString(args, "newId"),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
-        operator,
       });
-      await activate();
-      return record;
+      return outcome.record;
     }
     case "storage_records_delete": {
       assertOnlyKeys(args, ["id", "expectedGeneration"]);
-      const id = requiredString(args, "id");
-      await storage.caplets.hardDelete({
-        id,
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_delete",
+        id: requiredString(args, "id"),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
-        operator,
       });
-      await activate();
-      return { deleted: true, id };
+      return { deleted: outcome.deleted, id: outcome.id };
     }
     case "storage_records_installation_status": {
       assertOnlyKeys(args, ["id"]);
-      const id = requiredString(args, "id");
+      const outcome = await currentHostInstallationStatus(
+        administration,
+        requiredString(args, "id"),
+      );
       return {
-        installations: await storage.installations.list(id),
-        observations: await storage.installations.listObservations(id),
+        installations: outcome.installations,
+        observations: outcome.observations,
       };
     }
-    case "storage_records_installation_detach":
+    case "storage_records_installation_detach": {
       assertOnlyKeys(args, ["id", "expectedGeneration"]);
-      return await storage.installations.detach({
-        capletId: requiredString(args, "id"),
+      const id = requiredString(args, "id");
+      const current = (await currentHostInstallationStatus(administration, id)).installations.find(
+        (installation) => installation.status === "active",
+      );
+      if (!current) {
+        throw new CapletsError("REQUEST_INVALID", `Caplet ${id} has no active installation.`);
+      }
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_installation_delete",
+        id,
+        installationKey: current.installationKey,
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
-        operator,
       });
-    case "storage_records_installation_observe":
+      return outcome.status === "detached" ? outcome.installation : undefined;
+    }
+    case "storage_records_installation_observe": {
       assertOnlyKeys(args, [
         "id",
         "expectedGeneration",
@@ -574,16 +621,18 @@ async function dispatchCurrentHostStorage(
         "contentHash",
         "risk",
       ]);
-      return await storage.installations.appendObservation({
-        capletId: requiredString(args, "id"),
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_installation_observe",
+        id: requiredString(args, "id"),
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
         status: requiredInstallationObservationStatus(args, "status"),
-        operator,
         ...optionalProp("resolvedRevision", optionalString(args, "resolvedRevision")),
         ...optionalProp("contentHash", optionalString(args, "contentHash")),
         ...optionalProp("risk", optionalRecord(args, "risk")),
       });
-    case "storage_records_installation_replace":
+      return outcome.observation;
+    }
+    case "storage_records_installation_replace": {
       assertOnlyKeys(args, [
         "id",
         "expectedGeneration",
@@ -592,15 +641,30 @@ async function dispatchCurrentHostStorage(
         "channel",
         "detachedInstallationKey",
       ]);
-      return await storage.installations.replaceDetached({
-        capletId: requiredString(args, "id"),
+      const id = requiredString(args, "id");
+      const requestedKey = optionalString(args, "detachedInstallationKey");
+      const detached = (await currentHostInstallationStatus(administration, id)).installations.find(
+        (installation) =>
+          installation.status === "detached" &&
+          (requestedKey === undefined || installation.installationKey === requestedKey),
+      );
+      if (!detached) {
+        throw new CapletsError("REQUEST_INVALID", `Caplet ${id} has no detached installation.`);
+      }
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "stored_caplet_installation_put",
+        id,
+        installationKey: detached.installationKey,
         expectedGeneration: requiredPositiveInteger(args, "expectedGeneration"),
         sourceKind: requiredString(args, "sourceKind"),
         sourceIdentity: requiredString(args, "sourceIdentity"),
-        operator,
         ...optionalProp("channel", optionalString(args, "channel")),
-        ...optionalProp("detachedInstallationKey", optionalString(args, "detachedInstallationKey")),
       });
+      if (outcome.status !== "replaced") {
+        throw new CapletsError("REQUEST_INVALID", `Caplet ${id} has no detached installation.`);
+      }
+      return outcome.installation;
+    }
     default:
       throw new CapletsError(
         "UNKNOWN_OPERATION",
@@ -609,136 +673,14 @@ async function dispatchCurrentHostStorage(
   }
 }
 
-function requireBackendAuthStore(context: RemoteControlDispatchContext) {
-  const authStore = context.backendAuthStore ?? context.hostStorage?.backendAuth;
-  if (!authStore) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      "Authoritative backend auth storage is unavailable.",
-    );
-  }
-  return authStore;
-}
-
-async function startRemoteAuthLogin(serverId: string, context: RemoteControlDispatchContext) {
-  if (!context.controlCallbackBaseUrl) {
-    throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
-  }
-  return await remoteAuthFlowCoordinator(context).start({
-    server: serverId,
-    callbackBaseUrl: context.controlCallbackBaseUrl,
-  });
-}
-
-async function completeRemoteAuthLogin(
-  flowId: string,
-  callbackUrl: string,
-  context: RemoteControlDispatchContext,
+async function currentHostInstallationStatus(
+  administration: CurrentHostOperatorAdministration,
+  id: string,
 ) {
-  return await remoteAuthFlowCoordinator(context).complete(flowId, callbackUrl);
-}
-
-function remoteAuthFlowCoordinator(
-  context: RemoteControlDispatchContext,
-): RemoteAuthFlowCoordinator {
-  const repository = context.backendAuthFlows ?? context.hostStorage?.backendAuthFlows;
-  if (!repository) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      "Authoritative backend auth flow storage is unavailable.",
-    );
-  }
-  const authStore = requireBackendAuthStore(context);
-  return new RemoteAuthFlowCoordinator({
-    repository,
-    authStore,
-    operatorClientId: "remote_cli",
-    resolveTarget: async (serverId) => {
-      const vaultResolver = context.hostStorage
-        ? await createHostStorageVaultResolver(context.hostStorage)
-        : vaultResolverForAuthDir(context.authDir);
-      const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
-        vaultResolver,
-      }).config;
-      const target = await resolveAuthTarget(serverId, config, authStore);
-      assertLoginTarget(target, serverId);
-      return target;
-    },
+  return await administration.operations.execute(administration.principal, {
+    kind: "stored_caplet_installation_status",
+    id,
   });
-}
-
-function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispatchContext) {
-  const kind = requiredString(args, "kind") as AddKind;
-  const id = requiredString(args, "id");
-  const options = remoteAddOptions(kind, optionalObject(args, "options"));
-  switch (kind) {
-    case "cli":
-      return {
-        remote: true,
-        label: "CLI",
-        ...addCliCaplet(id, {
-          ...options,
-          destinationRoot: context.projectCapletsRoot,
-          print: false,
-        }),
-      };
-    case "mcp":
-      return {
-        remote: true,
-        label: "MCP",
-        ...addMcpCaplet(id, {
-          ...options,
-          destinationRoot: context.projectCapletsRoot,
-          print: false,
-        }),
-      };
-    case "openapi":
-      return {
-        remote: true,
-        label: "OpenAPI",
-        ...addOpenApiCaplet(id, {
-          ...options,
-          destinationRoot: context.projectCapletsRoot,
-          print: false,
-        }),
-      };
-    case "google-discovery":
-    case "googleDiscovery":
-      return {
-        remote: true,
-        label: "Google Discovery",
-        ...addGoogleDiscoveryCaplet(id, {
-          ...options,
-          destinationRoot: context.projectCapletsRoot,
-          print: false,
-        }),
-      };
-    case "graphql":
-      return {
-        remote: true,
-        label: "GraphQL",
-        ...addGraphqlCaplet(id, {
-          ...options,
-          destinationRoot: context.projectCapletsRoot,
-          print: false,
-        }),
-      };
-    case "http":
-      return {
-        remote: true,
-        label: "HTTP",
-        ...addHttpCaplet(id, {
-          ...options,
-          destinationRoot: context.projectCapletsRoot,
-          print: false,
-        }),
-      };
-    default:
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        "add.kind must be cli, mcp, openapi, google-discovery, googleDiscovery, graphql, or http",
-      );
-  }
 }
 
 function optionalProp<Key extends string, Value>(
@@ -901,17 +843,21 @@ function decodeBundleFiles(request: RemoteCliRequest): CapletBundleInputFile[] {
   return files;
 }
 
-function encodeBundleResult(result: { record: unknown; files: CapletBundleInputFile[] }): {
+async function encodeBundleSourcesResult(result: {
   record: unknown;
-  files: RemoteCapletBundleFile[];
-} {
+  sources: ReopenableBundleFileSource[];
+}): Promise<{ record: unknown; files: RemoteCapletBundleFile[] }> {
   return {
     record: result.record,
-    files: result.files.map((file) => ({
-      path: file.path,
-      contentBase64: file.content.toString("base64"),
-      executable: file.executable,
-    })),
+    files: await Promise.all(
+      result.sources.map(async (source) => ({
+        path: source.path,
+        contentBase64: (
+          await readVerifiedBundleFile(source, { maxBytes: MAX_BUNDLE_FILE_BYTES })
+        ).toString("base64"),
+        executable: source.executable,
+      })),
+    ),
   };
 }
 
@@ -939,115 +885,6 @@ function requiredEngineRequest(
     );
   }
   return toolRequest;
-}
-
-function remoteAddOptions(
-  kind: AddKind,
-  options: Record<string, unknown>,
-): Record<string, unknown> {
-  rejectServerOwnedAddOptions(options);
-  switch (kind) {
-    case "cli":
-      return pickOptions(options, {
-        repo: "string",
-        include: "string",
-        command: "string",
-        force: "boolean",
-      });
-    case "mcp":
-      return pickOptions(options, {
-        command: "string",
-        arg: "string-array",
-        cwd: "string",
-        env: "string-array",
-        url: "string",
-        transport: "string",
-        tokenEnv: "string",
-        force: "boolean",
-      });
-    case "openapi":
-      return pickOptions(options, {
-        spec: "string",
-        baseUrl: "string",
-        tokenEnv: "string",
-        force: "boolean",
-      });
-    case "google-discovery":
-    case "googleDiscovery":
-      return pickOptions(options, {
-        discovery: "string",
-        discoveryUrl: "string",
-        baseUrl: "string",
-        tokenEnv: "string",
-        force: "boolean",
-      });
-    case "graphql":
-      return pickOptions(options, {
-        endpointUrl: "string",
-        schema: "string",
-        introspection: "boolean",
-        tokenEnv: "string",
-        force: "boolean",
-      });
-    case "http":
-      return pickOptions(options, {
-        baseUrl: "string",
-        action: "string-array",
-        tokenEnv: "string",
-        force: "boolean",
-      });
-    default:
-      return options;
-  }
-}
-
-type RemoteAddOptionType = "string" | "boolean" | "string-array";
-
-function pickOptions(
-  options: Record<string, unknown>,
-  schema: Record<string, RemoteAddOptionType>,
-): Record<string, unknown> {
-  const next: Record<string, unknown> = {};
-  for (const [key, type] of Object.entries(schema)) {
-    const value = options[key];
-    if (value === undefined) {
-      continue;
-    }
-    validateOptionType(key, value, type);
-    next[key] = value;
-  }
-  return next;
-}
-
-function rejectServerOwnedAddOptions(options: Record<string, unknown>): void {
-  if ("output" in options) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Remote add output is not supported remotely; the server owns destinationRoot and output path selection",
-    );
-  }
-  for (const key of ["destinationRoot", "print"]) {
-    if (key in options) {
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        `Remote add ${key} is not supported remotely; the server owns destinationRoot and print behavior`,
-      );
-    }
-  }
-}
-
-function validateOptionType(key: string, value: unknown, type: RemoteAddOptionType): void {
-  if (type === "string" && typeof value !== "string") {
-    throw new CapletsError("REQUEST_INVALID", `add.options.${key} must be a string`);
-  }
-  if (type === "boolean" && typeof value !== "boolean") {
-    throw new CapletsError("REQUEST_INVALID", `add.options.${key} must be a boolean`);
-  }
-  if (type === "string-array") {
-    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-      throw new CapletsError("REQUEST_INVALID", `add.options.${key} must be an array of strings`);
-    }
-  }
 }
 
 function optionalBoolean(args: Record<string, unknown>, key: string): boolean | undefined {

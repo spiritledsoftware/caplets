@@ -55,6 +55,8 @@ services:
       CAPLETS_BASE_CONFIG: /data/config/caplets/config.json
       CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
       CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server
+      CAPLETS_ADMIN_UPLOAD_STAGING_DIR: /data/state/caplets/admin-uploads
+      CAPLETS_ENCRYPTION_KEY: ${CAPLETS_ENCRYPTION_KEY:?set CAPLETS_ENCRYPTION_KEY to a base64url-encoded 32-byte key}
       CAPLETS_POSTGRES_HOST: caplets-postgres
       CAPLETS_POSTGRES_PORT: "5432"
       CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}

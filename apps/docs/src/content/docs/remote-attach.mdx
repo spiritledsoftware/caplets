@@ -24,6 +24,32 @@ Caplets native integrations use these shared runtime selection modes:
 | `cloud`  | The agent should connect to Caplets Cloud through a saved Remote Profile.                                                                        |
 | `auto`   | Caplets should use Cloud for Cloud URLs, self-hosted remote for non-Cloud URLs, daemon defaults when setup wrote them, and local mode otherwise. |
 
+## CLI Attach or SDK Project Binding
+
+Use the CLI Attach path when an MCP client needs a stdio adapter and Caplets should manage the
+surrounding Remote Profile workflow. The CLI uses saved profiles for Remote Login credentials and
+workspace selection, then connects the agent to the selected runtime. Keep credentials out of the
+agent's MCP configuration.
+
+Use `@caplets/sdk/project-binding` instead when an application needs to embed a Project Binding
+session and already owns all surrounding policy. The SDK caller must provide:
+
+- an isolated `createClient` instance with an explicit HTTP service root and optional
+  caller-owned static or async auth;
+- the exact `ws:` or `wss:` Project Binding `connect` URL selected by the application; and
+- the project root and caller-supplied fingerprint (or the Node-only filesystem fingerprint
+  helper).
+
+The SDK does not read or write CLI Remote Profiles. It does not discover endpoints, select a
+workspace, persist credentials, start or poll Remote Login, or turn the Project Binding session
+into an MCP stdio adapter. Use `caplets remote login` and `caplets attach` when Caplets should own
+those managed behaviors. Use the SDK only when the embedding application owns them and can keep
+credentials out of URLs, events, errors, and logs.
+
+In both paths, Caplets core remains authoritative for binding leases, readiness, and synchronization
+policy; the client keeps the protocol session alive but does not choose those policies. See
+[Project Binding](/project-binding/) for the SDK endpoint, event, result, and lifecycle contracts.
+
 ## MCP client config
 
 Local daemon-backed Codex config after setup:
@@ -115,10 +141,10 @@ should not contain Caplets remote tokens or passwords.
 Run a finite Project Binding smoke path before wiring an agent:
 
 ```sh
-caplets attach --once
+caplets attach https://caplets.example.com/caplets --once
 ```
 
-`caplets attach --once` validates the configured Project Binding WebSocket URL once and
+This validates the selected remote's Project Binding WebSocket URL once and
 exits. Use it when a remote project binding is expected, not as a generic attach manifest
 check.
 

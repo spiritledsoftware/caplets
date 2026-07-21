@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveDaemonHttpServeOptions } from "../src/daemon";
 import { resolveServeOptions } from "../src/serve/options";
+import { DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES } from "../src/admin-api/bundle-contract";
 
 describe("resolveServeOptions", () => {
   it("defaults serve to stdio", () => {
@@ -17,6 +18,122 @@ describe("resolveServeOptions", () => {
       remoteCredentialStateDir: expect.stringContaining("remote-server"),
       trustProxy: false,
     });
+  });
+
+  it("defaults HTTP admin upload deployment limits", () => {
+    expect(resolveServeOptions({ transport: "http" }, {})).toMatchObject({
+      adminUploads: {
+        stagingDir: expect.stringMatching(/caplets-uploads$/u),
+        maxConcurrent: 1,
+        maxStagedBytes: DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES,
+      },
+    });
+  });
+
+  it("resolves admin upload settings with CLI, environment, config, then built-in precedence", () => {
+    const configured = {
+      adminUploadStagingDir: "/config/uploads",
+      adminUploadMaxConcurrent: 2,
+      adminUploadMaxStagedBytes: 400_000_000,
+    };
+    expect(resolveServeOptions({ transport: "http" }, {}, configured)).toMatchObject({
+      adminUploads: {
+        stagingDir: "/config/uploads",
+        maxConcurrent: 2,
+        maxStagedBytes: 400_000_000,
+      },
+    });
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        {
+          CAPLETS_ADMIN_UPLOAD_STAGING_DIR: "/env/uploads",
+          CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT: "3",
+          CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES: "410000000",
+        },
+        configured,
+      ),
+    ).toMatchObject({
+      adminUploads: {
+        stagingDir: "/env/uploads",
+        maxConcurrent: 3,
+        maxStagedBytes: 410_000_000,
+      },
+    });
+    expect(
+      resolveServeOptions(
+        {
+          transport: "http",
+          adminUploadStagingDir: "/cli/uploads",
+          adminUploadMaxConcurrent: "4",
+          adminUploadMaxStagedBytes: "420000000",
+        },
+        {
+          CAPLETS_ADMIN_UPLOAD_STAGING_DIR: "/env/uploads",
+          CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT: "3",
+          CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES: "410000000",
+        },
+        configured,
+      ),
+    ).toMatchObject({
+      adminUploads: {
+        stagingDir: "/cli/uploads",
+        maxConcurrent: 4,
+        maxStagedBytes: 420_000_000,
+      },
+    });
+  });
+
+  it.each([
+    [
+      "CLI",
+      {
+        raw: { adminUploadMaxConcurrent: "1.5" },
+        env: {},
+        defaults: undefined,
+        message: "--admin-upload-max-concurrent",
+      },
+    ],
+    [
+      "environment",
+      {
+        raw: {},
+        env: { CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT: "NaN" },
+        defaults: undefined,
+        message: "CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT",
+      },
+    ],
+    [
+      "config",
+      {
+        raw: {},
+        env: {},
+        defaults: { adminUploadMaxConcurrent: Number.MAX_SAFE_INTEGER + 1 },
+        message: "serve.adminUploadMaxConcurrent",
+      },
+    ],
+    [
+      "staged byte minimum",
+      {
+        raw: { adminUploadMaxStagedBytes: String(DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES - 1) },
+        env: {},
+        defaults: undefined,
+        message: `at least ${DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES}`,
+      },
+    ],
+    [
+      "empty staging directory",
+      {
+        raw: {},
+        env: { CAPLETS_ADMIN_UPLOAD_STAGING_DIR: "  " },
+        defaults: undefined,
+        message: "CAPLETS_ADMIN_UPLOAD_STAGING_DIR must not be empty",
+      },
+    ],
+  ])("rejects invalid %s admin upload settings", (_source, input) => {
+    expect(() =>
+      resolveServeOptions({ transport: "http", ...input.raw }, input.env, input.defaults),
+    ).toThrow(input.message);
   });
 
   it("uses CAPLETS_SERVER_URL as HTTP serve defaults", () => {
@@ -290,6 +407,22 @@ describe("resolveServeOptions", () => {
   it("rejects HTTP-only options for stdio", () => {
     expect(() => resolveServeOptions({ transport: "stdio", host: "127.0.0.1" }, {})).toThrow(
       /only valid with --transport http/u,
+    );
+  });
+
+  it("rejects admin upload options for stdio", () => {
+    expect(() =>
+      resolveServeOptions(
+        {
+          transport: "stdio",
+          adminUploadStagingDir: "/tmp/uploads",
+          adminUploadMaxConcurrent: "2",
+          adminUploadMaxStagedBytes: "400000000",
+        },
+        {},
+      ),
+    ).toThrow(
+      "--admin-upload-staging-dir, --admin-upload-max-concurrent, --admin-upload-max-staged-bytes are only valid with --transport http",
     );
   });
 

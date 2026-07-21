@@ -160,6 +160,71 @@ describe("caplets daemon CLI", () => {
     }
   });
 
+  it("passes and preserves admin upload settings through daemon install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-admin-uploads-"));
+    try {
+      const out: string[] = [];
+      await runCli(
+        [
+          "daemon",
+          "install",
+          "--json",
+          "--no-validate",
+          "--admin-upload-staging-dir",
+          "/srv/caplets/uploads",
+          "--admin-upload-max-concurrent",
+          "4",
+          "--admin-upload-max-staged-bytes",
+          "400000000",
+        ],
+        {
+          env: testEnv(dir),
+          writeOut: (value) => out.push(value),
+          daemon: { platform: "linux", commandRunner: fakeRunner() },
+        },
+      );
+
+      const result = JSON.parse(out.join("")) as {
+        config: {
+          serve: {
+            adminUploads: {
+              stagingDir: string;
+              maxConcurrent: number;
+              maxStagedBytes: number;
+            };
+          };
+          command: { args: string[] };
+        };
+      };
+      expect(result.config.serve.adminUploads).toEqual({
+        stagingDir: "/srv/caplets/uploads",
+        maxConcurrent: 4,
+        maxStagedBytes: 400_000_000,
+      });
+      expect(result.config.command.args).toEqual(
+        expect.arrayContaining([
+          "--admin-upload-staging-dir",
+          "/srv/caplets/uploads",
+          "--admin-upload-max-concurrent",
+          "4",
+          "--admin-upload-max-staged-bytes",
+          "400000000",
+        ]),
+      );
+
+      const updateOut: string[] = [];
+      await runCli(["daemon", "install", "--dry-run", "--json"], {
+        env: testEnv(dir),
+        writeOut: (value) => updateOut.push(value),
+        daemon: { platform: "linux", commandRunner: fakeRunner() },
+      });
+      const updated = JSON.parse(updateOut.join("")) as typeof result;
+      expect(updated.config.serve.adminUploads).toEqual(result.config.serve.adminUploads);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("moves removed serve daemon subcommands to daemon guidance", async () => {
     await expect(runCli(["serve", "start"], { writeErr: () => {} })).rejects.toThrow(
       /Use caplets daemon start/u,

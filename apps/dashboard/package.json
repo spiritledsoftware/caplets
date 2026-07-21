@@ -6,11 +6,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "astro build",
-    "dev": "astro dev"
+    "dev": "astro dev",
+    "test": "vitest run"
   },
   "dependencies": {
     "@astrojs/react": "^6.0.1",
     "@base-ui/react": "^1.6.0",
+    "@caplets/sdk": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-virtual": "^3.14.6",
     "astro": "^7.1.1",

@@ -2,7 +2,7 @@ import BetterSqlite3 from "better-sqlite3";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import { createHostStorage, type HostStorage, type RemoteSecurityStore } from "../src/storage";
@@ -59,7 +59,7 @@ describe("dashboard sessions", () => {
       },
     });
 
-    const summary = await app.request("http://127.0.0.1:5387/dashboard/api/summary");
+    const summary = await app.request("http://127.0.0.1:5387/dashboard/api/v2/host");
     expect(summary.status).toBe(200);
     await expect(summary.json()).resolves.toMatchObject({
       host: {
@@ -71,6 +71,7 @@ describe("dashboard sessions", () => {
         caplets: expect.objectContaining({ href: "/dashboard#caplets" }),
       }),
     });
+    expect((await app.request("http://127.0.0.1:5387/dashboard/api/summary")).status).toBe(404);
 
     await engine.close();
   });
@@ -88,7 +89,7 @@ describe("dashboard sessions", () => {
     });
     expect(admin.status).toBe(403);
 
-    const reveal = await app.request(`${baseUrl}/dashboard/api/vault/reveal`, {
+    const reveal = await app.request(`${baseUrl}/dashboard/api/private/vault-reveals`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -222,6 +223,214 @@ describe("dashboard sessions", () => {
     await engine.close();
   });
 
+  it("applies session and current CSRF authority to the shared dashboard Admin mount", async () => {
+    const { app, engine, store, storage } = await testApp();
+    expect((await app.request("http://127.0.0.1:5387/dashboard/api/v2/host")).status).toBe(401);
+    const { cookie, csrfToken } = await approvedDashboardSession(app, store);
+    await storage.caplets.importBundle({
+      id: "demo",
+      operator: { clientId: "operator_test", role: "operator" },
+      files: [
+        {
+          path: "CAPLET.md",
+          executable: false,
+          content: Buffer.from(`---
+name: Demo
+description: Dashboard Admin mount fixture.
+mcpServer:
+  command: demo
+---
+
+# Demo
+`),
+        },
+      ],
+    });
+    const hostUrl = "http://127.0.0.1:5387/";
+    const pending = await store.createPendingLogin({
+      hostUrl,
+      requestedRole: "operator",
+      clientLabel: "Operator CLI",
+    });
+    await store.approvePendingLogin({
+      operatorClientId: "bootstrap_test",
+      operatorCode: pending.operatorCode,
+    });
+    const operator = await store.completePendingLogin({
+      hostUrl,
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      requiredRole: "operator",
+    });
+
+    const dashboardRead = await app.request("http://127.0.0.1:5387/dashboard/api/v2/host", {
+      headers: { cookie },
+    });
+    const bearerRead = await app.request("http://127.0.0.1:5387/v2/admin/host", {
+      headers: { authorization: `Bearer ${operator.accessToken}` },
+    });
+    expect(dashboardRead.status).toBe(200);
+    expect(bearerRead.status).toBe(200);
+    expect(await dashboardRead.json()).toEqual(await bearerRead.json());
+    const observations = await app.request(
+      "http://127.0.0.1:5387/dashboard/api/v2/caplet-records/demo/installation-observations?limit=1",
+      { headers: { cookie } },
+    );
+    expect(observations.status).toBe(200);
+    await expect(observations.json()).resolves.toEqual({ items: [] });
+
+    for (const [name, csrf, status] of [
+      ["missing CSRF", undefined, 403],
+      ["stale CSRF", "stale-csrf", 403],
+      ["current CSRF", csrfToken, 503],
+    ] as const) {
+      const response = await app.request(
+        "http://127.0.0.1:5387/dashboard/api/v2/runtime-restarts",
+        {
+          method: "POST",
+          headers: {
+            cookie,
+            "content-type": "application/json",
+            "idempotency-key": `dashboard-runtime-${name.replaceAll(" ", "-")}`,
+            "if-none-match": "*",
+            ...(csrf ? { "x-caplets-csrf": csrf } : {}),
+          },
+          body: "{}",
+        },
+      );
+      expect(response.status, name).toBe(status);
+      expect(response.headers.get("cache-control"), name).toBe("no-store");
+    }
+
+    const dashboardMutation = await app.request(
+      "http://127.0.0.1:5387/dashboard/api/v2/runtime-restarts",
+      {
+        method: "POST",
+        headers: {
+          cookie,
+          "content-type": "application/json",
+          "idempotency-key": "dashboard-runtime-equivalence",
+          "if-none-match": "*",
+          "x-caplets-csrf": csrfToken,
+        },
+        body: "{}",
+      },
+    );
+    const bearerMutation = await app.request("http://127.0.0.1:5387/v2/admin/runtime-restarts", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${operator.accessToken}`,
+        "content-type": "application/json",
+        "idempotency-key": "bearer-runtime-equivalence",
+        "if-none-match": "*",
+        "x-caplets-csrf": "ignored-by-bearer",
+      },
+      body: "{}",
+    });
+    expect(dashboardMutation.status).toBe(503);
+    expect(bearerMutation.status).toBe(503);
+    expect(await dashboardMutation.json()).toEqual(await bearerMutation.json());
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it.each([
+    ["self-demotion", "PATCH", { role: "access" }],
+    ["self-revocation", "DELETE", undefined],
+  ] as const)(
+    "expires and deletes the dashboard session after %s ends acting-client authority",
+    async (_name, method, body) => {
+      const { app, engine, store, storage } = await testApp();
+      const { cookie, csrfToken } = await approvedDashboardSession(app, store);
+      const currentSession = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
+        headers: { cookie },
+      });
+      const sessionBody = (await currentSession.json()) as {
+        session: { sessionId: string; operatorClientId: string };
+      };
+      const clientUrl = `http://127.0.0.1:5387/dashboard/api/v2/remote-clients/${sessionBody.session.operatorClientId}`;
+      const currentClient = await app.request(clientUrl, { headers: { cookie } });
+      const etag = currentClient.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const response = await app.request(clientUrl, {
+        method,
+        headers: {
+          cookie,
+          "idempotency-key": `dashboard-${method.toLowerCase()}-self`,
+          "if-match": etag!,
+          "x-caplets-csrf": csrfToken,
+          ...(body === undefined ? {} : { "content-type": "application/merge-patch+json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+      await expect(
+        storage.dashboardSessions.get(sessionBody.session.sessionId),
+      ).resolves.toBeUndefined();
+      const expired = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
+        headers: { cookie },
+      });
+      expect(expired.status).toBe(401);
+
+      await engine.close();
+    },
+  );
+
+  it("preserves a committed self-demotion response when session cleanup and reporting fail", async () => {
+    const reports: string[] = [];
+    const deleteSecret = "cap_remote_access_delete_failure_secret";
+    const reporterSecret = "cap_remote_access_reporter_failure_secret";
+    const { app, engine, store, storage } = await testApp({}, (message) => {
+      if (message !== "Could not remove an ended dashboard session.\n") return;
+      reports.push(message);
+      throw new Error(reporterSecret);
+    });
+    const { cookie, csrfToken } = await approvedDashboardSession(app, store);
+    const currentSession = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
+      headers: { cookie },
+    });
+    const sessionBody = (await currentSession.json()) as {
+      session: { sessionId: string; operatorClientId: string };
+    };
+    const clientUrl = `http://127.0.0.1:5387/dashboard/api/v2/remote-clients/${sessionBody.session.operatorClientId}`;
+    const currentClient = await app.request(clientUrl, { headers: { cookie } });
+    const etag = currentClient.headers.get("etag");
+    expect(etag).not.toBeNull();
+    vi.spyOn(storage.dashboardSessions, "delete").mockRejectedValueOnce(new Error(deleteSecret));
+
+    const response = await app.request(clientUrl, {
+      method: "PATCH",
+      headers: {
+        cookie,
+        "content-type": "application/merge-patch+json",
+        "idempotency-key": "dashboard-self-demotion-cleanup-failure",
+        "if-match": etag!,
+        "x-caplets-csrf": csrfToken,
+      },
+      body: JSON.stringify({ role: "access" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    const responseText = await response.text();
+    expect(JSON.parse(responseText)).toMatchObject({ role: "access" });
+    expect(reports).toEqual(["Could not remove an ended dashboard session.\n"]);
+    for (const secret of [deleteSecret, reporterSecret]) {
+      expect(responseText).not.toContain(secret);
+      expect(response.headers.get("set-cookie")).not.toContain(secret);
+      expect(reports.join("")).not.toContain(secret);
+    }
+    await expect(
+      storage.dashboardSessions.get(sessionBody.session.sessionId),
+    ).resolves.toBeDefined();
+
+    await engine.close();
+  });
+
   it("rejects downgraded dashboard approvals without creating orphaned access clients", async () => {
     const { app, engine, store } = await testApp();
     const started = await startDashboardLogin(app);
@@ -346,6 +555,9 @@ describe("dashboard sessions", () => {
       control: setup.context,
       authoritativeStorage: reloadedStorage,
     });
+    const listClients = vi
+      .spyOn(reloadedStorage.remoteSecurity, "listClients")
+      .mockRejectedValue(new Error("dashboard session validation must not list clients"));
     const restored = await reloadedApp.request("http://127.0.0.1:5387/dashboard/api/session", {
       headers: { cookie },
     });
@@ -361,6 +573,7 @@ describe("dashboard sessions", () => {
     });
     expect(revoked.status).toBe(401);
 
+    expect(listClients).not.toHaveBeenCalled();
     await reloadedEngine.close();
   });
 });
@@ -412,7 +625,10 @@ function approvalCode(command: string): string {
   return code;
 }
 
-async function testApp(overrides: Partial<HttpServeOptions> = {}) {
+async function testApp(
+  overrides: Partial<HttpServeOptions> = {},
+  writeErr: (value: string) => void = () => {},
+) {
   const stateDir = tempDir("caplets-dashboard-state-");
   const databasePath = join(stateDir, "host.sqlite3");
   const context = testContext();
@@ -420,7 +636,7 @@ async function testApp(overrides: Partial<HttpServeOptions> = {}) {
   const engine = engineFor(context, storage);
   const store = storage.remoteSecurity;
   const app = createHttpServeApp(httpOptions(stateDir, overrides), engine, {
-    writeErr: () => {},
+    writeErr,
     control: context,
     authoritativeStorage: storage,
   });
@@ -476,6 +692,11 @@ function httpOptions(
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
     ...overrides,
   };
 }

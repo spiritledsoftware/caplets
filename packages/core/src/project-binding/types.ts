@@ -1,41 +1,23 @@
-export type ProjectBindingState =
-  | "not_attached"
-  | "attaching"
-  | "syncing"
-  | "ready"
-  | "degraded"
-  | "blocked"
-  | "offline"
-  | "cleaning_up"
-  | "ended"
-  | "expired";
+import {
+  PROJECT_BINDING_READINESS_STATES,
+  PROJECT_BINDING_STATES,
+  PROJECT_BINDING_SYNC_STATES,
+  type ProjectBindingReadiness,
+  type ProjectBindingState,
+  type ProjectBindingSyncState,
+} from "./protocol";
 
-export const PROJECT_BINDING_STATES: readonly ProjectBindingState[] = [
-  "not_attached",
-  "attaching",
-  "syncing",
-  "ready",
-  "degraded",
-  "blocked",
-  "offline",
-  "cleaning_up",
-  "ended",
-  "expired",
-];
+export { PROJECT_BINDING_READINESS_STATES, PROJECT_BINDING_STATES, PROJECT_BINDING_SYNC_STATES };
+export type {
+  BindingTerminalReason,
+  ProjectBindingReadiness,
+  ProjectBindingState,
+  ProjectBindingSyncState,
+} from "./protocol";
 
 export function isProjectBindingState(value: unknown): value is ProjectBindingState {
   return typeof value === "string" && PROJECT_BINDING_STATES.includes(value as ProjectBindingState);
 }
-
-export const PROJECT_BINDING_SYNC_STATES = [
-  "not_started",
-  "pending",
-  "syncing",
-  "idle",
-  "failed",
-] as const;
-
-export type ProjectBindingSyncState = (typeof PROJECT_BINDING_SYNC_STATES)[number];
 
 export function isProjectBindingSyncState(value: unknown): value is ProjectBindingSyncState {
   return (
@@ -43,10 +25,6 @@ export function isProjectBindingSyncState(value: unknown): value is ProjectBindi
     PROJECT_BINDING_SYNC_STATES.includes(value as ProjectBindingSyncState)
   );
 }
-
-export const PROJECT_BINDING_READINESS_STATES = ["not_ready", "ready", "quarantined"] as const;
-
-export type ProjectBindingReadiness = (typeof PROJECT_BINDING_READINESS_STATES)[number];
 
 export function isProjectBindingReadiness(value: unknown): value is ProjectBindingReadiness {
   return (
@@ -119,13 +97,6 @@ export type ProjectBindingSessionContext = {
   retry?: ProjectBindingRetrySnapshot | undefined;
   sync?: ProjectBindingManagedSyncSnapshot | undefined;
   quarantineRecords?: ProjectBindingQuarantineRecord[] | undefined;
-};
-
-export type BindingTerminalReason = {
-  code: import("./errors").ProjectBindingErrorCode | "interrupted" | "completed";
-  message: string;
-  recoveryCommand?: string | undefined;
-  requestId?: string | undefined;
 };
 
 export type ProjectBindingLease = {

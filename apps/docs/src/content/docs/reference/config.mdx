@@ -134,16 +134,19 @@ legacy migration.
 
 User-owned HTTP serve defaults. Ignored from project config for security.
 
-| Field                      | Status   | Type    | Description                                                                  |
-| -------------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
-| `host`                     | Optional | string  | Default HTTP bind host for caplets serve.                                    |
-| `port`                     | Optional | integer | Default HTTP port.                                                           |
-| `path`                     | Optional | string  | Default HTTP base path.                                                      |
-| `remoteStatePath`          | Optional | string  | Default remote credential state directory for HTTP serve.                    |
-| `upstreamUrl`              | Optional | string  | Default upstream Caplets URL for stacked HTTP serve.                         |
-| `allowUnauthenticatedHttp` | Optional | boolean | Opt in to unauthenticated HTTP serving; intended only for trusted local use. |
-| `trustProxy`               | Optional | boolean | Trust proxy headers when deriving public HTTP request URLs.                  |
-| `publicOrigins`            | Optional | array   | Additional public HTTP origins.                                              |
+| Field                       | Status   | Type    | Description                                                                  |
+| --------------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
+| `host`                      | Optional | string  | Default HTTP bind host for caplets serve.                                    |
+| `port`                      | Optional | integer | Default HTTP port.                                                           |
+| `path`                      | Optional | string  | Default HTTP base path.                                                      |
+| `remoteStatePath`           | Optional | string  | Default remote credential state directory for HTTP serve.                    |
+| `upstreamUrl`               | Optional | string  | Default upstream Caplets URL for stacked HTTP serve.                         |
+| `allowUnauthenticatedHttp`  | Optional | boolean | Opt in to unauthenticated HTTP serving; intended only for trusted local use. |
+| `trustProxy`                | Optional | boolean | Trust proxy headers when deriving public HTTP request URLs.                  |
+| `adminUploadStagingDir`     | Optional | string  | Directory used to stage Admin API bundle uploads.                            |
+| `adminUploadMaxConcurrent`  | Optional | integer | Maximum number of active Admin API bundle uploads.                           |
+| `adminUploadMaxStagedBytes` | Optional | integer | Maximum aggregate bytes reserved by staged Admin API bundle uploads.         |
+| `publicOrigins`             | Optional | array   | Additional public HTTP origins.                                              |
 
 ### `completion`
 

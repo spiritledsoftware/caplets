@@ -468,9 +468,16 @@ function persistedRisk(value: unknown, id: string): CapletsLockRiskSummary {
   return value as CapletsLockRiskSummary;
 }
 
-export function readCapletBundleFiles(bundlePath: string): {
+export type CapletBundleFileEntry = {
+  path: string;
+  sourcePath: string;
+  size: number;
+  executable: boolean;
+};
+
+export function inspectCapletBundleFiles(bundlePath: string): {
   id: string;
-  files: CapletBundleInputFile[];
+  files: CapletBundleFileEntry[];
 } {
   const inputPath = resolve(bundlePath);
   if (!existsSync(inputPath)) {
@@ -490,7 +497,8 @@ export function readCapletBundleFiles(bundlePath: string): {
       files: [
         {
           path: "CAPLET.md",
-          content: readFileSync(inputPath),
+          sourcePath: inputPath,
+          size: inputStats.size,
           executable: (inputStats.mode & 0o111) !== 0,
         },
       ],
@@ -503,7 +511,7 @@ export function readCapletBundleFiles(bundlePath: string): {
     );
   }
   const root = realpathSync(inputPath);
-  const files: CapletBundleInputFile[] = [];
+  const files: CapletBundleFileEntry[] = [];
   collectBundleFiles(root, root, "", files, new Set<string>());
   if (!files.some((file) => file.path === "CAPLET.md")) {
     throw new CapletsError("CONFIG_INVALID", `Caplet bundle ${bundlePath} is missing CAPLET.md.`);
@@ -511,11 +519,26 @@ export function readCapletBundleFiles(bundlePath: string): {
   return { id: basename(root), files };
 }
 
+export function readCapletBundleFiles(bundlePath: string): {
+  id: string;
+  files: CapletBundleInputFile[];
+} {
+  const bundle = inspectCapletBundleFiles(bundlePath);
+  return {
+    id: bundle.id,
+    files: bundle.files.map((file) => ({
+      path: file.path,
+      content: readFileSync(file.sourcePath),
+      executable: file.executable,
+    })),
+  };
+}
+
 function collectBundleFiles(
   root: string,
   sourcePath: string,
   bundlePath: string,
-  files: CapletBundleInputFile[],
+  files: CapletBundleFileEntry[],
   ancestors: Set<string>,
 ): void {
   const sourceStats = lstatSync(sourcePath);
@@ -563,7 +586,8 @@ function collectBundleFiles(
   }
   files.push({
     path: bundlePath,
-    content: readFileSync(resolvedPath),
+    sourcePath: resolvedPath,
+    size: stats.size,
     executable: (stats.mode & 0o111) !== 0,
   });
 }

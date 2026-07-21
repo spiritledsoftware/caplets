@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, lt, sql } from "drizzle-orm";
 import {
   isStoredOAuthTokenBundle,
   type StoredOAuthTokenBundle,
@@ -7,6 +7,12 @@ import {
 } from "../auth/store";
 import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
+import {
+  MAX_STORAGE_PAGE_LIMIT,
+  storagePageLimit,
+  type KeysetSortDirection,
+  type StorageKeysetPage,
+} from "./keyset-page";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
 import type {
@@ -25,6 +31,15 @@ export type BackendAuthMutationOptions = {
 export type BackendAuthStateSnapshot = {
   generation: number;
   bundle?: StoredOAuthTokenBundle | undefined;
+};
+export type BackendAuthConnectionPageKey = {
+  server: string;
+};
+
+export type BackendAuthConnectionPageInput = {
+  limit?: number | undefined;
+  after?: BackendAuthConnectionPageKey | undefined;
+  sort?: KeysetSortDirection | undefined;
 };
 
 type BackendAuthRow = {
@@ -62,22 +77,80 @@ export class BackendAuthStateStore {
     return state.bundle ? { bundle: state.bundle, generation: state.generation } : undefined;
   }
 
-  async listTokenBundles(): Promise<StoredOAuthTokenBundleView[]> {
+  async listConnectionsPage(
+    input: BackendAuthConnectionPageInput = {},
+  ): Promise<StorageKeysetPage<StoredOAuthTokenBundleView, BackendAuthConnectionPageKey>> {
+    const limit = storagePageLimit(input.limit);
+    const sort = input.sort ?? "asc";
+    if (input.after !== undefined) validateConnectionPageKey(input.after);
     const rows =
       this.database.dialect === "sqlite"
         ? this.database.db
             .select()
             .from(sqlite.backendAuthStates)
-            .orderBy(asc(sqlite.backendAuthStates.server))
+            .where(
+              and(
+                isNotNull(sqlite.backendAuthStates.tokenBundle),
+                input.after
+                  ? sort === "asc"
+                    ? gt(sqlite.backendAuthStates.server, input.after.server)
+                    : lt(sqlite.backendAuthStates.server, input.after.server)
+                  : undefined,
+              ),
+            )
+            .orderBy(
+              sort === "asc"
+                ? asc(sqlite.backendAuthStates.server)
+                : desc(sqlite.backendAuthStates.server),
+            )
+            .limit(limit + 1)
             .all()
         : await this.database.db
             .select()
             .from(postgres.backendAuthStates)
-            .orderBy(asc(postgres.backendAuthStates.server));
-    return rows.flatMap((row) => {
+            .where(
+              and(
+                isNotNull(postgres.backendAuthStates.tokenBundle),
+                input.after
+                  ? sort === "asc"
+                    ? sql`${postgres.backendAuthStates.server} COLLATE "C" > ${input.after.server}`
+                    : sql`${postgres.backendAuthStates.server} COLLATE "C" < ${input.after.server}`
+                  : undefined,
+              ),
+            )
+            .orderBy(
+              sort === "asc"
+                ? sql`${postgres.backendAuthStates.server} COLLATE "C" ASC`
+                : sql`${postgres.backendAuthStates.server} COLLATE "C" DESC`,
+            )
+            .limit(limit + 1);
+    const hasNext = rows.length > limit;
+    if (hasNext) rows.pop();
+    const items = rows.map((row) => {
       const state = stateSnapshot(row, row.server);
-      return state.bundle ? [{ bundle: state.bundle, generation: state.generation }] : [];
+      if (!state.bundle) {
+        throw new CapletsError("INTERNAL_ERROR", `Backend auth state for ${row.server} is empty.`);
+      }
+      return { bundle: state.bundle, generation: state.generation };
     });
+    return {
+      items,
+      ...(hasNext ? { nextKey: { server: items[items.length - 1]!.bundle.server } } : {}),
+    };
+  }
+
+  async listTokenBundles(): Promise<StoredOAuthTokenBundleView[]> {
+    const items: StoredOAuthTokenBundleView[] = [];
+    let after: BackendAuthConnectionPageKey | undefined;
+    do {
+      const page = await this.listConnectionsPage({
+        limit: MAX_STORAGE_PAGE_LIMIT,
+        ...(after ? { after } : {}),
+      });
+      items.push(...page.items);
+      after = page.nextKey;
+    } while (after);
+    return items;
   }
 
   async writeTokenBundle(
@@ -585,6 +658,20 @@ function validateServer(server: string): void {
   if (!server.trim() || server.includes("/") || server.includes("\\") || server.includes("..")) {
     throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);
   }
+}
+
+function validateConnectionPageKey(value: unknown): asserts value is BackendAuthConnectionPageKey {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !("server" in value) ||
+    typeof value.server !== "string"
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Backend auth connection page key is invalid.");
+  }
+  validateServer(value.server);
 }
 
 function validateMutationOptions(options: BackendAuthMutationOptions): void {

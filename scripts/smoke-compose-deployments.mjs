@@ -12,6 +12,7 @@ const root = mkdtempSync(join(tmpdir(), "caplets-compose-smoke-"));
 const image = process.env.CAPLETS_SMOKE_IMAGE || "caplets:compose-smoke";
 const projects = [];
 const prefix = `caplets-smoke-${process.pid}`;
+const smokeEncryptionKey = Buffer.alloc(32, 63).toString("base64url");
 
 try {
   if (!process.env.CAPLETS_SMOKE_IMAGE) {
@@ -45,7 +46,10 @@ async function smokeSqlite() {
 
 async function smokeConveniencePostgres() {
   phase("Convenience PostgreSQL deployment");
-  const env = { CAPLETS_POSTGRES_PASSWORD: "convenience-smoke-secret" };
+  const env = {
+    CAPLETS_POSTGRES_PASSWORD: "convenience-smoke-secret",
+    CAPLETS_ENCRYPTION_KEY: smokeEncryptionKey,
+  };
   const project = fixture("postgres", "docker-compose.postgres.yml", env);
   compose(project, ["config", "--quiet"]);
   compose(project, ["up", "-d", "--wait"], { stdio: "inherit" });
@@ -85,8 +89,10 @@ async function smokeConveniencePostgres() {
   assert.match(bootstrapLogin.stderr, /password authentication failed/u);
   compose(project, ["run", "--rm", "--no-deps", "caplets-postgres-migrate"]);
 
-  const missingPassword = fixture("postgres-missing", "docker-compose.postgres.yml");
-  const missingEnv = deploymentEnv({});
+  const missingPassword = fixture("postgres-missing", "docker-compose.postgres.yml", {
+    CAPLETS_ENCRYPTION_KEY: smokeEncryptionKey,
+  });
+  const missingEnv = deploymentEnv({ CAPLETS_ENCRYPTION_KEY: smokeEncryptionKey });
   delete missingEnv.CAPLETS_POSTGRES_PASSWORD;
   const result = dockerResult(composeCommand(missingPassword, ["config", "--quiet"]), {
     cwd: missingPassword.directory,

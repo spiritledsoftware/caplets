@@ -6,13 +6,14 @@
 - Install with `pnpm install --frozen-lockfile` when matching CI.
 - Full local gate and pre-push hook: `pnpm verify` (`format:check -> lint -> code-mode:check-api -> schema:check -> docs:check -> typecheck -> test -> benchmark:check -> build`).
 - Fast focused checks: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
-- Run one package: `pnpm --filter @caplets/core test`, `pnpm --filter caplets build`, or replace the filter with `@caplets/opencode`, `@caplets/pi`, `@caplets/benchmarks`.
+- Run one package: `pnpm --filter @caplets/core test`, `pnpm --filter @caplets/sdk test`, `pnpm --filter caplets build`, or replace the filter with `@caplets/opencode`, `@caplets/pi`, or `@caplets/benchmarks`.
 - Run one Vitest file by passing it after the package script, e.g. `pnpm --filter @caplets/core test -- test/config.test.ts`.
 - Dev server: `pnpm dev` builds/watches `@caplets/core` and restarts `packages/cli/dist/index.js`; run `pnpm build` first if CLI dist output is missing.
 
 ## Package Map
 
 - `packages/core` is the runtime/library source: config parsing, schema generation, MCP/OpenAPI/GraphQL/HTTP/CLI backends, native service exports.
+- `packages/sdk` owns the independent public Caplets SDK. Its root is the browser/Node Fetch client generated from the canonical public HTTP contract plus curated Caplet Bundle helpers; `@caplets/sdk/project-binding` owns the browser-safe fixed-v1 coordinator, and `@caplets/sdk/project-binding/node` owns marker-aware filesystem fingerprints. Keep caller authentication optional and caller-owned, require isolated clients and explicit service/WebSocket roots, and exclude MCP and dashboard-private routes.
 - `packages/cli` publishes the `caplets` binary and delegates almost all behavior to `@caplets/core`; `caplets serve` starts the MCP server, while no args print help.
 - `packages/opencode` and `packages/pi` are native agent integrations that wrap `@caplets/core/native`; keep integration-specific schema/adapter code there.
 - `packages/benchmarks` owns deterministic and opt-in live coding-agent benchmarks; deterministic benchmark docs are generated from `pnpm benchmark`.
@@ -46,6 +47,7 @@ This is a single-context repo: start with root `CONTEXT.md` and relevant ADRs in
 - Avoid committing short-lived plans unless explicitly requested. Do not use `docs/superpowers/` in this repo.
 - Config schema source: `packages/core/src/config.ts`. Generate with `pnpm schema:generate`; check with `pnpm schema:check`.
 - Code Mode API sources: `packages/core/src/code-mode/runtime-api.d.ts` and `packages/core/src/code-mode/platform-entry.ts`. Generate with `pnpm code-mode:generate-api`; check with `pnpm code-mode:check-api`.
+- Canonical HTTP API sources are the route-local Zod/OpenAPI definitions in `packages/core`; `pnpm openapi:generate` writes `schemas/caplets-http.openapi.json` and `packages/sdk/src/generated/`. `pnpm openapi:check` checks both artifacts and the SDK contract. Do not hand-edit the generated SDK.
 - Benchmark report: `pnpm benchmark` updates `docs/benchmarks/coding-agent.md`; `pnpm benchmark:check` checks staleness.
 - Live benchmarks are opt-in and local/model-dependent: build first, then run `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode`, `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi`, or `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi-eval`.
 

@@ -81,12 +81,20 @@ A paired remote client whose role allows Remote Attach, MCP, and Project Binding
 _Avoid_: Regular device token, user token
 
 **Operator Client**:
-A paired remote client whose role allows dashboard and admin operations against the Caplets host, including remote-client administration, Caplet installation and configuration, and Vault administration.
+A paired remote client whose role includes every Access Client capability and additionally allows dashboard and host administration, including remote-client administration, Caplet installation and configuration, and Vault administration.
 _Avoid_: Admin device token, dashboard token
 
 **Current Host**:
 The Caplets host that served the active dashboard session and owns the runtime state being administered in that session.
 _Avoid_: Only server, global host singleton
+
+**Admin API**:
+A versioned HTTP resource interface through which an Operator Client administers the Current Host. Dashboard and remote clients use the same resource semantics even though their authentication ceremonies differ.
+_Avoid_: Remote CLI RPC, dashboard backend, mixed-auth endpoint
+
+**Caplets SDK**:
+The typed client Module for the canonical public Caplets HTTP API and the versioned Attach Project Binding WebSocket session protocol. It excludes MCP and dashboard-private authentication ceremonies.
+_Avoid_: Admin client, core client, dashboard session client
 
 **Operator Activity Log**:
 A host-owned record of sensitive Operator Client actions performed through the dashboard or operator admin surfaces.

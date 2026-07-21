@@ -745,6 +745,54 @@ describe("cli init", () => {
     }
   });
 
+  it("parses and propagates HTTP admin upload flags", async () => {
+    const served: unknown[] = [];
+    await runCli(
+      [
+        "serve",
+        "--transport",
+        "http",
+        "--admin-upload-staging-dir",
+        "/srv/caplets/uploads",
+        "--admin-upload-max-concurrent",
+        "4",
+        "--admin-upload-max-staged-bytes",
+        "400000000",
+      ],
+      {
+        env: {},
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      },
+    );
+
+    expect(served).toEqual([
+      expect.objectContaining({
+        adminUploads: {
+          stagingDir: "/srv/caplets/uploads",
+          maxConcurrent: 4,
+          maxStagedBytes: 400_000_000,
+        },
+      }),
+    ]);
+  });
+
+  it.each([
+    ["fraction", "--admin-upload-max-concurrent", "1.5"],
+    ["NaN", "--admin-upload-max-concurrent", "NaN"],
+    ["unsafe integer", "--admin-upload-max-concurrent", "9007199254740992"],
+    ["undersized quota", "--admin-upload-max-staged-bytes", "369283313"],
+  ])("rejects invalid HTTP admin upload CLI %s", async (_label, flag, value) => {
+    await expect(
+      runCli(["serve", "--transport", "http", flag, value], {
+        env: {},
+        writeErr: () => {},
+      }),
+    ).rejects.toThrow(/admin-upload/u);
+  });
+
   it("resolves HTTP serve with an upstream URL", async () => {
     const served: unknown[] = [];
 
@@ -774,6 +822,14 @@ describe("cli init", () => {
     await expect(
       runCli(["serve", "--transport", "stdio", "--port", "5387"], { writeErr: () => {} }),
     ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+  });
+
+  it("rejects admin upload serve flags with stdio", async () => {
+    await expect(
+      runCli(["serve", "--transport", "stdio", "--admin-upload-max-concurrent", "2"], {
+        writeErr: () => {},
+      }),
+    ).rejects.toThrow(/only valid with --transport http/u);
   });
 
   it("lists enabled Caplets by default", async () => {
@@ -1245,18 +1301,70 @@ describe("cli init", () => {
     const requests: unknown[] = [];
     const out: string[] = [];
     const fetchMock = vi.fn(
-      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-        requests.push(JSON.parse(String(init?.body)));
-        return new Response(
-          JSON.stringify({
+      async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const path = new URL(request.url).pathname;
+        if (path === "/caplets/") {
+          return Response.json({
+            name: "caplets",
+            transport: "http",
+            base: "/caplets/",
+            versions: [
+              { version: 1, path: "/caplets/v1", links: { admin: "/caplets/v1/admin" } },
+              { version: 2, path: "/caplets/v2", links: { admin: "/caplets/v2/admin" } },
+            ],
+            auth: { type: "remote" },
+          });
+        }
+        if (path === "/caplets/v2") {
+          return Response.json({
+            version: 2,
+            path: "/caplets/v2",
+            links: { admin: "/caplets/v2/admin" },
+          });
+        }
+        if (path === "/caplets/v1/attach/manifest") {
+          return Response.json({
+            version: 1,
+            revision: "prompt-revision",
+            generatedAt: "2026-07-20T00:00:00.000Z",
+            caplets: [
+              {
+                stableId: "progressive:linear",
+                exportId: "linear-export",
+                kind: "caplet",
+                name: "linear",
+                title: "Linear",
+                description: "Linear tools",
+                inputSchema: { type: "object" },
+                schemaHash: "sha256:linear",
+                capletId: "linear",
+                shadowing: "allow",
+              },
+            ],
+            tools: [],
+            resources: [],
+            resourceTemplates: [],
+            prompts: [],
+            completions: [],
+            codeModeCaplets: [],
+            diagnostics: [],
+          });
+        }
+        if (path === "/caplets/v1/attach/sessions") {
+          return Response.json({ sessionId: "prompt-session" }, { status: 201 });
+        }
+        if (path === "/caplets/v1/attach/invoke") {
+          requests.push(await request.json());
+          return Response.json({
             ok: true,
-            result: {
+            data: {
               description: "Review an issue.",
               messages: [{ role: "user", content: { type: "text", text: "Review CAP-123" } }],
             },
-          }),
-          { headers: { "content-type": "application/json" } },
-        );
+          });
+        }
+        throw new Error(`Unexpected remote prompt request ${path}`);
       },
     );
 
@@ -1301,17 +1409,14 @@ describe("cli init", () => {
     }
 
     expect(requests).toEqual([
-      {
-        command: "get_prompt",
-        arguments: {
-          caplet: "linear",
-          request: {
-            operation: "get_prompt",
-            name: "review_issue",
-            args: { issueId: "CAP-123" },
-          },
+      expect.objectContaining({
+        kind: "caplet",
+        input: {
+          operation: "get_prompt",
+          name: "review_issue",
+          args: { issueId: "CAP-123" },
         },
-      },
+      }),
     ]);
     expect(JSON.parse(out.join(""))).toMatchObject({ description: "Review an issue." });
   });
@@ -2853,11 +2958,31 @@ describe("cli init", () => {
     const requests: unknown[] = [];
     const out: string[] = [];
     const fetchMock = vi.fn(
-      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-        requests.push(JSON.parse(String(init?.body)));
-        return Response.json({
-          ok: true,
-          result: {
+      async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const path = new URL(request.url).pathname;
+        if (path === "/caplets/") {
+          return Response.json({
+            name: "caplets",
+            transport: "http",
+            base: "/caplets/",
+            versions: [
+              { version: 1, path: "/caplets/v1", links: { admin: "/caplets/v1/admin" } },
+              { version: 2, path: "/caplets/v2", links: { admin: "/caplets/v2/admin" } },
+            ],
+            auth: { type: "remote" },
+          });
+        }
+        if (path === "/caplets/v2") {
+          return Response.json({
+            version: 2,
+            path: "/caplets/v2",
+            links: { admin: "/caplets/v2/admin" },
+          });
+        }
+        requests.push(await request.json());
+        return Response.json(
+          {
             installed: [
               {
                 id: "github",
@@ -2865,8 +2990,10 @@ describe("cli init", () => {
                 status: "restored",
               },
             ],
+            setupActions: [],
           },
-        });
+          { status: 201 },
+        );
       },
     );
     try {
@@ -2898,11 +3025,8 @@ describe("cli init", () => {
 
       expect(requests).toEqual([
         {
-          command: "install",
-          arguments: {
-            capletIds: [],
-            force: false,
-          },
+          capletIds: [],
+          force: false,
         },
       ]);
       expect(JSON.parse(out.join(""))).toMatchObject({
@@ -2925,11 +3049,31 @@ describe("cli init", () => {
     const requests: unknown[] = [];
     const out: string[] = [];
     const fetchMock = vi.fn(
-      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-        requests.push(JSON.parse(String(init?.body)));
-        return Response.json({
-          ok: true,
-          result: {
+      async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const path = new URL(request.url).pathname;
+        if (path === "/caplets/") {
+          return Response.json({
+            name: "caplets",
+            transport: "http",
+            base: "/caplets/",
+            versions: [
+              { version: 1, path: "/caplets/v1", links: { admin: "/caplets/v1/admin" } },
+              { version: 2, path: "/caplets/v2", links: { admin: "/caplets/v2/admin" } },
+            ],
+            auth: { type: "remote" },
+          });
+        }
+        if (path === "/caplets/v2") {
+          return Response.json({
+            version: 2,
+            path: "/caplets/v2",
+            links: { admin: "/caplets/v2/admin" },
+          });
+        }
+        requests.push(await request.json());
+        return Response.json(
+          {
             installed: [
               {
                 id: "github",
@@ -2937,8 +3081,10 @@ describe("cli init", () => {
                 status: "content_updated",
               },
             ],
+            setupActions: [],
           },
-        });
+          { status: 201 },
+        );
       },
     );
     try {
@@ -2970,12 +3116,9 @@ describe("cli init", () => {
 
       expect(requests).toEqual([
         {
-          command: "update",
-          arguments: {
-            capletIds: ["github"],
-            force: false,
-            allowRiskIncrease: false,
-          },
+          capletIds: ["github"],
+          force: false,
+          acknowledgeRiskIncrease: false,
         },
       ]);
       expect(out.join("")).toContain("Content updated github at remote /remote/global/github");

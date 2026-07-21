@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachProjectOnce,
   attachProjectSession,
@@ -13,7 +13,7 @@ import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import type {
   ProjectBindingSocketEvent,
   ProjectBindingWebSocket,
-} from "../src/project-binding/transport";
+} from "@caplets/sdk/project-binding";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 const tempDirs: string[] = [];
@@ -22,6 +22,7 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+  vi.useRealTimers();
 });
 
 describe("caplets attach CLI", () => {
@@ -312,7 +313,8 @@ describe("caplets attach CLI", () => {
     );
   });
 
-  it("pins the selected Cloud workspace for active attach session refreshes", async () => {
+  it("pins the selected Cloud workspace and uses the fixed 15-second heartbeat", async () => {
+    vi.useFakeTimers();
     const authDir = tempAuthDir();
     const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
     await store.saveCloudProfile({
@@ -330,19 +332,47 @@ describe("caplets attach CLI", () => {
     const controller = new AbortController();
     const requests: Array<{ path: string; body?: unknown }> = [];
     let switchedSelection = false;
+    let projectFingerprint = "";
+    let heartbeatEvents = 0;
+    let resolveFirstHeartbeat!: () => void;
+    const firstHeartbeat = new Promise<void>((resolve) => {
+      resolveFirstHeartbeat = resolve;
+    });
+    const binding = () => ({
+      bindingId: "binding_1",
+      state: "attaching" as const,
+      syncState: "pending" as const,
+      projectFingerprint,
+      serverProjectRoot: "/srv/repo",
+      updatedAt: "2026-07-20T12:00:00.000Z",
+      expiresAt: "2026-07-20T12:01:00.000Z",
+    });
 
-    await attachProjectSession(
+    const socket = new OpenProjectBindingSocket();
+    const session = attachProjectSession(
       {
         authDir,
         remoteUrl: "https://cloud.caplets.dev",
         projectRoot: "/repo",
-        fetch: async (url, init) => {
-          const path = new URL(String(url)).pathname;
-          requests.push({
-            path,
-            ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
-          });
+        fetch: async (input, init) => {
+          const request = input instanceof Request ? input : new Request(input, init);
+          const path = new URL(request.url).pathname;
+          const body =
+            request.method === "GET"
+              ? undefined
+              : await request
+                  .clone()
+                  .json()
+                  .catch(() => undefined);
+          requests.push({ path, ...(body !== undefined ? { body } : {}) });
           if (path.endsWith("/project-bindings/sessions")) {
+            projectFingerprint =
+              typeof body === "object" &&
+              body !== null &&
+              "projectFingerprint" in body &&
+              typeof body.projectFingerprint === "string"
+                ? body.projectFingerprint
+                : "";
             if (!switchedSelection) {
               switchedSelection = true;
               await store.saveCloudProfile({
@@ -358,25 +388,35 @@ describe("caplets attach CLI", () => {
                 },
               });
             }
-            return Response.json(
-              { binding: { bindingId: "binding_1" }, sessionId: "session_1" },
-              { status: 201 },
-            );
+            return Response.json({ binding: binding(), sessionId: "session_1" }, { status: 201 });
           }
-          return Response.json({ ok: true });
+          if (path.endsWith("/heartbeat")) {
+            return Response.json({ ok: true, binding: binding() });
+          }
+          return Response.json({ ok: true, binding: binding() });
         },
       },
       { CAPLETS_MODE: "cloud" },
       {
         signal: controller.signal,
-        heartbeatIntervalMs: 60_000,
-        webSocketFactory: () => new OpenProjectBindingSocket(),
+        webSocketFactory: () => socket,
         onEvent: (event) => {
-          if (event.type === "heartbeat") controller.abort();
+          if (event.type !== "heartbeat") return;
+          heartbeatEvents += 1;
+          if (heartbeatEvents === 1) resolveFirstHeartbeat();
+          if (heartbeatEvents === 2) socket.receiveEnded();
         },
       },
     );
 
+    await firstHeartbeat;
+    expect(requests.filter((request) => request.path.endsWith("/heartbeat"))).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(requests.filter((request) => request.path.endsWith("/heartbeat"))).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(session).resolves.toMatchObject({ ok: true, ended: true });
+
+    expect(requests.filter((request) => request.path.endsWith("/heartbeat"))).toHaveLength(2);
     expect(requests.map((request) => request.path)).toEqual(
       expect.arrayContaining([
         "/v1/ws/team/attach/project-bindings/sessions",
@@ -595,7 +635,25 @@ class OpenProjectBindingSocket implements ProjectBindingWebSocket {
   onclose: ((event: ProjectBindingSocketEvent) => void) | null = null;
   onerror: ((event: ProjectBindingSocketEvent) => void) | null = null;
 
-  send(): void {}
+  send(data: string): void {
+    const message = JSON.parse(data) as { type?: string; reason?: unknown };
+    if (message.type === "end") {
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: JSON.stringify({ type: "ended", reason: message.reason }),
+        });
+      });
+    }
+  }
+
+  receiveEnded(): void {
+    this.onmessage?.({
+      data: JSON.stringify({
+        type: "ended",
+        reason: { code: "completed", message: "Session completed." },
+      }),
+    });
+  }
 
   close(): void {}
 }

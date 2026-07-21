@@ -4116,6 +4116,14 @@ describe("createNativeCapletsService remote mode", () => {
           url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
+          const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+          if (
+            Object.keys(body).sort().join(",") !== "projectFingerprint,projectRoot" ||
+            body.projectRoot !== projectRoot ||
+            typeof body.projectFingerprint !== "string"
+          ) {
+            return Response.json({ ok: false }, { status: 400 });
+          }
           return Response.json(
             {
               binding: { bindingId: "binding_1", state: "attaching", syncState: "pending" },
@@ -4167,17 +4175,10 @@ describe("createNativeCapletsService remote mode", () => {
     const bodies = fetch.mock.calls
       .map(([, init]) => init?.body)
       .filter((body): body is string => typeof body === "string")
-      .map(
-        (body) =>
-          JSON.parse(body) as {
-            projectRoot?: string;
-            allowedCapletIds?: string[];
-            sessionId?: string;
-          },
-      );
-    expect(bodies[0]).toMatchObject({
+      .map((body) => JSON.parse(body) as Record<string, unknown>);
+    expect(bodies[0]).toEqual({
       projectRoot,
-      allowedCapletIds: ["code_mode", "local"],
+      projectFingerprint: expect.any(String),
     });
     expect(fetch).toHaveBeenCalledWith(
       new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
@@ -4749,7 +4750,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(replacementClose).toHaveBeenCalledOnce();
   });
 
-  it("disconnects and re-registers self-hosted bindings after an allowed-ID heartbeat rejection", async () => {
+  it("disconnects and re-registers self-hosted bindings after a heartbeat rejection", async () => {
     const fixture = client();
     const sessionBodies: string[] = [];
     let sessionCount = 0;
@@ -4772,6 +4773,10 @@ describe("createNativeCapletsService remote mode", () => {
           );
         }
         if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+          if (Object.keys(body).sort().join(",") !== "sessionId,state,syncState") {
+            return new Response("invalid heartbeat", { status: 400 });
+          }
           return new Response("expired", { status: 503 });
         }
         return Response.json({ ok: true });
@@ -4810,7 +4815,10 @@ describe("createNativeCapletsService remote mode", () => {
     await projectBinding.start();
     await vi.waitFor(() => expect(sessionCount).toBe(2));
 
-    expect(sessionBodies[1]).toContain('"bravo"');
+    expect(Object.keys(JSON.parse(sessionBodies[1]!) as Record<string, unknown>).sort()).toEqual([
+      "projectFingerprint",
+      "projectRoot",
+    ]);
     await service.close();
   });
 
@@ -5578,6 +5586,11 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
     ...overrides,
   };
 }

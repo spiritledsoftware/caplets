@@ -1,0 +1,303 @@
+{
+  "protocol": "caplets.project-binding.v1",
+  "client": {
+    "valid": [
+      {
+        "name": "heartbeat",
+        "message": {
+          "type": "heartbeat",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "state": "syncing",
+          "syncState": "syncing"
+        }
+      },
+      {
+        "name": "end",
+        "message": {
+          "type": "end",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "reason": {
+            "code": "completed",
+            "message": "Session completed.",
+            "recoveryCommand": "caplets attach",
+            "requestId": "request-client-end"
+          }
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "name": "heartbeat-extra-field",
+        "message": {
+          "type": "heartbeat",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "state": "ready",
+          "syncState": "idle",
+          "extra": true
+        }
+      },
+      {
+        "name": "end-extra-field",
+        "message": {
+          "type": "end",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "reason": {
+            "code": "completed",
+            "message": "Session completed."
+          },
+          "extra": true
+        }
+      },
+      {
+        "name": "end-reason-extra-field",
+        "message": {
+          "type": "end",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "reason": {
+            "code": "completed",
+            "message": "Session completed.",
+            "extra": true
+          }
+        }
+      },
+      {
+        "name": "end-invalid-terminal-reason",
+        "message": {
+          "type": "end",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "reason": {
+            "code": "not_a_v1_reason",
+            "message": "Unsupported terminal reason."
+          }
+        }
+      },
+      {
+        "name": "heartbeat-missing-sync-state",
+        "message": {
+          "type": "heartbeat",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "state": "ready"
+        }
+      },
+      {
+        "name": "heartbeat-invalid-sync-state",
+        "message": {
+          "type": "heartbeat",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "state": "ready",
+          "syncState": "complete"
+        }
+      },
+      {
+        "name": "end-malformed-reason",
+        "message": {
+          "type": "end",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "reason": []
+        }
+      },
+      {
+        "name": "unknown-client-type",
+        "message": {
+          "type": "ready"
+        }
+      },
+      {
+        "name": "malformed-null",
+        "message": null
+      },
+      {
+        "name": "malformed-array",
+        "message": []
+      },
+      {
+        "name": "malformed-string",
+        "message": "heartbeat"
+      },
+      {
+        "name": "malformed-object",
+        "message": {}
+      }
+    ]
+  },
+  "server": {
+    "valid": [
+      {
+        "name": "state",
+        "message": {
+          "type": "state",
+          "state": "degraded",
+          "syncState": "failed",
+          "requestId": "request-server-state"
+        }
+      },
+      {
+        "name": "ready",
+        "message": {
+          "type": "ready",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "syncState": "idle",
+          "requestId": "request-server-ready"
+        }
+      },
+      {
+        "name": "blocked",
+        "message": {
+          "type": "blocked",
+          "reason": {
+            "code": "policy_denied",
+            "message": "Project Binding is blocked by policy.",
+            "recoveryCommand": "caplets auth login",
+            "requestId": "request-server-blocked"
+          }
+        }
+      },
+      {
+        "name": "ended",
+        "message": {
+          "type": "ended",
+          "reason": {
+            "code": "completed",
+            "message": "Session completed."
+          }
+        }
+      }
+    ],
+    "invalid": [
+      {
+        "name": "state-extra-field",
+        "message": {
+          "type": "state",
+          "state": "ready",
+          "syncState": "idle",
+          "extra": true
+        }
+      },
+      {
+        "name": "ready-extra-field",
+        "message": {
+          "type": "ready",
+          "bindingId": "binding-1",
+          "sessionId": "session-1",
+          "syncState": "idle",
+          "extra": true
+        }
+      },
+      {
+        "name": "blocked-extra-field",
+        "message": {
+          "type": "blocked",
+          "reason": {
+            "code": "policy_denied",
+            "message": "Project Binding is blocked by policy."
+          },
+          "extra": true
+        }
+      },
+      {
+        "name": "ended-extra-field",
+        "message": {
+          "type": "ended",
+          "reason": {
+            "code": "completed",
+            "message": "Session completed."
+          },
+          "extra": true
+        }
+      },
+      {
+        "name": "blocked-reason-extra-field",
+        "message": {
+          "type": "blocked",
+          "reason": {
+            "code": "policy_denied",
+            "message": "Project Binding is blocked by policy.",
+            "extra": true
+          }
+        }
+      },
+      {
+        "name": "ended-invalid-terminal-reason",
+        "message": {
+          "type": "ended",
+          "reason": {
+            "code": "not_a_v1_reason",
+            "message": "Unsupported terminal reason."
+          }
+        }
+      },
+      {
+        "name": "blocked-invalid-terminal-reason",
+        "message": {
+          "type": "blocked",
+          "reason": {
+            "code": "not_a_v1_reason",
+            "message": "Unsupported terminal reason."
+          }
+        }
+      },
+      {
+        "name": "state-missing-sync-state",
+        "message": {
+          "type": "state",
+          "state": "ready"
+        }
+      },
+      {
+        "name": "ready-missing-sync-state",
+        "message": {
+          "type": "ready",
+          "bindingId": "binding-1",
+          "sessionId": "session-1"
+        }
+      },
+      {
+        "name": "state-invalid-sync-state",
+        "message": {
+          "type": "state",
+          "state": "ready",
+          "syncState": "complete"
+        }
+      },
+      {
+        "name": "ended-malformed-reason",
+        "message": {
+          "type": "ended",
+          "reason": []
+        }
+      },
+      {
+        "name": "unknown-server-type",
+        "message": {
+          "type": "heartbeat"
+        }
+      },
+      {
+        "name": "malformed-null",
+        "message": null
+      },
+      {
+        "name": "malformed-array",
+        "message": []
+      },
+      {
+        "name": "malformed-string",
+        "message": "ready"
+      },
+      {
+        "name": "malformed-object",
+        "message": {}
+      }
+    ]
+  }
+}

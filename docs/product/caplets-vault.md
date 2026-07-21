@@ -54,6 +54,9 @@ caplets vault access grant GH_TOKEN github --remote
 Remote Vault values are owned by the selected runtime. Local Caplets do not read, mirror, or forward
 remote or Cloud Vault values.
 
+Remote CLI and generated Admin clients can read metadata but cannot reveal raw values. Raw Vault
+Reveal remains a dashboard-private, confirmed human action with `no-store` responses.
+
 ## Grants And Remapping
 
 Vault resolution requires an access grant for the stored key, Caplet ID, referenced key name, and

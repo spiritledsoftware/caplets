@@ -257,6 +257,23 @@
           "description": "Trust proxy headers when deriving public HTTP request URLs.",
           "type": "boolean"
         },
+        "adminUploadStagingDir": {
+          "description": "Directory used to stage Admin API bundle uploads.",
+          "type": "string",
+          "minLength": 1
+        },
+        "adminUploadMaxConcurrent": {
+          "description": "Maximum number of active Admin API bundle uploads.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "adminUploadMaxStagedBytes": {
+          "description": "Maximum aggregate bytes reserved by staged Admin API bundle uploads.",
+          "type": "integer",
+          "minimum": 369283314,
+          "maximum": 9007199254740991
+        },
         "publicOrigins": {
           "description": "Additional public HTTP origins.",
           "type": "array",

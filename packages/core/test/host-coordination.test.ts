@@ -113,7 +113,7 @@ describe("host coordination", () => {
     const wait = fixture.store.waitForConfigGeneration(0);
     await fixture.firstSelect.promise;
     expect(fixture.events.slice(0, 2)).toEqual([
-      "LISTEN caplets_config_generation",
+      'LISTEN "caplets_config_generation"',
       "SELECT generation",
     ]);
 
@@ -121,8 +121,28 @@ describe("host coordination", () => {
     fixture.client.notify("caplets_config_generation");
 
     await expect(wait).resolves.toBe(1);
-    expect(fixture.events).toContain("UNLISTEN caplets_config_generation");
+    expect(fixture.events).toContain('UNLISTEN "caplets_config_generation"');
     expect(fixture.client.released).toBe(true);
+    await fixture.store.close();
+  });
+
+  it.each([
+    ["select", '"select"'],
+    ["MixedCase_1", '"MixedCase_1"'],
+    ['unsafe"; NOTIFY injected; --', '"unsafe""; NOTIFY injected; --"'],
+  ])("quotes the schema-derived PostgreSQL notification channel for %s", async (schema, quoted) => {
+    const fixture = fakePostgresCoordination(schema);
+    const wait = fixture.store.waitForConfigGeneration(0);
+    await fixture.firstSelect.promise;
+
+    expect(fixture.events[0]).toBe(`LISTEN ${quoted}`);
+    fixture.setGeneration(1);
+    fixture.client.notify(schema);
+
+    await expect(wait).resolves.toBe(1);
+    expect(fixture.events).toContain(`UNLISTEN ${quoted}`);
+    expect(fixture.events.filter((event) => event.startsWith("LISTEN "))).toHaveLength(1);
+    expect(fixture.events.filter((event) => event.startsWith("UNLISTEN "))).toHaveLength(1);
     await fixture.store.close();
   });
 
@@ -170,8 +190,8 @@ describe("host coordination", () => {
     await storage.close();
 
     await rejected;
-    expect(fixture.events).toContain("UNLISTEN caplets_config_generation");
-    expect(fixture.events.indexOf("UNLISTEN caplets_config_generation")).toBeLessThan(
+    expect(fixture.events).toContain('UNLISTEN "caplets_config_generation"');
+    expect(fixture.events.indexOf('UNLISTEN "caplets_config_generation"')).toBeLessThan(
       fixture.events.indexOf("CLOSE database"),
     );
     expect(fixture.client.listenerCount).toBe(0);
@@ -217,7 +237,7 @@ class FakePostgresListenerClient {
   }
 }
 
-function fakePostgresCoordination(): {
+function fakePostgresCoordination(schema = "caplets"): {
   store: HostCoordinationStore;
   database: HostDatabase;
   pool: { connect: () => Promise<FakePostgresListenerClient> };
@@ -232,7 +252,7 @@ function fakePostgresCoordination(): {
   const client = new FakePostgresListenerClient(events);
   const database = {
     dialect: "postgres",
-    schema: "caplets",
+    schema,
     db: {
       select: () => ({
         from: () => ({

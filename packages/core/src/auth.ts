@@ -20,6 +20,7 @@ import {
 import type { BackendAuthMutationOptions, BackendAuthStateStore } from "./storage/backend-auth";
 import type { CapletServerConfig } from "./config";
 import { CapletsError, redactSecrets } from "./errors";
+import { readLimitedText } from "./http/utils";
 
 export {
   authStorePath,
@@ -621,15 +622,28 @@ export async function completeOAuthFlowState(
       ...(options.persistTokenBundle ? { persistTokenBundle: options.persistTokenBundle } : {}),
     },
   );
+  const tokenEndpoint = new URL(
+    state.discovery.authorizationServerMetadata?.token_endpoint ?? "/token",
+    state.discovery.authorizationServerUrl,
+  ).href;
+  let tokenFailureStatus: number | undefined;
+  const fetchOAuth = async (url: string | URL, init?: RequestInit): Promise<Response> => {
+    const response = await fetch(url, init);
+    if (new URL(url).href === tokenEndpoint && !response.ok) {
+      tokenFailureStatus = response.status;
+    }
+    return response;
+  };
   const scope = scopesFor(authConfig);
   try {
     await auth(provider, {
       serverUrl: server.url!,
       authorizationCode: completion.code,
       ...(scope ? { scope } : {}),
+      fetchFn: fetchOAuth,
     });
   } catch (error) {
-    throw normalizeMcpOAuthError(server, error);
+    throw normalizeMcpOAuthError(server, error, tokenFailureStatus);
   }
   const persisted = provider.tokenBundleView();
   if (!persisted) {
@@ -754,7 +768,17 @@ function assertNoOAuthCallbackError(target: { server: string }, callbackUrl: str
   );
 }
 
-function normalizeMcpOAuthError(server: CapletServerConfig, error: unknown): unknown {
+function normalizeMcpOAuthError(
+  server: CapletServerConfig,
+  error: unknown,
+  tokenFailureStatus?: number,
+): unknown {
+  if (tokenFailureStatus !== undefined) {
+    return new CapletsError("AUTH_FAILED", "OAuth token request failed", {
+      server: server.server,
+      status: tokenFailureStatus,
+    });
+  }
   if (
     (server.auth?.type === "oauth2" || server.auth?.type === "oidc") &&
     !server.auth.clientId &&
@@ -1130,6 +1154,7 @@ export async function completeGenericOAuthFlowState(
       body: params.toString(),
     },
     state.allowLoopbackHttp,
+    "oauth_token",
   );
   const idToken = asString(tokenResponse.id_token);
   const idClaims = parseJwtPayload(idToken);
@@ -1623,6 +1648,39 @@ function refreshedExpiresAt(expiresIn: unknown, fallback?: string): string | und
   return undefined;
 }
 
+const MAX_OAUTH_ERROR_RESPONSE_BYTES = 4 * 1024;
+
+class OAuthTokenResponseError extends CapletsError {
+  readonly errorCode: string | undefined;
+
+  constructor(status: number, errorCode: string | undefined) {
+    super("AUTH_FAILED", "OAuth token request failed", { status });
+    this.errorCode = errorCode;
+  }
+}
+
+async function readOAuthErrorCode(response: Response): Promise<string | undefined> {
+  let text: string;
+  try {
+    text = await readLimitedText(response, {
+      maxBytes: MAX_OAUTH_ERROR_RESPONSE_BYTES,
+      errorMessage: "OAuth token error response exceeded byte limit",
+    });
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const errorCode = Reflect.get(parsed, "error");
+    return typeof errorCode === "string" && /^[A-Za-z][A-Za-z0-9._~-]{0,127}$/u.test(errorCode)
+      ? errorCode
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function fetchOptionalJson(
   url: string,
   timeoutMs?: number,
@@ -1640,6 +1698,7 @@ async function fetchJson(
   timeoutMs = 60_000,
   init: RequestInit = {},
   allowLoopbackHttp = false,
+  failureKind: "metadata" | "oauth_token" = "metadata",
 ): Promise<Record<string, unknown>> {
   assertAllowedAuthUrl(url, "OAuth discovery URL", allowLoopbackHttp);
   const controller = new AbortController();
@@ -1647,6 +1706,9 @@ async function fetchJson(
   try {
     const response = await fetch(url, { ...init, redirect: "manual", signal: controller.signal });
     if (!response.ok) {
+      if (failureKind === "oauth_token") {
+        throw new OAuthTokenResponseError(response.status, await readOAuthErrorCode(response));
+      }
       throw new CapletsError("AUTH_FAILED", "OAuth metadata request failed", {
         status: response.status,
       });

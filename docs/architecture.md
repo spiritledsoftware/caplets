@@ -2,7 +2,7 @@
 
 Caplets is a Code Mode and capability gateway for coding agents. It turns configured backends into Caplet handles, optional progressive wrapper tools, and optional direct MCP surfaces.
 
-Source code is authoritative. This document summarizes the architecture, but implementation details in `packages/core`, generated schemas, tests, and package entrypoints win when docs drift.
+Source code is authoritative. This document summarizes the architecture, but implementation details in `packages/core`, public client details in `packages/sdk`, generated schemas, tests, and package entrypoints win when docs drift.
 
 ## Runtime Layers
 
@@ -58,11 +58,17 @@ The HTTP server in `packages/core/src/serve/http.ts` exposes versioned MCP, atta
 
 ### Current Host Administration
 
-`packages/core/src/current-host/operations.ts` is the Current Host administration Module. Its typed Interface accepts a trusted host-scoped Operator principal plus a semantic query or command, then owns safe read models, catalog and Caplet administration, Pending Remote Login and Remote Client mutations, safe Vault administration, Operator activity, redaction, and actor-specific `sessionEnded` outcomes.
+`packages/core/src/current-host/operations.ts` is the Current Host administration Module. Its typed Interface accepts a trusted host-scoped Operator principal plus a semantic operation, then owns safe read models, catalog and Caplet administration, Pending Remote Login and Remote Client mutations, backend authentication, safe Vault administration, Operator activity, redaction, conditional generations, and actor-specific `sessionEnded` outcomes. HTTP and CLI Adapters do not own Host Storage orchestration.
 
-The human dashboard and `/v1/admin` Operator bearer routes are separate Adapters over that Interface. The dashboard retains cookie, CSRF, session, and browser presentation ceremony; the bearer Adapter retains the existing `RemoteCliRequest` selection and safe response envelope. Access Clients remain limited to MCP, Attach, and Project Binding routes. Both Access and Operator Clients may revoke only their own credential through the role-neutral self-revoke route.
+One resource router mounts under `/v2/admin` for paired Operator bearer clients and under `/dashboard/api/v2` for the dashboard. Both mounts share route-local Zod/OpenAPI schemas and semantic handlers while retaining distinct authentication ceremonies: Remote Profile bearer validation for operators, and dashboard cookie, session, origin, and CSRF validation for browsers. Access Clients remain limited to MCP, Attach, Project Binding, and credential-owner self-revocation.
 
-Raw Vault Reveal is not a shared operation. It remains a dashboard-only human confirmation path with `no-store` responses and an ephemeral browser timer; generic bearer administration rejects it.
+The public, cacheable `/openapi.json` describes canonical public v1 and v2 HTTP resources. Route-local Zod/OpenAPI definitions generate `schemas/caplets-http.openapi.json`, and the pinned generator writes the public HTTP client into the independent `@caplets/sdk` package.
+
+The root `@caplets/sdk` entrypoint is the browser/Node Fetch client plus curated ordered and streaming Caplet Bundle helpers. `@caplets/sdk/project-binding` is the browser-safe `caplets.project-binding.v1` session coordinator, while `@caplets/sdk/project-binding/node` computes marker-aware filesystem fingerprints. Callers create isolated clients with an explicit absolute service root and provide optional static or async authentication; the coordinator separately requires the exact Project Binding `ws:` or `wss:` URL. Generated requests return fields without throwing by default, with throwing available as an opt-in.
+
+MCP, dashboard cookie/session/CSRF routes, Raw Vault Reveal, and other browser-private routes are excluded from the canonical OpenAPI document and the SDK. Runtime discovery and invocation remain on Attach. `/v1/admin` is a frozen, deprecated compatibility Adapter, and remote `init` and `add` are rejected as local filesystem operations.
+
+Raw Vault Reveal is not a shared Admin operation. It remains a dashboard-only human confirmation path at `/dashboard/api/private/vault-reveals`, with `no-store` responses and an ephemeral browser timer; bearer administration and generated clients cannot invoke it.
 
 ### Caplets Daemon
 

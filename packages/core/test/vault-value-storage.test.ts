@@ -1,10 +1,11 @@
 import { Buffer } from "node:buffer";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createHostStorage } from "../src/storage";
+import { Pool } from "pg";
+import { createHostStorage, migrateHostStorage, type HostStorage } from "../src/storage";
 import {
   prepareVaultValueSet,
   setPreparedVaultValueSqlite,
@@ -12,6 +13,12 @@ import {
 } from "../src/storage/vault-values";
 import { operatorActivity, vaultValues } from "../src/storage/schema/sqlite";
 import { VAULT_MAX_VALUE_BYTES } from "../src/vault";
+
+const postgresUrl = process.env.CAPLETS_TEST_POSTGRES_URL;
+if (process.env.CAPLETS_REQUIRE_TEST_POSTGRES === "1" && !postgresUrl) {
+  throw new Error("CAPLETS_TEST_POSTGRES_URL is required when CAPLETS_REQUIRE_TEST_POSTGRES=1.");
+}
+const postgresIt = postgresUrl ? it : it.skip;
 
 describe("VaultValueStore", () => {
   it("keeps encrypted Vault values coherent, secret-safe, and fail-closed", async () => {
@@ -42,7 +49,7 @@ describe("VaultValueStore", () => {
       });
 
       const firstStatus = await first.set("API_TOKEN", plaintext, {
-        expectedGeneration: 0,
+        createOnly: true,
         operatorClientId: "operator-1",
       });
       expect(firstStatus).toMatchObject({
@@ -70,7 +77,6 @@ describe("VaultValueStore", () => {
       await expect(second.resolveValue("API_TOKEN")).resolves.toBe(plaintext);
 
       const rotatedStatus = await second.set("API_TOKEN", rotatedPlaintext, {
-        force: true,
         expectedGeneration: 1,
         operatorClientId: "operator-2",
       });
@@ -81,6 +87,13 @@ describe("VaultValueStore", () => {
         createdAt: firstStatus.createdAt,
       });
       expect(rotatedStatus.updatedAt >= firstStatus.updatedAt).toBe(true);
+      await expect(
+        second.set("API_TOKEN", "invalid-conditional-secret", {
+          force: true,
+          createOnly: true,
+          expectedGeneration: 2,
+        }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
       await expect(
         first.set("API_TOKEN", "stale-secret", { force: true, expectedGeneration: 1 }),
       ).rejects.toMatchObject({
@@ -93,7 +106,7 @@ describe("VaultValueStore", () => {
       });
       await expect(first.resolveValue("API_TOKEN")).resolves.toBe(rotatedPlaintext);
 
-      await first.set("ANOTHER_TOKEN", "another-secret", { expectedGeneration: 0 });
+      await first.set("ANOTHER_TOKEN", "another-secret", { createOnly: true });
       await expect(second.listValues()).resolves.toEqual([
         expect.objectContaining({ key: "ANOTHER_TOKEN", present: true, generation: 1 }),
         expect.objectContaining({ key: "API_TOKEN", present: true, generation: 2 }),
@@ -124,9 +137,8 @@ describe("VaultValueStore", () => {
         key: "API_TOKEN",
         present: false,
       });
-      await expect(first.delete("API_TOKEN", { expectedGeneration: 0 })).resolves.toEqual({
-        key: "API_TOKEN",
-        deleted: false,
+      await expect(first.delete("API_TOKEN", { expectedGeneration: 0 })).rejects.toMatchObject({
+        details: { kind: "stale_generation", expectedGeneration: 0, currentGeneration: 0 },
       });
       await expect(first.resolveValue("API_TOKEN")).rejects.toMatchObject({
         code: "CONFIG_INVALID",
@@ -167,6 +179,69 @@ describe("VaultValueStore", () => {
       }
     } finally {
       await firstStorage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("traverses Vault values in bounded keyset pages", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-vault-value-pages-"));
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+
+    try {
+      for (const key of ["DELTA_TOKEN", "ALPHA_TOKEN", "CHARLIE_TOKEN", "BRAVO_TOKEN"]) {
+        await storage.vaultValues.set(key, `${key}-secret`);
+      }
+
+      const first = await storage.vaultValues.listValuesPage({ limit: 2 });
+      expect(first.items.map(({ key }) => key)).toEqual(["ALPHA_TOKEN", "BRAVO_TOKEN"]);
+      expect(first.nextKey).toEqual({ vaultKey: "BRAVO_TOKEN" });
+
+      const second = await storage.vaultValues.listValuesPage({
+        limit: 2,
+        after: first.nextKey,
+      });
+      expect(second.items.map(({ key }) => key)).toEqual(["CHARLIE_TOKEN", "DELTA_TOKEN"]);
+      expect(second.nextKey).toBeUndefined();
+      expect([...first.items, ...second.items].map(({ key }) => key)).toEqual([
+        "ALPHA_TOKEN",
+        "BRAVO_TOKEN",
+        "CHARLIE_TOKEN",
+        "DELTA_TOKEN",
+      ]);
+      await expect(storage.vaultValues.countValues()).resolves.toBe(4);
+
+      const descendingFirst = await storage.vaultValues.listValuesPage({
+        limit: 2,
+        sort: "desc",
+      });
+      const descendingSecond = await storage.vaultValues.listValuesPage({
+        limit: 2,
+        sort: "desc",
+        after: descendingFirst.nextKey,
+      });
+      expect([...descendingFirst.items, ...descendingSecond.items].map(({ key }) => key)).toEqual([
+        "DELTA_TOKEN",
+        "CHARLIE_TOKEN",
+        "BRAVO_TOKEN",
+        "ALPHA_TOKEN",
+      ]);
+
+      await expect(
+        storage.vaultValues.listValuesPage({
+          limit: 2,
+          after: { vaultKey: "ZZZZ_TOKEN" },
+        }),
+      ).resolves.toEqual({ items: [] });
+      for (const limit of [0, 501, 1.5]) {
+        await expect(storage.vaultValues.listValuesPage({ limit })).rejects.toMatchObject({
+          code: "REQUEST_INVALID",
+        });
+      }
+    } finally {
+      await storage.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -283,6 +358,43 @@ describe("VaultValueStore", () => {
       expect(fingerprint).not.toContain(hostConfigurationFingerprint);
     } finally {
       await storage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  postgresIt("matches Vault value keyset traversal on PostgreSQL", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-vault-value-pages-postgres-"));
+    const schema = `caplets_vault_value_pages_${randomUUID().replaceAll("-", "")}`;
+    const config = {
+      type: "postgres" as const,
+      connectionString: postgresUrl!,
+      schema,
+    };
+    let storage: HostStorage | undefined;
+
+    try {
+      await migrateHostStorage(config);
+      storage = await createHostStorage(config, { vaultRoot: join(directory, "vault") });
+      for (const key of ["PAGE_C", "PAGE_A", "PAGE_B"]) {
+        await storage.vaultValues.set(key, `${key}-secret`);
+      }
+
+      const first = await storage.vaultValues.listValuesPage({ limit: 2 });
+      expect(first.items.map(({ key }) => key)).toEqual(["PAGE_A", "PAGE_B"]);
+      expect(first.nextKey).toEqual({ vaultKey: "PAGE_B" });
+      await expect(
+        storage.vaultValues.listValuesPage({ limit: 2, after: first.nextKey }),
+      ).resolves.toEqual({
+        items: [expect.objectContaining({ key: "PAGE_C", present: true })],
+      });
+      await expect(storage.vaultValues.countValues()).resolves.toBe(3);
+    } finally {
+      await storage?.close();
+      const pool = new Pool({ connectionString: postgresUrl! });
+      try {
+        await pool.query(`drop schema if exists "${schema}" cascade`);
+      } finally {
+        await pool.end();
+      }
       rmSync(directory, { recursive: true, force: true });
     }
   });

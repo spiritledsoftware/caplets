@@ -86,9 +86,38 @@ import {
 } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
-  dashboardApi,
+  adminV2CreateRuntimeRestart,
+  adminV2DeleteRemoteClient,
+  adminV2DeleteVaultValue,
+  adminV2GetDiagnostics,
+  adminV2GetHost,
+  adminV2GetProjectBinding,
+  adminV2GetRemoteClient,
+  adminV2GetRemoteLoginRequest,
+  adminV2GetRuntime,
+  adminV2GetVaultValue,
+  adminV2ListActivity,
+  adminV2ListCatalogUpdateCandidates,
+  adminV2ListEffectiveCaplets,
+  adminV2ListLogs,
+  adminV2ListRemoteClients,
+  adminV2ListRemoteLoginRequests,
+  adminV2ListVaultGrants,
+  adminV2ListVaultValues,
+  adminV2PutVaultValue,
+  adminV2UpdateCatalogCaplets,
+  adminV2UpdateRemoteClient,
+  adminV2UpdateRemoteLoginRequest,
+  completeDashboardLogin,
+  createDashboardMutationIntent,
   isDashboardUnauthorized,
+  logoutDashboardSession,
+  pollDashboardLogin,
+  restoreDashboardSession,
+  revealVaultValue,
   setDashboardSession,
+  startDashboardLogin,
+  type DashboardLoginPending,
   type DashboardSession,
 } from "@/lib/api";
 import { EPHEMERAL_REVEAL_TTL_MS, createEphemeralRevealExpiry } from "@/lib/ephemeral-reveal";
@@ -99,14 +128,11 @@ import { StoredCapletsPage } from "@/components/StoredCapletsPage";
 const REVEAL_DURATION_SECONDS = EPHEMERAL_REVEAL_TTL_MS / 1_000;
 const ACTION_DISCARDED = Symbol("dashboard-action-discarded");
 
-type CatalogMutationStatus = "installed" | "restored" | "updated" | "content_updated" | "noop";
+function catalogInstalledEntries(result: unknown): unknown[] {
+  if (!result || typeof result !== "object" || !("installed" in result)) return [];
+  return Array.isArray(result.installed) ? result.installed : [];
+}
 
-type CatalogMutationResult = {
-  installed?: Array<{
-    status?: CatalogMutationStatus;
-    catalogIndexing?: { status?: string; reason?: string };
-  }>;
-};
 type DashboardActionOptions = {
   clientRevocation?: boolean;
 };
@@ -117,7 +143,8 @@ type DashboardAction = (
   options?: DashboardActionOptions,
 ) => Promise<void>;
 export function catalogMutationLabel(result: unknown): string {
-  const status = (result as CatalogMutationResult | undefined)?.installed?.[0]?.status;
+  const first = catalogInstalledEntries(result)[0];
+  const status = first && typeof first === "object" && "status" in first ? first.status : undefined;
   if (status === "content_updated") return "Content updated";
   if (status === "noop") return "Already current";
   if (status === "restored") return "Restored";
@@ -126,11 +153,16 @@ export function catalogMutationLabel(result: unknown): string {
 }
 
 function catalogIndexingUnavailable(result: unknown): boolean {
-  return Boolean(
-    (result as CatalogMutationResult | undefined)?.installed?.some(
-      (entry) => entry.catalogIndexing?.status === "unavailable",
-    ),
-  );
+  return catalogInstalledEntries(result).some((entry) => {
+    if (!entry || typeof entry !== "object" || !("catalogIndexing" in entry)) return false;
+    const indexing = entry.catalogIndexing;
+    return (
+      indexing !== null &&
+      typeof indexing === "object" &&
+      "status" in indexing &&
+      indexing.status === "unavailable"
+    );
+  });
 }
 
 type RouteKey =
@@ -148,6 +180,7 @@ type Summary = {
   host?: { baseUrl?: string; version?: string };
   attention?: Array<{ label: string; severity?: string; kind?: string }>;
   sections?: Record<string, unknown>;
+  error?: string;
 };
 
 type CapletRecord = Record<string, unknown> & {
@@ -163,31 +196,151 @@ type CapletRecord = Record<string, unknown> & {
   projectBindingRequired?: boolean | "true" | "false";
 };
 
+type DashboardPageProgress = {
+  nextCursor?: string;
+  loadingMore?: boolean;
+  paginationError?: string;
+};
+
+type ProjectBindingSnapshot = {
+  state: "connected" | "disconnected";
+  affectedCaplets: string[];
+  actions: Array<{
+    id: string;
+    label: string;
+    enabled: boolean;
+    reason?: string;
+  }>;
+};
+
 type DashboardData = {
   summary?: Summary;
-  caplets?: { caplets?: Array<CapletRecord>; error?: string };
-  clients?: { clients?: Array<Record<string, string>>; error?: string };
-  pending?: { pendingLogins?: Array<Record<string, string>>; error?: string };
+  caplets?: DashboardPageProgress & {
+    caplets?: Array<CapletRecord>;
+    error?: string;
+  };
+  clients?: DashboardPageProgress & {
+    clients?: Array<Record<string, string>>;
+    error?: string;
+  };
+  pending?: DashboardPageProgress & {
+    pendingLogins?: Array<Record<string, string>>;
+    error?: string;
+  };
   vault?: {
     values?: Array<Record<string, string | number>>;
     grants?: Array<Record<string, unknown>>;
+    valuesNextCursor?: string;
+    valuesLoadingMore?: boolean;
+    valuesPaginationError?: string;
+    grantsNextCursor?: string;
+    grantsLoadingMore?: boolean;
+    grantsPaginationError?: string;
     error?: string;
   };
   runtime?: { runtime?: Record<string, string>; daemon?: Record<string, unknown>; error?: string };
   diagnostics?: { status?: string; checks?: Array<Record<string, string>>; error?: string };
   activity?: { entries?: Array<Record<string, unknown>>; error?: string };
   logs?: { entries?: Array<Record<string, unknown>>; error?: string };
-  projectBinding?: {
-    projectBinding?: { state?: string; actions?: Array<Record<string, string | boolean>> };
-    error?: string;
-  };
-  updates?: {
+  projectBinding?: ProjectBindingSnapshot | { error: string };
+  updates?: DashboardPageProgress & {
     ready?: boolean;
     reason?: string;
     updates?: Array<{ id?: string; status?: string; risk?: unknown }>;
     error?: string;
   };
 };
+
+export type DashboardCollectionKey =
+  | "caplets"
+  | "clients"
+  | "pending"
+  | "vaultValues"
+  | "vaultGrants"
+  | "updates";
+
+type DashboardCursorPage<T> = {
+  items: T[];
+  nextCursor?: string;
+};
+
+type DashboardPageStatus = {
+  loadingMore: boolean;
+  paginationError?: string;
+};
+
+function dashboardCursorSets(): Record<DashboardCollectionKey, Set<string>> {
+  return {
+    caplets: new Set(),
+    clients: new Set(),
+    pending: new Set(),
+    vaultValues: new Set(),
+    vaultGrants: new Set(),
+    updates: new Set(),
+  };
+}
+
+export class DashboardPaginationLocks {
+  private readonly owners = new Map<DashboardCollectionKey, symbol>();
+
+  reset(): void {
+    this.owners.clear();
+  }
+
+  tryAcquire(key: DashboardCollectionKey): symbol | undefined {
+    if (this.owners.has(key)) return undefined;
+    const owner = Symbol(key);
+    this.owners.set(key, owner);
+    return owner;
+  }
+
+  release(key: DashboardCollectionKey, owner: symbol | undefined): void {
+    if (owner !== undefined && this.owners.get(key) === owner) {
+      this.owners.delete(key);
+    }
+  }
+}
+
+function dashboardCursor(value: unknown, property = "nextCursor"): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const cursor = Reflect.get(value, property);
+  return typeof cursor === "string" ? cursor : undefined;
+}
+
+function withDashboardPageStatus(
+  data: DashboardData,
+  key: DashboardCollectionKey,
+  status: DashboardPageStatus,
+): DashboardData {
+  switch (key) {
+    case "caplets":
+      return { ...data, caplets: { ...data.caplets, ...status } };
+    case "clients":
+      return { ...data, clients: { ...data.clients, ...status } };
+    case "pending":
+      return { ...data, pending: { ...data.pending, ...status } };
+    case "updates":
+      return { ...data, updates: { ...data.updates, ...status } };
+    case "vaultValues":
+      return {
+        ...data,
+        vault: {
+          ...data.vault,
+          valuesLoadingMore: status.loadingMore,
+          valuesPaginationError: status.paginationError,
+        },
+      };
+    case "vaultGrants":
+      return {
+        ...data,
+        vault: {
+          ...data.vault,
+          grantsLoadingMore: status.loadingMore,
+          grantsPaginationError: status.paginationError,
+        },
+      };
+  }
+}
 
 const routes: Array<{
   key: RouteKey;
@@ -305,6 +458,9 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   const pendingClientRevocationsRef = useRef(0);
   const clientRevocationWaitersRef = useRef(new Set<() => void>());
   const runtimeRestartPendingRef = useRef(false);
+  const paginationGenerationRef = useRef(0);
+  const paginationLocksRef = useRef(new DashboardPaginationLocks());
+  const paginationCursorsRef = useRef(dashboardCursorSets());
 
   const resolveConfirmation = useCallback((confirmed: ConfirmationResult) => {
     const activeConfirmation = confirmationRef.current;
@@ -353,13 +509,16 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
 
   useEffect(() => {
     let cancelled = false;
-    void restoreDashboardSession(0, () => cancelled);
+    void restoreSessionWithRetry(0, () => cancelled);
     return () => {
       cancelled = true;
     };
   }, []);
 
   function endDashboardSession(message = "Authorization required.") {
+    paginationGenerationRef.current += 1;
+    paginationLocksRef.current.reset();
+    paginationCursorsRef.current = dashboardCursorSets();
     setSession(undefined);
     setDashboardSession(undefined);
     setData({});
@@ -369,12 +528,10 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     setDataLoading(false);
   }
 
-  async function restoreDashboardSession(attempt: number, cancelled: () => boolean) {
+  async function restoreSessionWithRetry(attempt: number, cancelled: () => boolean) {
     setLoading(true);
     try {
-      const result = await dashboardApi<{ authenticated: boolean; session: DashboardSession }>(
-        "session",
-      );
+      const result = await restoreDashboardSession();
       if (cancelled()) return;
       setSession(result.session);
       setDashboardSession(result.session);
@@ -388,33 +545,169 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
       }
       setAuthMessage("Reconnecting to the Current Host…");
       window.setTimeout(
-        () => restoreDashboardSession(attempt + 1, cancelled),
+        () => restoreSessionWithRetry(attempt + 1, cancelled),
         Math.min(10_000, 1_000 + attempt * 1_000),
       );
     }
   }
 
   async function refresh(expectedMutationRevision = mutationRevisionRef.current): Promise<boolean> {
+    const paginationGeneration = ++paginationGenerationRef.current;
+    paginationLocksRef.current.reset();
+    paginationCursorsRef.current = dashboardCursorSets();
+    setData((current) => ({
+      ...current,
+      caplets: current.caplets
+        ? {
+            ...current.caplets,
+            nextCursor: undefined,
+            loadingMore: false,
+            paginationError: undefined,
+          }
+        : undefined,
+      clients: current.clients
+        ? {
+            ...current.clients,
+            nextCursor: undefined,
+            loadingMore: false,
+            paginationError: undefined,
+          }
+        : undefined,
+      pending: current.pending
+        ? {
+            ...current.pending,
+            nextCursor: undefined,
+            loadingMore: false,
+            paginationError: undefined,
+          }
+        : undefined,
+      vault: current.vault
+        ? {
+            ...current.vault,
+            valuesNextCursor: undefined,
+            valuesLoadingMore: false,
+            valuesPaginationError: undefined,
+            grantsNextCursor: undefined,
+            grantsLoadingMore: false,
+            grantsPaginationError: undefined,
+          }
+        : undefined,
+      updates: current.updates
+        ? {
+            ...current.updates,
+            nextCursor: undefined,
+            loadingMore: false,
+            paginationError: undefined,
+          }
+        : undefined,
+    }));
     setDataLoading(true);
     try {
-      const loaded = await Promise.all([
-        load("summary", "summary"),
-        load("caplets", "caplets"),
-        load("clients", "access/clients"),
-        load("pending", "access/pending-logins"),
-        load("vault", "vault"),
-        load("runtime", "runtime"),
-        load("diagnostics", "diagnostics"),
-        load("activity", "activity?limit=50"),
-        load("logs", "logs?limit=100"),
-        load("projectBinding", "project-binding"),
-        load("updates", "catalog/updates"),
+      const [
+        summary,
+        caplets,
+        clients,
+        pending,
+        vault,
+        runtime,
+        diagnostics,
+        activity,
+        logs,
+        projectBinding,
+        updates,
+      ] = await Promise.all([
+        load(adminV2GetHost()),
+        load(
+          adminV2ListEffectiveCaplets({}).then((page) => ({
+            caplets: page.items,
+            nextCursor: page.nextCursor,
+          })),
+        ),
+        load(
+          adminV2ListRemoteClients({}).then((page) => ({
+            clients: page.items.map(({ clientId, clientLabel, role }) => ({
+              clientId,
+              clientLabel,
+              role,
+            })),
+            nextCursor: page.nextCursor,
+          })),
+        ),
+        load(
+          adminV2ListRemoteLoginRequests({}).then((page) => ({
+            pendingLogins: page.items.map(({ flowId, clientLabel, requestedRole, status }) => ({
+              flowId,
+              clientLabel,
+              requestedRole,
+              status,
+            })),
+            nextCursor: page.nextCursor,
+          })),
+        ),
+        load(
+          Promise.all([adminV2ListVaultValues({}), adminV2ListVaultGrants({})]).then(
+            ([values, grants]) => ({
+              values: values.items.map(({ key, generation, valueBytes, createdAt, updatedAt }) => ({
+                key,
+                generation,
+                valueBytes,
+                createdAt,
+                updatedAt,
+              })),
+              valuesNextCursor: values.nextCursor,
+              grants: grants.items.map((grant) => ({ ...grant })),
+              grantsNextCursor: grants.nextCursor,
+            }),
+          ),
+        ),
+        load(
+          adminV2GetRuntime().then(({ runtime, daemon }) => ({
+            runtime: { ...runtime, publicOrigin: runtime.publicOrigin ?? "" },
+            daemon,
+          })),
+        ),
+        load(adminV2GetDiagnostics()),
+        load(adminV2ListActivity({ limit: 50 }).then((page) => ({ entries: page.items }))),
+        load(adminV2ListLogs({ limit: 100 }).then((page) => ({ entries: page.items }))),
+        load(adminV2GetProjectBinding()),
+        load(
+          adminV2ListCatalogUpdateCandidates({}).then((page) => ({
+            ready: true,
+            updates: page.items,
+            nextCursor: page.nextCursor,
+          })),
+        ),
       ]);
       await waitForClientRevocationBarrier();
-      if (expectedMutationRevision !== mutationRevisionRef.current) return false;
-      setData(
-        Object.fromEntries(loaded.map((entry) => [entry.name, entry.value])) as DashboardData,
-      );
+      if (
+        paginationGeneration !== paginationGenerationRef.current ||
+        expectedMutationRevision !== mutationRevisionRef.current
+      )
+        return false;
+      const cursors = dashboardCursorSets();
+      const seed = (key: DashboardCollectionKey, cursor: string | undefined) => {
+        if (cursor !== undefined) cursors[key].add(cursor);
+      };
+      seed("caplets", dashboardCursor(caplets));
+      seed("clients", dashboardCursor(clients));
+      seed("pending", dashboardCursor(pending));
+      seed("vaultValues", dashboardCursor(vault, "valuesNextCursor"));
+      seed("vaultGrants", dashboardCursor(vault, "grantsNextCursor"));
+      seed("updates", dashboardCursor(updates));
+      paginationCursorsRef.current = cursors;
+      setData({
+        summary,
+        caplets,
+        clients,
+        pending,
+        vault,
+        runtime,
+        diagnostics,
+        activity,
+        logs,
+        projectBinding,
+        updates,
+      });
       return true;
     } catch (error) {
       if (isDashboardUnauthorized(error)) {
@@ -423,31 +716,215 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
       }
       throw error;
     } finally {
-      setDataLoading(false);
+      if (paginationGeneration === paginationGenerationRef.current) setDataLoading(false);
     }
   }
 
-  async function load(name: string, path: string) {
+  async function load<T>(request: Promise<T>): Promise<T | { error: string }> {
     try {
-      return { name, value: await dashboardApi(path) };
+      return await request;
     } catch (error) {
       if (isDashboardUnauthorized(error)) throw error;
-      return { name, value: { error: error instanceof Error ? error.message : String(error) } };
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async function loadMoreDashboardPage<T>(
+    key: DashboardCollectionKey,
+    label: string,
+    cursor: string | undefined,
+    request: (cursor: string) => Promise<DashboardCursorPage<T>>,
+    append: (data: DashboardData, page: DashboardCursorPage<T>) => DashboardData,
+  ): Promise<void> {
+    if (!cursor) return;
+    const lockOwner = paginationLocksRef.current.tryAcquire(key);
+    if (lockOwner === undefined) return;
+    const generation = paginationGenerationRef.current;
+    setData((current) =>
+      withDashboardPageStatus(current, key, {
+        loadingMore: true,
+        paginationError: undefined,
+      }),
+    );
+    try {
+      const page = await request(cursor);
+      if (generation !== paginationGenerationRef.current) return;
+      if (page.nextCursor !== undefined && paginationCursorsRef.current[key].has(page.nextCursor)) {
+        throw new Error(`${label} pagination returned a repeated cursor.`);
+      }
+      if (page.nextCursor !== undefined) {
+        paginationCursorsRef.current[key].add(page.nextCursor);
+      }
+      setData((current) => append(current, page));
+    } catch (error) {
+      if (generation !== paginationGenerationRef.current) return;
+      if (isDashboardUnauthorized(error)) {
+        endDashboardSession();
+        return;
+      }
+      setData((current) =>
+        withDashboardPageStatus(current, key, {
+          loadingMore: false,
+          paginationError: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      paginationLocksRef.current.release(key, lockOwner);
+    }
+  }
+
+  function loadMoreDashboardCollection(key: DashboardCollectionKey): Promise<void> {
+    switch (key) {
+      case "caplets":
+        return loadMoreDashboardPage(
+          key,
+          "Effective Caplets",
+          data.caplets?.nextCursor,
+          (cursor) =>
+            adminV2ListEffectiveCaplets({ cursor }).then((page) => ({
+              items: page.items,
+              nextCursor: page.nextCursor,
+            })),
+          (current, page) => ({
+            ...current,
+            caplets: {
+              ...current.caplets,
+              caplets: [...(current.caplets?.caplets ?? []), ...page.items],
+              nextCursor: page.nextCursor,
+              loadingMore: false,
+              paginationError: undefined,
+            },
+          }),
+        );
+      case "clients":
+        return loadMoreDashboardPage(
+          key,
+          "Remote clients",
+          data.clients?.nextCursor,
+          (cursor) =>
+            adminV2ListRemoteClients({ cursor }).then((page) => ({
+              items: page.items.map(({ clientId, clientLabel, role }) => ({
+                clientId,
+                clientLabel,
+                role,
+              })),
+              nextCursor: page.nextCursor,
+            })),
+          (current, page) => ({
+            ...current,
+            clients: {
+              ...current.clients,
+              clients: [...(current.clients?.clients ?? []), ...page.items],
+              nextCursor: page.nextCursor,
+              loadingMore: false,
+              paginationError: undefined,
+            },
+          }),
+        );
+      case "pending":
+        return loadMoreDashboardPage(
+          key,
+          "Remote login requests",
+          data.pending?.nextCursor,
+          (cursor) =>
+            adminV2ListRemoteLoginRequests({ cursor }).then((page) => ({
+              items: page.items.map(({ flowId, clientLabel, requestedRole, status }) => ({
+                flowId,
+                clientLabel,
+                requestedRole,
+                status,
+              })),
+              nextCursor: page.nextCursor,
+            })),
+          (current, page) => ({
+            ...current,
+            pending: {
+              ...current.pending,
+              pendingLogins: [...(current.pending?.pendingLogins ?? []), ...page.items],
+              nextCursor: page.nextCursor,
+              loadingMore: false,
+              paginationError: undefined,
+            },
+          }),
+        );
+      case "vaultValues":
+        return loadMoreDashboardPage(
+          key,
+          "Vault values",
+          data.vault?.valuesNextCursor,
+          (cursor) =>
+            adminV2ListVaultValues({ cursor }).then((page) => ({
+              items: page.items.map(
+                ({ key: storedKey, generation, valueBytes, createdAt, updatedAt }) => ({
+                  key: storedKey,
+                  generation,
+                  valueBytes,
+                  createdAt,
+                  updatedAt,
+                }),
+              ),
+              nextCursor: page.nextCursor,
+            })),
+          (current, page) => ({
+            ...current,
+            vault: {
+              ...current.vault,
+              values: [...(current.vault?.values ?? []), ...page.items],
+              valuesNextCursor: page.nextCursor,
+              valuesLoadingMore: false,
+              valuesPaginationError: undefined,
+            },
+          }),
+        );
+      case "vaultGrants":
+        return loadMoreDashboardPage(
+          key,
+          "Vault grants",
+          data.vault?.grantsNextCursor,
+          (cursor) =>
+            adminV2ListVaultGrants({ cursor }).then((page) => ({
+              items: page.items.map((grant) => ({ ...grant })),
+              nextCursor: page.nextCursor,
+            })),
+          (current, page) => ({
+            ...current,
+            vault: {
+              ...current.vault,
+              grants: [...(current.vault?.grants ?? []), ...page.items],
+              grantsNextCursor: page.nextCursor,
+              grantsLoadingMore: false,
+              grantsPaginationError: undefined,
+            },
+          }),
+        );
+      case "updates":
+        return loadMoreDashboardPage(
+          key,
+          "Catalog update candidates",
+          data.updates?.nextCursor,
+          (cursor) =>
+            adminV2ListCatalogUpdateCandidates({ cursor }).then((page) => ({
+              items: page.items,
+              nextCursor: page.nextCursor,
+            })),
+          (current, page) => ({
+            ...current,
+            updates: {
+              ...current.updates,
+              updates: [...(current.updates?.updates ?? []), ...page.items],
+              nextCursor: page.nextCursor,
+              loadingMore: false,
+              paginationError: undefined,
+            },
+          }),
+        );
     }
   }
 
   async function startAuthorization() {
     setLoading(true);
     try {
-      const pending = await dashboardApi<{
-        flowId: string;
-        pendingCompletionSecret: string;
-        intervalSeconds: number;
-        approvalCommand: string;
-      }>("login/start", {
-        method: "POST",
-        body: JSON.stringify({ clientLabel: "Browser Dashboard" }),
-      });
+      const pending = await startDashboardLogin("Browser Dashboard");
       setAuthCommand(pending.approvalCommand);
       setAuthMessage(
         "Run this command on the Current Host. This page will finish automatically after approval.",
@@ -462,19 +939,11 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     }
   }
 
-  async function pollAuthorization(pending: {
-    flowId: string;
-    pendingCompletionSecret: string;
-    intervalSeconds: number;
-  }) {
+  async function pollAuthorization(
+    pending: Pick<DashboardLoginPending, "flowId" | "pendingCompletionSecret" | "intervalSeconds">,
+  ) {
     try {
-      const result = await dashboardApi<{ status: string }>("login/poll", {
-        method: "POST",
-        body: JSON.stringify({
-          flowId: pending.flowId,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
-      });
+      const result = await pollDashboardLogin(pending.flowId, pending.pendingCompletionSecret);
       if (result.status !== "approved") {
         if (result.status === "denied" || result.status === "expired") {
           setAuthCommand("");
@@ -488,13 +957,10 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         );
         return;
       }
-      const completed = await dashboardApi<{ session: DashboardSession }>("login/complete", {
-        method: "POST",
-        body: JSON.stringify({
-          flowId: pending.flowId,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
-      });
+      const completed = await completeDashboardLogin(
+        pending.flowId,
+        pending.pendingCompletionSecret,
+      );
       setSession(completed.session);
       setDashboardSession(completed.session);
       const refreshed = await refresh();
@@ -548,9 +1014,8 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
         }))
       )
         return;
-      await action("Restart requested", () =>
-        dashboardApi("runtime/restart", { method: "POST", body: "{}" }),
-      );
+      const intent = createDashboardMutationIntent();
+      await action("Restart requested", () => adminV2CreateRuntimeRestart(intent));
     } finally {
       runtimeRestartPendingRef.current = false;
       setRuntimeRestartPending(false);
@@ -559,7 +1024,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
 
   async function logout() {
     try {
-      await dashboardApi("logout", { method: "POST", body: "{}" });
+      await logoutDashboardSession();
       endDashboardSession();
       toast.success("Logged out");
     } catch (error) {
@@ -741,6 +1206,7 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
                     data={data}
                     loading={dataLoading}
                     action={action}
+                    loadMore={loadMoreDashboardCollection}
                     runtimeRestartPending={runtimeRestartPending}
                     requestRuntimeRestart={requestRuntimeRestart}
                     session={session}
@@ -859,6 +1325,7 @@ function Page({
   data,
   loading,
   action,
+  loadMore,
   session,
   runtimeRestartPending,
   requestRuntimeRestart,
@@ -868,12 +1335,15 @@ function Page({
   loading: boolean;
   session: DashboardSession;
   action: DashboardAction;
+  loadMore: (key: DashboardCollectionKey) => Promise<void>;
   runtimeRestartPending: boolean;
   requestRuntimeRestart: () => Promise<void>;
 }) {
   const { confirmAction, confirmDestructive, confirmTyped } = useActionConfirm();
-  if (route === "access") return <AccessPage data={data} loading={loading} action={action} />;
-  if (route === "caplets") return <CapletsPage data={data} loading={loading} action={action} />;
+  if (route === "access")
+    return <AccessPage data={data} loading={loading} action={action} onLoadMore={loadMore} />;
+  if (route === "caplets")
+    return <CapletsPage data={data} loading={loading} action={action} onLoadMore={loadMore} />;
   if (route === "stored-caplets")
     return (
       <StoredCapletsPage
@@ -885,7 +1355,8 @@ function Page({
     );
   if (route === "catalog")
     return <CatalogPage data={data} action={action} confirmTyped={confirmTyped} />;
-  if (route === "vault") return <VaultPage data={data} loading={loading} action={action} />;
+  if (route === "vault")
+    return <VaultPage data={data} loading={loading} action={action} onLoadMore={loadMore} />;
   if (route === "runtime")
     return (
       <RuntimePage
@@ -1021,7 +1492,11 @@ function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean
   const pendingCount = data.pending?.pendingLogins?.length ?? 0;
   const updateSummary = catalogUpdateSummary(data.updates?.updates ?? []);
   const runtimeStatus = data.runtime?.runtime?.status ?? data.diagnostics?.status ?? "unknown";
-  const projectBindingState = data.projectBinding?.projectBinding?.state ?? "not configured";
+  const projectBindingState =
+    data.projectBinding && "state" in data.projectBinding
+      ? data.projectBinding.state
+      : "not configured";
+  const projectBindingConnected = projectBindingState === "connected";
   const vaultGrantCount = data.vault?.grants?.length ?? 0;
   const inventoryCount = (data.caplets?.caplets ?? []).length;
   const attentionItems = [
@@ -1045,7 +1520,7 @@ function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean
           },
         ]
       : []),
-    ...((projectBindingState !== "bound" && projectBindingState !== "ready"
+    ...((!projectBindingConnected
       ? [
           {
             label: `Project Binding ${projectBindingState}`,
@@ -1136,7 +1611,7 @@ function OverviewPage({ data, loading }: { data: DashboardData; loading: boolean
           detail="Check whether local project context is attached."
           href={routeHref("runtime")}
           actionLabel="Inspect binding"
-          severity={projectBindingState === "bound" ? "ok" : "info"}
+          severity={projectBindingConnected ? "ok" : "info"}
         />
         <TriageCard
           title="Runtime health"
@@ -1225,10 +1700,12 @@ function AccessPage({
   data,
   loading,
   action,
+  onLoadMore,
 }: {
   data: DashboardData;
   loading: boolean;
   action: DashboardAction;
+  onLoadMore: (key: DashboardCollectionKey) => Promise<void>;
 }) {
   const { confirmAction, confirmTyped } = useActionConfirm();
   const pending = data.pending?.pendingLogins ?? [];
@@ -1276,12 +1753,16 @@ function AccessPage({
                           ))
                         )
                           return;
-                        await action("Approved operator login", () =>
-                          dashboardApi(`access/pending-logins/${login.flowId}/approve`, {
-                            method: "POST",
-                            body: JSON.stringify({ grantedRole: "operator" }),
-                          }),
-                        );
+                        const intent = createDashboardMutationIntent();
+                        await action("Approved operator login", async () => {
+                          const detail = await adminV2GetRemoteLoginRequest(login.flowId);
+                          return adminV2UpdateRemoteLoginRequest(
+                            login.flowId,
+                            { action: "approve", grantedRole: "operator" },
+                            detail.etag,
+                            intent,
+                          );
+                        });
                       }}
                     >
                       Approve operator
@@ -1298,12 +1779,16 @@ function AccessPage({
                           ))
                         )
                           return;
-                        await action("Approved access login", () =>
-                          dashboardApi(`access/pending-logins/${login.flowId}/approve`, {
-                            method: "POST",
-                            body: JSON.stringify({ grantedRole: "access" }),
-                          }),
-                        );
+                        const intent = createDashboardMutationIntent();
+                        await action("Approved access login", async () => {
+                          const detail = await adminV2GetRemoteLoginRequest(login.flowId);
+                          return adminV2UpdateRemoteLoginRequest(
+                            login.flowId,
+                            { action: "approve", grantedRole: "access" },
+                            detail.etag,
+                            intent,
+                          );
+                        });
                       }}
                     >
                       Approve access
@@ -1320,12 +1805,16 @@ function AccessPage({
                           ))
                         )
                           return;
-                        await action("Denied login", () =>
-                          dashboardApi(`access/pending-logins/${login.flowId}/deny`, {
-                            method: "POST",
-                            body: "{}",
-                          }),
-                        );
+                        const intent = createDashboardMutationIntent();
+                        await action("Denied login", async () => {
+                          const detail = await adminV2GetRemoteLoginRequest(login.flowId);
+                          return adminV2UpdateRemoteLoginRequest(
+                            login.flowId,
+                            { action: "deny" },
+                            detail.etag,
+                            intent,
+                          );
+                        });
                       }}
                     >
                       Deny
@@ -1337,6 +1826,12 @@ function AccessPage({
           ) : (
             <EmptyLine text="No pending logins. New requests will appear here so you can approve as Operator, grant Access-only credentials, or deny unknown clients." />
           )}
+          <DashboardCollectionFooter
+            count={pending.length}
+            label="pending logins"
+            progress={data.pending?.error ? undefined : data.pending}
+            onLoadMore={() => void onLoadMore("pending")}
+          />
         </CardContent>
       </Card>
       <Card>
@@ -1400,6 +1895,12 @@ function AccessPage({
               <EmptyLine text="No approved clients yet. Approve a pending login above to create the first remote client." />
             )}
           </div>
+          <DashboardCollectionFooter
+            count={clients.length}
+            label="clients"
+            progress={data.clients?.error ? undefined : data.clients}
+            onLoadMore={() => void onLoadMore("clients")}
+          />
         </CardContent>
       </Card>
     </PageFrame>
@@ -1457,12 +1958,16 @@ function ClientActions({
         onClick={async () => {
           if (!(await confirmAction("Change client role?", `${label} will become ${nextRole}.`)))
             return;
-          await action("Role changed", () =>
-            dashboardApi(`access/clients/${client.clientId}/role`, {
-              method: "POST",
-              body: JSON.stringify({ role: nextRole }),
-            }),
-          );
+          const intent = createDashboardMutationIntent();
+          await action("Role changed", async () => {
+            const detail = await adminV2GetRemoteClient(client.clientId);
+            return adminV2UpdateRemoteClient(
+              client.clientId,
+              { role: nextRole },
+              detail.etag,
+              intent,
+            );
+          });
         }}
       >
         Change to {nextRole}
@@ -1480,13 +1985,13 @@ function ClientActions({
             ))
           )
             return;
+          const intent = createDashboardMutationIntent();
           await action(
             "Client revoked",
-            () =>
-              dashboardApi(`access/clients/${client.clientId}/revoke`, {
-                method: "POST",
-                body: "{}",
-              }),
+            async () => {
+              const detail = await adminV2GetRemoteClient(client.clientId);
+              return adminV2DeleteRemoteClient(client.clientId, detail.etag, intent);
+            },
             { clientRevocation: true },
           );
         }}
@@ -1501,10 +2006,12 @@ function CapletsPage({
   data,
   loading,
   action,
+  onLoadMore,
 }: {
   data: DashboardData;
   loading: boolean;
   action: DashboardAction;
+  onLoadMore: (key: DashboardCollectionKey) => Promise<void>;
 }) {
   const { confirmTyped } = useActionConfirm();
   const caplets = data.caplets?.caplets ?? [];
@@ -1541,14 +2048,15 @@ function CapletsPage({
                               ))
                             )
                               return;
+                            const intent = createDashboardMutationIntent();
                             await action(catalogMutationLabel, () =>
-                              dashboardApi<CatalogMutationResult>("catalog/update", {
-                                method: "POST",
-                                body: JSON.stringify({
-                                  capletId,
+                              adminV2UpdateCatalogCaplets(
+                                {
+                                  capletIds: [capletId],
                                   acknowledgeRiskIncrease: true,
-                                }),
-                              }),
+                                },
+                                intent,
+                              ),
                             );
                           }}
                         >
@@ -1570,6 +2078,18 @@ function CapletsPage({
               <EmptyLine text="No Caplets are installed." />
             )}
           </div>
+          <DashboardCollectionFooter
+            count={caplets.length}
+            label="effective Caplets"
+            progress={data.caplets?.error ? undefined : data.caplets}
+            onLoadMore={() => void onLoadMore("caplets")}
+          />
+          <DashboardCollectionFooter
+            count={data.updates?.updates?.length ?? 0}
+            label="update candidates"
+            progress={data.updates?.error ? undefined : data.updates}
+            onLoadMore={() => void onLoadMore("updates")}
+          />
         </CardContent>
       </Card>
     </PageFrame>
@@ -1715,16 +2235,19 @@ function VaultPage({
   data,
   loading,
   action,
+  onLoadMore,
 }: {
   data: DashboardData;
   loading: boolean;
   action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
+  onLoadMore: (key: DashboardCollectionKey) => Promise<void>;
 }) {
   const confirm = useConfirm();
   const dismissConfirmation = useDismissConfirmation();
   const { confirmTyped } = useActionConfirm();
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
+  const grants = data.vault?.grants ?? [];
   const [revealed, setRevealed] = useState<{ key: string; value: string; expiresAt: number }>();
   const [now, setNow] = useState(Date.now());
   const values = data.vault?.values ?? [];
@@ -1762,12 +2285,11 @@ function VaultPage({
       ))
     )
       return;
-    await action(replacing ? "Vault value replaced" : "Vault value saved", () =>
-      dashboardApi("vault/values", {
-        method: "POST",
-        body: JSON.stringify({ key, value, force: replacing }),
-      }),
-    );
+    const intent = createDashboardMutationIntent();
+    await action(replacing ? "Vault value replaced" : "Vault value saved", async () => {
+      const etag = replacing ? (await adminV2GetVaultValue(key)).etag : "*";
+      return adminV2PutVaultValue(key, { value }, etag, intent);
+    });
   }
   if (loading && !data.vault) return <DashboardLoadingState title="Vault" />;
   return (
@@ -1876,13 +2398,7 @@ function VaultPage({
                           await action("Vault value revealed", async () => {
                             let revealed: { value: string };
                             try {
-                              revealed = await dashboardApi<{ value: string }>("vault/reveal", {
-                                method: "POST",
-                                body: JSON.stringify({
-                                  key: entry.key,
-                                  confirmation,
-                                }),
-                              });
+                              revealed = await revealVaultValue(rawKey, confirmation);
                             } catch (error) {
                               if (
                                 !isMounted.current ||
@@ -1923,12 +2439,11 @@ function VaultPage({
                             ))
                           )
                             return;
-                          await action("Vault value deleted", () =>
-                            dashboardApi(`vault/values/${entry.key}/delete`, {
-                              method: "POST",
-                              body: "{}",
-                            }),
-                          );
+                          const intent = createDashboardMutationIntent();
+                          await action("Vault value deleted", async () => {
+                            const detail = await adminV2GetVaultValue(rawKey);
+                            return adminV2DeleteVaultValue(rawKey, detail.etag, intent);
+                          });
                         }}
                       >
                         <Trash2Icon />
@@ -1941,6 +2456,70 @@ function VaultPage({
           ) : (
             <EmptyLine text="No Vault values." />
           )}
+          <DashboardCollectionFooter
+            count={values.length}
+            label="Vault values"
+            progress={
+              data.vault?.error
+                ? undefined
+                : {
+                    nextCursor: data.vault?.valuesNextCursor,
+                    loadingMore: data.vault?.valuesLoadingMore,
+                    paginationError: data.vault?.valuesPaginationError,
+                  }
+            }
+            onLoadMore={() => void onLoadMore("vaultValues")}
+          />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <h2 className="text-base font-medium leading-snug">Access grants</h2>
+          <CardDescription>
+            Caplet references that can resolve stored Vault values without revealing their contents.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {grants.length ? (
+            grants.map((grant, index) => {
+              const storedKey = String(grant.storedKey ?? "Unknown value");
+              const capletId = String(grant.capletId ?? "Unknown Caplet");
+              const referenceName = String(grant.referenceName ?? storedKey);
+              const origin =
+                grant.origin && typeof grant.origin === "object"
+                  ? String(Reflect.get(grant.origin, "kind") ?? "unknown origin")
+                  : "unknown origin";
+              const storedValue = vaultKeyPresentation(storedKey);
+              return (
+                <Row
+                  key={`${capletId}:${referenceName}:${storedKey}:${index}`}
+                  title={
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span>{capletId}</span>
+                      <Badge variant="outline">{origin}</Badge>
+                    </div>
+                  }
+                  detail={`${referenceName} resolves ${storedValue.label}`}
+                />
+              );
+            })
+          ) : (
+            <EmptyLine text="No Vault access grants." />
+          )}
+          <DashboardCollectionFooter
+            count={grants.length}
+            label="Vault grants"
+            progress={
+              data.vault?.error
+                ? undefined
+                : {
+                    nextCursor: data.vault?.grantsNextCursor,
+                    loadingMore: data.vault?.grantsLoadingMore,
+                    paginationError: data.vault?.grantsPaginationError,
+                  }
+            }
+            onLoadMore={() => void onLoadMore("vaultGrants")}
+          />
         </CardContent>
       </Card>
     </PageFrame>
@@ -2422,6 +3001,47 @@ function DashboardLoadingState({ title }: { title: string }) {
         </CardContent>
       </Card>
     </PageFrame>
+  );
+}
+
+function DashboardCollectionFooter({
+  count,
+  label,
+  progress,
+  onLoadMore,
+}: {
+  count: number;
+  label: string;
+  progress?: DashboardPageProgress;
+  onLoadMore: () => void;
+}) {
+  if (!progress) return null;
+  return (
+    <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="text-sm text-muted-foreground" aria-live="polite">
+        {count} {label} loaded
+        {progress.paginationError ? (
+          <p className="mt-1 text-destructive" role="alert">
+            {progress.paginationError}
+          </p>
+        ) : null}
+      </div>
+      {progress.nextCursor || progress.paginationError ? (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={progress.loadingMore}
+          aria-busy={progress.loadingMore}
+          onClick={onLoadMore}
+        >
+          <RefreshCwIcon
+            data-icon="inline-start"
+            className={progress.loadingMore ? "animate-spin motion-reduce:animate-none" : undefined}
+          />
+          Load more {label}
+        </Button>
+      ) : null}
+    </div>
   );
 }
 

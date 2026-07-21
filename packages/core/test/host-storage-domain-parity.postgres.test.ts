@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterEach, expect, it, vi } from "vitest";
 import type { StoredOAuthTokenBundle } from "../src/auth/store";
@@ -137,7 +138,7 @@ postgresIt(
 
     await expect(
       first.vaultValues.set("API_TOKEN", plaintext, {
-        expectedGeneration: 0,
+        createOnly: true,
         operatorClientId: operator.clientId,
       }),
     ).resolves.toMatchObject({ key: "API_TOKEN", present: true, generation: 1 });
@@ -184,8 +185,8 @@ postgresIt(
       await pool.end();
     }
 
-    await first.vaultValues.set("GRANT_A", "grant-secret-a", { expectedGeneration: 0 });
-    await first.vaultValues.set("GRANT_B", "grant-secret-b", { expectedGeneration: 0 });
+    await first.vaultValues.set("GRANT_A", "grant-secret-a", { createOnly: true });
+    await first.vaultValues.set("GRANT_B", "grant-secret-b", { createOnly: true });
     const originPath = "/project/.caplets/shared.md";
     await first.vaultGrants.grant({
       capletId: "shared",
@@ -261,11 +262,13 @@ postgresIt(
   async () => {
     process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 31).toString("base64url");
     const { first, second } = await openPair("vault_state_atomic");
+    if (first.database.dialect !== "postgres") throw new Error("Expected PostgreSQL storage");
+    const firstDatabase = first.database.db;
     const firstState = new VaultStateStore(first.database);
     const secondState = new VaultStateStore(second.database);
 
     await first.vaultValues.set("ATOMIC_SECRET", "original-postgres-secret", {
-      expectedGeneration: 0,
+      createOnly: true,
     });
     await expect(
       firstState.setValueAndGrant({
@@ -280,6 +283,7 @@ postgresIt(
           operator,
         },
         operatorClientId: operator.clientId,
+        expectedGeneration: 1,
       }),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
 
@@ -292,11 +296,106 @@ postgresIt(
     });
     await expect(second.vaultGrants.list()).resolves.toEqual([]);
     await expect(second.operatorActivity.list()).resolves.toEqual({ entries: [] });
+    await expect(second.coordination.currentConfigGeneration()).resolves.toBe(0);
+
+    await firstDatabase.execute(
+      sql.raw(`
+        create function fail_vault_intent_activity() returns trigger
+        language plpgsql as $$
+        begin
+          raise exception 'injected PostgreSQL Vault activity failure';
+        end
+        $$
+      `),
+    );
+    await firstDatabase.execute(
+      sql.raw(`
+        create trigger fail_vault_intent_activity
+        before insert on operator_activity
+        for each row when (new.action = 'vault.set')
+        execute function fail_vault_intent_activity()
+      `),
+    );
+    await expect(
+      firstState.setValueAndGrant({
+        key: "ATOMIC_SECRET",
+        value: "activity-failure-postgres-secret",
+        force: true,
+        expectedGeneration: 1,
+        grant: {
+          capletId: "postgres-activity-failure-caplet",
+          vaultKey: "ATOMIC_SECRET",
+          referenceName: "TOKEN",
+          originKind: "project-file",
+          originPath: "/project/.caplets/postgres-activity-failure-caplet.md",
+          operator,
+        },
+        operatorClientId: operator.clientId,
+      }),
+    ).rejects.toThrow();
+    await firstDatabase.execute(
+      sql.raw("drop trigger fail_vault_intent_activity on operator_activity"),
+    );
+    await firstDatabase.execute(sql.raw("drop function fail_vault_intent_activity()"));
+
+    await expect(second.vaultValues.resolveValue("ATOMIC_SECRET")).resolves.toBe(
+      "original-postgres-secret",
+    );
+    await expect(second.vaultGrants.list()).resolves.toEqual([]);
+    await expect(second.operatorActivity.list()).resolves.toEqual({ entries: [] });
+    await expect(second.coordination.currentConfigGeneration()).resolves.toBe(0);
+
+    await firstDatabase.execute(
+      sql.raw(`
+        create function fail_vault_config_publication() returns trigger
+        language plpgsql as $$
+        begin
+          raise exception 'injected PostgreSQL config publication failure';
+        end
+        $$
+      `),
+    );
+    await firstDatabase.execute(
+      sql.raw(`
+        create trigger fail_vault_config_publication
+        before insert on host_config_generations
+        for each row execute function fail_vault_config_publication()
+      `),
+    );
+    await expect(
+      firstState.setValueAndGrant({
+        key: "ATOMIC_SECRET",
+        value: "publication-failure-postgres-secret",
+        force: true,
+        expectedGeneration: 1,
+        grant: {
+          capletId: "postgres-publication-failure-caplet",
+          vaultKey: "ATOMIC_SECRET",
+          referenceName: "TOKEN",
+          originKind: "project-file",
+          originPath: "/project/.caplets/postgres-publication-failure-caplet.md",
+          operator,
+        },
+        operatorClientId: operator.clientId,
+      }),
+    ).rejects.toThrow();
+    await firstDatabase.execute(
+      sql.raw("drop trigger fail_vault_config_publication on host_config_generations"),
+    );
+    await firstDatabase.execute(sql.raw("drop function fail_vault_config_publication()"));
+
+    await expect(second.vaultValues.resolveValue("ATOMIC_SECRET")).resolves.toBe(
+      "original-postgres-secret",
+    );
+    await expect(second.vaultGrants.list()).resolves.toEqual([]);
+    await expect(second.operatorActivity.list()).resolves.toEqual({ entries: [] });
+    await expect(second.coordination.currentConfigGeneration()).resolves.toBe(0);
 
     const committed = await secondState.setValueAndGrant({
       key: "ATOMIC_SECRET",
       value: "committed-postgres-secret",
       force: true,
+      expectedGeneration: 1,
       grant: {
         capletId: "postgres-atomic-caplet",
         vaultKey: "ATOMIC_SECRET",
@@ -317,16 +416,66 @@ postgresIt(
         vaultKey: "ATOMIC_SECRET",
         referenceName: "TOKEN",
         createdAt: committed.updatedAt,
+        resourceVersion: expect.any(String),
       }),
     ]);
-    const activity = (await first.operatorActivity.list()).entries;
-    expect(activity.map((entry) => entry.action).sort()).toEqual([
-      "vault.grant",
-      "vault_value_written",
-    ]);
-    expect(new Set(activity.map((entry) => entry.createdAt))).toEqual(
-      new Set([committed.updatedAt]),
+    await expect(first.operatorActivity.list()).resolves.toEqual({
+      entries: [
+        expect.objectContaining({
+          action: "vault.set",
+          createdAt: committed.updatedAt,
+          metadata: expect.objectContaining({ generation: 2, grant: true }),
+        }),
+      ],
+    });
+    await expect(first.coordination.currentConfigGeneration()).resolves.toBe(1);
+  },
+);
+
+postgresIt(
+  "rolls back a PostgreSQL value update when a create-only grant appears before the atomic write",
+  async () => {
+    process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 43).toString("base64url");
+    const { first, second } = await openPair("grant_race");
+    const state = new VaultStateStore(second.database);
+    const grant = {
+      capletId: "postgres-grant-race-caplet",
+      vaultKey: "POSTGRES_GRANT_RACE",
+      referenceName: "TOKEN",
+      originKind: "project-file" as const,
+      originPath: "/project/.caplets/postgres-grant-race-caplet.md",
+      operator,
+    };
+
+    await first.vaultValues.set("POSTGRES_GRANT_RACE", "original-postgres-secret", {
+      createOnly: true,
+    });
+    await first.vaultGrants.grant(grant);
+    const [winner] = await first.vaultGrants.list("postgres-grant-race-caplet");
+    if (!winner) throw new Error("Expected the concurrently created PostgreSQL Vault grant");
+
+    await expect(
+      state.setValueAndGrant({
+        key: "POSTGRES_GRANT_RACE",
+        value: "losing-postgres-secret",
+        force: true,
+        expectedGeneration: 1,
+        grant,
+        grantCreateOnly: true,
+        operatorClientId: operator.clientId,
+      }),
+    ).rejects.toMatchObject({ code: "CONFIG_EXISTS" });
+
+    await expect(second.vaultValues.resolveValue("POSTGRES_GRANT_RACE")).resolves.toBe(
+      "original-postgres-secret",
     );
+    await expect(second.vaultValues.getStatus("POSTGRES_GRANT_RACE")).resolves.toMatchObject({
+      present: true,
+      generation: 1,
+    });
+    await expect(second.vaultGrants.list("postgres-grant-race-caplet")).resolves.toEqual([
+      expect.objectContaining({ resourceVersion: winner.resourceVersion }),
+    ]);
   },
 );
 
@@ -334,17 +483,22 @@ postgresIt("serializes competing atomic Vault writers across PostgreSQL instance
   process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 37).toString("base64url");
   const { first, second } = await openPair("vault_state_race");
   const states = [new VaultStateStore(first.database), new VaultStateStore(second.database)];
+  await first.vaultValues.set("POSTGRES_RACE_SECRET", "original-postgres-race-secret", {
+    createOnly: true,
+  });
   const inputs = [
     {
       key: "POSTGRES_RACE_SECRET",
       value: "first-postgres-race-secret",
       force: false,
+      expectedGeneration: 1,
       grant: {
         capletId: "first-postgres-race-caplet",
         vaultKey: "POSTGRES_RACE_SECRET",
         referenceName: "TOKEN",
         originKind: "project-file" as const,
         originPath: "/project/.caplets/first-postgres-race-caplet.md",
+        createOnly: true,
         operator,
       },
       operatorClientId: operator.clientId,
@@ -353,12 +507,14 @@ postgresIt("serializes competing atomic Vault writers across PostgreSQL instance
       key: "POSTGRES_RACE_SECRET",
       value: "second-postgres-race-secret",
       force: false,
+      expectedGeneration: 1,
       grant: {
         capletId: "second-postgres-race-caplet",
         vaultKey: "POSTGRES_RACE_SECRET",
         referenceName: "TOKEN",
         originKind: "project-file" as const,
         originPath: "/project/.caplets/second-postgres-race-caplet.md",
+        createOnly: true,
         operator,
       },
       operatorClientId: operator.clientId,
@@ -377,13 +533,16 @@ postgresIt("serializes competing atomic Vault writers across PostgreSQL instance
   if (!winner || winner.status !== "fulfilled") {
     throw new Error("Expected a fulfilled PostgreSQL Vault writer result");
   }
-  expect(winner.value.generation).toBe(1);
+  expect(winner.value.generation).toBe(2);
   const loser = results[1 - winnerIndex];
   expect(loser?.status).toBe("rejected");
   if (!loser || loser.status !== "rejected") {
     throw new Error("Expected one rejected PostgreSQL Vault writer");
   }
-  expect(loser.reason).toMatchObject({ code: "CONFIG_EXISTS" });
+  expect(loser.reason).toMatchObject({
+    code: "REQUEST_INVALID",
+    details: { kind: "stale_generation", expectedGeneration: 1, currentGeneration: 2 },
+  });
 
   await expect(first.vaultValues.resolveValue("POSTGRES_RACE_SECRET")).resolves.toBe(
     inputs[winnerIndex]!.value,
@@ -394,11 +553,10 @@ postgresIt("serializes competing atomic Vault writers across PostgreSQL instance
       vaultKey: "POSTGRES_RACE_SECRET",
     }),
   ]);
-  const activity = (await second.operatorActivity.list()).entries;
-  expect(activity.map((entry) => entry.action).sort()).toEqual([
-    "vault.grant",
-    "vault_value_written",
-  ]);
+  await expect(second.operatorActivity.list()).resolves.toEqual({
+    entries: [expect.objectContaining({ action: "vault.set" })],
+  });
+  await expect(second.coordination.currentConfigGeneration()).resolves.toBe(1);
 });
 
 postgresIt(
@@ -545,6 +703,9 @@ postgresIt(
     });
     await expect(second.projectBindings.get(input.bindingId)).resolves.toEqual(created);
     await expect(first.projectBindings.list()).resolves.toEqual([created]);
+    await expect(first.projectBindings.existsActive(new Date(created.createdAt))).resolves.toBe(
+      true,
+    );
 
     const ready = await second.projectBindings.heartbeat({
       bindingId: input.bindingId,
@@ -571,6 +732,7 @@ postgresIt(
       expectedGeneration: ready.generation,
     });
     expect(ended).toMatchObject({ generation: 3, state: "ended", active: false });
+    await expect(first.projectBindings.existsActive(new Date())).resolves.toBe(false);
 
     const expiring = await first.projectBindings.create({
       ...input,

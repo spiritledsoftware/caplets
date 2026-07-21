@@ -11,6 +11,7 @@ import {
   classifyRemoteAuthError,
   type BackendAuthCompletionPersistence,
   completeOAuthFlowState,
+  completeGenericOAuthFlowState,
   genericOAuthHeaders,
   extractCompletion,
   FileOAuthProvider,
@@ -21,6 +22,7 @@ import {
   runGenericOAuthFlow,
   startGenericOAuthFlow,
   startOAuthFlowState,
+  startGenericOAuthFlowState,
 } from "../src/auth";
 import { formatAuthRows, listAuth } from "../src/cli/auth";
 import { runCli } from "../src/cli";
@@ -1112,6 +1114,51 @@ describe("auth helpers", () => {
       expect.objectContaining({ server: "remote", accessToken: "completed-access-token" }),
       expect.objectContaining({ expectedGeneration: 0 }),
     );
+  });
+
+  it("preserves only a bounded OAuth error code from a generic token response", async () => {
+    const target = {
+      server: "users",
+      backend: "http" as const,
+      url: "https://api.example.com",
+      auth: {
+        type: "oauth2" as const,
+        authorizationUrl: "https://auth.example.com/authorize",
+        tokenUrl: "https://auth.example.com/token",
+        clientId: "client",
+      },
+    };
+    const started = await startGenericOAuthFlowState(target, {
+      redirectUri: "http://127.0.0.1/callback",
+      authStore,
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      expiresAt: new Date("2026-07-20T12:10:00.000Z"),
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json(
+        {
+          error: "temporarily_unavailable",
+          error_description: "provider echoed access_token=secret-access-token",
+          refresh_token: "secret-refresh-token",
+        },
+        { status: 400 },
+      ),
+    );
+
+    const completion = completeGenericOAuthFlowState(
+      target,
+      started.state,
+      `http://127.0.0.1/callback?code=provider-code&state=${started.state.stateVerifier}`,
+      { authStore, now: new Date("2026-07-20T12:01:00.000Z") },
+    );
+
+    await expect(completion).rejects.toMatchObject({
+      code: "AUTH_FAILED",
+      errorCode: "temporarily_unavailable",
+      message: "OAuth token request failed",
+      details: { status: 400 },
+    });
+    await expect(completion).rejects.not.toThrow(/secret-access-token|secret-refresh-token/u);
   });
 
   it("does not mix dynamic public client ID with configured client secret", async () => {

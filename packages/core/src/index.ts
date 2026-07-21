@@ -178,18 +178,6 @@ export type {
   RawAttachOptions,
   ResolvedAttachOptions,
 } from "./project-binding/attach";
-export { runProjectBindingSession } from "./project-binding/session";
-export type {
-  ProjectBindingSessionEvent,
-  ProjectBindingSocketClientMessage,
-  ProjectBindingSocketServerMessage,
-  RunProjectBindingSessionInput,
-} from "./project-binding/session";
-export { defaultProjectBindingWebSocketFactory } from "./project-binding/transport";
-export type {
-  ProjectBindingWebSocket,
-  ProjectBindingWebSocketFactory,
-} from "./project-binding/transport";
 export {
   ProjectBindingWorkspaceStore,
   projectBindingWorkspacePaths,

@@ -145,6 +145,14 @@ The Caplets runtime and migration containers run as the image's non-root user wi
 - all Linux capabilities dropped; and
 - `no-new-privileges` enabled.
 
+All three runtime descriptors set `CAPLETS_ADMIN_UPLOAD_STAGING_DIR` to
+`/data/state/caplets/admin-uploads`, inside the writable `caplets-data` volume. The hardened
+runtime must not stage legal Admin bundles in its 64 MiB `/tmp` tmpfs: the default one-upload
+admission quota is 369,283,314 bytes (about 352.2 MiB), covering one 64 MiB `CAPLET.md` document, up
+to 256 MiB of auxiliary files, a bounded manifest, and bounded multipart framing. Operators that use
+a dedicated staging mount must provide at least that capacity and raise
+`CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES` deliberately when increasing upload concurrency.
+
 PostgreSQL retains the official image's required initialization privilege transition and writable paths. Additional PostgreSQL restrictions may be included only when first initialization and restart are verified with a fresh named volume. PostgreSQL receives a 60-second shutdown grace period.
 
 All hardened services use bounded local Docker logs, initially `max-size: 10m` and `max-file: 3`. Operators may replace the log driver. The reference does not set CPU or memory limits because safe values are workload- and host-specific.

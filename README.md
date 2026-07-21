@@ -101,7 +101,10 @@ security, and lose to command flags and environment variables:
   "serve": {
     "host": "127.0.0.1",
     "port": 5387,
-    "publicOrigins": ["https://caplets.example.com"]
+    "publicOrigins": ["https://caplets.example.com"],
+    "adminUploadStagingDir": "/path/on-a-writable-volume/caplets-uploads",
+    "adminUploadMaxConcurrent": 1,
+    "adminUploadMaxStagedBytes": 400000000
   }
 }
 ```
@@ -109,6 +112,17 @@ security, and lose to command flags and environment variables:
 `serve.publicOrigins` are full origins used for public request identity, not host-only
 allowlists. `caplets setup` still prepares a credential-free loopback daemon before
 mutating agent config, even if your user `serve` defaults describe a broader HTTP runtime.
+
+Admin bundle uploads stage verified multipart files before committing them to Authoritative Host
+State. The defaults allow one upload and 369,283,314 bytes (about 352.2 MiB) of aggregate staged
+data, enough for one maximum legal request: one 64 MiB `CAPLET.md` document, up to 256 MiB of
+auxiliary files, a bounded manifest, and bounded multipart framing. The matching flags are
+`--admin-upload-staging-dir`, `--admin-upload-max-concurrent`, and
+`--admin-upload-max-staged-bytes`; environment deployments can use
+`CAPLETS_ADMIN_UPLOAD_STAGING_DIR`, `CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT`, and
+`CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES`. Container deployments should put the staging directory on
+a writable volume with at least 369,283,314 bytes (about 352.2 MiB) available rather than a smaller
+`/tmp` tmpfs. Increase the aggregate quota deliberately if you also raise concurrency.
 
 ## Use Caplets
 
@@ -216,6 +230,46 @@ caplets attach https://caplets.example.com/caplets
 caplets remote login https://cloud.caplets.dev
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
 ```
+
+## Current Host Administration
+
+The dashboard and remote CLI administer the Current Host through the same resource semantics. The
+dashboard mounts them at `/dashboard/api/v2` behind its cookie, session, origin, and CSRF ceremony;
+paired Operator clients use bearer-authenticated `/v2/admin`. Access credentials cannot invoke
+Admin resources, and remote administration uses the selected Remote Profile rather than a separate
+Admin token.
+
+`GET /openapi.json` is the public, cacheable OpenAPI 3.1 contract. The `@caplets/sdk` Fetch client
+is generated from it. V2 success responses are direct resource representations; failures use
+Problem Details, mutable resources use ETags and preconditions, and side-effecting POSTs require
+idempotency keys. Caplet bundles use ordered, manifest-first multipart uploads and streaming
+multipart downloads instead of JSON/base64.
+
+Runtime tools, resources, prompts, and completions continue through Attach. Remote `init` and `add`
+are local-only filesystem operations and are rejected. `/v1/admin` remains available as a frozen,
+deprecated compatibility Adapter for retained commands; it receives no new operations.
+
+## JavaScript and TypeScript SDK
+
+Install `@caplets/sdk` for an isolated, typed public HTTP client in Node.js 22+ or a modern browser.
+Pass the absolute Caplets service root explicitly:
+
+```ts
+import { createClient, getServiceDiscovery } from "@caplets/sdk";
+
+const client = createClient({
+  baseUrl: "https://host.example/caplets",
+  auth: async () => getCurrentAccessToken(),
+});
+
+const result = await getServiceDiscovery({ client });
+if (result.error) handleRequestFailure(result.error);
+else useService(result.data);
+```
+
+The caller owns authentication and endpoint selection. See the
+[SDK guide](https://docs.caplets.dev/sdk/) for generated operation families, streaming Caplet
+Bundles, and browser-safe Project Binding with the separate Node fingerprint helper.
 
 ## Caplets Vault
 

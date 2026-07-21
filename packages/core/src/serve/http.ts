@@ -11,7 +11,6 @@ import {
 import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
 import { WebSocketServer } from "ws";
-import { fingerprintProjectRoot } from "../cloud/project-root";
 import {
   defaultCapletsLockfilePath,
   resolveCapletsRoot,
@@ -25,10 +24,25 @@ import {
   createCurrentHostOperations,
   toCurrentHostSafeError,
   trustedDevelopmentOperatorPrincipal,
+  type CurrentHostLogStateOwner,
   type CurrentHostOperatorPrincipal,
+  type CurrentHostProjectBindingStateOwner,
+  type CurrentHostRuntimeStateOwner,
 } from "../current-host/operations";
+import { AdminBundleUploadAdmissionController } from "../admin-api/bundle-upload-admission";
+import { problemResponse } from "../admin-api/problem";
+import {
+  AdminV2PrincipalError,
+  createAdminV2Router,
+  type AdminV2HostContext,
+  type AdminV2PrincipalProvider,
+} from "../admin-api/router";
+import {
+  ifNoneMatchIncludes,
+  rootOpenApiRepresentation,
+} from "../admin-api/openapi-representation";
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
-import { DashboardActivityLog, type DashboardActivityAction } from "../dashboard/activity-log";
+import { DashboardActivityLog } from "../dashboard/activity-log";
 import { dashboardShell, dashboardStaticResponse } from "../dashboard/routes";
 import { DashboardSessionStore } from "../dashboard/session-store";
 import type { DashboardSessionView } from "../dashboard/types";
@@ -43,13 +57,18 @@ import {
 } from "../attach/api";
 import {
   type BindingTerminalReason,
-  PROJECT_BINDING_STATES,
-  PROJECT_BINDING_SYNC_STATES,
   type ProjectBindingLease,
   type ProjectBindingState,
   type ProjectBindingSyncState,
 } from "../project-binding";
-import type { ProjectBindingSocketClientMessage } from "../project-binding/session";
+import {
+  projectBindingSocketProtocolSchema,
+  projectBindingConnectQuerySchema,
+  projectBindingHeartbeatRequestSchema,
+  projectBindingSessionCreateRequestSchema,
+  projectBindingSocketClientMessageSchema,
+  type ProjectBindingSocketClientMessage,
+} from "../project-binding/protocol";
 import { ProjectBindingWorkspaceStore } from "../project-binding/workspaces";
 import {
   dispatchRemoteCliRequest,
@@ -59,8 +78,12 @@ import {
 } from "../remote-control/dispatch";
 import type { RemoteCliRequest } from "../remote-control/types";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
-import { MAX_BUNDLE_FILES, MAX_BUNDLE_TOTAL_BYTES } from "../storage/caplet-records";
-import type { RemoteSecurityStore } from "../storage/remote-security";
+import {
+  MAX_BUNDLE_FILES,
+  MAX_BUNDLE_FILE_BYTES,
+  MAX_BUNDLE_TOTAL_BYTES,
+} from "../storage/caplet-records";
+import { remoteClientById, type RemoteSecurityStore } from "../storage/remote-security";
 import type { BackendAuthStateStore } from "../storage/backend-auth";
 import type { BackendAuthFlowRepository } from "../storage/backend-auth-flows";
 import type { HostStorage } from "../storage/database";
@@ -90,6 +113,7 @@ type HttpServeIo = {
   authoritativeStorage?: HostStorage;
   dashboardDistDir?: string;
   projectBindingWorkspaceStore?: ProjectBindingWorkspaceStore;
+  currentHostLogState?: CurrentHostLogStateOwner;
 };
 
 type HttpMcpSession = {
@@ -122,8 +146,12 @@ type HttpSession = {
   transport: StreamableHTTPTransport;
 };
 
+export type CloseCapletsSessionsOptions = {
+  activeRequestGraceMs?: number;
+};
+
 export type CapletsHttpApp = Hono & {
-  closeCapletsSessions: () => Promise<void>;
+  closeCapletsSessions: (options?: CloseCapletsSessionsOptions) => Promise<void>;
 };
 
 type AttachEventStream = {
@@ -173,14 +201,18 @@ type AttachEventSource = {
 const ATTACH_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
 const ATTACH_SESSION_PRUNE_INTERVAL_MS = 60_000;
 const BACKEND_AUTH_FLOW_MAINTENANCE_INTERVAL_MS = 60_000;
+const IDEMPOTENCY_MAINTENANCE_INTERVAL_MS = 60_000;
 const PROJECT_BINDING_LEASE_TTL_MS = 60_000;
+export const PROJECT_BINDING_STATE_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_HTTP_ACTIVE_REQUEST_GRACE_MS = 30_000;
+const MAX_HTTP_ACTIVE_REQUEST_GRACE_MS = 5 * 60_000;
 export const AUTH_REQUEST_MAX_BYTES = 64 * 1024;
 export const CONTROL_REQUEST_MAX_BYTES = 1024 * 1024;
 export const ATTACH_INVOKE_REQUEST_MAX_BYTES = 16 * 1024 * 1024;
 // The ceiling is the exact worst-case padded payload plus the metadata bound enforced by
 // semantic import/update decoding for the canonical RemoteHttpClient envelope.
 const LEGACY_CAPLET_BUNDLE_BASE64_MAX_BYTES = maximumBase64EncodedBytes(
-  MAX_BUNDLE_TOTAL_BYTES,
+  MAX_BUNDLE_TOTAL_BYTES + MAX_BUNDLE_FILE_BYTES,
   MAX_BUNDLE_FILES + 1,
 );
 export const LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES =
@@ -188,6 +220,12 @@ export const LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES =
 const LEGACY_BUNDLE_COMMANDS: Readonly<Record<string, true>> = {
   storage_records_import: true,
   storage_records_update: true,
+};
+
+const deprecatedV1Admin: MiddlewareHandler = async (context, next) => {
+  context.header("Deprecation", "true");
+  context.header("Link", '</v2/admin/host>; rel="successor-version"');
+  await next();
 };
 
 export function createHttpServeApp(
@@ -202,7 +240,11 @@ export function createHttpServeApp(
   const defaultAttachSessionPromises = new Map<string, Promise<HttpAttachSession>>();
   const projectBindingSessions = new Map<string, ProjectBindingHttpRecord>();
   let projectBindingSessionsClosing = false;
+  let httpRequestsClosing = false;
   let projectBindingWorkspaceCleanup: Promise<unknown> | undefined;
+  let activeRequestCount = 0;
+  let resolveActiveRequestsDrained: (() => void) | undefined;
+  let activeRequestsDrained: Promise<void> | undefined;
   const attachEventStreams = new Set<AttachEventStream>();
   const attachSessionPruneTimer = setInterval(() => {
     pruneIdleAttachSessions();
@@ -211,6 +253,20 @@ export function createHttpServeApp(
   attachSessionPruneTimer.unref?.();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
+  const canonicalBaseUrl = canonicalServePathUrl(options, paths.base);
+  const canonicalAdminV2Url = canonicalServePathUrl(options, paths.adminV2);
+  const adminV2Host: AdminV2HostContext = {
+    baseUrl: canonicalBaseUrl,
+    dashboardUrl: canonicalServePathUrl(options, paths.dashboard),
+    dashboardPath: paths.dashboard,
+    bind: `${options.host}:${options.port}`,
+    publicOrigin: new URL(canonicalBaseUrl).origin,
+  };
+  const bundleUploadAdmission = new AdminBundleUploadAdmissionController({
+    stagingDir: options.adminUploads.stagingDir,
+    maxConcurrent: options.adminUploads.maxConcurrent,
+    maxStagedBytes: options.adminUploads.maxStagedBytes,
+  });
   const stackIdentity = httpStackIdentity(options);
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
@@ -229,6 +285,13 @@ export function createHttpServeApp(
     : undefined;
   backendAuthFlowMaintenanceTimer?.unref?.();
   maintainBackendAuthFlows();
+  const idempotency = authoritativeStorage?.idempotency;
+  let idempotencyMaintenance: Promise<void> | undefined;
+  const idempotencyMaintenanceTimer = idempotency
+    ? setInterval(maintainIdempotencyRecords, IDEMPOTENCY_MAINTENANCE_INTERVAL_MS)
+    : undefined;
+  idempotencyMaintenanceTimer?.unref?.();
+  maintainIdempotencyRecords();
   const projectBindingRepository = authoritativeStorage?.projectBindings;
   const hostNodeId =
     typeof engine.hostNodeIdentity === "function" ? engine.hostNodeIdentity() : undefined;
@@ -237,13 +300,12 @@ export function createHttpServeApp(
     (authoritativeStorage && remoteCredentialStore
       ? new DashboardSessionStore({
           repository: authoritativeStorage.dashboardSessions,
-          validateOperatorClient: async (clientId) =>
-            (await remoteCredentialStore.listClients()).some(
-              (client) =>
-                client.clientId === clientId &&
-                client.role === "operator" &&
-                client.revokedAt === undefined,
-            ),
+          validateOperatorClient: async (clientId) => {
+            const client = await remoteClientById(remoteCredentialStore, clientId);
+            return (
+              client !== undefined && client.role === "operator" && client.revokedAt === undefined
+            );
+          },
         })
       : undefined);
   const dashboardActivityLog =
@@ -256,6 +318,137 @@ export function createHttpServeApp(
         "Committed host configuration could not be activated on this Host Node.",
       );
     }
+  };
+  const projectBindingStateListeners = new Set<() => void>();
+  const emitProjectBindingStateChanged = (): void => {
+    for (const listener of projectBindingStateListeners) listener();
+  };
+  let projectBindingStatePollTimer: NodeJS.Timeout | undefined;
+  let projectBindingStatePollInFlight: Promise<void> | undefined;
+  let projectBindingStatePollPending = false;
+  let projectBindingStatePollGeneration = 0;
+  let lastPolledProjectBindingActive: boolean | undefined;
+  const pollProjectBindingState = (): void => {
+    if (!projectBindingRepository || projectBindingStateListeners.size === 0) return;
+    projectBindingStatePollPending = true;
+    if (projectBindingStatePollInFlight) return;
+    const generation = projectBindingStatePollGeneration;
+    projectBindingStatePollInFlight = (async () => {
+      while (
+        projectBindingStatePollPending &&
+        generation === projectBindingStatePollGeneration &&
+        projectBindingStateListeners.size > 0
+      ) {
+        projectBindingStatePollPending = false;
+        let active: boolean;
+        try {
+          active = await projectBindingRepository.existsActive(new Date());
+        } catch {
+          if (
+            generation === projectBindingStatePollGeneration &&
+            projectBindingStateListeners.size > 0
+          ) {
+            emitProjectBindingStateChanged();
+          }
+          return;
+        }
+        if (
+          generation !== projectBindingStatePollGeneration ||
+          projectBindingStateListeners.size === 0
+        ) {
+          return;
+        }
+        if (
+          lastPolledProjectBindingActive === undefined ||
+          lastPolledProjectBindingActive !== active
+        ) {
+          lastPolledProjectBindingActive = active;
+          emitProjectBindingStateChanged();
+        }
+      }
+    })().finally(() => {
+      projectBindingStatePollInFlight = undefined;
+      if (projectBindingStatePollPending && projectBindingStateListeners.size > 0) {
+        pollProjectBindingState();
+      }
+    });
+  };
+  const startProjectBindingStatePolling = (): void => {
+    if (!projectBindingRepository || projectBindingStatePollTimer) return;
+    projectBindingStatePollGeneration += 1;
+    lastPolledProjectBindingActive = undefined;
+    projectBindingStatePollTimer = setInterval(
+      pollProjectBindingState,
+      PROJECT_BINDING_STATE_POLL_INTERVAL_MS,
+    );
+    projectBindingStatePollTimer.unref?.();
+    pollProjectBindingState();
+  };
+  const stopProjectBindingStatePolling = (): void => {
+    projectBindingStatePollGeneration += 1;
+    projectBindingStatePollPending = false;
+    lastPolledProjectBindingActive = undefined;
+    clearInterval(projectBindingStatePollTimer);
+    projectBindingStatePollTimer = undefined;
+  };
+  const currentHostRuntimeState: CurrentHostRuntimeStateOwner = {
+    read: async () => {
+      const readiness = await engine.readiness();
+      if (readiness.ready) return { status: "ok" };
+      return {
+        status: "error",
+        ...(readiness.reason === undefined ? {} : { reason: readiness.reason }),
+      };
+    },
+    subscribe: (listener) => engine.onReload(() => listener()),
+  };
+  const currentHostProjectBindingState: CurrentHostProjectBindingStateOwner = {
+    read: async () => {
+      let connected: boolean;
+      try {
+        const now = new Date();
+        if (projectBindingRepository) {
+          connected = await projectBindingRepository.existsActive(now);
+        } else {
+          connected = [...projectBindingSessions.values()].some(
+            (binding) =>
+              binding.active && !binding.terminal && Date.parse(binding.expiresAt) > now.getTime(),
+          );
+        }
+      } catch {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Authoritative Project Binding state is unavailable.",
+        );
+      }
+      return {
+        state: connected ? "connected" : "disconnected",
+        affectedCaplets: engine
+          .enabledServers()
+          .filter((caplet) => caplet.projectBinding?.required === true)
+          .map((caplet) => caplet.server)
+          .sort(),
+        actions: [
+          {
+            id: "attach-project",
+            label: "Attach project from a client",
+            enabled: false,
+            reason: "Project Binding sessions are started by Access Clients.",
+          },
+        ],
+      };
+    },
+    subscribe(listener) {
+      projectBindingStateListeners.add(listener);
+      startProjectBindingStatePolling();
+      let subscribed = true;
+      return () => {
+        if (!subscribed) return;
+        subscribed = false;
+        projectBindingStateListeners.delete(listener);
+        if (projectBindingStateListeners.size === 0) stopProjectBindingStatePolling();
+      };
+    },
   };
   const currentHostOperations = createCurrentHostOperations({
     engine,
@@ -271,8 +464,15 @@ export function createHttpServeApp(
           },
         }),
     activityLog: dashboardActivityLog,
+    runtimeState: currentHostRuntimeState,
+    ...(io.currentHostLogState === undefined ? {} : { logState: io.currentHostLogState }),
+    projectBindingState: currentHostProjectBindingState,
     capletRecords: authoritativeStorage?.caplets,
+    capletInstallations: authoritativeStorage?.installations,
     catalogStorage: authoritativeStorage,
+    backendAuthStore,
+    backendAuthFlows,
+    backendAuthCallbackBaseUrl: canonicalAdminV2Url,
     ...(authoritativeStorage
       ? {
           activateConfig: activateCommittedConfig,
@@ -326,6 +526,14 @@ export function createHttpServeApp(
     "operator",
     retainAuthenticatedRemoteClient,
   );
+  const operatorAdminV2RouteAuth = routeAuth(
+    options,
+    remoteCredentialStore,
+    paths.base,
+    "operator",
+    retainAuthenticatedRemoteClient,
+    adminV2BearerAuthProblemResponse,
+  );
   const attachHostProtection = dnsRebindingProtection(options);
   app.use(
     "*",
@@ -333,6 +541,90 @@ export function createHttpServeApp(
       writeErr(`${[message, ...rest].join(" ")}\n`);
     }),
   );
+  app.use("*", async (context, next) => {
+    if (httpRequestsClosing) {
+      context.header("connection", "close");
+      return context.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
+    }
+    activeRequestCount += 1;
+    try {
+      await next();
+    } finally {
+      activeRequestCount -= 1;
+      if (activeRequestCount === 0) {
+        const resolve = resolveActiveRequestsDrained;
+        activeRequestsDrained = undefined;
+        resolveActiveRequestsDrained = undefined;
+        resolve?.();
+      }
+    }
+  });
+  const bearerAdminPrincipal: AdminV2PrincipalProvider = (request) => {
+    const client = authenticatedRemoteClients.get(request);
+    if (client) {
+      if (client.role !== "operator") {
+        throw new AdminV2PrincipalError(403, "An Operator Client is required.");
+      }
+      return {
+        clientId: client.clientId,
+        clientLabel: client.clientLabel,
+        hostUrl: client.hostUrl,
+        role: "operator",
+      };
+    }
+    if (
+      options.auth.type === "development_unauthenticated" &&
+      isVerifiedLoopbackDevelopmentRequest(
+        options,
+        request.url,
+        (name) => request.headers.get(name) ?? undefined,
+      )
+    ) {
+      return trustedDevelopmentOperatorPrincipal(
+        remoteCredentialHostUrl(
+          request.url,
+          paths.base,
+          options,
+          (name) => request.headers.get(name) ?? undefined,
+        ),
+      );
+    }
+    throw new AdminV2PrincipalError(401, "A valid Operator Client credential is required.");
+  };
+  const dashboardAdminPrincipal: AdminV2PrincipalProvider = async (request, context) => {
+    const validated = await validateDashboardSession(
+      request.headers.get("cookie") ?? undefined,
+      {
+        requireCsrf: context.mutates,
+        csrfToken: request.headers.get("x-caplets-csrf") ?? undefined,
+      },
+      request.url,
+      (name) => request.headers.get(name) ?? undefined,
+    );
+    if (!validated.ok) {
+      const status = validated.response.status === 403 ? 403 : 401;
+      throw new AdminV2PrincipalError(
+        status,
+        status === 403
+          ? "A current dashboard CSRF token is required."
+          : "A current Operator dashboard session is required.",
+      );
+    }
+    const hostUrl = remoteCredentialHostUrl(
+      request.url,
+      paths.base,
+      options,
+      (name) => request.headers.get(name) ?? undefined,
+    );
+    if (validated.session.operatorClientId === "development_unauthenticated") {
+      return trustedDevelopmentOperatorPrincipal(hostUrl);
+    }
+    return {
+      clientId: validated.session.operatorClientId,
+      hostUrl,
+      role: "operator",
+    };
+  };
 
   app.get(paths.base, (c) => {
     const remote = remoteCredentialStore
@@ -342,10 +634,26 @@ export function createHttpServeApp(
       name: "caplets",
       transport: "http",
       base: paths.base,
-      versions: [versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote)],
+      versions: [
+        versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote),
+        adminV2VersionDiscovery(paths),
+      ],
       auth: { type: options.auth.type },
       ...(remote ? { remote } : {}),
     });
+  });
+
+  app.get(routePath(paths.base, "openapi.json"), (c) => {
+    const representation = rootOpenApiRepresentation();
+    const headers = {
+      "cache-control": "public, max-age=0, must-revalidate",
+      "content-type": "application/vnd.oai.openapi+json;version=3.1",
+      etag: representation.etag,
+    };
+    if (ifNoneMatchIncludes(c.req.header("if-none-match"), representation.etag)) {
+      return new Response(null, { status: 304, headers });
+    }
+    return new Response(representation.bytes, { status: 200, headers });
   });
 
   app.get(paths.version, (c) => {
@@ -354,6 +662,8 @@ export function createHttpServeApp(
       : undefined;
     return c.json(versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote));
   });
+
+  app.get(paths.version2, (c) => c.json(adminV2VersionDiscovery(paths)));
 
   app.get(paths.health, async (c) => {
     const readiness = await engine.readiness();
@@ -483,631 +793,79 @@ export function createHttpServeApp(
     return c.json({ authenticated: true, session: session.session });
   });
 
-  app.get(paths.dashboardSummary, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const baseUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-        c.req.header(name),
-      );
-      const dashboardUrl = new URL(
-        paths.dashboard,
-        publicRequestOrigin(c.req.url, options.trustProxy, (name) => c.req.header(name)),
-      ).toString();
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "summary", baseUrl, dashboardUrl, dashboardPath: paths.dashboard },
-      );
-
-      return c.json(outcome.summary);
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardCaplets, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
+  app.get(paths.adminV2Callback, async (c) => {
+    const flowId = requiredRouteParam(c.req.param("flowId"));
     try {
       const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "caplets_list" },
-      );
-
-      return c.json({ caplets: outcome.caplets });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardStoredCaplets, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "stored_caplets_list" },
-      );
-      return c.json({ records: outcome.records });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardStoredCaplets, async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Stored Caplet import request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const historyLimit = optionalIntegerField(parsed, "historyLimit");
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
+        { role: "backend_auth_callback", flowId },
         {
-          kind: "stored_caplet_import",
-          id: stringField(parsed, "id"),
-          document: opaqueStringField(parsed, "document"),
-          ...(historyLimit === undefined ? {} : { historyLimit }),
+          kind: "backend_auth_flow_callback_complete",
+          flowId,
+          callbackUrl: c.req.url,
         },
       );
-      return c.json({ record: outcome.record }, 201);
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(routePath(paths.dashboardStoredCaplets, ":id"), async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const revisionKey = optionalQueryParam(c.req.query("revision"));
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
+      return new Response(
+        JSON.stringify({
+          server: outcome.server,
+          authenticated: outcome.authenticated,
+        }),
         {
-          kind: "stored_caplet_get",
-          id: requiredRouteParam(c.req.param("id")),
-          ...(revisionKey === undefined ? {} : { revisionKey }),
-        },
-      );
-      return c.json({ record: outcome.record, document: outcome.document });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.put(routePath(paths.dashboardStoredCaplets, ":id"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Stored Caplet update request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "stored_caplet_update",
-          id: requiredRouteParam(c.req.param("id")),
-          document: opaqueStringField(parsed, "document"),
-          expectedGeneration: integerField(parsed, "expectedGeneration"),
-        },
-      );
-      return c.json({ record: outcome.record });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.delete(routePath(paths.dashboardStoredCaplets, ":id"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Stored Caplet delete request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "stored_caplet_delete",
-          id: requiredRouteParam(c.req.param("id")),
-          expectedGeneration: integerField(parsed, "expectedGeneration"),
-        },
-      );
-      return c.json({ deleted: outcome.deleted, id: outcome.id });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(routePath(paths.dashboardStoredCaplets, ":id/revisions"), async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "stored_caplet_revisions",
-          id: requiredRouteParam(c.req.param("id")),
-        },
-      );
-      return c.json({ revisions: outcome.revisions });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(
-    routePath(paths.dashboardStoredCaplets, ":id/revisions/:revisionKey/restore"),
-    async (c) => {
-      const session = await dashboardSessionForRequest(c, {
-        requireCsrf: true,
-        csrfToken: c.req.header("x-caplets-csrf"),
-      });
-      if (!session.ok) return session.response;
-      try {
-        const parsed = await readLimitedJsonObject(
-          c.req.raw,
-          "Stored Caplet restore request",
-          CONTROL_REQUEST_MAX_BYTES,
-        );
-        const outcome = await currentHostOperations.execute(
-          dashboardPrincipalForSession(c, session.session),
-          {
-            kind: "stored_caplet_restore_revision",
-            id: requiredRouteParam(c.req.param("id")),
-            revisionKey: requiredRouteParam(c.req.param("revisionKey")),
-            expectedGeneration: integerField(parsed, "expectedGeneration"),
+          status: 200,
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json",
           },
-        );
-        return c.json({ record: outcome.record });
-      } catch (error) {
-        return currentHostErrorResponse(error);
-      }
-    },
+        },
+      );
+    } catch (error) {
+      const response = problemResponse(error);
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    }
+  });
+
+  const bearerAdminAdapter = new Hono();
+  bearerAdminAdapter.use("*", async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    return await operatorAdminV2RouteAuth(c, next);
+  });
+  bearerAdminAdapter.route(
+    "/",
+    createAdminV2Router({
+      operations: currentHostOperations,
+      principalProvider: bearerAdminPrincipal,
+      host: adminV2Host,
+      idempotencyStore: idempotency,
+      bundleUploadAdmission,
+    }),
+  );
+  app.route(paths.adminV2, bearerAdminAdapter);
+  app.route(
+    paths.dashboardV2,
+    createAdminV2Router({
+      operations: currentHostOperations,
+      principalProvider: dashboardAdminPrincipal,
+      host: adminV2Host,
+      idempotencyStore: idempotency,
+      bundleUploadAdmission,
+      mutationResponseHeaders: async ({ request, outcome }) => {
+        if (outcome.sessionEnded !== true) return undefined;
+        try {
+          await dashboardSessionStore?.delete(request.headers.get("cookie") ?? undefined);
+        } catch {
+          try {
+            writeErr("Could not remove an ended dashboard session.\n");
+          } catch {
+            // Cleanup reporting must not replace a committed Admin mutation response.
+          }
+        }
+        return { "Set-Cookie": expiredDashboardSessionCookie(paths.dashboard) };
+      },
+    }),
   );
 
-  app.delete(routePath(paths.dashboardStoredCaplets, ":id/revisions/:revisionKey"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Stored Caplet revision delete request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "stored_caplet_delete_revision",
-          id: requiredRouteParam(c.req.param("id")),
-          revisionKey: requiredRouteParam(c.req.param("revisionKey")),
-          expectedGeneration: integerField(parsed, "expectedGeneration"),
-        },
-      );
-      return c.json({ record: outcome.record ?? null });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardCatalogSearch, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const query = new URL(c.req.url).searchParams;
-      const source = requiredQueryParam(query, "source");
-      const outcome =
-        query.has("q") || query.has("limit")
-          ? await currentHostOperations.execute(dashboardPrincipalForSession(c, session.session), {
-              kind: "catalog_search",
-              source,
-              query: query.get("q") ?? undefined,
-              limit: numberQueryParam(query.get("limit")),
-            })
-          : await currentHostOperations.execute(dashboardPrincipalForSession(c, session.session), {
-              kind: "catalog_index",
-              source,
-            });
-
-      return c.json({ entries: outcome.entries });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardCatalogDetail, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const query = new URL(c.req.url).searchParams;
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "catalog_detail",
-          source: requiredQueryParam(query, "source"),
-          entryKey: requiredQueryParam(query, "entryKey"),
-        },
-      );
-
-      return c.json({
-        entry: outcome.entry,
-        setupActions: outcome.setupActions,
-        projectScopedInstallAvailable: outcome.projectScopedInstallAvailable,
-      });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardCatalogUpdates, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "catalog_updates" },
-      );
-
-      return c.json({ updates: outcome.updates });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardCatalogInstall, async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Dashboard catalog install request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "catalog_install",
-          source: stringField(parsed, "source"),
-          entryKey: stringField(parsed, "entryKey"),
-          force: optionalBooleanField(parsed, "force"),
-          disableCatalogIndexing: true,
-        },
-      );
-
-      return c.json({ installed: outcome.installed, setupActions: outcome.setupActions });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardCatalogUpdate, async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Dashboard catalog update request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "catalog_update",
-          capletIds: [stringField(parsed, "capletId")],
-          force: optionalBooleanField(parsed, "force"),
-          allowRiskIncrease: optionalBooleanField(parsed, "acknowledgeRiskIncrease") ?? false,
-          disableCatalogIndexing: true,
-        },
-      );
-
-      return c.json({ installed: outcome.installed, setupActions: outcome.setupActions });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardAccessClients, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "clients_list" },
-      );
-
-      return c.json({ clients: outcome.clients });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardAccessPendingLogins, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "pending_logins_list" },
-      );
-
-      return c.json({ pendingLogins: outcome.pendingLogins });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/approve"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Dashboard pending login approval request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "pending_login_approve",
-          flowId: requiredRouteParam(c.req.param("flowId")),
-          grantedRole: optionalRemoteClientRole(parsed, "grantedRole"),
-        },
-      );
-
-      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
-      return c.json({ pendingLogin: outcome.pendingLogin });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/deny"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "pending_login_deny", flowId: requiredRouteParam(c.req.param("flowId")) },
-      );
-
-      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
-      return c.json({ pendingLogin: outcome.pendingLogin });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(routePath(paths.dashboardAccessClients, ":clientId/revoke"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "client_revoke", clientId: requiredRouteParam(c.req.param("clientId")) },
-      );
-
-      if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
-      if (outcome.sessionEnded) {
-        await dashboardSessionStore?.delete(c.req.header("cookie"));
-        c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
-      }
-      return c.json({
-        revoked: outcome.revoked,
-        clientId: outcome.clientId,
-        sessionEnded: outcome.sessionEnded,
-      });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(routePath(paths.dashboardAccessClients, ":clientId/role"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Dashboard remote client role request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "client_change_role",
-          clientId: requiredRouteParam(c.req.param("clientId")),
-          role: requiredRemoteClientRole(parsed, "role"),
-        },
-      );
-
-      if (outcome.status === "credential_store_unavailable") {
-        return c.json({ error: "dashboard_auth_unavailable" }, 404);
-      }
-      if (outcome.status === "not_found") return c.json({ error: "client_not_found" }, 404);
-      if (outcome.sessionEnded) {
-        await dashboardSessionStore?.delete(c.req.header("cookie"));
-        c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
-      }
-      return c.json({ client: outcome.client, sessionEnded: outcome.sessionEnded });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardActivity, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const query = new URL(c.req.url).searchParams;
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "activity_list",
-          limit: numberQueryParam(query.get("limit")),
-          after: query.get("after") ?? undefined,
-          action: optionalActivityAction(query.get("action") ?? undefined),
-        },
-      );
-
-      return c.json(outcome.activity);
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardVault, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "vault_list" },
-      );
-
-      return c.json({ values: outcome.values, grants: outcome.grants });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardVaultSet, async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Dashboard Vault set request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "vault_set",
-          name: stringField(parsed, "key"),
-          value: opaqueStringField(parsed, "value"),
-          force: optionalBooleanField(parsed, "force"),
-        },
-      );
-
-      return c.json({ status: outcome.status });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(routePath(paths.dashboardVaultValues, ":key/delete"), async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "vault_delete", name: requiredRouteParam(c.req.param("key")) },
-      );
-
-      return c.json({ deleted: outcome.deleted });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardVaultGrant, async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Dashboard Vault grant request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "vault_access_grant",
-          storedKey: stringField(parsed, "storedKey"),
-          referenceName: stringField(parsed, "referenceName"),
-          capletId: stringField(parsed, "capletId"),
-        },
-      );
-
-      return c.json({ grant: outcome.grant });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardVaultRevoke, async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Dashboard Vault revoke request",
-        CONTROL_REQUEST_MAX_BYTES,
-      );
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "vault_access_revoke",
-          storedKey: stringField(parsed, "storedKey"),
-          referenceName: optionalStringField(parsed, "referenceName"),
-          capletId: optionalStringField(parsed, "capletId"),
-        },
-      );
-
-      return c.json({ revoked: outcome.revoked });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardVaultReveal, async (c) => {
+  app.post(routePath(paths.dashboardPrivate, "vault-reveals"), async (c) => {
+    c.header("Cache-Control", "no-store");
     const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
@@ -1134,124 +892,9 @@ export function createHttpServeApp(
       });
       return c.json({ key, value }, 200, { "cache-control": "no-store" });
     } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardRuntime, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "runtime",
-          baseUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-            c.req.header(name),
-          ),
-          bind: `${options.host}:${options.port}`,
-          publicOrigin: options.publicOrigin ?? null,
-        },
-      );
-
-      return c.json({ runtime: outcome.runtime, daemon: outcome.daemon });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.post(paths.dashboardRuntimeRestart, async (c) => {
-    const session = await dashboardSessionForRequest(c, {
-      requireCsrf: true,
-      csrfToken: c.req.header("x-caplets-csrf"),
-    });
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "runtime_restart" },
-      );
-
-      return c.json({ restartAvailable: outcome.restartAvailable, reason: outcome.reason }, 409);
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardLogs, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "logs", limit: numberQueryParam(new URL(c.req.url).searchParams.get("limit")) },
-      );
-
-      return c.json({
-        entries: outcome.entries,
-        limit: outcome.limit,
-        truncated: outcome.truncated,
-      });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardDiagnostics, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "diagnostics" },
-      );
-
-      return c.json({
-        status: outcome.status,
-        diagnostics: outcome.diagnostics,
-        checks: outcome.checks,
-      });
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardEvents, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "runtime_event" },
-      );
-
-      return new Response(
-        `id: ${Date.now()}\nevent: runtime_health\ndata: ${JSON.stringify(outcome.event)}\n\n`,
-        {
-          headers: {
-            "content-type": "text/event-stream",
-            "cache-control": "no-cache",
-            connection: "keep-alive",
-          },
-        },
-      );
-    } catch (error) {
-      return currentHostErrorResponse(error);
-    }
-  });
-
-  app.get(paths.dashboardProjectBinding, async (c) => {
-    const session = await dashboardSessionForRequest(c);
-    if (!session.ok) return session.response;
-    try {
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        { kind: "project_binding" },
-      );
-
-      return c.json({ projectBinding: outcome.projectBinding });
-    } catch (error) {
-      return currentHostErrorResponse(error);
+      const response = currentHostErrorResponse(error);
+      response.headers.set("Cache-Control", "no-store");
+      return response;
     }
   });
 
@@ -1672,6 +1315,25 @@ export function createHttpServeApp(
     );
   }
 
+  function maintainIdempotencyRecords(): void {
+    if (!idempotency || idempotencyMaintenance) return;
+    const maintenance = idempotency.prune().then(() => undefined);
+    idempotencyMaintenance = maintenance;
+    void maintenance.then(
+      () => {
+        if (idempotencyMaintenance === maintenance) {
+          idempotencyMaintenance = undefined;
+        }
+      },
+      (error) => {
+        if (idempotencyMaintenance === maintenance) {
+          idempotencyMaintenance = undefined;
+        }
+        writeErr(`Could not maintain Admin idempotency records: ${errorMessage(error)}\n`);
+      },
+    );
+  }
+
   function pruneProjectBindingWorkspaces(): void {
     if (projectBindingWorkspaceCleanup) return;
     const cleanup = projectBindingWorkspaceStore.cleanup();
@@ -1702,48 +1364,55 @@ export function createHttpServeApp(
     }
   }
 
-  app.post(paths.control, currentHostDevelopmentGuard(options), operatorRouteAuth, async (c) => {
-    let request: RemoteCliRequest;
-    try {
-      request = parseRemoteCliRequest(
-        await readCommandLimitedJsonObject(
-          c.req.raw,
-          "Control request",
-          CONTROL_REQUEST_MAX_BYTES,
-          LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES,
-          LEGACY_BUNDLE_COMMANDS,
+  app.post(
+    paths.control,
+    deprecatedV1Admin,
+    currentHostDevelopmentGuard(options),
+    operatorRouteAuth,
+    async (c) => {
+      let request: RemoteCliRequest;
+      try {
+        request = parseRemoteCliRequest(
+          await readCommandLimitedJsonObject(
+            c.req.raw,
+            "Control request",
+            CONTROL_REQUEST_MAX_BYTES,
+            LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES,
+            LEGACY_BUNDLE_COMMANDS,
+          ),
+        );
+      } catch (error) {
+        const requestError =
+          error instanceof CapletsError
+            ? error
+            : new CapletsError("REQUEST_INVALID", "Control request body must be valid JSON", error);
+        const safe = toSafeError(requestError, "REQUEST_INVALID");
+        return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
+      }
+      const context = controlContext(
+        io,
+        writeErr,
+        backendAuthFlows,
+        backendAuthStore,
+        authoritativeStorage,
+        c.req.url,
+        paths.control,
+        options.publicOrigin,
+        options.trustProxy,
+        (name) => c.req.header(name),
+      );
+      return c.json(
+        await dispatchRemoteCliRequest(
+          request,
+          { ...context, attachEngine: engine },
+          {
+            operations: currentHostOperations,
+            principal: controlOperatorPrincipal(c),
+          },
         ),
       );
-    } catch (error) {
-      const requestError =
-        error instanceof CapletsError
-          ? error
-          : new CapletsError("REQUEST_INVALID", "Control request body must be valid JSON", error);
-      const safe = toSafeError(requestError, "REQUEST_INVALID");
-      return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
-    }
-    const context = controlContext(
-      io,
-      writeErr,
-      backendAuthFlows,
-      backendAuthStore,
-      authoritativeStorage,
-      c.req.url,
-      paths.control,
-      options.publicOrigin,
-      options.trustProxy,
-      (name) => c.req.header(name),
-    );
-    return c.json(
-      await dispatchRemoteCliRequest(request, context, {
-        operations: currentHostOperations,
-        principal: controlOperatorPrincipal(c),
-        ...(authoritativeStorage
-          ? { storage: authoritativeStorage, activateConfig: activateCommittedConfig }
-          : {}),
-      }),
-    );
-  });
+    },
+  );
 
   app.get(
     routePath(paths.projectBindings, "connect"),
@@ -1758,13 +1427,15 @@ export function createHttpServeApp(
     },
     upgradeWebSocket((c) => {
       const validation = projectBindingSocketRecordForRequest(c);
+      let socketAttached = false;
       return {
         onOpen: (_event, ws) => {
           if (!validation.ok) {
             ws.close(1008, "Project Binding session was not found.");
             return;
           }
-          sendProjectBindingReadyWhenOpen(ws, validation.record);
+          socketAttached = true;
+          sendProjectBindingReadyWhenOpen(ws, validation.record, () => socketAttached);
         },
         onMessage: (event, ws) => {
           if (!validation.ok) {
@@ -1773,12 +1444,13 @@ export function createHttpServeApp(
           }
           void parseProjectBindingSocketClientMessage(event.data)
             .then(async (message) => {
-              if (!message) return;
               if (
                 message.bindingId !== validation.record.bindingId ||
                 message.sessionId !== validation.record.sessionId
               ) {
-                ws.close(1008, "Project Binding message does not match this session.");
+                if (socketAttached) {
+                  ws.close(1008, "Project Binding message does not match this session.");
+                }
                 return;
               }
               if (message.type === "heartbeat") {
@@ -1787,7 +1459,9 @@ export function createHttpServeApp(
                   message,
                   validation.durableClientId,
                 );
-                if (!updated) ws.close(1008, "Project Binding session is no longer authorized.");
+                if (!updated && socketAttached) {
+                  ws.close(1008, "Project Binding session is no longer authorized.");
+                }
                 return;
               }
               const ended = await endProjectBindingRecord(
@@ -1796,28 +1470,32 @@ export function createHttpServeApp(
                 message.reason,
               );
               if (!ended) {
-                ws.close(1008, "Project Binding session is no longer authorized.");
+                if (socketAttached) {
+                  ws.close(1008, "Project Binding session is no longer authorized.");
+                }
                 return;
               }
-              ws.send(JSON.stringify({ type: "ended", reason: message.reason }));
-              ws.close(1000, message.reason.message);
+              if (socketAttached) {
+                ws.send(JSON.stringify({ type: "ended", reason: message.reason }));
+                ws.close(1000, message.reason.message);
+              }
             })
             .catch((error) => {
+              if (error instanceof CapletsError && error.code === "REQUEST_INVALID") {
+                if (socketAttached) {
+                  ws.close(1008, "Project Binding message is invalid.");
+                }
+                return;
+              }
               writeErr(`Project Binding WebSocket message failed: ${errorMessage(error)}\n`);
-              ws.close(1011, "Project Binding message failed.");
+              if (socketAttached) ws.close(1011, "Project Binding message failed.");
             });
         },
         onError: (event) => {
           writeErr(`Project Binding WebSocket error: ${errorMessage(event)}\n`);
         },
         onClose: () => {
-          if (!validation.ok) return;
-          void endProjectBindingRecord(validation.record, undefined, {
-            code: "interrupted",
-            message: "Project Binding WebSocket closed.",
-          }).catch((error) => {
-            writeErr(`Project Binding WebSocket close cleanup failed: ${errorMessage(error)}\n`);
-          });
+          socketAttached = false;
         },
       };
     }),
@@ -1838,14 +1516,21 @@ export function createHttpServeApp(
       if (projectBindingSessionsClosing) {
         return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
       }
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Project Binding session request",
-        CONTROL_REQUEST_MAX_BYTES,
+      const request = projectBindingSessionCreateRequestSchema.safeParse(
+        await readLimitedJsonObject(
+          c.req.raw,
+          "Project Binding session request",
+          CONTROL_REQUEST_MAX_BYTES,
+        ),
       );
-      const projectRoot = stringField(parsed, "projectRoot");
-      const projectFingerprint =
-        optionalStringField(parsed, "projectFingerprint") ?? fingerprintProjectRoot(projectRoot);
+      if (!request.success) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Project Binding session request must contain exactly projectRoot and projectFingerprint.",
+          request.error.issues,
+        );
+      }
+      const { projectRoot, projectFingerprint } = request.data;
       const ownerKey = projectBindingOwnerKey(c);
       const serverWorkspaceFingerprint = projectBindingWorkspaceFingerprint(
         ownerKey,
@@ -1921,24 +1606,12 @@ export function createHttpServeApp(
         }
         throw error;
       }
+      projectBindingSessions.set(bindingId, record);
+      emitProjectBindingStateChanged();
       if (projectBindingSessionsClosing) {
-        await projectBindingWorkspaceStore.writeLease(
-          projectBindingLease(terminalProjectBindingCandidate(record)),
-        );
-        if (
-          projectBindingRepository &&
-          hostNodeId &&
-          record.authoritativeGeneration !== undefined
-        ) {
-          await projectBindingRepository.end({
-            bindingId,
-            ownerNodeId: hostNodeId,
-            expectedGeneration: record.authoritativeGeneration,
-          });
-        }
+        await endProjectBindingRecord(record);
         return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
       }
-      projectBindingSessions.set(bindingId, record);
       return c.json({ binding: projectBindingResponse(record), sessionId }, 201);
     } catch (error) {
       const safe = toSafeError(
@@ -1968,12 +1641,21 @@ export function createHttpServeApp(
       const ownerKey = projectBindingOwnerKey(c);
       let record = projectBindingRecordFor(bindingId, ownerKey);
       if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
-      const parsed = await readLimitedJsonObject(
-        c.req.raw,
-        "Project Binding heartbeat request",
-        CONTROL_REQUEST_MAX_BYTES,
+      const request = projectBindingHeartbeatRequestSchema.safeParse(
+        await readLimitedJsonObject(
+          c.req.raw,
+          "Project Binding heartbeat request",
+          CONTROL_REQUEST_MAX_BYTES,
+        ),
       );
-      const sessionId = stringField(parsed, "sessionId");
+      if (!request.success) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Project Binding heartbeat request must contain exactly sessionId, state, and syncState.",
+          request.error.issues,
+        );
+      }
+      const { sessionId, state, syncState } = request.data;
       record = projectBindingRecordFor(bindingId, ownerKey);
       if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
       if (sessionId !== record.sessionId) {
@@ -1981,13 +1663,7 @@ export function createHttpServeApp(
       }
       const updated = await updateProjectBindingHeartbeat(
         record,
-        {
-          type: "heartbeat",
-          bindingId,
-          sessionId,
-          state: projectBindingStateField(parsed, "state", record.state),
-          syncState: projectBindingSyncStateField(parsed, "syncState", record.syncState),
-        },
+        { type: "heartbeat", bindingId, sessionId, state, syncState },
         ownerKey,
       );
       if (!updated) return c.json({ ok: false, error: { code: "AUTH_FAILED" } }, 403);
@@ -2025,9 +1701,26 @@ export function createHttpServeApp(
     | { ok: true; record: ProjectBindingHttpRecord; durableClientId: string }
     | { ok: false; response: Response } {
     const url = new URL(c.req.url);
-    const bindingId = url.searchParams.get("bindingId") ?? "";
-    const sessionId = url.searchParams.get("sessionId") ?? "";
-    const projectFingerprint = url.searchParams.get("projectFingerprint") ?? "";
+    const socketProtocols = (c.req.header("sec-websocket-protocol") ?? "")
+      .split(",")
+      .map((protocol) => protocol.trim())
+      .filter(Boolean);
+    const queryEntries = [...url.searchParams.entries()];
+    const query = projectBindingConnectQuerySchema.safeParse(Object.fromEntries(queryEntries));
+    if (
+      !projectBindingSocketProtocolSchema.safeParse(socketProtocols[0]).success ||
+      !query.success ||
+      new Set(queryEntries.map(([key]) => key)).size !== queryEntries.length
+    ) {
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({ ok: false, error: { code: "REQUEST_INVALID" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+      };
+    }
+    const { bindingId, sessionId, projectFingerprint } = query.data;
     const durableClientId = projectBindingOwnerKey(c);
     const record = projectBindingRecordFor(bindingId, durableClientId);
     if (!record) {
@@ -2048,7 +1741,7 @@ export function createHttpServeApp(
         }),
       };
     }
-    if (projectFingerprint && projectFingerprint !== record.projectFingerprint) {
+    if (projectFingerprint !== record.projectFingerprint) {
       return {
         ok: false,
         response: new Response(JSON.stringify({ ok: false, error: { code: "REQUEST_INVALID" } }), {
@@ -2132,6 +1825,7 @@ export function createHttpServeApp(
             ownerNodeId: hostNodeId,
             expectedGeneration: candidate.authoritativeGeneration,
           });
+          emitProjectBindingStateChanged();
         }
         throw error;
       }
@@ -2147,6 +1841,7 @@ export function createHttpServeApp(
       record.expiresAt = candidate.expiresAt;
       record.generation = candidate.generation;
       record.authoritativeGeneration = candidate.authoritativeGeneration;
+      emitProjectBindingStateChanged();
       return true;
     });
     record.heartbeatInFlight = heartbeat;
@@ -2217,9 +1912,7 @@ export function createHttpServeApp(
   ): Promise<boolean> {
     if (record.ownerKey !== ownerKey) return false;
     if (!remoteCredentialStore) return ownerKey === "development_unauthenticated";
-    const client = (await remoteCredentialStore.listClients()).find(
-      (candidate) => candidate.clientId === ownerKey,
-    );
+    const client = await remoteClientById(remoteCredentialStore, ownerKey);
     return (
       client !== undefined &&
       remoteClientRoleSatisfies(client.role, "access") &&
@@ -2252,6 +1945,7 @@ export function createHttpServeApp(
     if (current && !record.terminal) terminalizeProjectBindingRecord(record);
     const terminal = current ? record : terminalProjectBindingCandidate(target);
 
+    emitProjectBindingStateChanged();
     await projectBindingWorkspaceStore.writeLease(projectBindingLease(terminal));
     if (current) {
       if (removeCurrent && projectBindingSessions.get(record.bindingId) === record) {
@@ -2280,9 +1974,11 @@ export function createHttpServeApp(
   function sendProjectBindingReadyWhenOpen(
     ws: { readyState: number; send: (data: string) => void },
     record: ProjectBindingHttpRecord,
+    isAttached: () => boolean,
     attempts = 20,
   ): void {
     setTimeout(() => {
+      if (!isAttached()) return;
       if (ws.readyState === 1) {
         ws.send(
           JSON.stringify({
@@ -2294,7 +1990,9 @@ export function createHttpServeApp(
         );
         return;
       }
-      if (attempts > 1) sendProjectBindingReadyWhenOpen(ws, record, attempts - 1);
+      if (attempts > 1) {
+        sendProjectBindingReadyWhenOpen(ws, record, isAttached, attempts - 1);
+      }
     }, 10);
   }
 
@@ -2463,19 +2161,6 @@ export function createHttpServeApp(
     return `sha256_${createHash("sha256").update(ownerKey).update("\0").update(projectFingerprint).digest("hex")}`;
   }
 
-  function projectBindingStateField(
-    input: Record<string, unknown>,
-    key: string,
-    fallback: ProjectBindingState,
-  ): ProjectBindingState {
-    const value = optionalStringField(input, key);
-    if (value === undefined) return fallback;
-    if (!PROJECT_BINDING_STATES.includes(value as ProjectBindingState)) {
-      throw new CapletsError("REQUEST_INVALID", `${key} must be a Project Binding state.`);
-    }
-    return value as ProjectBindingState;
-  }
-
   async function dashboardSessionForRequest(
     c: Parameters<MiddlewareHandler>[0],
     csrf: { requireCsrf?: boolean; csrfToken?: string | undefined } = {},
@@ -2483,23 +2168,6 @@ export function createHttpServeApp(
     return await validateDashboardSession(c.req.header("cookie"), csrf, c.req.url, (name) =>
       c.req.header(name),
     );
-  }
-
-  function dashboardPrincipalForSession(
-    c: Parameters<MiddlewareHandler>[0],
-    session: DashboardSessionView,
-  ): CurrentHostOperatorPrincipal {
-    const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-      c.req.header(name),
-    );
-    if (session.operatorClientId === "development_unauthenticated") {
-      return trustedDevelopmentOperatorPrincipal(hostUrl);
-    }
-    return {
-      clientId: session.operatorClientId,
-      hostUrl,
-      role: "operator",
-    };
   }
 
   function controlOperatorPrincipal(
@@ -2589,19 +2257,6 @@ export function createHttpServeApp(
     }
   }
 
-  function projectBindingSyncStateField(
-    input: Record<string, unknown>,
-    key: string,
-    fallback: ProjectBindingSyncState,
-  ): ProjectBindingSyncState {
-    const value = optionalStringField(input, key);
-    if (value === undefined) return fallback;
-    if (!PROJECT_BINDING_SYNC_STATES.includes(value as ProjectBindingSyncState)) {
-      throw new CapletsError("REQUEST_INVALID", `${key} must be a Project Binding sync state.`);
-    }
-    return value as ProjectBindingSyncState;
-  }
-
   app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
     const flowId = c.req.param("flowId");
     const result = await dispatchRemoteCliRequest(
@@ -2618,6 +2273,7 @@ export function createHttpServeApp(
         options.trustProxy,
         (name) => c.req.header(name),
       ),
+      { operations: currentHostOperations },
     );
     if (!result.ok) {
       writeErr(`Caplets authentication failed for flow ${flowId}: ${result.error.message}\n`);
@@ -2629,13 +2285,39 @@ export function createHttpServeApp(
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
-  app.closeCapletsSessions = async () => {
+  async function waitForActiveRequestsToDrain(graceMs: number): Promise<void> {
+    if (activeRequestCount === 0 || graceMs === 0) return;
+    activeRequestsDrained ??= new Promise<void>((resolve) => {
+      resolveActiveRequestsDrained = resolve;
+    });
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        activeRequestsDrained,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, graceMs);
+          timeout.unref?.();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  app.closeCapletsSessions = async (closeOptions = {}) => {
+    const activeRequestGraceMs = checkedActiveRequestGraceMs(
+      closeOptions.activeRequestGraceMs ?? DEFAULT_HTTP_ACTIVE_REQUEST_GRACE_MS,
+    );
+    httpRequestsClosing = true;
+    projectBindingSessionsClosing = true;
     clearInterval(attachSessionPruneTimer);
     clearInterval(backendAuthFlowMaintenanceTimer);
-    projectBindingSessionsClosing = true;
+    clearInterval(idempotencyMaintenanceTimer);
+    currentHostOperations.close();
     for (const stream of attachEventStreams) {
       stream.close();
     }
+    await waitForActiveRequestsToDrain(activeRequestGraceMs);
     await Promise.allSettled(
       [...sessions.values()].map(async (session) => {
         await session.server.close();
@@ -2653,6 +2335,10 @@ export function createHttpServeApp(
     if (backendAuthFlowMaintenance) {
       await Promise.allSettled([backendAuthFlowMaintenance]);
     }
+    if (idempotencyMaintenance) {
+      await Promise.allSettled([idempotencyMaintenance]);
+    }
+    await bundleUploadAdmission.close();
   };
 
   if (options.warnUnauthenticatedNetwork) {
@@ -2736,6 +2422,17 @@ function pendingLoginApprovalCommand(operatorCode: string, stateDir: string | un
 function shellQuoteArg(value: string): string {
   if (/^[A-Za-z0-9_./:=@%+-]+$/u.test(value)) return value;
   return `'${value.replace(/'/gu, "'\\''")}'`;
+}
+
+function canonicalServePathUrl(options: HttpServeOptions, path: string): string {
+  const boundOrigin = `http://${formatHost(options.host)}:${options.port}`;
+  return publicHostUrl(
+    boundOrigin,
+    path,
+    remoteCredentialPublicOrigin(options, () => undefined),
+    options.trustProxy,
+    () => undefined,
+  );
 }
 
 function publicHostUrl(
@@ -2848,7 +2545,7 @@ function remoteHostMetadata(
 }
 
 function versionDiscovery(
-  paths: ReturnType<typeof servicePaths>,
+  paths: ServicePaths,
   options: { exposeAttach?: boolean; exposeAttachSessions?: boolean } = {},
   remote?: RemoteHostMetadata | undefined,
 ) {
@@ -2872,6 +2569,14 @@ function versionDiscovery(
         : {}),
       health: paths.health,
     },
+  };
+}
+
+function adminV2VersionDiscovery(paths: ServicePaths) {
+  return {
+    version: 2,
+    path: paths.version2,
+    links: { admin: paths.adminV2 },
   };
 }
 
@@ -3216,9 +2921,12 @@ export function routePath(base: string, path: string): string {
   return base === "/" ? `/${path}` : `${base}/${path}`;
 }
 
-export function servicePaths(base: string): {
+export type ServicePaths = {
   base: string;
   version: string;
+  version2: string;
+  adminV2: string;
+  adminV2Callback: string;
   mcp: string;
   control: string;
   attachManifest: string;
@@ -3236,45 +2944,33 @@ export function servicePaths(base: string): {
   remoteClient: string;
   dashboard: string;
   dashboardApi: string;
+  dashboardV2: string;
+  dashboardPrivate: string;
   dashboardLoginStart: string;
   dashboardLoginPoll: string;
   dashboardLoginComplete: string;
   dashboardSession: string;
   dashboardLogout: string;
-  dashboardSummary: string;
-  dashboardCaplets: string;
-  dashboardStoredCaplets: string;
-  dashboardCatalogSearch: string;
-  dashboardCatalogDetail: string;
-  dashboardCatalogInstall: string;
-  dashboardCatalogUpdates: string;
-  dashboardCatalogUpdate: string;
-  dashboardAccessClients: string;
-  dashboardAccessPendingLogins: string;
-  dashboardVault: string;
-  dashboardVaultValues: string;
-  dashboardVaultSet: string;
-  dashboardVaultGrant: string;
-  dashboardVaultRevoke: string;
-  dashboardVaultReveal: string;
-  dashboardRuntime: string;
-  dashboardRuntimeRestart: string;
-  dashboardLogs: string;
-  dashboardDiagnostics: string;
-  dashboardEvents: string;
-  dashboardProjectBinding: string;
-  dashboardActivity: string;
   health: string;
-} {
+};
+
+export function servicePaths(base: string): ServicePaths {
   const version = routePath(base, "v1");
+  const version2 = routePath(base, "v2");
+  const adminV2 = routePath(version2, "admin");
   const attach = routePath(version, "attach");
   const remote = routePath(version, "remote");
   const dashboard = routePath(base, "dashboard");
   const dashboardApi = routePath(dashboard, "api");
+  const dashboardV2 = routePath(dashboardApi, "v2");
+  const dashboardPrivate = routePath(dashboardApi, "private");
   const dashboardLogin = routePath(dashboardApi, "login");
   return {
     base,
     version,
+    version2,
+    adminV2,
+    adminV2Callback: routePath(adminV2, "backend-auth-flows/:flowId/callback"),
     mcp: routePath(version, "mcp"),
     control: routePath(version, "admin"),
     attachSessions: routePath(attach, "sessions"),
@@ -3292,34 +2988,13 @@ export function servicePaths(base: string): {
     remoteClient: routePath(remote, "client"),
     dashboard,
     dashboardApi,
+    dashboardV2,
+    dashboardPrivate,
     dashboardLoginStart: routePath(dashboardLogin, "start"),
     dashboardLoginPoll: routePath(dashboardLogin, "poll"),
     dashboardLoginComplete: routePath(dashboardLogin, "complete"),
     dashboardSession: routePath(dashboardApi, "session"),
     dashboardLogout: routePath(dashboardApi, "logout"),
-    dashboardSummary: routePath(dashboardApi, "summary"),
-    dashboardCaplets: routePath(dashboardApi, "caplets"),
-    dashboardStoredCaplets: routePath(dashboardApi, "stored-caplets"),
-    dashboardCatalogSearch: routePath(dashboardApi, "catalog/search"),
-    dashboardCatalogDetail: routePath(dashboardApi, "catalog/detail"),
-    dashboardCatalogInstall: routePath(dashboardApi, "catalog/install"),
-    dashboardCatalogUpdates: routePath(dashboardApi, "catalog/updates"),
-    dashboardCatalogUpdate: routePath(dashboardApi, "catalog/update"),
-    dashboardAccessClients: routePath(dashboardApi, "access/clients"),
-    dashboardAccessPendingLogins: routePath(dashboardApi, "access/pending-logins"),
-    dashboardVault: routePath(dashboardApi, "vault"),
-    dashboardVaultValues: routePath(dashboardApi, "vault/values"),
-    dashboardVaultSet: routePath(dashboardApi, "vault/values"),
-    dashboardVaultGrant: routePath(dashboardApi, "vault/grants"),
-    dashboardVaultRevoke: routePath(dashboardApi, "vault/grants/revoke"),
-    dashboardVaultReveal: routePath(dashboardApi, "vault/reveal"),
-    dashboardRuntime: routePath(dashboardApi, "runtime"),
-    dashboardRuntimeRestart: routePath(dashboardApi, "runtime/restart"),
-    dashboardLogs: routePath(dashboardApi, "logs"),
-    dashboardDiagnostics: routePath(dashboardApi, "diagnostics"),
-    dashboardEvents: routePath(dashboardApi, "events"),
-    dashboardProjectBinding: routePath(dashboardApi, "project-binding"),
-    dashboardActivity: routePath(dashboardApi, "activity"),
     health: routePath(version, "healthz"),
   };
 }
@@ -3340,82 +3015,6 @@ async function createHttpSession(
   return { server, transport };
 }
 
-function requiredQueryParam(params: URLSearchParams, key: string): string {
-  const value = params.get(key);
-  if (!value) throw new CapletsError("REQUEST_INVALID", `${key} is required.`);
-  return value;
-}
-
-function optionalQueryParam(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? normalized : undefined;
-}
-
-function integerField(input: Record<string, unknown>, key: string): number {
-  const value = input[key];
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    throw new CapletsError("REQUEST_INVALID", `${key} must be a non-negative integer.`);
-  }
-  return value;
-}
-
-function optionalIntegerField(input: Record<string, unknown>, key: string): number | undefined {
-  return input[key] === undefined ? undefined : integerField(input, key);
-}
-
-function optionalBooleanField(input: Record<string, unknown>, key: string): boolean | undefined {
-  const value = input[key];
-  if (value === undefined) return undefined;
-  if (typeof value === "boolean") return value;
-  throw new CapletsError("REQUEST_INVALID", `${key} must be a boolean.`);
-}
-
-function requiredRemoteClientRole(input: Record<string, unknown>, key: string): RemoteClientRole {
-  const value = stringField(input, key);
-  if (value === "access" || value === "operator") return value;
-  throw new CapletsError("REQUEST_INVALID", `${key} must be access or operator.`);
-}
-
-function optionalRemoteClientRole(
-  input: Record<string, unknown>,
-  key: string,
-): RemoteClientRole | undefined {
-  const value = optionalStringField(input, key);
-  if (value === undefined) return undefined;
-  if (value === "access" || value === "operator") return value;
-  throw new CapletsError("REQUEST_INVALID", `${key} must be access or operator.`);
-}
-
-function numberQueryParam(value: string | null): number | undefined {
-  if (value === null) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function optionalActivityAction(value: string | undefined): DashboardActivityAction | undefined {
-  if (value === undefined) return undefined;
-  return isDashboardActivityAction(value) ? value : undefined;
-}
-
-function isDashboardActivityAction(value: string): value is DashboardActivityAction {
-  return (
-    value === "dashboard_login_completed" ||
-    value === "dashboard_logout" ||
-    value === "pending_login_approved" ||
-    value === "pending_login_denied" ||
-    value === "remote_client_revoked" ||
-    value === "remote_client_role_changed" ||
-    value === "catalog_installed" ||
-    value === "catalog_updated" ||
-    value === "vault_set" ||
-    value === "vault_deleted" ||
-    value === "vault_grant_added" ||
-    value === "vault_grant_revoked" ||
-    value === "vault_value_revealed" ||
-    value === "runtime_restart_requested"
-  );
-}
-
 function routeAuth(
   options: HttpServeOptions,
   remoteCredentialStore: RemoteCredentialStore | undefined,
@@ -3424,6 +3023,7 @@ function routeAuth(
   retainAuthenticatedClient:
     | ((request: Request, client: ValidatedRemoteClient) => void)
     | undefined,
+  authProblemResponse?: ((status: 401 | 403) => Response) | undefined,
 ): MiddlewareHandler {
   if (options.auth.type === "development_unauthenticated") {
     return async (_c, next) => {
@@ -3431,13 +3031,13 @@ function routeAuth(
     };
   }
   if (!remoteCredentialStore) {
-    return async (c) => c.text("Unauthorized", 401);
+    return async (c) => authProblemResponse?.(401) ?? c.text("Unauthorized", 401);
   }
   return async (c, next) => {
     const header = authorizationHeaderForRequest(c);
     const token = bearerToken(header);
     if (!token) {
-      return c.text("Unauthorized", 401);
+      return authProblemResponse?.(401) ?? c.text("Unauthorized", 401);
     }
     try {
       const client = await remoteCredentialStore.validateAccessToken({
@@ -3447,14 +3047,30 @@ function routeAuth(
         accessToken: token,
       });
       if (requiredRole !== undefined && !remoteClientRoleSatisfies(client.role, requiredRole)) {
-        return c.text(`Forbidden: ${requiredRole} role required`, 403);
+        return (
+          authProblemResponse?.(403) ?? c.text(`Forbidden: ${requiredRole} role required`, 403)
+        );
       }
       retainAuthenticatedClient?.(c.req.raw, client);
     } catch {
-      return c.text("Unauthorized", 401);
+      return authProblemResponse?.(401) ?? c.text("Unauthorized", 401);
     }
     await next();
   };
+}
+
+function adminV2BearerAuthProblemResponse(status: 401 | 403): Response {
+  const response = problemResponse(
+    new AdminV2PrincipalError(
+      status,
+      status === 401
+        ? "A valid Operator Client credential is required."
+        : "An Operator Client is required.",
+    ),
+    { status },
+  );
+  response.headers.set("Cache-Control", "no-store");
+  return response;
 }
 
 function currentHostDevelopmentGuard(options: HttpServeOptions): MiddlewareHandler {
@@ -3541,13 +3157,6 @@ function stringField(input: Record<string, unknown>, key: string): string {
   }
   return value.trim();
 }
-function opaqueStringField(input: Record<string, unknown>, key: string): string {
-  const value = input[key];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string.`);
-  }
-  return value;
-}
 
 function optionalStringField(input: Record<string, unknown>, key: string): string | undefined {
   const value = input[key];
@@ -3560,28 +3169,33 @@ function optionalStringField(input: Record<string, unknown>, key: string): strin
 
 async function parseProjectBindingSocketClientMessage(
   data: unknown,
-): Promise<ProjectBindingSocketClientMessage | undefined> {
+): Promise<ProjectBindingSocketClientMessage> {
   const text = await socketMessageText(data);
-  if (!text) return undefined;
-  const parsed = JSON.parse(text) as Partial<ProjectBindingSocketClientMessage>;
-  if (
-    parsed.type === "heartbeat" &&
-    typeof parsed.bindingId === "string" &&
-    typeof parsed.sessionId === "string" &&
-    PROJECT_BINDING_STATES.includes(parsed.state as ProjectBindingState) &&
-    PROJECT_BINDING_SYNC_STATES.includes(parsed.syncState as ProjectBindingSyncState)
-  ) {
-    return parsed as ProjectBindingSocketClientMessage;
+  if (!text) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Project Binding WebSocket messages must contain JSON text.",
+    );
   }
-  if (
-    parsed.type === "end" &&
-    typeof parsed.bindingId === "string" &&
-    typeof parsed.sessionId === "string" &&
-    isBindingTerminalReason(parsed.reason)
-  ) {
-    return parsed as ProjectBindingSocketClientMessage;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Project Binding WebSocket messages must contain valid JSON.",
+      error,
+    );
   }
-  return undefined;
+  const message = projectBindingSocketClientMessageSchema.safeParse(parsed);
+  if (!message.success) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Project Binding WebSocket message does not match protocol v1.",
+      message.error.issues,
+    );
+  }
+  return message.data;
 }
 
 async function socketMessageText(data: unknown): Promise<string | undefined> {
@@ -3592,16 +3206,6 @@ async function socketMessageText(data: unknown): Promise<string | undefined> {
   }
   if (data instanceof Blob) return await data.text();
   return undefined;
-}
-
-function isBindingTerminalReason(value: unknown): value is BindingTerminalReason {
-  return (
-    Boolean(value) &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    typeof (value as Partial<BindingTerminalReason>).code === "string" &&
-    typeof (value as Partial<BindingTerminalReason>).message === "string"
-  );
 }
 
 function requiredRouteParam(value: string | undefined): string {
@@ -3711,6 +3315,34 @@ function authDescription(options: HttpServeOptions): string {
     : "development unauthenticated";
 }
 
+function checkedActiveRequestGraceMs(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_HTTP_ACTIVE_REQUEST_GRACE_MS) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `HTTP shutdown active-request grace must be an integer from 0 to ${MAX_HTTP_ACTIVE_REQUEST_GRACE_MS} milliseconds.`,
+    );
+  }
+  return value;
+}
+
+export async function shutdownHttpServer(
+  server: ServerType,
+  app: CapletsHttpApp,
+  engine: CapletsEngine,
+  options: CloseCapletsSessionsOptions = {},
+): Promise<void> {
+  const serverStopped = new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
+  try {
+    await app.closeCapletsSessions(options);
+  } finally {
+    closeAllServerConnections(server);
+    await serverStopped;
+    await engine.close();
+  }
+}
+
 function installHttpSignalHandlers(
   server: ServerType,
   app: CapletsHttpApp,
@@ -3718,13 +3350,8 @@ function installHttpSignalHandlers(
   writeErr: (value: string) => void,
 ): void {
   let closing: Promise<void> | undefined;
-  const close = async () => {
-    closing ??= (async () => {
-      await app.closeCapletsSessions();
-      closeAllServerConnections(server);
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await engine.close();
-    })();
+  const close = () => {
+    closing ??= shutdownHttpServer(server, app, engine);
     return closing;
   };
   process.once(

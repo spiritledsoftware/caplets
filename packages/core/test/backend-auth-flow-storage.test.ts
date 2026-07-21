@@ -710,6 +710,106 @@ describe("durable backend auth flow storage", () => {
     });
   });
 
+  it("traverses stable filtered flow pages and validates page keys", async () => {
+    const definitions = [
+      { flowId: "flow_a", server: SERVER, now: NOW },
+      { flowId: "flow_A", server: SERVER, now: NOW },
+      { flowId: "flow_other", server: "gitlab", now: NOW },
+      { flowId: "flow_later", server: SERVER, now: after(1) },
+    ];
+    for (const definition of definitions) {
+      await firstRepository.create({
+        ...definition,
+        state: flowState(definition.flowId, {
+          server: definition.server,
+          createdAt: definition.now.toISOString(),
+          expiresAt: after(10_000).toISOString(),
+        }),
+        expiresAt: after(10_000),
+      });
+    }
+
+    const firstPage = await secondRepository.listPage({ server: SERVER, now: NOW, limit: 1 });
+    expect(firstPage.items.map((flow) => flow.flowId)).toEqual(["flow_A"]);
+    expect(firstPage.nextKey).toEqual({
+      server: SERVER,
+      createdAt: NOW.toISOString(),
+      flowId: "flow_A",
+    });
+    const secondPage = await secondRepository.listPage({
+      server: SERVER,
+      now: NOW,
+      limit: 1,
+      after: firstPage.nextKey,
+    });
+    expect(secondPage.items.map((flow) => flow.flowId)).toEqual(["flow_a"]);
+
+    await firstRepository.claim({
+      flowId: "flow_a",
+      claimToken: "claim_flow_a",
+      now: after(2),
+    });
+    const pendingIds: string[] = [];
+    let afterKey: { server: string; createdAt: string; flowId: string } | undefined;
+    do {
+      const page = await secondRepository.listPage({
+        server: SERVER,
+        status: "pending",
+        now: after(2),
+        limit: 1,
+        ...(afterKey ? { after: afterKey } : {}),
+      });
+      pendingIds.push(...page.items.map((flow) => flow.flowId));
+      afterKey = page.nextKey;
+    } while (afterKey);
+    expect(pendingIds).toEqual(["flow_A", "flow_later"]);
+
+    const allIds: string[] = [];
+    afterKey = undefined;
+    do {
+      const page = await secondRepository.listPage({
+        now: after(2),
+        limit: 1,
+        ...(afterKey ? { after: afterKey } : {}),
+      });
+      allIds.push(...page.items.map((flow) => flow.flowId));
+      afterKey = page.nextKey;
+    } while (afterKey);
+    expect(allIds).toEqual(["flow_A", "flow_a", "flow_other", "flow_later"]);
+    await expect(
+      secondRepository.listPage({
+        server: SERVER,
+        status: "expired",
+        now: after(20_000),
+        limit: 10,
+      }),
+    ).resolves.toMatchObject({
+      items: [
+        { flowId: "flow_A", server: SERVER, status: "expired" },
+        { flowId: "flow_a", server: SERVER, status: "expired" },
+        { flowId: "flow_later", server: SERVER, status: "expired" },
+      ],
+    });
+
+    await expect(
+      secondRepository.listPage({
+        server: SERVER,
+        limit: 1,
+        after: {
+          server: "gitlab",
+          createdAt: NOW.toISOString(),
+          flowId: "flow_other",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    await expect(
+      secondRepository.listPage({
+        limit: 1,
+        after: { server: SERVER, createdAt: "not-a-timestamp", flowId: "flow_A" },
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+  });
+
   it("rejects executable or non-JSON state before persistence", async () => {
     const state = {
       ...flowState("flow_function"),

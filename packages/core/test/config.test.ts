@@ -26,6 +26,7 @@ import {
   vaultBootstrapResolver,
   type ConfigVaultResolver,
 } from "../src/config";
+import { DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES } from "../src/admin-api/bundle-contract";
 import { listCaplets } from "../src/cli/inspection";
 import { CapletsError } from "../src/errors";
 import { ServerRegistry } from "../src/registry";
@@ -224,6 +225,9 @@ describe("config", () => {
         allowUnauthenticatedHttp: true,
         trustProxy: true,
         publicOrigins: ["https://caplets.example.com"],
+        adminUploadStagingDir: "/var/lib/caplets/uploads",
+        adminUploadMaxConcurrent: 3,
+        adminUploadMaxStagedBytes: 400_000_000,
       },
     });
 
@@ -237,6 +241,9 @@ describe("config", () => {
         allowUnauthenticatedHttp: true,
         trustProxy: true,
         publicOrigins: ["https://caplets.example.com"],
+        adminUploadStagingDir: "/var/lib/caplets/uploads",
+        adminUploadMaxConcurrent: 3,
+        adminUploadMaxStagedBytes: 400_000_000,
       },
     });
   });
@@ -249,6 +256,36 @@ describe("config", () => {
     expect(() =>
       parseConfig({ serve: { publicOrigins: ["https://user:pass@caplets.example.com"] } }),
     ).toThrow(CapletsError);
+  });
+
+  it("rejects invalid admin upload serve config", () => {
+    expect(() => parseConfig({ serve: { adminUploadStagingDir: "  " } })).toThrow(CapletsError);
+    expect(() => parseConfig({ serve: { adminUploadMaxConcurrent: 1.5 } })).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({ serve: { adminUploadMaxConcurrent: Number.MAX_SAFE_INTEGER + 1 } }),
+    ).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({
+        serve: { adminUploadMaxStagedBytes: DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES - 1 },
+      }),
+    ).toThrow(CapletsError);
+  });
+
+  it("publishes the runtime admin upload request minimum in config schema", () => {
+    const schema = configJsonSchema() as {
+      properties: {
+        serve: { properties: { adminUploadMaxStagedBytes: { minimum?: number } } };
+      };
+    };
+
+    expect(schema.properties.serve.properties.adminUploadMaxStagedBytes.minimum).toBe(
+      DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES,
+    );
+    expect(() =>
+      parseConfig({
+        serve: { adminUploadMaxStagedBytes: DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES },
+      }),
+    ).not.toThrow();
   });
 
   it("publishes origin-only validation for serve public origins", () => {

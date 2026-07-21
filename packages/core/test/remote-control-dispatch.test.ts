@@ -1,8 +1,19 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TemporarilyUnavailableError } from "@modelcontextprotocol/sdk/server/auth/errors";
+import {
+  InvalidRequestError,
+  TemporarilyUnavailableError,
+} from "@modelcontextprotocol/sdk/server/auth/errors";
 
 const mockMcpAuth = vi.hoisted(() => vi.fn());
 
@@ -12,20 +23,43 @@ vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
 }));
 
 import { FileOAuthProvider } from "../src/auth";
+import { CapletsEngine } from "../src/engine";
 
 import {
-  dispatchRemoteCliRequest,
+  dispatchRemoteCliRequest as dispatchRemoteCliRequestImplementation,
   LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES,
   maximumBase64EncodedBytes,
   remoteBundleSerializedMetadataBytes,
 } from "../src/remote-control/dispatch";
-import { createCurrentHostOperations } from "../src/current-host/operations";
+import { DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS } from "../src/remote-control/auth-flow";
+import { REMOTE_CLI_COMMANDS, REMOTE_CLI_COMMAND_DESTINATIONS } from "../src/remote-control/types";
+import { REMOTE_CLI_COMMAND_DESTINATION_FIXTURE } from "./fixtures/remote-cli-command-destinations";
+import {
+  createCurrentHostOperations,
+  type CurrentHostOperations,
+  type CurrentHostOperationsDependencies,
+} from "../src/current-host/operations";
 import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { createHostStorage, type HostStorage } from "../src/storage";
 import { MAX_BUNDLE_FILES, MAX_BUNDLE_TOTAL_BYTES } from "../src/storage/caplet-records";
 
 const dirs: string[] = [];
 const storages: HostStorage[] = [];
+const currentHostAdministrationByContext = new WeakMap<
+  object,
+  NonNullable<Parameters<typeof dispatchRemoteCliRequestImplementation>[2]>
+>();
+
+async function dispatchRemoteCliRequest(
+  ...args: Parameters<typeof dispatchRemoteCliRequestImplementation>
+) {
+  const [request, context, administration] = args;
+  return await dispatchRemoteCliRequestImplementation(
+    request,
+    context,
+    administration ?? currentHostAdministrationByContext.get(context),
+  );
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -37,6 +71,22 @@ afterEach(async () => {
 });
 
 describe("dispatchRemoteCliRequest", () => {
+  it("classifies every frozen command into exactly one migration destination", () => {
+    const classified = Object.entries(REMOTE_CLI_COMMAND_DESTINATION_FIXTURE).flatMap(
+      ([destination, commands]) => commands.map((command) => [command, destination] as const),
+    );
+
+    expect(classified.map(([command]) => command)).toHaveLength(
+      new Set(classified.map(([command]) => command)).size,
+    );
+    expect(new Set(classified.map(([command]) => command))).toEqual(new Set(REMOTE_CLI_COMMANDS));
+    expect(
+      Object.fromEntries(classified.map(([command, destination]) => [command, destination])),
+    ).toEqual(REMOTE_CLI_COMMAND_DESTINATIONS);
+    expect(REMOTE_CLI_COMMAND_DESTINATIONS.call_tool).toBe("attach");
+    expect(REMOTE_CLI_COMMAND_DESTINATIONS.auth_login_complete).toBe("public_auth_self_service");
+  });
+
   it("derives padded payload and escaped metadata sizes without materializing a maximum bundle", () => {
     expect(maximumBase64EncodedBytes(4, 4)).toBe(16);
     expect(maximumBase64EncodedBytes(4, 1)).toBe(8);
@@ -53,10 +103,13 @@ describe("dispatchRemoteCliRequest", () => {
 
   it("accepts the serialized bundle metadata boundary and rejects one excess byte", async () => {
     const context = testContext();
-    const importBundle = vi.fn(async () => ({ id: "metadata-boundary" }));
+    const execute = vi.fn(async () => ({
+      kind: "stored_caplet_bundle_import" as const,
+      record: { id: "metadata-boundary" },
+    }));
     const administration = {
       ...currentHostAdministration(context),
-      storage: { caplets: { importBundle } } as unknown as HostStorage,
+      operations: { execute } as unknown as CurrentHostOperations,
     };
     const command = "storage_records_import";
     const id = "metadata-boundary";
@@ -108,7 +161,57 @@ describe("dispatchRemoteCliRequest", () => {
         message: "Remote Caplet bundle metadata exceeds the byte limit.",
       },
     });
-    expect(importBundle).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts the frozen bundle file-count boundary and rejects one excess entry", async () => {
+    const context = testContext();
+    const execute = vi.fn(async () => ({
+      kind: "stored_caplet_bundle_import" as const,
+      record: { id: "file-count-boundary" },
+    }));
+    const administration = {
+      ...currentHostAdministration(context),
+      operations: { execute } as unknown as CurrentHostOperations,
+    };
+    const file = { path: "CAPLET.md", contentBase64: "", executable: false };
+
+    for (const count of [502, MAX_BUNDLE_FILES + 1]) {
+      execute.mockClear();
+      await expect(
+        dispatchRemoteCliRequest(
+          {
+            command: "storage_records_import",
+            arguments: {
+              id: "file-count-boundary",
+              files: Array.from({ length: count }, () => file),
+            },
+          },
+          context,
+          administration,
+        ),
+      ).resolves.toMatchObject({ ok: true });
+      expect(execute).toHaveBeenCalledOnce();
+    }
+
+    execute.mockClear();
+    await expect(
+      dispatchRemoteCliRequest(
+        {
+          command: "storage_records_import",
+          arguments: {
+            id: "file-count-excess",
+            files: Array.from({ length: MAX_BUNDLE_FILES + 2 }, () => file),
+          },
+        },
+        context,
+        administration,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "REQUEST_INVALID" },
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("lists Caplets from the server-side config", async () => {
@@ -123,8 +226,8 @@ describe("dispatchRemoteCliRequest", () => {
     expect(response.ok && response.result).toEqual([
       expect.objectContaining({
         server: "server_status",
-        backend: "http",
-        source: "global-config",
+        backend: "attach",
+        source: "remote-attach",
       }),
     ]);
   });
@@ -146,6 +249,34 @@ describe("dispatchRemoteCliRequest", () => {
         result: { id: "server_status", backend: { type: "http" }, name: "Server Status" },
       },
     });
+  });
+
+  it("rejects runtime access to a Caplet hidden from Attach", async () => {
+    const context = testContext();
+    const config = JSON.parse(readFileSync(context.configPath, "utf8")) as {
+      httpApis: Record<string, Record<string, unknown>>;
+    };
+    config.httpApis.server_status!.disabled = true;
+    writeFileSync(context.configPath, JSON.stringify(config));
+
+    await expect(
+      dispatchRemoteCliRequest(
+        {
+          command: "inspect",
+          arguments: { caplet: "server_status", request: { operation: "inspect" } },
+        },
+        context,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "ATTACH_EXPORT_NOT_FOUND",
+        message: "The requested Attach Caplet is not exported.",
+      },
+    });
+    await expect(
+      dispatchRemoteCliRequest({ command: "list", arguments: { includeDisabled: true } }, context),
+    ).resolves.toEqual({ ok: true, result: [] });
   });
 
   it("executes nested search_tools requests through the server engine", async () => {
@@ -245,20 +376,27 @@ describe("dispatchRemoteCliRequest", () => {
     writeFileSync(
       context.configPath,
       JSON.stringify({
-        mcpServers: {
+        options: { exposure: "progressive" },
+        httpApis: {
           github: {
             name: "GitHub",
             description: "GitHub tools.",
-            transport: "http",
-            url: "https://api.githubcopilot.com/mcp",
-            auth: { type: "bearer", token: "$vault:GH_TOKEN" },
+            baseUrl: "https://api.github.test",
+            auth: { type: "none" },
+            actions: { check: { method: "GET", path: "/check" } },
           },
         },
       }),
     );
     const storage = await configuredTestStorage({ ...context, authDir });
     const dispatchContext = { ...context, authDir, hostStorage: storage };
-    const administration = currentHostAdministration({ ...context, authDir, storage });
+    const currentHostEngine = await CapletsEngine.create(dispatchContext);
+    const administration = currentHostAdministration({
+      ...context,
+      authDir,
+      storage,
+      engine: currentHostEngine,
+    });
 
     const set = await dispatchRemoteCliRequest(
       {
@@ -307,10 +445,11 @@ describe("dispatchRemoteCliRequest", () => {
       ok: true,
       result: {
         structuredContent: {
-          result: { id: "github", backend: { type: "mcp" }, name: "GitHub" },
+          result: { id: "github", backend: { type: "http" }, name: "GitHub" },
         },
       },
     });
+    await currentHostEngine.close();
   });
 
   it("does not retain a remote Vault value when set-and-grant fails", async () => {
@@ -391,146 +530,33 @@ describe("dispatchRemoteCliRequest", () => {
     expect(JSON.stringify(response)).not.toContain("remote_secret");
   });
 
-  it("adds MCP Caplets to the server-side project Caplets root", async () => {
-    const context = testContext();
+  it("rejects init and every add variant without changing local files", async () => {
+    const context = testContext({ writeConfig: false });
+    const requests = [
+      { command: "init", arguments: {} },
+      ...["cli", "mcp", "openapi", "google-discovery", "googleDiscovery", "graphql", "http"].map(
+        (kind) => ({
+          command: "add",
+          arguments: { kind, id: `remote-${kind}` },
+        }),
+      ),
+    ];
 
-    const response = await dispatchRemoteCliRequest(
-      {
-        command: "add",
-        arguments: {
-          kind: "mcp",
-          id: "remote_fixture",
-          options: { command: "node", arg: ["server.js"] },
+    for (const request of requests) {
+      await expect(dispatchRemoteCliRequest(request, context)).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "REQUEST_INVALID",
+          message: `Remote ${request.command} is local-only. Run caplets ${request.command} on the machine whose files should change.`,
         },
-      },
-      context,
-    );
+      });
+    }
 
-    expect(response).toMatchObject({ ok: true, result: { remote: true, label: "MCP" } });
-    const capletPath = join(context.projectCapletsRoot, "remote_fixture.md");
-    expect(existsSync(capletPath)).toBe(true);
-    expect(readFileSync(capletPath, "utf8")).toContain("mcpServer:");
+    expect(existsSync(context.configPath)).toBe(false);
+    expect(readdirSync(context.projectCapletsRoot)).toEqual([]);
   });
 
-  it("rejects remote add output because the server owns the destination", async () => {
-    const context = testContext();
-
-    const response = await dispatchRemoteCliRequest(
-      {
-        command: "add",
-        arguments: {
-          kind: "mcp",
-          id: "remote_escape",
-          options: { command: "node", output: join(context.tempRoot, "outside.md") },
-        },
-      },
-      context,
-    );
-
-    expect(response).toMatchObject({
-      ok: false,
-      error: {
-        code: "REQUEST_INVALID",
-        message: expect.stringContaining("output is not supported remotely"),
-      },
-    });
-  });
-
-  it("rejects remote add destinationRoot because the server owns the destination", async () => {
-    const context = testContext();
-
-    const response = await dispatchRemoteCliRequest(
-      {
-        command: "add",
-        arguments: {
-          kind: "mcp",
-          id: "remote_destination_root",
-          options: { command: "node", destinationRoot: context.tempRoot },
-        },
-      },
-      context,
-    );
-
-    expect(response).toMatchObject({
-      ok: false,
-      error: {
-        code: "REQUEST_INVALID",
-        message: expect.stringContaining("destinationRoot is not supported remotely"),
-      },
-    });
-  });
-
-  it("rejects remote add print because the server owns write behavior", async () => {
-    const context = testContext();
-
-    const response = await dispatchRemoteCliRequest(
-      {
-        command: "add",
-        arguments: {
-          kind: "mcp",
-          id: "remote_print",
-          options: { command: "node", print: true },
-        },
-      },
-      context,
-    );
-
-    expect(response).toMatchObject({
-      ok: false,
-      error: {
-        code: "REQUEST_INVALID",
-        message: expect.stringContaining("print is not supported remotely"),
-      },
-    });
-  });
-
-  it("rejects invalid remote add option types before calling helpers", async () => {
-    const context = testContext();
-
-    const response = await dispatchRemoteCliRequest(
-      {
-        command: "add",
-        arguments: {
-          kind: "mcp",
-          id: "remote_bad_force",
-          options: { command: "node", force: "yes" },
-        },
-      },
-      context,
-    );
-
-    expect(response).toMatchObject({
-      ok: false,
-      error: { code: "REQUEST_INVALID", message: expect.stringContaining("force") },
-    });
-  });
-
-  it("accepts valid remote add nested options", async () => {
-    const context = testContext();
-
-    const response = await dispatchRemoteCliRequest(
-      {
-        command: "add",
-        arguments: {
-          kind: "mcp",
-          id: "remote_valid",
-          options: { command: "node", arg: ["server.js"], env: ["A=B"], force: true },
-        },
-      },
-      context,
-    );
-
-    expect(response).toMatchObject({ ok: true, result: { remote: true, label: "MCP" } });
-    expect(existsSync(join(context.projectCapletsRoot, "remote_valid.md"))).toBe(true);
-  });
-
-  it("marks init and install mutation responses as remote", async () => {
-    const initContext = testContext({ writeConfig: false });
-
-    await expect(
-      dispatchRemoteCliRequest({ command: "init", arguments: {} }, initContext),
-    ).resolves.toMatchObject({ ok: true, result: { remote: true, path: initContext.configPath } });
-
+  it("keeps retained install response parity", async () => {
     const installContext = testContext();
     const sourceRepo = join(installContext.tempRoot, "source");
     const sourceCaplets = join(sourceRepo, "caplets");
@@ -677,11 +703,16 @@ describe("dispatchRemoteCliRequest", () => {
     writeFileSync(
       context.configPath,
       JSON.stringify({
+        options: { exposure: "progressive" },
         storage: { type: "sqlite", path: join(context.tempRoot, "host-state.sqlite3") },
-        mcpServers: {
-          github: { name: "GitHub", description: "GitHub project automation.", command: "node" },
-        },
         httpApis: {
+          github: {
+            name: "GitHub",
+            description: "GitHub project automation.",
+            baseUrl: "https://api.github.test",
+            auth: { type: "none" },
+            actions: { check: { method: "GET", path: "/check" } },
+          },
           users: {
             name: "Users",
             description: "Manage users through the API.",
@@ -719,11 +750,8 @@ describe("dispatchRemoteCliRequest", () => {
   it("lists, refreshes, and logs out server-side auth credentials", async () => {
     const fixture = remoteFixtureWithOAuth();
     const storage = await configuredTestStorage(fixture.context);
-    const dispatchContext = {
-      ...fixture.context,
-      hostStorage: storage,
-      backendAuthStore: storage.backendAuth,
-    };
+    const dispatchContext = fixture.context;
+    const administration = currentHostAdministration({ ...fixture.context, storage });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         access_token: "new-access-token",
@@ -742,6 +770,7 @@ describe("dispatchRemoteCliRequest", () => {
     const listed = await dispatchRemoteCliRequest(
       { command: "auth_list", arguments: {} },
       dispatchContext,
+      administration,
     );
     expect(listed).toEqual({
       ok: true,
@@ -751,6 +780,7 @@ describe("dispatchRemoteCliRequest", () => {
     const refreshed = await dispatchRemoteCliRequest(
       { command: "auth_refresh", arguments: { server: "remote" } },
       dispatchContext,
+      administration,
     );
     expect(refreshed).toEqual({
       ok: true,
@@ -773,6 +803,7 @@ describe("dispatchRemoteCliRequest", () => {
     const loggedOut = await dispatchRemoteCliRequest(
       { command: "auth_logout", arguments: { server: "remote" } },
       dispatchContext,
+      administration,
     );
     expect(loggedOut).toEqual({
       ok: true,
@@ -829,12 +860,7 @@ describe("dispatchRemoteCliRequest", () => {
       }),
     );
     const storage = await configuredTestStorage({ ...context, authDir });
-    const dispatchContext = {
-      ...context,
-      authDir,
-      hostStorage: storage,
-      controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-    };
+    const dispatchContext = remoteOAuthDispatchContext({ ...context, authDir }, storage);
 
     const response = await dispatchRemoteCliRequest(
       { command: "auth_login_start", arguments: { server: "drive" } },
@@ -904,11 +930,7 @@ describe("dispatchRemoteCliRequest", () => {
   it("does not persist a pending auth flow when MCP auth is already authorized", async () => {
     const fixture = remoteFixtureWithOAuth();
     const storage = await configuredTestStorage(fixture.context);
-    const dispatchContext = {
-      ...fixture.context,
-      hostStorage: storage,
-      controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
-    };
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
     const create = vi.spyOn(storage.backendAuthFlows, "create");
     mockMcpAuth.mockResolvedValueOnce("AUTHORIZED");
 
@@ -1054,6 +1076,146 @@ describe("dispatchRemoteCliRequest", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("serializes durable OAuth heartbeats and settles them before completion", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const baseTime = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(baseTime);
+    try {
+      let finishExchange!: (response: Response) => void;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          finishExchange = resolve;
+        }),
+      );
+      const heartbeatAttempts: Array<{
+        resolve(value: boolean): void;
+        reject(error: Error): void;
+      }> = [];
+      const heartbeat = vi.spyOn(storage.backendAuthFlows, "heartbeat").mockImplementation(
+        async () =>
+          await new Promise<boolean>((resolve, reject) => {
+            heartbeatAttempts.push({ resolve, reject });
+          }),
+      );
+      const completeClaim = vi.spyOn(storage.backendAuthFlows, "completeClaim");
+      const completion = dispatchRemoteCliRequest(
+        {
+          command: "auth_login_complete",
+          arguments: {
+            flowId: started.flowId,
+            callbackUrl: oauthCallbackUrl(authorizationUrl),
+          },
+        },
+        dispatchContext,
+      );
+      let completionSettled = false;
+      void completion.finally(() => {
+        completionSettled = true;
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS * 3);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+
+      heartbeatAttempts.shift()?.reject(new Error("transient heartbeat failure"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(heartbeat).toHaveBeenCalledTimes(2);
+      const firstHeartbeatAt = heartbeat.mock.calls[0]?.[0].now;
+      const secondHeartbeatAt = heartbeat.mock.calls[1]?.[0].now;
+      if (!firstHeartbeatAt || !secondHeartbeatAt) {
+        throw new Error("Expected timestamped heartbeat attempts.");
+      }
+      expect(secondHeartbeatAt.getTime() - firstHeartbeatAt.getTime()).toBeGreaterThanOrEqual(
+        DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS * 3,
+      );
+      expect(secondHeartbeatAt).toEqual(new Date());
+
+      finishExchange(oauthTokenResponse());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completionSettled).toBe(false);
+      expect(completeClaim).not.toHaveBeenCalled();
+
+      heartbeatAttempts.shift()?.resolve(true);
+      await expect(completion).resolves.toEqual({
+        ok: true,
+        result: { server: "remote", authenticated: true },
+      });
+      expect(completeClaim).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS * 2);
+      expect(heartbeat).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles an active heartbeat before releasing a retryable OAuth claim", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    vi.useFakeTimers();
+    try {
+      let finishExchange!: (response: Response) => void;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          finishExchange = resolve;
+        }),
+      );
+      let finishHeartbeat!: (value: boolean) => void;
+      const heartbeat = vi.spyOn(storage.backendAuthFlows, "heartbeat").mockImplementationOnce(
+        async () =>
+          await new Promise<boolean>((resolve) => {
+            finishHeartbeat = resolve;
+          }),
+      );
+      const release = vi.spyOn(storage.backendAuthFlows, "release");
+      const completion = dispatchRemoteCliRequest(
+        {
+          command: "auth_login_complete",
+          arguments: {
+            flowId: started.flowId,
+            callbackUrl: oauthCallbackUrl(authorizationUrl),
+          },
+        },
+        dispatchContext,
+      );
+      let completionSettled = false;
+      void completion.finally(() => {
+        completionSettled = true;
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+
+      finishExchange(Response.json({ error: "temporarily_unavailable" }, { status: 503 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completionSettled).toBe(false);
+      expect(release).not.toHaveBeenCalled();
+
+      finishHeartbeat(true);
+      await expect(completion).resolves.toMatchObject({
+        ok: false,
+        error: { code: "AUTH_FAILED" },
+      });
+      expect(release).toHaveBeenCalledTimes(1);
+      await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+        status: "pending",
+      });
+      await vi.advanceTimersByTimeAsync(DEFAULT_REMOTE_AUTH_CLAIM_HEARTBEAT_MS * 2);
+      expect(heartbeat).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("releases a matching claim after an explicitly retryable pre-commit failure", async () => {
     const fixture = genericRemoteFixtureWithOAuth();
     const storage = await configuredTestStorage(fixture.context);
@@ -1090,6 +1252,208 @@ describe("dispatchRemoteCliRequest", () => {
       result: { server: "remote", authenticated: true },
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["temporarily_unavailable", "server_error"])(
+    "releases a generic OAuth claim after HTTP 400 %s",
+    async (errorCode) => {
+      const fixture = genericRemoteFixtureWithOAuth();
+      const storage = await configuredTestStorage(fixture.context);
+      const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+      const started = await startRemoteOAuth(dispatchContext);
+      const authorizationUrl = new URL(started.authorizationUrl);
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          Response.json(
+            {
+              error: errorCode,
+              error_description: "provider echoed access_token=secret-access-token",
+              refresh_token: "secret-refresh-token",
+            },
+            { status: 400 },
+          ),
+        )
+        .mockResolvedValueOnce(oauthTokenResponse());
+      const completionRequest = {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      } as const;
+
+      const transientFailure = await dispatchRemoteCliRequest(completionRequest, dispatchContext);
+
+      expect(transientFailure).toMatchObject({ ok: false, error: { code: "AUTH_FAILED" } });
+      expect(JSON.stringify(transientFailure)).not.toMatch(
+        /secret-access-token|secret-refresh-token/u,
+      );
+      await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+        status: "pending",
+      });
+      await expect(dispatchRemoteCliRequest(completionRequest, dispatchContext)).resolves.toEqual({
+        ok: true,
+        result: { server: "remote", authenticated: true },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("terminalizes a generic OAuth claim after HTTP 400 invalid_grant", async () => {
+    const fixture = genericRemoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json(
+        {
+          error: "invalid_grant",
+          error_description: "provider echoed access_token=secret-access-token",
+        },
+        { status: 400 },
+      ),
+    );
+    const completionRequest = {
+      command: "auth_login_complete",
+      arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+    } as const;
+
+    const terminalFailure = await dispatchRemoteCliRequest(completionRequest, dispatchContext);
+
+    expect(terminalFailure).toMatchObject({ ok: false, error: { code: "AUTH_FAILED" } });
+    expect(JSON.stringify(terminalFailure)).not.toContain("secret-access-token");
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "failed",
+    });
+    await expect(
+      dispatchRemoteCliRequest(completionRequest, dispatchContext),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "AUTH_FAILED", message: expect.stringContaining("cannot be retried") },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([429, 503])(
+    "releases an MCP claim after a %i token response even when the OAuth error is terminal",
+    async (status) => {
+      const fixture = remoteFixtureWithOAuth();
+      const storage = await configuredTestStorage(fixture.context);
+      const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+      mockMcpAuth
+        .mockImplementationOnce(async (provider: FileOAuthProvider) => {
+          provider.saveCodeVerifier("persisted-pkce-verifier");
+          provider.saveDiscoveryState({
+            authorizationServerUrl: "https://auth.example.com",
+            authorizationServerMetadata: {
+              issuer: "https://auth.example.com",
+              authorization_endpoint: "https://auth.example.com/authorize",
+              token_endpoint: "https://auth.example.com/token",
+              response_types_supported: ["code"],
+            },
+          });
+          provider.redirectToAuthorization(
+            new URL(`https://auth.example.com/authorize?state=${provider.state()}`),
+          );
+          return "REDIRECT";
+        })
+        .mockImplementationOnce(async (_provider, options) => {
+          const response = await options.fetchFn("https://auth.example.com/token", {
+            method: "POST",
+          });
+          expect(response.status).toBe(status);
+          throw new InvalidRequestError("provider echoed access_token=secret-token");
+        })
+        .mockImplementationOnce(async (provider: FileOAuthProvider) => {
+          await provider.saveTokens({
+            access_token: "completed-access-token",
+            token_type: "Bearer",
+          });
+          return "AUTHORIZED";
+        });
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          Response.json({ error: "invalid_request", access_token: "secret-token" }, { status }),
+        );
+      const started = await startRemoteOAuth(dispatchContext);
+      const authorizationUrl = new URL(started.authorizationUrl);
+      const completionRequest = {
+        command: "auth_login_complete",
+        arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+      } as const;
+
+      const transientFailure = await dispatchRemoteCliRequest(completionRequest, dispatchContext);
+
+      expect(transientFailure).toMatchObject({ ok: false, error: { code: "AUTH_FAILED" } });
+      expect(JSON.stringify(transientFailure)).not.toContain("secret-token");
+      await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+        status: "pending",
+      });
+      await expect(dispatchRemoteCliRequest(completionRequest, dispatchContext)).resolves.toEqual({
+        ok: true,
+        result: { server: "remote", authenticated: true },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("terminalizes an MCP claim after a terminal 400 token response", async () => {
+    const fixture = remoteFixtureWithOAuth();
+    const storage = await configuredTestStorage(fixture.context);
+    const dispatchContext = remoteOAuthDispatchContext(fixture.context, storage);
+    mockMcpAuth
+      .mockImplementationOnce(async (provider: FileOAuthProvider) => {
+        provider.saveCodeVerifier("persisted-pkce-verifier");
+        provider.saveDiscoveryState({
+          authorizationServerUrl: "https://auth.example.com",
+          authorizationServerMetadata: {
+            issuer: "https://auth.example.com",
+            authorization_endpoint: "https://auth.example.com/authorize",
+            token_endpoint: "https://auth.example.com/token",
+            response_types_supported: ["code"],
+          },
+        });
+        provider.redirectToAuthorization(
+          new URL(`https://auth.example.com/authorize?state=${provider.state()}`),
+        );
+        return "REDIRECT";
+      })
+      .mockImplementationOnce(async (_provider, options) => {
+        const response = await options.fetchFn("https://auth.example.com/token", {
+          method: "POST",
+        });
+        expect(response.status).toBe(400);
+        throw new InvalidRequestError("provider echoed refresh_token=secret-refresh-token");
+      });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: "invalid_request", refresh_token: "secret-refresh-token" },
+          { status: 400 },
+        ),
+      );
+    const started = await startRemoteOAuth(dispatchContext);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    const completionRequest = {
+      command: "auth_login_complete",
+      arguments: { flowId: started.flowId, callbackUrl: oauthCallbackUrl(authorizationUrl) },
+    } as const;
+
+    const terminalFailure = await dispatchRemoteCliRequest(completionRequest, dispatchContext);
+
+    expect(terminalFailure).toMatchObject({ ok: false, error: { code: "AUTH_FAILED" } });
+    expect(JSON.stringify(terminalFailure)).not.toContain("secret-refresh-token");
+    await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+      status: "failed",
+    });
+    await expect(
+      dispatchRemoteCliRequest(completionRequest, dispatchContext),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "AUTH_FAILED", message: expect.stringContaining("cannot be retried") },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("releases an MCP claim after a retryable OAuth token error", async () => {
@@ -1449,6 +1813,92 @@ describe("dispatchRemoteCliRequest", () => {
     });
   });
 
+  it("delegates source-first record operations without reading transport-owned storage", async () => {
+    const context = testContext();
+    const operations = [
+      {
+        request: { command: "storage_records_list", arguments: {} },
+        operation: { kind: "stored_caplets_list" },
+        outcome: { kind: "stored_caplets_list", records: [{ id: "record" }] },
+        result: [{ id: "record" }],
+      },
+      {
+        request: { command: "storage_records_revisions", arguments: { id: "record" } },
+        operation: { kind: "stored_caplet_revisions", id: "record" },
+        outcome: {
+          kind: "stored_caplet_revisions",
+          revisions: [{ revisionKey: "rev_1", sequence: 1, name: "Record" }],
+        },
+        result: [{ revisionKey: "rev_1", sequence: 1, name: "Record" }],
+      },
+      {
+        request: {
+          command: "storage_records_restore",
+          arguments: { id: "record", revisionKey: "rev_1", expectedGeneration: 2 },
+        },
+        operation: {
+          kind: "stored_caplet_restore_revision",
+          id: "record",
+          revisionKey: "rev_1",
+          expectedGeneration: 2,
+        },
+        outcome: {
+          kind: "stored_caplet_restore_revision",
+          record: { id: "record", headGeneration: 3 },
+        },
+        result: { id: "record", headGeneration: 3 },
+      },
+      {
+        request: {
+          command: "storage_records_delete_revision",
+          arguments: { id: "record", revisionKey: "rev_1", expectedGeneration: 3 },
+        },
+        operation: {
+          kind: "stored_caplet_delete_revision",
+          id: "record",
+          revisionKey: "rev_1",
+          expectedGeneration: 3,
+        },
+        outcome: {
+          kind: "stored_caplet_delete_revision",
+          record: { id: "record", headGeneration: 4 },
+        },
+        result: { deleted: true, record: { id: "record", headGeneration: 4 } },
+      },
+      {
+        request: {
+          command: "storage_records_delete",
+          arguments: { id: "record", expectedGeneration: 4 },
+        },
+        operation: { kind: "stored_caplet_delete", id: "record", expectedGeneration: 4 },
+        outcome: { kind: "stored_caplet_delete", deleted: true, id: "record" },
+        result: { deleted: true, id: "record" },
+      },
+    ] as const;
+    const execute = vi.fn(
+      async (_principal: unknown, operation: { kind: string }) =>
+        operations.find(({ operation: expected }) => expected.kind === operation.kind)!.outcome,
+    );
+    const administration = {
+      ...currentHostAdministration(context),
+      operations: { execute } as unknown as CurrentHostOperations,
+    };
+    Object.defineProperty(administration, "storage", {
+      get: () => {
+        throw new Error("transport-owned HostStorage was read");
+      },
+    });
+
+    for (const fixture of operations) {
+      await expect(
+        dispatchRemoteCliRequest(fixture.request, context, administration),
+      ).resolves.toEqual({ ok: true, result: fixture.result });
+    }
+    expect(execute.mock.calls.map(([, operation]) => operation)).toEqual(
+      operations.map(({ operation }) => operation),
+    );
+  });
+
   it("administers complete stored bundles and installation lifecycles", async () => {
     const context = testContext();
     const storage = await createHostStorage({
@@ -1456,11 +1906,7 @@ describe("dispatchRemoteCliRequest", () => {
       path: join(context.tempRoot, "records.sqlite3"),
     });
     const activateConfig = vi.fn(async () => undefined);
-    const administration = {
-      ...currentHostAdministration(context),
-      storage,
-      activateConfig,
-    };
+    const administration = currentHostAdministration({ ...context, storage, activateConfig });
     const document = (command: string, title: string) =>
       Buffer.from(
         `---\nname: Remote Record\ndescription: Remote bundle fixture.\nmcpServer:\n  command: ${command}\n---\n# ${title}\n`,
@@ -1691,7 +2137,7 @@ describe("dispatchRemoteCliRequest", () => {
         ok: true,
         result: { deleted: true, id: "renamed-record" },
       });
-      expect(activateConfig).toHaveBeenCalledTimes(7);
+      expect(activateConfig).toHaveBeenCalledTimes(9);
     } finally {
       await storage.close();
     }
@@ -1711,6 +2157,7 @@ function testContext(options: { writeConfig?: boolean } = {}) {
     writeFileSync(
       configPath,
       JSON.stringify({
+        options: { exposure: "progressive" },
         storage: { type: "sqlite", path: join(dir, "host-state.sqlite3") },
         httpApis: {
           server_status: {
@@ -1740,13 +2187,16 @@ type DispatchAdministrationContext = {
   authDir?: string;
   globalCapletsRoot?: string;
   globalLockfilePath?: string;
+  controlCallbackBaseUrl?: string;
   storage?: HostStorage;
+  activateConfig?: () => Promise<void>;
+  engine?: CurrentHostOperationsDependencies["engine"];
 };
 
 function currentHostAdministration(context: DispatchAdministrationContext) {
   return {
     operations: createCurrentHostOperations({
-      engine: { enabledServers: () => [] },
+      engine: context.engine ?? { enabledServers: () => [] },
       control: {
         configPath: context.configPath,
         projectConfigPath: context.projectConfigPath,
@@ -1761,14 +2211,18 @@ function currentHostAdministration(context: DispatchAdministrationContext) {
       ...(context.storage
         ? {
             capletRecords: context.storage.caplets,
+            capletInstallations: context.storage.installations,
             catalogStorage: context.storage,
             vaultGrants: context.storage.vaultGrants,
             vaultValues: context.storage.vaultValues,
           }
         : {}),
       version: "test-version",
+      ...(context.controlCallbackBaseUrl
+        ? { backendAuthCallbackBaseUrl: context.controlCallbackBaseUrl }
+        : {}),
+      ...(context.activateConfig ? { activateConfig: context.activateConfig } : {}),
     }),
-    ...(context.storage ? { storage: context.storage } : {}),
     principal: {
       clientId: "rcli_abcdefghijklmnop",
       hostUrl: "http://127.0.0.1:5387/",
@@ -1799,7 +2253,7 @@ function remoteOAuthDispatchContext(
   },
   storage: HostStorage,
 ): Parameters<typeof dispatchRemoteCliRequest>[1] {
-  return {
+  const dispatchContext = {
     configPath: context.configPath,
     projectConfigPath: context.projectConfigPath,
     projectCapletsRoot: context.projectCapletsRoot,
@@ -1814,6 +2268,15 @@ function remoteOAuthDispatchContext(
     hostStorage: storage,
     controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
   };
+  currentHostAdministrationByContext.set(
+    dispatchContext,
+    currentHostAdministration({
+      ...context,
+      storage,
+      controlCallbackBaseUrl: dispatchContext.controlCallbackBaseUrl,
+    }),
+  );
+  return dispatchContext;
 }
 
 async function startRemoteOAuth(

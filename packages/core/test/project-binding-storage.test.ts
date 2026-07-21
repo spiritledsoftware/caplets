@@ -182,4 +182,50 @@ describe("SQL Project Binding metadata", () => {
       await firstStorage.close();
     }
   });
+  it("reports whether an unexpired active lease exists at a point in time", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-project-binding-active-"));
+    directories.push(root);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(root, "caplets.sqlite3"),
+    });
+    let now = new Date("2026-07-18T12:00:00.000Z");
+    const bindings = new ProjectBindingStore(storage.database, {
+      now: () => now,
+      leaseTtlMs: 1_000,
+    });
+
+    try {
+      const expired = await bindings.create({
+        bindingId: "binding-expired",
+        sessionId: "session-expired",
+        projectFingerprint: "sha256:expired",
+        projectRoot: "/client/expired",
+        serverProjectRoot: "/host/expired",
+        ownerNodeId: "node-a",
+      });
+      expect(await bindings.existsActive(now)).toBe(true);
+      expect(await bindings.existsActive(new Date(expired.expiresAt))).toBe(false);
+
+      now = new Date("2026-07-18T12:01:00.000Z");
+      const active = await bindings.create({
+        bindingId: "binding-active",
+        sessionId: "session-active",
+        projectFingerprint: "sha256:active",
+        projectRoot: "/client/active",
+        serverProjectRoot: "/host/active",
+        ownerNodeId: "node-a",
+      });
+      expect(await bindings.existsActive(now)).toBe(true);
+
+      await bindings.end({
+        bindingId: active.bindingId,
+        ownerNodeId: active.ownerNodeId,
+        expectedGeneration: active.generation,
+      });
+      expect(await bindings.existsActive(now)).toBe(false);
+    } finally {
+      await storage.close();
+    }
+  });
 });

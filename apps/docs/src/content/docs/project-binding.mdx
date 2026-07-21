@@ -49,6 +49,120 @@ the upstream supports it. If the upstream binding path is unavailable, local pro
 non-project upstream Caplets remain available; required upstream project Caplets stay unavailable
 with a diagnostic.
 
+## CLI Attach or the public SDK
+
+Choose the client that owns the surrounding workflow:
+
+| Use                            | Choose it when                                                                                                                                            |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `caplets attach`               | An MCP client should launch a thin stdio adapter and let the Caplets CLI use Remote Profiles, saved workspace selection, and CLI-managed login state.     |
+| `@caplets/sdk/project-binding` | An application already owns endpoint selection, credentials, project identity, and lifecycle UI, and needs to embed only the Project Binding coordinator. |
+
+The SDK coordinator is not a programmatic form of Remote Login. It does not discover a service or
+WebSocket endpoint, choose a Cloud workspace, persist or refresh credentials, or poll a pending
+Remote Login. For those managed behaviors, use the CLI flow described in
+[Remote Attach](/remote-attach/). SDK callers supply an isolated client, an exact Project Binding
+WebSocket URL, and a project fingerprint.
+
+## Public SDK coordinator
+
+The package root supplies the generated public HTTP client. The browser-safe coordinator is a
+separate export:
+
+```ts
+import { createClient } from "@caplets/sdk";
+import { runProjectBindingSession } from "@caplets/sdk/project-binding";
+
+const client = createClient({
+  baseUrl: "https://caplets.example.com/caplets",
+  auth: async () => getAccessToken(),
+});
+
+const result = await runProjectBindingSession({
+  client,
+  webSocketUrl: "wss://caplets.example.com/caplets/v1/attach/project-bindings/connect",
+  projectRoot: "/workspace/repository",
+  projectFingerprint: fingerprintFromYourApplication,
+  onEvent(event) {
+    renderBindingStatus(event);
+  },
+});
+
+if (result.error) {
+  renderBindingFailure(result.error);
+}
+```
+
+`createClient` creates an isolated Fetch client for the explicit HTTP service root. Its `auth`
+value is optional and can be either a caller-owned static token or an async provider. The example's
+credential functions and fingerprint value belong to the application; the SDK does not acquire or
+store them.
+
+The coordinator has no Node built-ins and can run in a modern browser or Node 22. A Node process
+that has a filesystem path can use the separate marker-aware helper:
+
+```ts
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
+
+const projectRoot = "/workspace/repository";
+const projectFingerprint = fingerprintProjectRoot(projectRoot);
+```
+
+`fingerprintProjectRoot` hashes the resolved path and recognized project markers. It is not
+exported from the browser-safe coordinator. Browser callers must calculate or obtain a stable
+fingerprint themselves and pass it to `runProjectBindingSession`.
+
+### Endpoint and protocol contract
+
+`webSocketUrl` must be an explicit `ws:` or `wss:` URL whose final path segment is `connect`.
+The coordinator preserves deployment prefixes and derives only the sibling `sessions`,
+`{bindingId}/heartbeat`, and `{bindingId}/session` HTTP URLs. It does not discover either the HTTP
+service root or the WebSocket URL. Supply the exact workspace-scoped URL when the deployment uses
+workspace routing.
+
+Every socket offers `caplets.project-binding.v1` as its first WebSocket subprotocol, and the server
+always negotiates that exact value. When the isolated client's auth provider returns a bearer
+token, the coordinator offers `caplets.bearer.<base64url-utf8-token>` as a second subprotocol. It
+resolves async auth again for each HTTP request and for the single reconnect.
+
+Bearer credentials are never placed in the WebSocket URL, session events, SDK error messages, or
+logs. Do not add tokens to query parameters, application logs, agent configuration, or a persisted
+fingerprint. The socket URL query carries only the binding ID, session ID, and project fingerprint.
+
+### Events, results, and fixed lifecycle
+
+`onEvent` receives a discriminated union:
+
+| Event          | Meaning                                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `state`        | The server reported a binding and sync-state transition.                                                             |
+| `ready`        | The binding is usable and includes the binding/session IDs, root, fingerprint, public WebSocket URL, and sync state. |
+| `reconnecting` | An unexpected socket close or error triggered the one allowed reconnect (`attempt: 1`).                              |
+| `heartbeat`    | The dual heartbeat completed and reports the current server-returned binding and sync state.                         |
+| `ended`        | The terminal reason is known and guarded cleanup has been attempted. This is the final event.                        |
+
+The terminal promise does not resolve at `ready`; it settles after `ended`. By default it returns
+typed fields as either `{ data, error: undefined }` or
+`{ data: undefined, error: ProjectBindingSessionError }`. Set `throwOnError: true` to receive
+`ProjectBindingSessionData` directly and reject with `ProjectBindingSessionError` on failure.
+Abort is a typed failure after cleanup, not a successful end. Error kinds distinguish `http`,
+`protocol`, `socket`, `callback`, `aborted`, and `cleanup` failures without exposing credentials.
+
+The timing and retry behavior is fixed protocol policy rather than application configuration:
+
+- send both a WebSocket heartbeat and its sibling HTTP heartbeat immediately after the socket
+  opens, then every 15 seconds;
+- reconnect once after an unexpected close or socket error, then fail if that connection also
+  closes unexpectedly; and
+- finalize exactly once, even when abort, heartbeat, callback, and socket failures race. A live
+  socket receives an `end` message and gets up to one second for acknowledgement; otherwise the
+  coordinator falls back to the sibling HTTP delete. The initiating failure remains primary and a
+  cleanup failure is attached as secondary detail.
+
+There are intentionally no heartbeat, retry, or finalization tuning options. The coordinator
+maintains the connection and reports state, but Caplets core remains authoritative for lease
+ownership and expiry, readiness, synchronization policy, and the synchronized workspace bytes.
+
 ## Preflight the binding path
 
 Use the finite smoke path with an explicit remote selector before editing agent configuration:

@@ -20,13 +20,16 @@ import type {
 type VaultSetOperation = Extract<CurrentHostOperation, { kind: "vault_set" }>;
 type VaultListOperation = Extract<CurrentHostOperation, { kind: "vault_list" }>;
 type VaultGetOperation = Extract<CurrentHostOperation, { kind: "vault_get" }>;
+type VaultValuesPageOperation = Extract<CurrentHostOperation, { kind: "vault_values_page" }>;
 type VaultDeleteOperation = Extract<CurrentHostOperation, { kind: "vault_delete" }>;
 type VaultAccessGrantOperation = Extract<CurrentHostOperation, { kind: "vault_access_grant" }>;
 type VaultAccessRevokeOperation = Extract<CurrentHostOperation, { kind: "vault_access_revoke" }>;
 type VaultAccessListOperation = Extract<CurrentHostOperation, { kind: "vault_access_list" }>;
+type VaultGrantsPageOperation = Extract<CurrentHostOperation, { kind: "vault_grants_page" }>;
 type VaultSetOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_set" }>;
 type VaultListOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_list" }>;
 type VaultGetOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_get" }>;
+type VaultValuesPageOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_values_page" }>;
 type VaultDeleteOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_delete" }>;
 type VaultAccessGrantOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_access_grant" }>;
 type VaultAccessRevokeOutcome = Extract<
@@ -34,6 +37,7 @@ type VaultAccessRevokeOutcome = Extract<
   { kind: "vault_access_revoke" }
 >;
 type VaultAccessListOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_access_list" }>;
+type VaultGrantsPageOutcome = Extract<CurrentHostOperationOutcome, { kind: "vault_grants_page" }>;
 
 /** Safe Vault administration implementation. Raw value reveal remains in the dashboard adapter. */
 export function createCurrentHostVaultOperations(dependencies: CurrentHostOperationsDependencies) {
@@ -50,7 +54,7 @@ export function createCurrentHostVaultOperations(dependencies: CurrentHostOperat
 
   return {
     valueCount: async (): Promise<number> =>
-      sqlValues ? (await sqlValues.listValues()).length : fileVault!.listValues().length,
+      sqlValues ? await sqlValues.countValues() : fileVault!.listValues().length,
     list: async (_operation: VaultListOperation): Promise<VaultListOutcome> => ({
       kind: "vault_list",
       values: sqlValues ? await sqlValues.listValues() : fileVault!.listValues(),
@@ -59,6 +63,24 @@ export function createCurrentHostVaultOperations(dependencies: CurrentHostOperat
           ? (await sqlGrants.list()).map(redactedSqlVaultGrant)
           : fileVault!.listAccess().map(redactedVaultGrant),
     }),
+    listValuesPage: async (
+      operation: VaultValuesPageOperation,
+    ): Promise<VaultValuesPageOutcome> => {
+      if (!sqlValues) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Authoritative Vault value state is unavailable.",
+        );
+      }
+      return {
+        kind: "vault_values_page",
+        page: await sqlValues.listValuesPage({
+          limit: operation.limit,
+          sort: operation.sort,
+          ...(operation.after === undefined ? {} : { after: operation.after }),
+        }),
+      };
+    },
     get: async (operation: VaultGetOperation): Promise<VaultGetOutcome> => ({
       kind: "vault_get",
       status: sqlValues
@@ -100,23 +122,80 @@ export function createCurrentHostVaultOperations(dependencies: CurrentHostOperat
       sqlGrants
         ? await sqlVaultRevokeOutcome(dependencies, sqlGrants, principal, operation)
         : vaultRevokeOutcome(dependencies, fileVault!, principal, operation),
-    listAccess: async (operation: VaultAccessListOperation): Promise<VaultAccessListOutcome> => ({
-      kind: "vault_access_list",
-      grants: sqlGrants
-        ? (await sqlGrants.list(operation.capletId))
-            .filter((grant) => sqlGrantMatches(grant, operation))
-            .map(redactedSqlVaultGrant)
-        : fileVault!
-            .listAccess({
-              ...(operation.storedKey === undefined
-                ? {}
-                : { storedKey: validateVaultKeyName(operation.storedKey) }),
-              ...(operation.capletId === undefined
-                ? {}
-                : { capletId: requiredCapletId(operation.capletId) }),
-            })
-            .map(redactedVaultGrant),
-    }),
+    listAccess: async (operation: VaultAccessListOperation): Promise<VaultAccessListOutcome> => {
+      let grants: CurrentHostVaultAccessGrant[];
+      if (
+        operation.storedKey !== undefined &&
+        operation.capletId !== undefined &&
+        operation.referenceName !== undefined
+      ) {
+        const capletId = requiredCapletId(operation.capletId);
+        const storedKey = validateVaultKeyName(operation.storedKey);
+        const referenceName = validateVaultKeyName(operation.referenceName);
+        const origin = vaultAccessOrigin(capletId, dependencies);
+        if (sqlGrants) {
+          const grant = await sqlGrants.get({
+            capletId,
+            vaultKey: storedKey,
+            referenceName,
+            originKind: origin.kind,
+            originPath: origin.path,
+          });
+          grants = grant === undefined ? [] : [redactedSqlVaultGrant(grant)];
+        } else {
+          grants = fileVault!
+            .listAccess({ storedKey, capletId, referenceName, origin })
+            .slice(0, 1)
+            .map(redactedVaultGrant);
+        }
+      } else {
+        grants = sqlGrants
+          ? (
+              await sqlGrants.list(
+                operation.capletId,
+                activeVaultGrantOrigins(dependencies, operation.capletId),
+              )
+            )
+              .filter((grant) => sqlGrantMatches(grant, operation))
+              .map(redactedSqlVaultGrant)
+          : fileVault!
+              .listAccess({
+                ...(operation.storedKey === undefined
+                  ? {}
+                  : { storedKey: validateVaultKeyName(operation.storedKey) }),
+                ...(operation.capletId === undefined
+                  ? {}
+                  : { capletId: requiredCapletId(operation.capletId) }),
+              })
+              .map(redactedVaultGrant);
+      }
+      return { kind: "vault_access_list", grants };
+    },
+    listGrantsPage: async (
+      operation: VaultGrantsPageOperation,
+    ): Promise<VaultGrantsPageOutcome> => {
+      if (!sqlGrants) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Authoritative Vault grant state is unavailable.",
+        );
+      }
+      const page = await sqlGrants.listPage({
+        limit: operation.limit,
+        sort: operation.sort,
+        ...(operation.after === undefined ? {} : { after: operation.after }),
+        ...(operation.storedKey === undefined ? {} : { vaultKey: operation.storedKey }),
+        ...(operation.capletId === undefined ? {} : { capletId: operation.capletId }),
+        activeOrigins: activeVaultGrantOrigins(dependencies, operation.capletId),
+      });
+      return {
+        kind: "vault_grants_page",
+        page: {
+          items: page.items.map(redactedSqlVaultGrant),
+          ...(page.nextKey === undefined ? {} : { nextKey: page.nextKey }),
+        },
+      };
+    },
   };
 }
 
@@ -133,6 +212,9 @@ async function sqlVaultSetOutcome(
   const referenceName =
     capletId === undefined ? undefined : validateVaultKeyName(operation.referenceName ?? storedKey);
   const origin = capletId === undefined ? undefined : vaultAccessOrigin(capletId, dependencies);
+  const force = operation.force ?? false;
+  const valueCreateOnly =
+    operation.createOnly ?? (operation.expectedGeneration === undefined ? !force : undefined);
   const grant: VaultGrantInput | undefined =
     capletId === undefined || referenceName === undefined || origin === undefined
       ? undefined
@@ -143,24 +225,39 @@ async function sqlVaultSetOutcome(
           originKind: origin.kind,
           originPath: origin.path,
           operator: sqlOperator(principal),
+          ...(operation.expectedGrantResourceVersion === undefined
+            ? { createOnly: operation.grantCreateOnly ?? valueCreateOnly ?? true }
+            : {}),
+          ...(operation.expectedGrantResourceVersion === undefined
+            ? {}
+            : { expectedResourceVersion: operation.expectedGrantResourceVersion }),
         };
-  const force = operation.force ?? false;
   const status = state
     ? await state.setValueAndGrant({
         key: storedKey,
         value: operation.value,
         force,
+        ...(valueCreateOnly === undefined ? {} : { createOnly: valueCreateOnly }),
+        ...(operation.expectedGeneration === undefined
+          ? {}
+          : { expectedGeneration: operation.expectedGeneration }),
         ...(grant === undefined ? {} : { grant }),
+        ...(operation.grantCreateOnly === undefined
+          ? {}
+          : { grantCreateOnly: operation.grantCreateOnly }),
         operatorClientId: principal.clientId,
       })
     : await setValueAndGrantWithRepositories(values, grants, {
         key: storedKey,
         value: operation.value,
         force,
+        createOnly: valueCreateOnly,
+        expectedGeneration: operation.expectedGeneration,
         grant,
         operatorClientId: principal.clientId,
       });
-  await dependencies.invalidateConfig?.(principal.clientId);
+  if (state) await dependencies.activateConfig?.();
+  else await dependencies.invalidateConfig?.(principal.clientId);
   return { kind: "vault_set", status };
 }
 
@@ -171,12 +268,16 @@ async function setValueAndGrantWithRepositories(
     key: string;
     value: string;
     force: boolean;
+    createOnly: boolean | undefined;
+    expectedGeneration: number | undefined;
     grant: VaultGrantInput | undefined;
     operatorClientId: string;
   },
 ) {
   const status = await values.set(input.key, input.value, {
     force: input.force,
+    ...(input.createOnly === undefined ? {} : { createOnly: input.createOnly }),
+    expectedGeneration: input.expectedGeneration,
     operatorClientId: input.operatorClientId,
   });
   if (input.grant) await grants.grant(input.grant);
@@ -191,8 +292,11 @@ async function sqlVaultDeleteOutcome(
   operation: VaultDeleteOperation,
 ): Promise<VaultDeleteOutcome> {
   const storedKey = validateVaultKeyName(operation.name);
-  const retained = (await grants.list()).filter((grant) => grant.vaultKey === storedKey).length;
-  const deleted = await values.delete(storedKey, { operatorClientId: principal.clientId });
+  const retained = await grants.countByVaultKey(storedKey);
+  const deleted = await values.delete(storedKey, {
+    expectedGeneration: operation.expectedGeneration,
+    operatorClientId: principal.clientId,
+  });
   if (deleted.deleted) await dependencies.invalidateConfig?.(principal.clientId);
   return {
     kind: "vault_delete",
@@ -216,11 +320,18 @@ async function sqlVaultGrantOutcome(
     referenceName,
     originKind: origin.kind,
     originPath: origin.path,
+    ...(operation.expectedResourceVersion === undefined
+      ? { createOnly: operation.createOnly ?? false }
+      : { expectedResourceVersion: operation.expectedResourceVersion }),
     operator: sqlOperator(principal),
   });
-  const grant = (await grants.list(capletId)).find(
-    (candidate) => candidate.vaultKey === storedKey && candidate.referenceName === referenceName,
-  );
+  const grant = await grants.get({
+    capletId,
+    vaultKey: storedKey,
+    referenceName,
+    originKind: origin.kind,
+    originPath: origin.path,
+  });
   if (!grant) {
     throw new CapletsError("INTERNAL_ERROR", "Stored Vault access grant could not be reloaded.");
   }
@@ -241,20 +352,56 @@ async function sqlVaultRevokeOutcome(
       : validateVaultKeyName(operation.referenceName);
   const capletId =
     operation.capletId === undefined ? undefined : requiredCapletId(operation.capletId);
-  const candidates = (await grants.list(capletId)).filter(
-    (grant) =>
-      grant.vaultKey === storedKey &&
-      (referenceName === undefined || grant.referenceName === referenceName),
-  );
+  if (
+    operation.expectedResourceVersion !== undefined &&
+    (capletId === undefined || referenceName === undefined)
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Conditional Vault grant revoke requires Caplet ID and reference name.",
+    );
+  }
   const revoked: StoredVaultGrant[] = [];
-  for (const grant of candidates) {
+  if (
+    operation.expectedResourceVersion !== undefined &&
+    capletId !== undefined &&
+    referenceName !== undefined
+  ) {
+    const origin = vaultAccessOrigin(capletId, dependencies);
+    const candidate = await grants.get({
+      capletId,
+      vaultKey: storedKey,
+      referenceName,
+      originKind: origin.kind,
+      originPath: origin.path,
+    });
     const removed = await grants.revoke({
-      capletId: grant.capletId,
-      vaultKey: grant.vaultKey,
-      referenceName: grant.referenceName,
+      capletId,
+      vaultKey: storedKey,
+      referenceName,
+      originKind: origin.kind,
+      originPath: origin.path,
+      expectedResourceVersion: operation.expectedResourceVersion,
       operator: sqlOperator(principal),
     });
-    if (removed) revoked.push(grant);
+    if (removed && candidate) revoked.push(candidate);
+  } else {
+    const candidates = await grants.listMatching({
+      vaultKey: storedKey,
+      ...(capletId === undefined ? {} : { capletId }),
+      ...(referenceName === undefined ? {} : { referenceName }),
+    });
+    for (const grant of candidates) {
+      const removed = await grants.revoke({
+        capletId: grant.capletId,
+        vaultKey: grant.vaultKey,
+        referenceName: grant.referenceName,
+        originKind: grant.originKind,
+        ...(grant.originPath === null ? {} : { originPath: grant.originPath }),
+        operator: sqlOperator(principal),
+      });
+      if (removed) revoked.push(grant);
+    }
   }
   if (revoked.length > 0) await dependencies.invalidateConfig?.(principal.clientId);
   return { kind: "vault_access_revoke", revoked: revoked.map(redactedSqlVaultGrant) };
@@ -267,6 +414,7 @@ function redactedSqlVaultGrant(grant: StoredVaultGrant): CurrentHostVaultAccessG
     capletId: grant.capletId,
     origin: { kind: grant.originKind },
     createdAt: grant.createdAt,
+    resourceVersion: grant.resourceVersion,
     updatedAt: grant.createdAt,
   };
 }
@@ -279,7 +427,9 @@ function sqlGrantMatches(grant: StoredVaultGrant, operation: VaultAccessListOper
     return false;
   }
   return (
-    operation.capletId === undefined || grant.capletId === requiredCapletId(operation.capletId)
+    (operation.capletId === undefined || grant.capletId === requiredCapletId(operation.capletId)) &&
+    (operation.referenceName === undefined ||
+      grant.referenceName === validateVaultKeyName(operation.referenceName))
   );
 }
 
@@ -450,6 +600,28 @@ function vaultRevokeOutcome(
     });
     throw error;
   }
+}
+function activeVaultGrantOrigins(
+  dependencies: CurrentHostOperationsDependencies,
+  capletId?: string,
+) {
+  const control = dependencies.control;
+  if (!control) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Vault access grants require server control context.",
+    );
+  }
+  const overlay = loadLocalOverlayConfigWithSources(control.configPath, control.projectConfigPath, {
+    vaultResolver: vaultBootstrapResolver,
+  });
+  return Object.entries(overlay.sources)
+    .filter(([configuredCapletId]) => capletId === undefined || configuredCapletId === capletId)
+    .map(([configuredCapletId, origin]) => ({
+      capletId: configuredCapletId,
+      originKind: origin.kind,
+      originPath: origin.path,
+    }));
 }
 
 function vaultAccessOrigin(capletId: string, dependencies: CurrentHostOperationsDependencies) {

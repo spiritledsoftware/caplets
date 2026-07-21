@@ -1,3 +1,4 @@
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, parse } from "node:path";
@@ -7,7 +8,7 @@ import {
 } from "./backend-operation-dispatch";
 import { CapletSetManager } from "./caplet-sets";
 import { CliToolsManager } from "./cli-tools";
-import { findProjectRoot, fingerprintProjectRoot } from "./cloud/project-root";
+import { findProjectRoot } from "./cloud/project-root";
 import {
   type CapletConfig,
   type CapletsConfig,

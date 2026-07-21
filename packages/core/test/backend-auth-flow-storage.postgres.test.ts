@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { Pool } from "pg";
@@ -25,14 +25,21 @@ const postgresIt = postgresUrl ? it : it.skip;
 const schemas = new Set<string>();
 const storages = new Set<HostStorage>();
 const originalEncryptionKey = process.env.CAPLETS_ENCRYPTION_KEY;
+const originalEncryptionKeyFile = process.env.CAPLETS_ENCRYPTION_KEY_FILE;
+const keyFiles = new Set<string>();
 
 beforeEach(() => {
   process.env.CAPLETS_ENCRYPTION_KEY = KEY;
+  delete process.env.CAPLETS_ENCRYPTION_KEY_FILE;
 });
 
 afterEach(async () => {
   if (originalEncryptionKey === undefined) delete process.env.CAPLETS_ENCRYPTION_KEY;
   else process.env.CAPLETS_ENCRYPTION_KEY = originalEncryptionKey;
+  if (originalEncryptionKeyFile === undefined) delete process.env.CAPLETS_ENCRYPTION_KEY_FILE;
+  else process.env.CAPLETS_ENCRYPTION_KEY_FILE = originalEncryptionKeyFile;
+  for (const keyFile of keyFiles) rmSync(keyFile, { force: true });
+  keyFiles.clear();
 
   await Promise.allSettled([...storages].map(async (storage) => await storage.close()));
   storages.clear();
@@ -114,6 +121,7 @@ postgresIt("fails closed without a valid shared encryption key across local root
   });
 
   delete process.env.CAPLETS_ENCRYPTION_KEY;
+  delete process.env.CAPLETS_ENCRYPTION_KEY_FILE;
   await expect(
     second.backendAuthFlows.claim({
       flowId,
@@ -144,6 +152,35 @@ postgresIt("fails closed without a valid shared encryption key across local root
       now: after(1_000),
     }),
   ).resolves.toMatchObject({ acquired: true });
+});
+
+postgresIt("shares backend auth flow encryption through CAPLETS_ENCRYPTION_KEY_FILE", async () => {
+  delete process.env.CAPLETS_ENCRYPTION_KEY;
+  const keyFile = `/tmp/caplets-postgres-encryption-${randomUUID()}`;
+  keyFiles.add(keyFile);
+  writeFileSync(keyFile, KEY, { mode: 0o400 });
+  process.env.CAPLETS_ENCRYPTION_KEY_FILE = keyFile;
+  const { first, second, firstVaultRoot, secondVaultRoot } = await openPair("shared_key_file");
+  const flowId = "postgres_shared_key_file";
+  const state = flowState(flowId, { pkceVerifier: "shared-file-pkce-secret" });
+
+  await first.backendAuthFlows.create({
+    flowId,
+    server: SERVER,
+    state,
+    expiresAt: after(10_000),
+    now: NOW,
+  });
+
+  await expect(
+    second.backendAuthFlows.claim({
+      flowId,
+      claimToken: "postgres_shared_key_file_claim",
+      now: after(1_000),
+    }),
+  ).resolves.toMatchObject({ acquired: true, state });
+  expect(existsSync(join(firstVaultRoot, "vault-key"))).toBe(false);
+  expect(existsSync(join(secondVaultRoot, "vault-key"))).toBe(false);
 });
 
 postgresIt("guards cross-instance claim, release, and finalize CAS", async () => {
@@ -406,6 +443,117 @@ postgresIt("scrubs expiry and races terminal pruning", async () => {
   await expect(first.backendAuthFlows.list({ now: after(3_000) })).resolves.toEqual([
     expect.objectContaining({ flowId: "postgres_pending", status: "pending" }),
   ]);
+});
+postgresIt("matches SQLite backend auth connection keyset pages", async () => {
+  const { first, second } = await openPair("connection_pages");
+  await first.backendAuth.writeTokenBundle({
+    server: "Aardvark",
+    accessToken: "excluded-token",
+  });
+  await first.backendAuth.writeTokenBundle({ server: "Alpha", accessToken: "upper-alpha-token" });
+  await first.backendAuth.writeTokenBundle({ server: "Bravo", accessToken: "upper-bravo-token" });
+  await first.backendAuth.writeTokenBundle({ server: "alpha", accessToken: "lower-alpha-token" });
+  await first.backendAuth.writeTokenBundle({ server: "bravo", accessToken: "lower-bravo-token" });
+  await first.backendAuth.deleteTokenBundle("Aardvark");
+
+  const firstPage = await second.backendAuth.listConnectionsPage({ limit: 2 });
+  expect(firstPage).toEqual({
+    items: [
+      {
+        bundle: { server: "Alpha", accessToken: "upper-alpha-token" },
+        generation: 1,
+      },
+      {
+        bundle: { server: "Bravo", accessToken: "upper-bravo-token" },
+        generation: 1,
+      },
+    ],
+    nextKey: { server: "Bravo" },
+  });
+  await expect(
+    second.backendAuth.listConnectionsPage({ limit: 2, after: firstPage.nextKey }),
+  ).resolves.toEqual({
+    items: [
+      {
+        bundle: { server: "alpha", accessToken: "lower-alpha-token" },
+        generation: 1,
+      },
+      {
+        bundle: { server: "bravo", accessToken: "lower-bravo-token" },
+        generation: 1,
+      },
+    ],
+  });
+});
+
+postgresIt("matches SQLite filtered backend auth flow keyset traversal", async () => {
+  const { first, second } = await openPair("flow_pages");
+  const definitions = [
+    { flowId: "postgres_page_a", server: SERVER, now: NOW },
+    { flowId: "postgres_page_A", server: SERVER, now: NOW },
+    { flowId: "postgres_page_other", server: "gitlab", now: NOW },
+    { flowId: "postgres_page_later", server: SERVER, now: after(1) },
+  ];
+  for (const definition of definitions) {
+    await first.backendAuthFlows.create({
+      ...definition,
+      state: flowState(definition.flowId, {
+        server: definition.server,
+        createdAt: definition.now.toISOString(),
+        expiresAt: after(10_000).toISOString(),
+      }),
+      expiresAt: after(10_000),
+    });
+  }
+  const firstPage = await second.backendAuthFlows.listPage({
+    server: SERVER,
+    now: NOW,
+    limit: 1,
+  });
+  expect(firstPage.items.map((flow) => flow.flowId)).toEqual(["postgres_page_A"]);
+  await expect(
+    second.backendAuthFlows.listPage({
+      server: SERVER,
+      now: NOW,
+      limit: 1,
+      after: firstPage.nextKey,
+    }),
+  ).resolves.toMatchObject({
+    items: [{ flowId: "postgres_page_a" }],
+  });
+
+  await first.backendAuthFlows.claim({
+    flowId: "postgres_page_a",
+    claimToken: "claim_postgres_page_a",
+    now: after(2),
+  });
+
+  const ids: string[] = [];
+  let afterKey: { server: string; createdAt: string; flowId: string } | undefined;
+  do {
+    const page = await second.backendAuthFlows.listPage({
+      server: SERVER,
+      status: "pending",
+      now: after(2),
+      limit: 1,
+      ...(afterKey ? { after: afterKey } : {}),
+    });
+    ids.push(...page.items.map((flow) => flow.flowId));
+    afterKey = page.nextKey;
+  } while (afterKey);
+  expect(ids).toEqual(["postgres_page_A", "postgres_page_later"]);
+
+  await expect(
+    second.backendAuthFlows.listPage({
+      server: SERVER,
+      limit: 1,
+      after: {
+        server: "gitlab",
+        createdAt: NOW.toISOString(),
+        flowId: "postgres_page_other",
+      },
+    }),
+  ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
 });
 
 async function openPair(domain: string): Promise<{
