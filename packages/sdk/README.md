@@ -11,14 +11,16 @@ npm install @caplets/sdk
 
 ## Create an isolated client
 
-Every client needs the absolute HTTP(S) **service root**, including any deployment prefix. The SDK
-does not discover or infer it from a dashboard, MCP, Attach, or Cloud URL.
+Every client needs the absolute HTTP(S) **Current Host Origin**: scheme, host, and optional port
+only. `createClient` rejects credentials, non-root paths, queries, and fragments before network I/O;
+a trailing root slash is normalized away. The fixed protocol namespaces cannot be relocated by
+`baseUrl` or a reverse-proxy prefix.
 
 ```ts
 import { createClient, getServiceDiscovery } from "@caplets/sdk";
 
 const client = createClient({
-  baseUrl: "https://host.example/caplets",
+  baseUrl: "https://host.example",
 });
 
 const result = await getServiceDiscovery({ client });
@@ -41,21 +43,27 @@ adds the bearer header only for operations whose public contract requires it.
 import { createClient } from "@caplets/sdk";
 
 const unauthenticated = createClient({
-  baseUrl: "https://host.example/caplets",
+  baseUrl: "https://host.example",
 });
 
 const staticAuth = createClient({
-  baseUrl: "https://host.example/caplets",
+  baseUrl: "https://host.example",
   auth: accessToken,
 });
 
 const asyncAuth = createClient({
-  baseUrl: "https://host.example/caplets",
+  baseUrl: "https://host.example",
   auth: async () => getCurrentAccessToken(),
 });
 ```
 
 The caller owns token storage, refresh, and login policy. Do not put bearer credentials in a URL.
+The OpenAPI contract also declares the host-only dashboard session cookie as an alternative for
+canonical `/api/v2/admin/*` operations. The SDK does not start, restore, or store dashboard
+sessions. A same-origin browser client with an already established session may use
+`credentials: "same-origin"`
+and supply `X-Caplets-CSRF` on unsafe Admin calls; configuring `auth` instead selects bearer mode
+exclusively.
 
 ## Generated operations and types
 
@@ -154,20 +162,21 @@ with the operation's `signal`.
 ## Project Binding
 
 The browser-safe coordinator is a separate export. It requires the exact `ws:` or `wss:` Project
-Binding connect endpoint; it does not derive that endpoint from the HTTP service root.
+Binding connect endpoint at `/api/v1/attach/project-bindings/connect`; it does not derive that
+endpoint from the Current Host Origin.
 
 ```ts
 import { createClient } from "@caplets/sdk";
 import { runProjectBindingSession } from "@caplets/sdk/project-binding";
 
 const client = createClient({
-  baseUrl: "https://host.example/caplets",
+  baseUrl: "https://host.example",
   auth: async () => getCurrentAccessToken(),
 });
 
 const result = await runProjectBindingSession({
   client,
-  webSocketUrl: "wss://host.example/caplets/v1/attach/project-bindings/connect",
+  webSocketUrl: "wss://host.example/api/v1/attach/project-bindings/connect",
   projectRoot: selectedProjectRoot,
   projectFingerprint,
   signal,
@@ -197,7 +206,7 @@ const projectFingerprint = fingerprintProjectRoot(projectRoot);
 
 const result = await runProjectBindingSession({
   client,
-  webSocketUrl: "wss://host.example/caplets/v1/attach/project-bindings/connect",
+  webSocketUrl: "wss://host.example/api/v1/attach/project-bindings/connect",
   projectRoot,
   projectFingerprint,
 });
@@ -213,16 +222,17 @@ directly and reject on failure.
 Bearer authentication is carried in headers and WebSocket subprotocol negotiation, never in the
 WebSocket URL, events, or error messages.
 
-## Runtime scope and compatibility
+## Runtime scope
 
 - Root HTTP client and `@caplets/sdk/project-binding`: modern browsers and Node.js 22+.
 - `@caplets/sdk/project-binding/node`: Node.js 22+ only; it uses filesystem and crypto APIs.
 - The root exposes public HTTP discovery, health, Remote Login, Attach, Project Binding controls,
-  frozen v1 Admin, and v2 Admin operations from the canonical OpenAPI contract.
-- It does not generate MCP operations, AsyncAPI clients, dashboard-private cookie/session/CSRF
-  routes, Raw Vault Reveal, credential persistence, automatic endpoint discovery, or retry policy.
-- Import public names from `@caplets/sdk`; there is no `@caplets/core/admin-client` compatibility
-  alias and generated internal paths are not API.
+  and Admin operations at their canonical `/api/*` paths.
+- It does not generate well-known discovery, MCP operations, AsyncAPI clients,
+  dashboard-private cookie/session/CSRF routes, Raw Vault Reveal, credential persistence, or
+  automatic endpoint discovery. It does not retry requests at another path or infer a deployment
+  prefix.
+- Import public names from `@caplets/sdk`; generated internal paths are not API.
 
 See the [SDK guide](https://docs.caplets.dev/sdk/) and
 [Project Binding guide](https://docs.caplets.dev/project-binding/).

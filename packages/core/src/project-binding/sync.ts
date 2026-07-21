@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildProjectSyncManifest } from "../project-binding/sync-filter";
+import { buildProjectSyncManifest } from "./sync-filter";
 
 export type ProjectSyncFile = {
   path: string;

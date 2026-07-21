@@ -107,7 +107,7 @@ const capletRuntimeRequirementsSchema = z
       .optional(),
   })
   .strict()
-  .describe("Runtime feature and resource requirements for hosted execution.");
+  .describe("Runtime feature and resource requirements.");
 
 const capletExposureSchema = z
   .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])

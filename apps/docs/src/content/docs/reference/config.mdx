@@ -138,9 +138,8 @@ User-owned HTTP serve defaults. Ignored from project config for security.
 | --------------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
 | `host`                      | Optional | string  | Default HTTP bind host for caplets serve.                                    |
 | `port`                      | Optional | integer | Default HTTP port.                                                           |
-| `path`                      | Optional | string  | Default HTTP base path.                                                      |
 | `remoteStatePath`           | Optional | string  | Default remote credential state directory for HTTP serve.                    |
-| `upstreamUrl`               | Optional | string  | Default upstream Caplets URL for stacked HTTP serve.                         |
+| `upstreamUrl`               | Optional | string  | Default upstream Caplets origin for stacked HTTP serve.                      |
 | `allowUnauthenticatedHttp`  | Optional | boolean | Opt in to unauthenticated HTTP serving; intended only for trusted local use. |
 | `trustProxy`                | Optional | boolean | Trust proxy headers when deriving public HTTP request URLs.                  |
 | `adminUploadStagingDir`     | Optional | string  | Directory used to stage Admin API bundle uploads.                            |
@@ -189,7 +188,7 @@ Downstream MCP servers keyed by stable server ID.
 | `shadowing`        | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.                |
 | `setup`            | Optional | object                                                                                            | Optional setup and verification metadata.                                       |
 | `projectBinding`   | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.         |
-| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                 |
+| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements.                                      |
 | `startupTimeoutMs` | Optional | integer                                                                                           | Timeout in milliseconds for starting or checking a downstream server.           |
 | `callTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for downstream tool calls.                              |
 | `toolCacheTtlMs`   | Optional | integer                                                                                           | Milliseconds downstream tool metadata stays fresh. Set 0 to refresh every time. |
@@ -212,7 +211,7 @@ OpenAPI endpoints keyed by stable Caplet ID.
 | `shadowing`           | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.                  |
 | `setup`               | Optional | object                                                                                            | Optional setup and verification metadata.                                         |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.           |
-| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                   |
+| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements.                                        |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for OpenAPI HTTP requests.                                |
 | `operationCacheTtlMs` | Optional | integer                                                                                           | Milliseconds OpenAPI operation metadata stays fresh. Set 0 to refresh every time. |
 | `disabled`            | Optional | boolean                                                                                           | When true, omit this OpenAPI Caplet from discovery.                               |
@@ -236,7 +235,7 @@ Google Discovery APIs keyed by stable Caplet ID.
 | `shadowing`           | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.                           |
 | `setup`               | Optional | object                                                                                            | Optional setup and verification metadata.                                                  |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.                    |
-| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                            |
+| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements.                                                 |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for Google Discovery HTTP requests.                                |
 | `operationCacheTtlMs` | Optional | integer                                                                                           | Milliseconds Google Discovery operation metadata stays fresh. Set 0 to refresh every time. |
 | `disabled`            | Optional | boolean                                                                                           | When true, omit this Google Discovery Caplet from discovery.                               |
@@ -260,7 +259,7 @@ GraphQL endpoints keyed by stable Caplet ID.
 | `shadowing`           | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.                  |
 | `setup`               | Optional | object                                                                                            | Optional setup and verification metadata.                                         |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.           |
-| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                   |
+| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements.                                        |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for GraphQL HTTP requests.                                |
 | `operationCacheTtlMs` | Optional | integer                                                                                           | Milliseconds GraphQL operation metadata stays fresh. Set 0 to refresh every time. |
 | `selectionDepth`      | Optional | integer                                                                                           | Maximum depth for auto-generated GraphQL selection sets.                          |
@@ -282,7 +281,7 @@ HTTP APIs keyed by stable Caplet ID.
 | `shadowing`        | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.              |
 | `setup`            | Optional | object                                                                                            | Optional setup and verification metadata.                                     |
 | `projectBinding`   | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.       |
-| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.               |
+| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements.                                    |
 | `requestTimeoutMs` | Optional | integer                                                                                           | Timeout in milliseconds for HTTP action requests.                             |
 | `maxResponseBytes` | Optional | integer                                                                                           | Maximum HTTP action response body bytes to read.                              |
 | `disabled`         | Optional | boolean                                                                                           | When true, omit this HTTP API Caplet.                                         |
@@ -303,7 +302,7 @@ CLI tools keyed by stable Caplet ID.
 | `shadowing`      | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.         |
 | `setup`          | Optional | object                                                                                            | Optional setup and verification metadata.                                |
 | `projectBinding` | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.  |
-| `runtime`        | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.          |
+| `runtime`        | Optional | object                                                                                            | Runtime feature and resource requirements.                               |
 | `timeoutMs`      | Optional | integer                                                                                           | Default timeout in milliseconds for CLI actions.                         |
 | `maxOutputBytes` | Optional | integer                                                                                           | Default maximum combined stdout and stderr bytes to keep.                |
 | `disabled`       | Optional | boolean                                                                                           | When true, omit this CLI tools Caplet.                                   |
@@ -326,5 +325,5 @@ Nested Caplet collections keyed by stable Caplet ID.
 | `shadowing`          | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.             |
 | `setup`              | Optional | object                                                                                            | Optional setup and verification metadata.                                    |
 | `projectBinding`     | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.      |
-| `runtime`            | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.              |
+| `runtime`            | Optional | object                                                                                            | Runtime feature and resource requirements.                                   |
 | `disabled`           | Optional | boolean                                                                                           | When true, omit this Caplet set.                                             |

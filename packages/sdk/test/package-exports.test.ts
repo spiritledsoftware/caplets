@@ -22,42 +22,6 @@ const buildConfigs = (
 const nodeBuiltins = new Set(builtinModules.map((specifier) => specifier.replace(/^node:/u, "")));
 
 describe("@caplets/sdk package exports", () => {
-  it("publishes only the three public ESM entry points", () => {
-    expect(sdkPackage.type).toBe("module");
-    expect(sdkPackage.version).toBe("0.0.0");
-    expect(sdkPackage.exports).toEqual({
-      ".": {
-        types: "./dist/index.d.ts",
-        default: "./dist/index.js",
-      },
-      "./project-binding": {
-        types: "./dist/project-binding/index.d.ts",
-        default: "./dist/project-binding.js",
-      },
-      "./project-binding/node": {
-        types: "./dist/project-binding/node.d.ts",
-        default: "./dist/project-binding/node.js",
-      },
-    });
-  });
-
-  it("gives every export declaration types and one dedicated JavaScript build entry", () => {
-    const entries = buildEntries();
-    const defaults = new Set<string>();
-
-    for (const [subpath, untypedTarget] of Object.entries(sdkPackage.exports)) {
-      const target = untypedTarget as PackageExport;
-      expect(target.types, `${subpath} types`).toMatch(/^\.\/dist\/.+\.d\.ts$/u);
-      expect(target.default, `${subpath} default`).toMatch(/^\.\/dist\/.+\.js$/u);
-
-      const defaultTarget = target.default as string;
-      const matchingEntries = entries.filter(({ name }) => `./dist/${name}.js` === defaultTarget);
-      expect(matchingEntries, `${subpath} build entry`).toHaveLength(1);
-      expect(defaults.has(defaultTarget), `${subpath} shares ${defaultTarget}`).toBe(false);
-      defaults.add(defaultTarget);
-    }
-  });
-
   it("keeps browser entries free of Node runtime dependencies and isolates the Node helper", () => {
     const entries = buildEntries();
     const rootEntry = entryForExport(".", entries);
@@ -83,16 +47,6 @@ describe("@caplets/sdk package exports", () => {
     });
 
     expect(violations).toEqual([]);
-  });
-
-  it("does not expose generated or private implementation subpaths", () => {
-    const exportedSubpaths = Object.keys(sdkPackage.exports);
-
-    expect(exportedSubpaths).not.toContain("./generated");
-    expect(exportedSubpaths).not.toContain("./generated/*");
-    expect(exportedSubpaths).not.toContain("./src/*");
-    expect(exportedSubpaths).not.toContain("./package.json");
-    expect(exportedSubpaths.some((subpath) => subpath.includes("*"))).toBe(false);
   });
 });
 

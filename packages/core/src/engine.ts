@@ -8,7 +8,7 @@ import {
 } from "./backend-operation-dispatch";
 import { CapletSetManager } from "./caplet-sets";
 import { CliToolsManager } from "./cli-tools";
-import { findProjectRoot } from "./cloud/project-root";
+import { findProjectRoot } from "./project-root";
 import {
   type CapletConfig,
   type CapletsConfig,
@@ -1261,7 +1261,7 @@ function globalFileManifest(configPath: string): string {
 
 function runtimeModeFromEnv(env: NodeJS.ProcessEnv | undefined): RuntimeMode {
   const mode = env?.CAPLETS_MODE ?? process.env.CAPLETS_MODE;
-  if (mode === "local" || mode === "remote" || mode === "cloud") return mode;
+  if (mode === "local" || mode === "remote") return mode;
   return "unknown";
 }
 

@@ -55,7 +55,7 @@ Using the existing real-component/mock-API conventions, cover:
 1. Remote Client role change: confirmation where present, one semantic client call, no early success, visible refresh/invalidation after resolution, and rejection state.
 2. Remote Client revoke: confirmation cannot be bypassed, acting-session termination is handled, stale responses cannot restore a revoked client, and rejection preserves usable state.
 3. Runtime restart: one semantic call, no early toast, correct pending state, refresh/invalidation after success, and stable failure state.
-4. Raw Vault Reveal: retain the existing confirmation, no persistence across navigation/refresh, timer expiry, and rejection behavior. Do not generalize this private ceremony into the shared Admin client.
+4. Raw Vault Reveal: retain the existing confirmation, no persistence across navigation/refresh, timer expiry, and rejection behavior. Do not generalize this private ceremony into the shared Caplets SDK.
 
 Component tests mock named semantic client methods, not raw `fetch` or route strings. They assert observable calls/state/toasts, not implementation snapshots or prose.
 

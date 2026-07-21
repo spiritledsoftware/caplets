@@ -471,7 +471,7 @@ describe("Current Host backend auth operations", () => {
       engine,
       activityLog: storage.operatorActivity,
       catalogStorage: storage,
-      backendAuthCallbackBaseUrl: "https://caplets.example.com/dashboard/api/v2/",
+      backendAuthCallbackBaseUrl: "https://caplets.example.com/v2/admin/",
       version: "test-version",
     });
     const accessPrincipal: CurrentHostPrincipal = { ...operator, role: "access" };
@@ -542,7 +542,7 @@ describe("Current Host backend auth operations", () => {
         projectConfigPath: fixture.projectConfigPath,
         authDir: fixture.authDir,
       },
-      backendAuthCallbackBaseUrl: "https://caplets.example.com/dashboard/api/v2/",
+      backendAuthCallbackBaseUrl: "https://caplets.example.com/v2/admin/",
       invalidateConfig,
       version: "test-version",
     });
@@ -584,7 +584,7 @@ describe("Current Host backend auth operations", () => {
         projectConfigPath: fixture.projectConfigPath,
         authDir: fixture.authDir,
       },
-      backendAuthCallbackBaseUrl: "https://caplets.example.com/dashboard/api/v2/",
+      backendAuthCallbackBaseUrl: "https://caplets.example.com/v2/admin/",
       invalidateConfig,
       version: "test-version",
     });

@@ -48,7 +48,7 @@ function routerFor(
 ) {
   return createAdminV2Router({
     operations: operationsWith(execute),
-    principalProvider: async () => principal,
+    authorityProvider: async () => ({ principal: await (async () => principal)() }),
     host: {
       baseUrl: "https://host.example",
       dashboardUrl: "https://host.example/dashboard",

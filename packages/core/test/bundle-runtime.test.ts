@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { BundleCapletSource, parseCapletSource } from "../src/caplet-source";
-import { classifyCapletRuntimeRoute, planCapletRuntimeRoutes } from "../src/runtime-plan";
+import { classifyCapletRuntimeRoute } from "../src/runtime-plan";
 
-describe("neutral hosted Caplet bundle runtime", () => {
+describe("Caplet bundle runtime", () => {
   it("validates a bundle with a CAPLET.md and companion OpenAPI file", async () => {
     const parsed = await parseCapletSource(
       new BundleCapletSource([
@@ -40,12 +40,6 @@ paths: {}
         sourcePath: "CAPLET.md",
       }),
     ]);
-    expect(
-      planCapletRuntimeRoutes(
-        parsed.resolvedCaplets.map((caplet) => caplet.config),
-        { deployment: "hosted" },
-      ),
-    ).toEqual([expect.objectContaining({ id: "CAPLET", route: "worker_safe" })]);
     expect(parsed.errors).toEqual([]);
   });
 

@@ -292,7 +292,7 @@ function register(project) {
 
 async function health(project) {
   const address = compose(project, ["port", "caplets", "5387"]).trim();
-  const response = await fetch(`http://${address}/v1/healthz`);
+  const response = await fetch(`http://${address}/api/v1/healthz`);
   assert.equal(response.ok, true);
   const body = await response.json();
   assert.equal(body.ready, true);

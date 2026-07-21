@@ -44,18 +44,20 @@ caplets vault set GH_TOKEN --grant github
 
 ## Remote Vault
 
-Use `--remote` when the Caplet executes in a self-hosted remote runtime or hosted Cloud runtime:
+Use `--remote` when the Caplet executes in a generic remote Current Host:
 
 ```sh
 caplets vault set GH_TOKEN --remote --grant github
 caplets vault access grant GH_TOKEN github --remote
 ```
 
-Remote Vault values are owned by the selected runtime. Local Caplets do not read, mirror, or forward
-remote or Cloud Vault values.
+Remote Vault values are owned by the selected Current Host. Local Caplets do not read, mirror, or
+forward remote Vault values.
 
-Remote CLI and generated Admin clients can read metadata but cannot reveal raw values. Raw Vault
-Reveal remains a dashboard-private, confirmed human action with `no-store` responses.
+Remote CLI and generated Caplets SDK clients can read metadata but cannot reveal raw values. Raw
+Vault Reveal remains the same-origin dashboard-private ceremony at
+`/dashboard/api/private/vault-reveals`; it requires the Dashboard Session Credential, current CSRF
+value, and exact confirmation, and returns `Cache-Control: no-store`.
 
 ## Grants And Remapping
 

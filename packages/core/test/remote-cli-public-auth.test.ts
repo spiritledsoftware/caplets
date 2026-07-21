@@ -17,8 +17,8 @@ describe("remote CLI public auth adapter", () => {
       });
     });
     const adapter = createRemotePublicAuthAdapter({
-      baseUrl: new URL("https://host.example/caplets/"),
-      attachUrl: new URL("https://host.example/caplets/v1/attach"),
+      baseUrl: new URL("https://host.example"),
+      attachUrl: new URL("https://host.example/api/v1/attach"),
       requestInit: { headers: { Authorization: "Bearer paired-operator-token" } },
       fetch,
     });
@@ -31,7 +31,7 @@ describe("remote CLI public auth adapter", () => {
     ).resolves.toMatchObject({ flowId: "flow-1", status: "completed" });
 
     expect(callbackRequest?.url).toBe(
-      "https://host.example/caplets/v2/admin/backend-auth-flows/flow-1/callback?code=provider-code&state=opaque-state",
+      "https://host.example/api/v2/admin/backend-auth-flows/flow-1/callback?code=provider-code&state=opaque-state",
     );
     expect(callbackRequest?.headers.get("authorization")).toBeNull();
   });

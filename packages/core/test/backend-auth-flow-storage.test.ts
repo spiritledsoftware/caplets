@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { GenericBackendAuthFlowState } from "../src/auth";
-import { createHostStorage, type HostStorage } from "../src/storage";
+import { createHostStorage, migrateHostStorage, type HostStorage } from "../src/storage";
 import { BackendAuthFlowRepository } from "../src/storage/backend-auth-flows";
 import * as sqlite from "../src/storage/schema/sqlite";
 
@@ -14,6 +14,8 @@ const OTHER_KEY = Buffer.alloc(32, 23).toString("base64url");
 const SERVER = "github";
 
 let root: string;
+const BACKEND_AUTH_FLOW_INVALIDATION_MIGRATION_CREATED_AT = 1_784_666_622_628;
+let storagePath: string;
 let firstStorage: HostStorage;
 let secondStorage: HostStorage;
 let firstRepository: BackendAuthFlowRepository;
@@ -21,9 +23,9 @@ let secondRepository: BackendAuthFlowRepository;
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "caplets-backend-auth-flows-"));
-  const path = join(root, "caplets.sqlite3");
-  firstStorage = await createHostStorage({ type: "sqlite", path });
-  secondStorage = await createHostStorage({ type: "sqlite", path });
+  storagePath = join(root, "caplets.sqlite3");
+  firstStorage = await createHostStorage({ type: "sqlite", path: storagePath });
+  secondStorage = await createHostStorage({ type: "sqlite", path: storagePath });
   const options = { env: { CAPLETS_ENCRYPTION_KEY: KEY } };
   firstRepository = new BackendAuthFlowRepository(firstStorage.database, options);
   secondRepository = new BackendAuthFlowRepository(secondStorage.database, options);
@@ -81,6 +83,149 @@ describe("durable backend auth flow storage", () => {
       startingBackendAuthGeneration: 4,
       state,
     });
+  });
+
+  it("atomically terminalizes only pre-migration in-flight flows", async () => {
+    await rewindBackendAuthFlowInvalidationMigration();
+    await firstRepository.create({
+      flowId: "flow_migration_pending",
+      server: SERVER,
+      state: flowState("flow_migration_pending", { pkceVerifier: "pending-migration-secret" }),
+      completionCorrelation: "correlation_migration_pending",
+      startingBackendAuthGeneration: 3,
+      expiresAt: after(100_000),
+      now: NOW,
+    });
+    await firstRepository.create({
+      flowId: "flow_migration_completing",
+      server: SERVER,
+      state: flowState("flow_migration_completing", {
+        pkceVerifier: "completing-migration-secret",
+      }),
+      completionCorrelation: "correlation_migration_completing",
+      startingBackendAuthGeneration: 4,
+      expiresAt: after(100_000),
+      now: NOW,
+    });
+    await expect(
+      secondRepository.claim({
+        flowId: "flow_migration_completing",
+        claimToken: "claim_migration_completing",
+        now: after(1_000),
+      }),
+    ).resolves.toMatchObject({ acquired: true });
+    for (const status of ["completed", "expired", "failed", "unknown"] as const) {
+      await createTerminalFlow(`flow_migration_${status}`, status);
+    }
+
+    const pendingPayload = rawRow("flow_migration_pending").encryptedPayload;
+    const completingPayload = rawRow("flow_migration_completing").encryptedPayload;
+    const terminalRows = Object.fromEntries(
+      ["completed", "expired", "failed", "unknown"].map((status) => {
+        const flowId = `flow_migration_${status}`;
+        return [flowId, rawRow(flowId)];
+      }),
+    );
+
+    await migrateHostStorage({ type: "sqlite", path: storagePath });
+
+    const pending = rawRow("flow_migration_pending");
+    expect(pending).toMatchObject({
+      status: "failed",
+      encryptedPayload: pendingPayload,
+      startingBackendAuthGeneration: null,
+      completionCorrelation: null,
+      completedBackendAuthGeneration: null,
+      claimToken: null,
+      claimedAt: null,
+      terminalAt: expect.any(String),
+    });
+    expect(pending.updatedAt).toBe(pending.terminalAt);
+    expect(Number.isNaN(Date.parse(pending.terminalAt!))).toBe(false);
+
+    const completing = rawRow("flow_migration_completing");
+    expect(completing).toMatchObject({
+      status: "unknown",
+      encryptedPayload: completingPayload,
+      startingBackendAuthGeneration: null,
+      completionCorrelation: null,
+      completedBackendAuthGeneration: null,
+      claimToken: null,
+      claimedAt: null,
+      terminalAt: expect.any(String),
+    });
+    expect(completing.updatedAt).toBe(completing.terminalAt);
+    for (const [flowId, row] of Object.entries(terminalRows)) {
+      expect(rawRow(flowId)).toEqual(row);
+    }
+
+    await firstRepository.create({
+      flowId: "flow_created_after_migration",
+      server: SERVER,
+      state: flowState("flow_created_after_migration"),
+      expiresAt: after(100_000),
+      now: after(2_000),
+    });
+    const postMigrationRow = rawRow("flow_created_after_migration");
+    await migrateHostStorage({ type: "sqlite", path: storagePath });
+    expect(rawRow("flow_created_after_migration")).toEqual(postMigrationRow);
+    const postMigrationClaim = await secondRepository.claim({
+      flowId: "flow_created_after_migration",
+      claimToken: "claim_created_after_migration",
+      now: after(3_000),
+    });
+    expect(postMigrationClaim).toMatchObject({ acquired: true });
+    await expect(
+      firstRepository.release({
+        flowId: "flow_created_after_migration",
+        claimToken: "claim_created_after_migration",
+        now: after(4_000),
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("serializes a claim racing the in-flight invalidation migration", async () => {
+    await rewindBackendAuthFlowInvalidationMigration();
+    await firstRepository.create({
+      flowId: "flow_migration_claim_race",
+      server: SERVER,
+      state: flowState("flow_migration_claim_race"),
+      completionCorrelation: "correlation_migration_claim_race",
+      expiresAt: after(100_000),
+      now: NOW,
+    });
+
+    const [claim] = await Promise.all([
+      secondRepository.claim({
+        flowId: "flow_migration_claim_race",
+        claimToken: "claim_migration_race",
+        now: after(1_000),
+      }),
+      migrateHostStorage({ type: "sqlite", path: storagePath }),
+    ]);
+
+    const row = rawRow("flow_migration_claim_race");
+    expect(row.status === "failed" || row.status === "unknown").toBe(true);
+    expect(row).toMatchObject({
+      claimToken: null,
+      claimedAt: null,
+      completionCorrelation: null,
+      terminalAt: expect.any(String),
+    });
+    expect(row.updatedAt).toBe(row.terminalAt);
+    if (claim.acquired) {
+      expect(row.status).toBe("unknown");
+      await expect(
+        firstRepository.release({
+          flowId: "flow_migration_claim_race",
+          claimToken: claim.claimToken,
+          now: after(2_000),
+        }),
+      ).resolves.toBe(false);
+    } else {
+      expect(claim.reason).toBe("terminal");
+      expect(row.status).toBe("failed");
+    }
   });
 
   it("keeps SQLite flow encryption available through its local key file", async () => {
@@ -827,6 +972,60 @@ describe("durable backend auth flow storage", () => {
     expect(rawRows()).toEqual([]);
   });
 });
+
+async function rewindBackendAuthFlowInvalidationMigration(): Promise<void> {
+  if (firstStorage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
+  firstStorage.database.db.run(
+    sql`DELETE FROM caplets_migrations
+        WHERE created_at >= ${BACKEND_AUTH_FLOW_INVALIDATION_MIGRATION_CREATED_AT}`,
+  );
+  firstStorage.database.db
+    .update(sqlite.capletsSchema)
+    .set({ version: 17 })
+    .where(eq(sqlite.capletsSchema.singleton, 1))
+    .run();
+}
+
+async function createTerminalFlow(
+  flowId: string,
+  status: "completed" | "expired" | "failed" | "unknown",
+): Promise<void> {
+  await firstRepository.create({
+    flowId,
+    server: SERVER,
+    state: flowState(flowId),
+    completionCorrelation: `correlation_${flowId}`,
+    startingBackendAuthGeneration: 0,
+    expiresAt: after(100_000),
+    now: NOW,
+  });
+  if (status === "expired") {
+    await firstRepository.expire(flowId, after(100_001));
+    return;
+  }
+  const claim = await firstRepository.claim({
+    flowId,
+    claimToken: `claim_${flowId}`,
+    now: after(1_000),
+  });
+  if (!claim.acquired) throw new Error(`Could not claim ${flowId}.`);
+  if (status === "completed") {
+    await firstRepository.finalize({
+      flowId,
+      claimToken: claim.claimToken,
+      completionCorrelation: claim.completionCorrelation,
+      backendAuthGeneration: 1,
+      now: after(2_000),
+    });
+    return;
+  }
+  await firstRepository.terminalizeClaim({
+    flowId,
+    claimToken: claim.claimToken,
+    status,
+    now: after(2_000),
+  });
+}
 
 function flowState(
   flowId: string,

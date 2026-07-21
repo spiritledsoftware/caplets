@@ -99,10 +99,10 @@ describe("relative Admin v2 router", () => {
       kind: "summary",
       summary: { host: { current: true }, requested: operation },
     }));
-    const principalProvider = vi.fn(async () => principal);
+    const authorityProvider = vi.fn(async () => ({ principal }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider,
+      authorityProvider,
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -118,7 +118,7 @@ describe("relative Admin v2 router", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(response.headers.get("cache-control")).toBe("no-store");
     await expect(response.json()).resolves.toMatchObject({ host: { current: true } });
-    expect(principalProvider).toHaveBeenCalledWith(expect.any(Request), { mutates: false });
+    expect(authorityProvider).toHaveBeenCalledWith(expect.any(Request), { mutates: false });
     expect(execute).toHaveBeenCalledWith(principal, {
       kind: "summary",
       baseUrl: "https://host.example",
@@ -130,12 +130,12 @@ describe("relative Admin v2 router", () => {
     const execute = vi.fn(async () => {
       throw new Error("unauthenticated input must not execute");
     });
-    const principalProvider = vi.fn(async () => {
+    const authorityProvider = vi.fn(async () => {
       throw new AdminV2PrincipalError(401, "Bearer authentication is required.");
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider,
+      authorityProvider,
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -151,7 +151,7 @@ describe("relative Admin v2 router", () => {
       status: 401,
       code: "AUTH_REQUIRED",
     });
-    expect(principalProvider).toHaveBeenCalledWith(expect.any(Request), { mutates: false });
+    expect(authorityProvider).toHaveBeenCalledWith(expect.any(Request), { mutates: false });
     expect(execute).not.toHaveBeenCalled();
   });
   it.each([
@@ -193,7 +193,7 @@ describe("relative Admin v2 router", () => {
     }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -219,7 +219,7 @@ describe("relative Admin v2 router", () => {
     }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -252,7 +252,7 @@ describe("relative Admin v2 router", () => {
     }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -285,7 +285,7 @@ describe("relative Admin v2 router", () => {
     }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -347,7 +347,7 @@ describe("relative Admin v2 router", () => {
     }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -386,7 +386,7 @@ describe("relative Admin v2 router", () => {
     }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -446,7 +446,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -501,7 +501,7 @@ describe("relative Admin v2 router", () => {
     }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -566,7 +566,7 @@ describe("relative Admin v2 router", () => {
     };
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: store,
       host: {
         baseUrl: "https://host.example",
@@ -660,7 +660,7 @@ describe("relative Admin v2 router", () => {
     };
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: store,
       host: {
         baseUrl: "https://host.example",
@@ -766,7 +766,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: store,
       host: {
         baseUrl: "https://host.example",
@@ -845,7 +845,7 @@ describe("relative Admin v2 router", () => {
     };
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: store,
       host: {
         baseUrl: "https://host.example",
@@ -893,7 +893,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -949,7 +949,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -1026,7 +1026,7 @@ describe("relative Admin v2 router", () => {
     }));
     const baseOptions = {
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -1150,7 +1150,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: store,
       host: {
         baseUrl: "https://host.example",
@@ -1252,7 +1252,7 @@ describe("relative Admin v2 router", () => {
     );
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim,
         heartbeat: vi.fn(async () => true),
@@ -1355,7 +1355,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -1398,7 +1398,7 @@ describe("relative Admin v2 router", () => {
     const finalize = vi.fn(async () => true);
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -1525,7 +1525,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       bundleUploadAdmission: admission,
       idempotencyStore: {
         claim: vi.fn(async () => ({
@@ -1648,7 +1648,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       bundleUploadAdmission: admission,
       idempotencyStore: store,
       host: {
@@ -1794,7 +1794,7 @@ describe("relative Admin v2 router", () => {
     const cleanupErrors = vi.fn();
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       bundleUploadAdmission: admission,
       idempotencyStore: store,
       reportBundleUploadCleanupError: cleanupErrors,
@@ -1822,12 +1822,7 @@ describe("relative Admin v2 router", () => {
       expect(first.status, await first.clone().text()).toBe(201);
       const leakedRoot = processRoot;
       if (!leakedRoot) throw new Error("Expected cleanup to retain the upload process root.");
-      expect(await readdir(leakedRoot)).toEqual(
-        expect.arrayContaining([
-          expect.stringMatching(/^request-/u),
-          expect.stringMatching(/^\.reservation-/u),
-        ]),
-      );
+      expect(await readdir(leakedRoot)).toEqual([expect.stringMatching(/^request-/u)]);
       const capacityProbe = await admission.acquire();
       await capacityProbe.cleanup();
       await chmod(leakedRoot, 0o700);
@@ -1886,7 +1881,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       bundleUploadAdmission: admission,
       reportBundleUploadCleanupError: cleanupErrors,
       idempotencyStore: {
@@ -1947,7 +1942,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       bundleUploadAdmission: admission,
       idempotencyStore: {
         claim,
@@ -2057,7 +2052,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       bundleUploadAdmission: admission,
       idempotencyStore: {
         claim: vi.fn(async () => {
@@ -2123,7 +2118,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       bundleUploadAdmission: admission,
       idempotencyStore: {
         claim: vi.fn(async () => {
@@ -2192,7 +2187,7 @@ describe("relative Admin v2 router", () => {
         record: { id: "demo", generation: 3 },
         sources: [source],
       })),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -2211,6 +2206,82 @@ describe("relative Admin v2 router", () => {
     await reader.read();
     await reader.cancel("disconnect");
     expect(cancelled).toBe(true);
+  });
+
+  it("returns bundle headers for HEAD without opening file streams", async () => {
+    const file = new TextEncoder().encode("streamed");
+    const open = vi.fn(
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(file);
+          },
+        }),
+    );
+    const execute = vi.fn(async () => ({
+      kind: "stored_caplet_bundle_get",
+      record: { id: "demo", generation: 3 },
+      sources: [
+        {
+          path: "data.txt",
+          size: file.byteLength,
+          sha256: createHash("sha256").update(file).digest("hex"),
+          executable: false,
+          open,
+        },
+      ],
+    }));
+    const app = createAdminV2Router({
+      operations: operationsWith(execute),
+      authorityProvider: async () => ({ principal }),
+      host: {
+        baseUrl: "https://host.example",
+        dashboardUrl: "https://host.example/dashboard",
+        dashboardPath: "/dashboard",
+        bind: "127.0.0.1:5387",
+      },
+    });
+
+    const response = await app.request("https://host.example/caplet-records/demo/bundle", {
+      method: "HEAD",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/^multipart\/mixed; boundary=/);
+    expect(response.headers.get("content-disposition")).toBe('attachment; filename="demo.bundle"');
+    expect(response.headers.get("etag")).toBeTruthy();
+    expect(await response.text()).toBe("");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("returns SSE headers for HEAD without opening a semantic event stream", async () => {
+    const runtimeEvents = vi.fn(
+      () =>
+        new ReadableStream({
+          start() {},
+        }),
+    );
+    const authorityProvider = vi.fn(async () => ({ principal }));
+    const app = createAdminV2Router({
+      operations: operationsWith(vi.fn(), runtimeEvents),
+      authorityProvider,
+      host: {
+        baseUrl: "https://host.example",
+        dashboardUrl: "https://host.example/dashboard",
+        dashboardPath: "/dashboard",
+        bind: "127.0.0.1:5387",
+      },
+    });
+
+    const response = await app.request("https://host.example/events", { method: "HEAD" });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("");
+    expect(authorityProvider).toHaveBeenCalledOnce();
+    expect(runtimeEvents).not.toHaveBeenCalled();
   });
 
   it("frames initial and subsequent semantic Host events as SSE and cancels the source", async () => {
@@ -2238,7 +2309,7 @@ describe("relative Admin v2 router", () => {
     );
     const app = createAdminV2Router({
       operations: operationsWith(vi.fn(), runtimeEvents),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -2353,7 +2424,7 @@ describe("relative Admin v2 router", () => {
     };
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: store,
       host: {
         baseUrl: "https://host.example",
@@ -2500,10 +2571,10 @@ describe("relative Admin v2 router", () => {
       heartbeat: vi.fn(async () => true),
       finalize: vi.fn(async () => true),
     };
-    const principalProvider = vi.fn(async () => principal);
+    const authorityProvider = vi.fn(async () => ({ principal }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider,
+      authorityProvider,
       idempotencyStore: store,
       host: {
         baseUrl: "https://host.example",
@@ -2584,13 +2655,13 @@ describe("relative Admin v2 router", () => {
       server: "server-a",
       expectedGeneration: 4,
     });
-    expect(principalProvider).toHaveBeenCalledWith(expect.any(Request), { mutates: true });
+    expect(authorityProvider).toHaveBeenCalledWith(expect.any(Request), { mutates: true });
   });
   it("returns a no-store 404 Problem for an absent Vault grant detail", async () => {
     const execute = vi.fn(async () => ({ kind: "vault_access_list", grants: [] }));
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       host: {
         baseUrl: "https://host.example",
         dashboardUrl: "https://host.example/dashboard",
@@ -2642,7 +2713,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -2740,7 +2811,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -2838,7 +2909,7 @@ describe("relative Admin v2 router", () => {
     );
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim,
         heartbeat: vi.fn(async () => true),
@@ -2946,7 +3017,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -2991,7 +3062,7 @@ describe("relative Admin v2 router", () => {
     );
   });
 
-  it.each(["/v2/admin", "/dashboard/api/v2"])(
+  it.each(["/v2/admin", "/tenant/tools/v2/admin"])(
     "qualifies renamed resource locations with the active %s mount",
     async (mount) => {
       const execute = vi.fn(async (_principal, operation) => {
@@ -3012,7 +3083,7 @@ describe("relative Admin v2 router", () => {
       });
       const router = createAdminV2Router({
         operations: operationsWith(execute),
-        principalProvider: async () => principal,
+        authorityProvider: async () => ({ principal: await (async () => principal)() }),
         idempotencyStore: {
           claim: vi.fn(async () => ({
             outcome: "acquired" as const,
@@ -3061,7 +3132,7 @@ describe("relative Admin v2 router", () => {
           };
         }),
       ),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,
@@ -3100,7 +3171,7 @@ describe("relative Admin v2 router", () => {
     }));
     const router = createAdminV2Router({
       operations: operationsWith(vi.fn()),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim,
         heartbeat: vi.fn(async () => true),
@@ -3113,9 +3184,9 @@ describe("relative Admin v2 router", () => {
         bind: "127.0.0.1:5387",
       },
     });
-    const app = new Hono().route("/dashboard/api/v2", router);
+    const app = new Hono().route("/tenant/tools/v2/admin", router);
     const response = await app.request(
-      "https://host.example/dashboard/api/v2/caplet-records/old-id",
+      "https://host.example/tenant/tools/v2/admin/caplet-records/old-id",
       {
         method: "PATCH",
         headers: {
@@ -3130,14 +3201,14 @@ describe("relative Admin v2 router", () => {
 
     expect(response.status).toBe(409);
     expect(Object.values(problem.links)).toEqual([
-      "/dashboard/api/v2/caplet-records/new-id",
-      "/dashboard/api/v2/caplet-records/old-id",
+      "/tenant/tools/v2/admin/caplet-records/new-id",
+      "/tenant/tools/v2/admin/caplet-records/old-id",
     ]);
     expect(claim).toHaveBeenCalledWith(
       expect.objectContaining({
         reconciliationLinks: [
-          "/dashboard/api/v2/caplet-records/new-id",
-          "/dashboard/api/v2/caplet-records/old-id",
+          "/tenant/tools/v2/admin/caplet-records/new-id",
+          "/tenant/tools/v2/admin/caplet-records/old-id",
         ],
       }),
     );
@@ -3167,7 +3238,7 @@ describe("relative Admin v2 router", () => {
     });
     const app = createAdminV2Router({
       operations: operationsWith(execute),
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: {
         claim: vi.fn(async () => ({
           outcome: "acquired" as const,

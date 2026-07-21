@@ -679,7 +679,6 @@ function mergeServeOverrides(
   const overrides: RawDaemonServeOptions = {};
   setDefinedServeOverride(overrides, "host", install.host ?? existingOverrides?.host);
   setDefinedServeOverride(overrides, "port", install.port ?? existingOverrides?.port);
-  setDefinedServeOverride(overrides, "path", install.path ?? existingOverrides?.path);
   setDefinedServeOverride(
     overrides,
     "remoteStatePath",
@@ -740,7 +739,6 @@ function legacyServeOverrides(existing: DaemonConfig): RawDaemonServeOptions {
   return {
     host: existing.serve.host,
     port: existing.serve.port,
-    path: existing.serve.path,
     ...(existing.serve.remoteCredentialStateDir
       ? { remoteStatePath: existing.serve.remoteCredentialStateDir }
       : {}),

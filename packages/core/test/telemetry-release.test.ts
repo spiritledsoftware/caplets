@@ -131,6 +131,8 @@ describe("telemetry release environment", () => {
   it("wires runtime telemetry and current workspace packages into Docker image builds", () => {
     const dockerfile = read("Dockerfile");
     const compose = read("docker-compose.yml");
+    const postgresCompose = read("docker-compose.postgres.yml");
+    const hardenedPostgresCompose = read("docker-compose.postgres-hardened.yml");
     const workflow = read(".github/workflows/release.yml");
     const packageJson = JSON.parse(read("package.json")) as { packageManager: string };
     const catalogPackageJson = JSON.parse(read("apps/catalog/package.json")) as {
@@ -165,11 +167,13 @@ describe("telemetry release environment", () => {
     );
     expect(dockerfile).toContain("pnpm --filter caplets deploy --prod --legacy /deploy");
     expect(dockerfile).toContain("COPY --from=build --chown=node:root /deploy ./");
-    expect(dockerfile).toContain("http://127.0.0.1:5387/v1/healthz");
+    expect(dockerfile).toContain("http://127.0.0.1:5387/api/v1/healthz");
     expect(dockerfile).toContain("node dist/index.js init --global");
     expect(dockerfile).toContain("node dist/index.js serve --transport http --host 0.0.0.0");
     expect(compose).toContain("CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server");
-    expect(compose).toContain("http://127.0.0.1:5387/v1/healthz");
+    expect(compose).toContain("http://127.0.0.1:5387/api/v1/healthz");
+    expect(postgresCompose).toContain("http://127.0.0.1:5387/api/v1/healthz");
+    expect(hardenedPostgresCompose).toContain("http://127.0.0.1:5387/api/v1/healthz");
     expect(compose).not.toContain("CAPLETS_SERVER_USER");
     expect(compose).not.toContain("CAPLETS_SERVER_PASSWORD");
     expect(workflow).toContain("CAPLETS_POSTHOG_TOKEN=${{ secrets.CAPLETS_POSTHOG_TOKEN }}");

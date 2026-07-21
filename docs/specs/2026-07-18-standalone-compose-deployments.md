@@ -66,7 +66,10 @@ The hardened descriptor defaults to an exact Caplets version tag. The checked-in
 
 `docker-compose.yml` is a complete SQLite deployment containing the Caplets runtime service and `caplets-data` volume. It has no required configuration variables. It pulls the published Caplets image when that image is not already present and starts with the image's normal initialization and HTTP-serving behavior.
 
-The default bind remains `127.0.0.1:5387`. `CAPLETS_BIND_ADDRESS`, `CAPLETS_PORT`, `CAPLETS_SERVER_URL`, and existing runtime settings remain explicit overrides.
+The default bind remains `127.0.0.1:5387`. `CAPLETS_BIND_ADDRESS`, `CAPLETS_PORT`,
+`CAPLETS_SERVER_URL`, and existing runtime settings remain explicit overrides.
+`CAPLETS_SERVER_URL` is a Current Host Origin with no non-root path, query, fragment, or embedded
+credentials. Deployment readiness probes use `/api/v1/healthz`.
 
 ## PostgreSQL Convenience Deployment
 
@@ -133,7 +136,11 @@ The hardened topology uses two networks:
 - an internal database network shared by PostgreSQL, migrator, and runtime; and
 - a runtime network attached only to Caplets to preserve outbound API access and the loopback-bound HTTP port.
 
-PostgreSQL and the migration container have no general outbound network path. PostgreSQL has no published host port. Caplets binds to `127.0.0.1:5387` by default. Remote exposure and TLS belong to an operator-managed reverse proxy or private network outside this descriptor.
+PostgreSQL and the migration container have no general outbound network path. PostgreSQL has no
+published host port. Caplets binds to `127.0.0.1:5387` by default. Remote exposure and TLS belong to
+an operator-managed reverse proxy or private network outside this descriptor. That proxy must expose
+`/.well-known/caplets`, `/api`, exact `/mcp`, and `/dashboard` at the origin root and forward
+Project Binding WebSocket upgrades; prefix-only hosting is unsupported.
 
 ### Container Restrictions
 

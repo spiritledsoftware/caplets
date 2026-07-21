@@ -1,12 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  symlinkSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,9 +11,7 @@ import {
   resolvedExecutionFingerprintForConfig,
 } from "../src/caplet-source/runtime-fingerprint";
 import { runCapletSetupCli } from "../src/cli/setup-caplet";
-import { createCloudRuntimeAdapter } from "../src/cloud/runtime-adapter";
 import { loadConfigWithSources } from "../src/config";
-import { LocalSetupStore } from "../src/setup/local-store";
 import { parseConfig } from "../src/config-runtime";
 import { createHostStorage } from "../src/storage";
 
@@ -1028,7 +1018,7 @@ README
     ).toThrow(/cycle/iu);
   });
 
-  it("uses one secret-independent per-Caplet fingerprint for local and hosted setup", async () => {
+  it("uses one secret-independent per-Caplet fingerprint for local setup", async () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-setup-fingerprint-"));
     tempDirs.push(root);
     const configPath = join(root, "config.json");
@@ -1085,23 +1075,11 @@ ${body}
         await localStorage.close();
       }
 
-      const hosted = createCloudRuntimeAdapter({
-        configPath,
-        projectConfigPath,
-        runtimeId: "runtime-test",
-        executionKind: "cloud",
-        setupStore: new LocalSetupStore({ baseDir: join(root, "hosted-setup") }),
-      });
-      const hostedPlan = await hosted.setupPlan("tool");
-      await hosted.close();
-
       process.env.SETUP_RUNTIME_TOKEN = "resolved-secret-two";
       writeFileSync(capletPath, capletFile("# Different README"), "utf8");
       const second = loadConfigWithSources(configPath, projectConfigPath);
 
       expect(approval?.contentHash).toBe(expected);
-      expect(hostedPlan.contentHash).toBe(expected);
-      expect(hostedPlan.persistenceEligible).toBe(true);
       expect(second.runtimeFingerprint?.caplets.tool?.fingerprint).toBe(expected);
       expect(JSON.stringify(first.runtimeFingerprint)).not.toContain("resolved-secret-one");
       expect(JSON.stringify(second.runtimeFingerprint)).not.toContain("resolved-secret-two");
@@ -1140,21 +1118,6 @@ ${body}
       }
       expect(JSON.stringify(liveOnlyAttempts)).toContain('"contentHash":"live-only"');
       expect(JSON.stringify(liveOnlyAttempts)).not.toContain("literal-secret");
-
-      const liveHostedRoot = join(root, "live-only-hosted");
-      const liveHosted = createCloudRuntimeAdapter({
-        configPath,
-        projectConfigPath,
-        runtimeId: "runtime-live-only",
-        executionKind: "cloud",
-        setupStore: new LocalSetupStore({ baseDir: liveHostedRoot }),
-      });
-      const liveHostedPlan = await liveHosted.setupPlan("tool");
-      await liveHosted.close();
-      expect(liveHostedPlan.contentHash).toBe("live-only");
-      expect(liveHostedPlan.approved).toBe(false);
-      expect(liveHostedPlan.persistenceEligible).toBe(false);
-      expect(existsSync(join(liveHostedRoot, "approvals.json"))).toBe(false);
     } finally {
       if (previousToken === undefined) delete process.env.SETUP_RUNTIME_TOKEN;
       else process.env.SETUP_RUNTIME_TOKEN = previousToken;

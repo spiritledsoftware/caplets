@@ -88,7 +88,7 @@ export async function parseCapletSource(source: CapletSource): Promise<CapletSou
 
   const configCaplets = capletsFromConfig(config);
   const plansById = new Map(
-    planCapletRuntimeRoutes(configCaplets, { deployment: "hosted" }).map((plan) => [plan.id, plan]),
+    planCapletRuntimeRoutes(configCaplets, { deployment: "remote" }).map((plan) => [plan.id, plan]),
   );
   const caplets = configCaplets.map((caplet) => {
     const plan = plansById.get(caplet.server);

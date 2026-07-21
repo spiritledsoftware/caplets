@@ -290,7 +290,7 @@ describe("Current Host Caplet Record resources", () => {
 
       const app = createAdminV2Router({
         operations,
-        principalProvider: async () => principal,
+        authorityProvider: async () => ({ principal: await (async () => principal)() }),
         idempotencyStore: storage.idempotency,
         host: {
           baseUrl: "https://host.example",
@@ -792,7 +792,7 @@ describe("Current Host Caplet Record resources", () => {
       });
       const app = createAdminV2Router({
         operations,
-        principalProvider: async () => principal,
+        authorityProvider: async () => ({ principal: await (async () => principal)() }),
         idempotencyStore: storage.idempotency,
         bundleUploadAdmission: admission,
         host: {

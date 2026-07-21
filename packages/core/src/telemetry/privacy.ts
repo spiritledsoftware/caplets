@@ -77,7 +77,7 @@ const COMMAND_FAMILIES = new Set([
 ]);
 const STRING_VALUE_ALLOWLISTS: Record<string, ReadonlySet<string>> = {
   surface: new Set(["cli", "serve", "attach", "daemon", "native", "code_mode"]),
-  runtime_mode: new Set(["local", "remote", "cloud", "unknown"]),
+  runtime_mode: new Set(["local", "remote", "unknown"]),
   execution_context: new Set(["interactive", "noninteractive", "ci"]),
   command_family: COMMAND_FAMILIES,
   operation_family: COMMAND_FAMILIES,

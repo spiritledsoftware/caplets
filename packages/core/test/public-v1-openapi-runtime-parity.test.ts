@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("public v1 OpenAPI/runtime response parity", () => {
-  it("accepts mounted Remote credentials and frozen Admin response shapes", async () => {
+  it("accepts mounted Remote credential response shapes", async () => {
     const engine = testEngine();
     const store = new RemoteServerCredentialStore({ dir: tempDir("caplets-v1-remote-store-") });
     const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
@@ -28,27 +28,27 @@ describe("public v1 OpenAPI/runtime response parity", () => {
     });
 
     try {
-      const started = await app.request("http://127.0.0.1:5387/v1/remote/login/start", {
+      const started = await app.request("http://127.0.0.1:5387/api/v1/remote/login/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ clientLabel: "Parity Client", clientFingerprint: "fp_parity" }),
       });
       const pending = await started.json();
       expect(started.status).toBe(200);
-      expectResponseMatches("/v1/remote/login/start", "post", 200, pending);
+      expectResponseMatches("/api/v1/remote/login/start", "post", 200, pending);
 
-      const invalidPoll = await app.request("http://127.0.0.1:5387/v1/remote/login/poll", {
+      const invalidPoll = await app.request("http://127.0.0.1:5387/api/v1/remote/login/poll", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ flowId: "missing" }),
       });
       const pollFailure = await invalidPoll.json();
       expect(invalidPoll.status).toBe(400);
-      expectResponseMatches("/v1/remote/login/poll", "post", 400, pollFailure);
+      expectResponseMatches("/api/v1/remote/login/poll", "post", 400, pollFailure);
 
       const pendingLogin = requirePendingLogin(pending);
       store.approvePendingLogin({ operatorCode: pendingLogin.operatorCode });
-      const completed = await app.request("http://127.0.0.1:5387/v1/remote/login/complete", {
+      const completed = await app.request("http://127.0.0.1:5387/api/v1/remote/login/complete", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -58,10 +58,10 @@ describe("public v1 OpenAPI/runtime response parity", () => {
       });
       const credentialsPayload = await completed.json();
       expect(completed.status).toBe(200);
-      expectResponseMatches("/v1/remote/login/complete", "post", 200, credentialsPayload);
+      expectResponseMatches("/api/v1/remote/login/complete", "post", 200, credentialsPayload);
       const credentials = requireRemoteCredentials(credentialsPayload);
 
-      const invalidRefresh = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
+      const invalidRefresh = await app.request("http://127.0.0.1:5387/api/v1/remote/refresh", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ refreshToken: "invalid-refresh-token" }),
@@ -69,30 +69,30 @@ describe("public v1 OpenAPI/runtime response parity", () => {
       const refreshFailure = await invalidRefresh.json();
       expect(invalidRefresh.status).toBe(401);
       expect(invalidRefresh.headers.get("content-type")).toContain("application/json");
-      expectResponseMatches("/v1/remote/refresh", "post", 401, refreshFailure);
+      expectResponseMatches("/api/v1/remote/refresh", "post", 401, refreshFailure);
 
-      const refreshed = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
+      const refreshed = await app.request("http://127.0.0.1:5387/api/v1/remote/refresh", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ refreshToken: credentials.refreshToken }),
       });
       const refreshedPayload = await refreshed.json();
       expect(refreshed.status).toBe(200);
-      expectResponseMatches("/v1/remote/refresh", "post", 200, refreshedPayload);
+      expectResponseMatches("/api/v1/remote/refresh", "post", 200, refreshedPayload);
       const refreshedCredentials = requireRemoteCredentials(refreshedPayload);
 
-      const unauthorizedDelete = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+      const unauthorizedDelete = await app.request("http://127.0.0.1:5387/api/v1/remote/client", {
         method: "DELETE",
       });
       const unauthorizedText = await unauthorizedDelete.text();
       expect(unauthorizedDelete.status).toBe(401);
       expect(unauthorizedDelete.headers.get("content-type")).toContain("text/plain");
-      expectResponseMatches("/v1/remote/client", "delete", 401, unauthorizedText, "text/plain");
+      expectResponseMatches("/api/v1/remote/client", "delete", 401, unauthorizedText, "text/plain");
 
       const revokeFailure = vi.spyOn(store, "revokeClient").mockImplementationOnce(() => {
         throw new CapletsError("SERVER_UNAVAILABLE", "Credential store unavailable.");
       });
-      const failedDelete = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+      const failedDelete = await app.request("http://127.0.0.1:5387/api/v1/remote/client", {
         method: "DELETE",
         headers: { authorization: `Bearer ${refreshedCredentials.accessToken}` },
       });
@@ -100,49 +100,15 @@ describe("public v1 OpenAPI/runtime response parity", () => {
       revokeFailure.mockRestore();
       expect(failedDelete.status).toBe(503);
       expect(failedDelete.headers.get("content-type")).toContain("application/json");
-      expectResponseMatches("/v1/remote/client", "delete", 503, deleteFailurePayload);
+      expectResponseMatches("/api/v1/remote/client", "delete", 503, deleteFailurePayload);
 
-      const unauthorizedAdmin = await app.request("http://127.0.0.1:5387/v1/admin", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      });
-      const unauthorizedAdminText = await unauthorizedAdmin.text();
-      expect(unauthorizedAdmin.status).toBe(401);
-      expectResponseMatches("/v1/admin", "post", 401, unauthorizedAdminText, "text/plain");
-
-      const forbiddenAdmin = await app.request("http://127.0.0.1:5387/v1/admin", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${refreshedCredentials.accessToken}`,
-          "content-type": "application/json",
-        },
-        body: "{}",
-      });
-      const forbiddenAdminText = await forbiddenAdmin.text();
-      expect(forbiddenAdmin.status).toBe(403);
-      expectResponseMatches("/v1/admin", "post", 403, forbiddenAdminText, "text/plain");
-
-      const operatorCredentials = issueRemoteCredentials(store, "operator");
-      const legacyAdmin = await app.request("http://127.0.0.1:5387/v1/admin", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${operatorCredentials.accessToken}`,
-          "content-type": "application/json",
-        },
-        body: '{"command":',
-      });
-      const legacyAdminPayload = await legacyAdmin.json();
-      expect(legacyAdmin.status).toBe(200);
-      expectResponseMatches("/v1/admin", "post", 200, legacyAdminPayload);
-
-      const revoked = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+      const revoked = await app.request("http://127.0.0.1:5387/api/v1/remote/client", {
         method: "DELETE",
         headers: { authorization: `Bearer ${refreshedCredentials.accessToken}` },
       });
       const revokePayload = await revoked.json();
       expect(revoked.status).toBe(200);
-      expectResponseMatches("/v1/remote/client", "delete", 200, revokePayload);
+      expectResponseMatches("/api/v1/remote/client", "delete", 200, revokePayload);
     } finally {
       await app.closeCapletsSessions();
       await engine.close();
@@ -166,26 +132,26 @@ describe("public v1 OpenAPI/runtime response parity", () => {
         operatorClientId: "parity-operator",
       });
 
-      const binding = await app.request("http://127.0.0.1:5387/v2/admin/project-binding");
+      const binding = await app.request("http://127.0.0.1:5387/api/v2/admin/project-binding");
       const bindingPayload = await binding.json();
       expect(binding.status).toBe(200);
       expect(binding.headers.get("content-type")).toContain("application/json");
-      expectResponseMatches("/v2/admin/project-binding", "get", 200, bindingPayload);
+      expectResponseMatches("/api/v2/admin/project-binding", "get", 200, bindingPayload);
 
       const vaultValue = await app.request(
-        "http://127.0.0.1:5387/v2/admin/vault-values/PARITY_TOKEN",
+        "http://127.0.0.1:5387/api/v2/admin/vault-values/PARITY_TOKEN",
       );
       const vaultPayload = await vaultValue.json();
       expect(vaultValue.status).toBe(200);
       expect(vaultValue.headers.get("content-type")).toContain("application/json");
-      expectResponseMatches("/v2/admin/vault-values/{storedKey}", "get", 200, vaultPayload);
+      expectResponseMatches("/api/v2/admin/vault-values/{storedKey}", "get", 200, vaultPayload);
     } finally {
       await app.closeCapletsSessions();
       await engine.close();
       await storage.close();
     }
   });
-  it("accepts mounted Attach session, invoke, manifest, and legacy failure payloads", async () => {
+  it("accepts mounted Attach session, invoke, manifest, and error payloads", async () => {
     const engine = testEngine();
     const manifest = attachManifest();
     const app = createHttpServeApp(httpOptions(), engine, {
@@ -199,25 +165,25 @@ describe("public v1 OpenAPI/runtime response parity", () => {
     });
 
     try {
-      const created = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      const created = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "{}",
       });
       const session = await created.json();
       expect(created.status).toBe(201);
-      expectResponseMatches("/v1/attach/sessions", "post", 201, session);
+      expectResponseMatches("/api/v1/attach/sessions", "post", 201, session);
 
       const sessionId = requireSessionId(session);
       const sessionHeaders = { [CAPLETS_ATTACH_SESSION_HEADER]: sessionId };
-      const servedManifest = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      const servedManifest = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
         headers: sessionHeaders,
       });
       const manifestPayload = await servedManifest.json();
       expect(servedManifest.status).toBe(200);
-      expectResponseMatches("/v1/attach/manifest", "get", 200, manifestPayload);
+      expectResponseMatches("/api/v1/attach/manifest", "get", 200, manifestPayload);
 
-      const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      const invoked = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
         method: "POST",
         headers: { ...sessionHeaders, "content-type": "application/json" },
         body: JSON.stringify({
@@ -229,33 +195,20 @@ describe("public v1 OpenAPI/runtime response parity", () => {
       });
       const invokePayload = await invoked.json();
       expect(invoked.status).toBe(200);
-      expectResponseMatches("/v1/attach/invoke", "post", 200, invokePayload);
+      expectResponseMatches("/api/v1/attach/invoke", "post", 200, invokePayload);
 
-      const malformed = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      const malformed = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
         method: "POST",
         headers: { ...sessionHeaders, "content-type": "application/json" },
         body: '{"revision":',
       });
       const failure = await malformed.json();
       expect(malformed.status).toBe(400);
-      expectResponseMatches("/v1/attach/invoke", "post", 400, failure);
+      expectResponseMatches("/api/v1/attach/invoke", "post", 400, failure);
     } finally {
       await app.closeCapletsSessions();
       await engine.close();
     }
-  });
-  it("accepts the scoped backend auth status shape returned by frozen Admin auth_list", () => {
-    expectResponseMatches("/v1/admin", "post", 200, {
-      ok: true,
-      result: [
-        {
-          server: "remote",
-          status: "authenticated",
-          expiresAt: "2999-01-01T00:00:00.000Z",
-          scope: "openid profile",
-        },
-      ],
-    });
   });
 });
 
@@ -324,22 +277,6 @@ function requireRemoteCredentials(value: unknown): {
   return { accessToken: value.accessToken, refreshToken: value.refreshToken };
 }
 
-function issueRemoteCredentials(
-  store: RemoteServerCredentialStore,
-  grantedRole: "access" | "operator",
-): { accessToken: string } {
-  const pending = store.createPendingLogin({
-    hostUrl: "http://127.0.0.1:5387/",
-    requestedRole: grantedRole,
-    clientLabel: `Parity ${grantedRole}`,
-  });
-  store.approvePendingLogin({ operatorCode: pending.operatorCode, grantedRole });
-  return store.completePendingLogin({
-    hostUrl: "http://127.0.0.1:5387/",
-    flowId: pending.flowId,
-    pendingCompletionSecret: pending.pendingCompletionSecret,
-  });
-}
 function requireSessionId(value: unknown): string {
   if (!isRecord(value) || typeof value.sessionId !== "string") {
     throw new Error("Attach session response is missing a session ID.");
@@ -419,7 +356,6 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     publicOrigin: undefined,
     auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: false,

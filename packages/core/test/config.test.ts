@@ -78,6 +78,41 @@ describe("config", () => {
     expect(config.mcpServers.github?.exposure).toBe("direct_and_code_mode");
   });
 
+  it("keeps generic runtime requirements without hosted schema taxonomy", () => {
+    const config = parseConfig({
+      mcpServers: {
+        browser: {
+          name: "Browser",
+          description: "Automate browser tasks safely.",
+          command: "browser-mcp",
+          runtime: {
+            features: ["browser", "docker"],
+            resources: { class: "heavy" },
+          },
+        },
+      },
+    });
+
+    expect(config.mcpServers.browser?.runtime).toEqual({
+      features: ["browser", "docker"],
+      resources: { class: "heavy" },
+    });
+    expect(JSON.stringify(configJsonSchema())).not.toMatch(/hosted|sandbox/iu);
+    expect(JSON.stringify(capletJsonSchema())).not.toMatch(/hosted|sandbox/iu);
+    expect(() =>
+      parseConfig({
+        mcpServers: {
+          browser: {
+            name: "Browser",
+            description: "Automate browser tasks safely.",
+            command: "browser-mcp",
+            runtime: { resources: { class: "small" } },
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it("accepts per-Caplet shadowing policy and exposes it in the generated schema", () => {
     const config = parseConfig({
       mcpServers: {
@@ -219,9 +254,8 @@ describe("config", () => {
       serve: {
         host: "127.0.0.1",
         port: 5480,
-        path: "/caplets",
         remoteStatePath: "/var/lib/caplets/remote-auth",
-        upstreamUrl: "https://upstream.example.com/caplets",
+        upstreamUrl: "https://upstream.example.com",
         allowUnauthenticatedHttp: true,
         trustProxy: true,
         publicOrigins: ["https://caplets.example.com"],
@@ -235,9 +269,8 @@ describe("config", () => {
       serve: {
         host: "127.0.0.1",
         port: 5480,
-        path: "/caplets",
         remoteStatePath: "/var/lib/caplets/remote-auth",
-        upstreamUrl: "https://upstream.example.com/caplets",
+        upstreamUrl: "https://upstream.example.com",
         allowUnauthenticatedHttp: true,
         trustProxy: true,
         publicOrigins: ["https://caplets.example.com"],
@@ -248,8 +281,12 @@ describe("config", () => {
     });
   });
 
-  it("rejects transport and non-origin values in global serve config", () => {
+  it("rejects removed serve.path and non-origin values in global serve config", () => {
     expect(() => parseConfig({ serve: { transport: "http" } })).toThrow(CapletsError);
+    expect(() => parseConfig({ serve: { path: "/prefix" } })).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({ serve: { upstreamUrl: "https://upstream.example.com/path" } }),
+    ).toThrow(CapletsError);
     expect(() =>
       parseConfig({ serve: { publicOrigins: ["https://caplets.example.com/path"] } }),
     ).toThrow(CapletsError);

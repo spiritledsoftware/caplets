@@ -92,7 +92,7 @@ Manual daemon-backed MCP config looks like this:
 ```
 
 You can put HTTP serve defaults in your user Caplets config when you run a foreground
-HTTP server or want daemon restarts to reuse a non-default port, path, upstream, or public
+HTTP server or want daemon restarts to reuse a non-default port, upstream, or public
 origin. These defaults live under top-level `serve`, are ignored from project config for
 security, and lose to command flags and environment variables:
 
@@ -112,6 +112,11 @@ security, and lose to command flags and environment variables:
 `serve.publicOrigins` are full origins used for public request identity, not host-only
 allowlists. `caplets setup` still prepares a credential-free loopback daemon before
 mutating agent config, even if your user `serve` defaults describe a broader HTTP runtime.
+
+Current Host inputs are origins such as `https://caplets.example.com`, never URLs with a
+deployment path, query, fragment, or embedded credentials. This includes `CAPLETS_SERVER_URL`,
+Remote Profile URLs, CLI URL arguments, and SDK `baseUrl`; a trailing root slash is normalized away.
+A reverse proxy must expose the fixed origin-root namespaces. Prefix-only hosting is unsupported.
 
 Admin bundle uploads stage verified multipart files before committing them to Authoritative Host
 State. The defaults allow one upload and 369,283,314 bytes (about 352.2 MiB) of aggregate staged
@@ -185,13 +190,13 @@ args = ["attach", "<local-daemon-url>"]
 }
 ```
 
-For a remote or Cloud-backed MCP server, keep the same thin-client shape and point
-`caplets attach` at the remote URL after Remote Login:
+For a remote MCP server, keep the same thin-client shape and point `caplets attach`
+at the Current Host Origin after Remote Login:
 
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach", "https://caplets.example.com/caplets"]
+args = ["attach", "https://caplets.example.com"]
 ```
 
 ```json
@@ -199,66 +204,73 @@ args = ["attach", "https://caplets.example.com/caplets"]
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "https://caplets.example.com/caplets"]
+      "args": ["attach", "https://caplets.example.com"]
     }
   }
 }
 ```
 
-`caplets attach <url>` is always the stdio client command for MCP configs. As an
-advanced manual fallback, you can still run a foreground HTTP runtime yourself, for
-example to compose local/project Caplets with an upstream host:
+`caplets attach <origin>` is always the stdio client command for MCP configs. As an advanced
+alternative, you can run a foreground HTTP runtime yourself, for example to compose local/project
+Caplets with an upstream Current Host:
 
 ```sh
-caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+caplets serve --transport http --upstream-url https://caplets.example.com
 ```
 
-Then point agents at that local runtime with `caplets attach <local-runtime-url>`.
+Then point agents at that local runtime with `caplets attach <local-runtime-origin>`.
 
 Native integrations expose `caplets__code_mode` for multi-step TypeScript workflows over
 generated `caplets.<id>` handles. Progressive exposure adds `caplets__<id>` tools; direct
 exposure adds operation-level tools such as `caplets__<id>__<operation>`. `caplets setup`
 writes non-secret daemon defaults for OpenCode and Pi; explicit plugin settings still win.
 
-Remote mode uses Remote Login for both self-hosted Caplets and Caplets Cloud. Trust the
-host once, then launch attach or a native integration with only non-secret selectors:
+Remote mode uses generic Current Host Remote Login. Trust the origin once, then launch attach or a
+native integration with only non-secret selectors:
 
 ```sh
-caplets remote login https://caplets.example.com/caplets
-caplets attach https://caplets.example.com/caplets
-
-caplets remote login https://cloud.caplets.dev
-CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
+caplets remote login https://caplets.example.com
+caplets attach https://caplets.example.com
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com opencode
 ```
 
 ## Current Host Administration
 
-The dashboard and remote CLI administer the Current Host through the same resource semantics. The
-dashboard mounts them at `/dashboard/api/v2` behind its cookie, session, origin, and CSRF ceremony;
-paired Operator clients use bearer-authenticated `/v2/admin`. Access credentials cannot invoke
-Admin resources, and remote administration uses the selected Remote Profile rather than a separate
-Admin token.
+A Current Host exposes fixed, disjoint protocol namespaces at its origin:
 
-`GET /openapi.json` is the public, cacheable OpenAPI 3.1 contract. The `@caplets/sdk` Fetch client
-is generated from it. V2 success responses are direct resource representations; failures use
-Problem Details, mutable resources use ETags and preconditions, and side-effecting POSTs require
-idempotency keys. Caplet bundles use ordered, manifest-first multipart uploads and streaming
-multipart downloads instead of JSON/base64.
+- `GET /` redirects to `/dashboard`.
+- `/.well-known/caplets` publishes origin-relative links to the API, OpenAPI, MCP, and dashboard.
+- `/api`, `/api/openapi.json`, `/api/v1/*`, and `/api/v2/admin/*` are the public HTTP API.
+- Exact `/mcp` is the Streamable HTTP MCP endpoint.
+- `/dashboard` contains the browser UI; `/dashboard/api/*` contains browser-private ceremonies.
 
-Runtime tools, resources, prompts, and completions continue through Attach. Remote `init` and `add`
-are local-only filesystem operations and are rejected. `/v1/admin` remains available as a frozen,
-deprecated compatibility Adapter for retained commands; it receives no new operations.
+Paired Operator Clients and the same-origin dashboard administer the Current Host through
+`/api/v2/admin/*`. Any `Authorization` header selects bearer mode exclusively, so invalid or
+underprivileged bearer credentials never fall back to a dashboard cookie. Without that header, the
+dashboard session cookie selects browser-session mode, and unsafe operations require the current
+`X-Caplets-CSRF`. Access Clients cannot invoke Admin resources.
+
+`GET /api/openapi.json` is the public, cacheable OpenAPI 3.1 contract from which
+`@caplets/sdk` is generated. Runtime tools, resources, prompts, and completions use Attach beneath
+`/api/v1/attach/*`; v1 Admin does not exist. Raw Vault Reveal remains only at
+`/dashboard/api/private/vault-reveals` with same-origin session, CSRF, exact confirmation, and
+`no-store` protection.
+
+Dashboard login issues a host-only, HttpOnly, SameSite=Lax cookie at `Path=/`. Session restore
+migrates an existing `Path=/dashboard` cookie without changing the session identity, CSRF value, or
+expiry. A cookie scoped to a removed custom prefix cannot reach the canonical restore route and
+requires a fresh dashboard login.
 
 ## JavaScript and TypeScript SDK
 
 Install `@caplets/sdk` for an isolated, typed public HTTP client in Node.js 22+ or a modern browser.
-Pass the absolute Caplets service root explicitly:
+Pass the Current Host Origin explicitly:
 
 ```ts
 import { createClient, getServiceDiscovery } from "@caplets/sdk";
 
 const client = createClient({
-  baseUrl: "https://host.example/caplets",
+  baseUrl: "https://host.example",
   auth: async () => getCurrentAccessToken(),
 });
 
@@ -283,7 +295,7 @@ caplets vault get GH_TOKEN
 caplets vault get GH_TOKEN --show
 ```
 
-Use `--remote` when the Caplet runs in a self-hosted remote or hosted Cloud runtime:
+Use `--remote` when the Caplet runs in a generic remote Current Host:
 
 ```sh
 caplets vault set GH_TOKEN --remote --grant github

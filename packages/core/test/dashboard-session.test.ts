@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../src/dashboard/auth";
 import { CapletsEngine } from "../src/engine";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import { createHostStorage, type HostStorage, type RemoteSecurityStore } from "../src/storage";
@@ -10,11 +11,23 @@ import type { HttpServeOptions } from "../src/serve/options";
 
 const dirs: string[] = [];
 const storages = new Set<HostStorage>();
+const sameOriginHeaders = { "sec-fetch-site": "same-origin" } as const;
 
 afterEach(async () => {
   await Promise.all([...storages].map(async (storage) => await storage.close()));
   storages.clear();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("dashboard session cookie serialization", () => {
+  it("fixes new cookies at the origin root while retaining explicit legacy expiry", () => {
+    expect(dashboardSessionCookie("session.secret", { secure: false })).toBe(
+      "caplets_dashboard_session=session.secret; Path=/; HttpOnly; SameSite=Lax",
+    );
+    expect(dashboardSessionCookie("session.secret", { secure: true })).toContain("; Secure");
+    expect(expiredDashboardSessionCookie("/")).toContain("Path=/;");
+    expect(expiredDashboardSessionCookie("/dashboard")).toContain("Path=/dashboard;");
+  });
 });
 
 describe("dashboard sessions", () => {
@@ -59,12 +72,12 @@ describe("dashboard sessions", () => {
       },
     });
 
-    const summary = await app.request("http://127.0.0.1:5387/dashboard/api/v2/host");
+    const summary = await app.request("http://127.0.0.1:5387/api/v2/admin/host");
     expect(summary.status).toBe(200);
     await expect(summary.json()).resolves.toMatchObject({
       host: {
         current: true,
-        baseUrl: "http://127.0.0.1:5387/",
+        baseUrl: "http://127.0.0.1:5387",
         dashboardUrl: "http://127.0.0.1:5387/dashboard",
       },
       sections: expect.objectContaining({
@@ -82,11 +95,7 @@ describe("dashboard sessions", () => {
     const session = await app.request(`${baseUrl}/dashboard/api/session`);
     expect(session.status).toBe(403);
 
-    const admin = await app.request(`${baseUrl}/v1/admin`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "list", arguments: {} }),
-    });
+    const admin = await app.request(`${baseUrl}/api/v2/admin/host`);
     expect(admin.status).toBe(403);
 
     const reveal = await app.request(`${baseUrl}/dashboard/api/private/vault-reveals`, {
@@ -99,10 +108,10 @@ describe("dashboard sessions", () => {
     });
     expect(reveal.status).toBe(403);
 
-    const attach = await app.request(`${baseUrl}/v1/attach/manifest`);
+    const attach = await app.request(`${baseUrl}/api/v1/attach/manifest`);
     expect(attach.status).toBe(200);
 
-    const mcp = await app.request(`${baseUrl}/v1/mcp`, {
+    const mcp = await app.request(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
         accept: "application/json, text/event-stream",
@@ -181,7 +190,7 @@ describe("dashboard sessions", () => {
     await engine.close();
   });
 
-  it("completes approved dashboard authorization into an HttpOnly session cookie", async () => {
+  it("issues a root cookie and migrates the same legacy credential without changing session state", async () => {
     const { app, engine, store } = await testApp();
     const started = await startDashboardLogin(app);
     const code = approvalCode(started.approvalCommand);
@@ -200,32 +209,69 @@ describe("dashboard sessions", () => {
     });
 
     expect(response.status).toBe(200);
-    const cookie = response.headers.get("set-cookie") ?? "";
+    const issuedCookies = response.headers.getSetCookie();
+    const cookie = issuedCookies[0] ?? "";
     expect(cookie).toContain("caplets_dashboard_session=");
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).toContain("Path=/;");
+    expect(issuedCookies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Path=/;"),
+        expect.stringContaining("Path=/dashboard;"),
+      ]),
+    );
+    expect(issuedCookies).toHaveLength(2);
     const bodyText = await response.text();
     expect(bodyText).not.toContain("cap_remote_access_");
     expect(bodyText).not.toContain("cap_remote_refresh_");
-    const body = JSON.parse(bodyText) as { session: { csrfToken: string; role: string } };
+    const body = JSON.parse(bodyText) as {
+      session: { sessionId: string; csrfToken: string; role: string };
+    };
     expect(body.session).toMatchObject({ role: "operator" });
     expect(body.session.csrfToken).toMatch(/^csrf_/u);
+    const credential = cookie.split(";", 1)[0] ?? "";
 
     const session = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
-      headers: { cookie },
+      headers: { cookie: credential, ...sameOriginHeaders },
     });
     expect(session.status).toBe(200);
+    const migratedCookies = session.headers.getSetCookie();
+    expect(migratedCookies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`${credential}; Path=/;`),
+        expect.stringContaining("Path=/dashboard;"),
+      ]),
+    );
+    expect(migratedCookies).toHaveLength(2);
     await expect(session.json()).resolves.toMatchObject({
       authenticated: true,
-      session: { role: "operator", csrfToken: body.session.csrfToken },
+      session: {
+        sessionId: body.session.sessionId,
+        role: "operator",
+        csrfToken: body.session.csrfToken,
+      },
     });
 
     await engine.close();
   });
+  it("does not recover dashboard sessions through a removed custom prefix", async () => {
+    const { app, engine } = await testApp();
+    const removed = await app.request("http://127.0.0.1:5387/tenant/tools/dashboard/api/session", {
+      headers: { cookie: "caplets_dashboard_session=legacy.custom-prefix" },
+    });
 
-  it("applies session and current CSRF authority to the shared dashboard Admin mount", async () => {
+    expect(removed.status).toBe(404);
+    expect(removed.headers.get("location")).toBeNull();
+    await expect(removed.json()).resolves.toEqual({ error: "not_found" });
+    expect((await app.request("http://127.0.0.1:5387/dashboard/api/session")).status).toBe(401);
+
+    await engine.close();
+  });
+
+  it("applies session and current CSRF authority to the canonical Admin route", async () => {
     const { app, engine, store, storage } = await testApp();
-    expect((await app.request("http://127.0.0.1:5387/dashboard/api/v2/host")).status).toBe(401);
+    expect((await app.request("http://127.0.0.1:5387/api/v2/admin/host")).status).toBe(401);
     const { cookie, csrfToken } = await approvedDashboardSession(app, store);
     await storage.caplets.importBundle({
       id: "demo",
@@ -263,18 +309,18 @@ mcpServer:
       requiredRole: "operator",
     });
 
-    const dashboardRead = await app.request("http://127.0.0.1:5387/dashboard/api/v2/host", {
-      headers: { cookie },
+    const dashboardRead = await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
+      headers: { cookie, ...sameOriginHeaders },
     });
-    const bearerRead = await app.request("http://127.0.0.1:5387/v2/admin/host", {
+    const bearerRead = await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
       headers: { authorization: `Bearer ${operator.accessToken}` },
     });
     expect(dashboardRead.status).toBe(200);
     expect(bearerRead.status).toBe(200);
     expect(await dashboardRead.json()).toEqual(await bearerRead.json());
     const observations = await app.request(
-      "http://127.0.0.1:5387/dashboard/api/v2/caplet-records/demo/installation-observations?limit=1",
-      { headers: { cookie } },
+      "http://127.0.0.1:5387/api/v2/admin/caplet-records/demo/installation-observations?limit=1",
+      { headers: { cookie, ...sameOriginHeaders } },
     );
     expect(observations.status).toBe(200);
     await expect(observations.json()).resolves.toEqual({ items: [] });
@@ -284,30 +330,29 @@ mcpServer:
       ["stale CSRF", "stale-csrf", 403],
       ["current CSRF", csrfToken, 503],
     ] as const) {
-      const response = await app.request(
-        "http://127.0.0.1:5387/dashboard/api/v2/runtime-restarts",
-        {
-          method: "POST",
-          headers: {
-            cookie,
-            "content-type": "application/json",
-            "idempotency-key": `dashboard-runtime-${name.replaceAll(" ", "-")}`,
-            "if-none-match": "*",
-            ...(csrf ? { "x-caplets-csrf": csrf } : {}),
-          },
-          body: "{}",
+      const response = await app.request("http://127.0.0.1:5387/api/v2/admin/runtime-restarts", {
+        method: "POST",
+        headers: {
+          cookie,
+          ...sameOriginHeaders,
+          "content-type": "application/json",
+          "idempotency-key": `dashboard-runtime-${name.replaceAll(" ", "-")}`,
+          "if-none-match": "*",
+          ...(csrf ? { "x-caplets-csrf": csrf } : {}),
         },
-      );
+        body: "{}",
+      });
       expect(response.status, name).toBe(status);
       expect(response.headers.get("cache-control"), name).toBe("no-store");
     }
 
     const dashboardMutation = await app.request(
-      "http://127.0.0.1:5387/dashboard/api/v2/runtime-restarts",
+      "http://127.0.0.1:5387/api/v2/admin/runtime-restarts",
       {
         method: "POST",
         headers: {
           cookie,
+          ...sameOriginHeaders,
           "content-type": "application/json",
           "idempotency-key": "dashboard-runtime-equivalence",
           "if-none-match": "*",
@@ -316,22 +361,85 @@ mcpServer:
         body: "{}",
       },
     );
-    const bearerMutation = await app.request("http://127.0.0.1:5387/v2/admin/runtime-restarts", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${operator.accessToken}`,
-        "content-type": "application/json",
-        "idempotency-key": "bearer-runtime-equivalence",
-        "if-none-match": "*",
-        "x-caplets-csrf": "ignored-by-bearer",
+    const bearerMutation = await app.request(
+      "http://127.0.0.1:5387/api/v2/admin/runtime-restarts",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${operator.accessToken}`,
+          "content-type": "application/json",
+          "idempotency-key": "bearer-runtime-equivalence",
+          "if-none-match": "*",
+          "x-caplets-csrf": "ignored-by-bearer",
+        },
+        body: "{}",
       },
-      body: "{}",
-    });
+    );
     expect(dashboardMutation.status).toBe(503);
     expect(bearerMutation.status).toBe(503);
     expect(await dashboardMutation.json()).toEqual(await bearerMutation.json());
 
+    const removedAlias = await app.request("http://127.0.0.1:5387/dashboard/api/v2/host", {
+      headers: { cookie, ...sameOriginHeaders },
+    });
+    expect(removedAlias.status).toBe(404);
+
     await app.closeCapletsSessions();
+    await engine.close();
+  });
+  it("selects bearer and session credentials without downgrade fallback", async () => {
+    const { app, engine, store } = await testApp();
+    const { cookie } = await approvedDashboardSession(app, store);
+    const operator = await approvedRemoteClient(store, "operator");
+    const access = await approvedRemoteClient(store, "access");
+
+    for (const [name, headers, status] of [
+      [
+        "valid bearer ignores a malformed cookie",
+        {
+          authorization: `Bearer ${operator.accessToken}`,
+          cookie: "caplets_dashboard_session=malformed",
+        },
+        200,
+      ],
+      [
+        "invalid bearer does not fall back to a valid cookie",
+        { authorization: "Bearer invalid", cookie, ...sameOriginHeaders },
+        401,
+      ],
+      [
+        "Access bearer does not fall back to a valid cookie",
+        { authorization: `Bearer ${access.accessToken}`, cookie, ...sameOriginHeaders },
+        403,
+      ],
+      ["session without browser provenance", { cookie }, 403],
+      [
+        "session with a mismatched Origin",
+        { cookie, origin: "https://attacker.example", ...sameOriginHeaders },
+        403,
+      ],
+      ["session from a same-site origin", { cookie, "sec-fetch-site": "same-site" }, 403],
+      ["session from the Current Host origin", { cookie, origin: "http://127.0.0.1:5387" }, 200],
+    ] as const) {
+      const response = await app.request("http://127.0.0.1:5387/api/v2/admin/host", { headers });
+      expect(response.status, name).toBe(status);
+      expect(response.headers.get("cache-control"), name).toBe("no-store");
+    }
+
+    await engine.close();
+  });
+
+  it("does not treat malformed session credentials as credential-free development access", async () => {
+    const { app, engine } = await developmentTestApp();
+
+    const response = await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
+      headers: {
+        cookie: "caplets_dashboard_session=malformed",
+        ...sameOriginHeaders,
+      },
+    });
+
+    expect(response.status).toBe(401);
     await engine.close();
   });
 
@@ -344,13 +452,15 @@ mcpServer:
       const { app, engine, store, storage } = await testApp();
       const { cookie, csrfToken } = await approvedDashboardSession(app, store);
       const currentSession = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
-        headers: { cookie },
+        headers: { cookie, ...sameOriginHeaders },
       });
       const sessionBody = (await currentSession.json()) as {
         session: { sessionId: string; operatorClientId: string };
       };
-      const clientUrl = `http://127.0.0.1:5387/dashboard/api/v2/remote-clients/${sessionBody.session.operatorClientId}`;
-      const currentClient = await app.request(clientUrl, { headers: { cookie } });
+      const clientUrl = `http://127.0.0.1:5387/api/v2/admin/remote-clients/${sessionBody.session.operatorClientId}`;
+      const currentClient = await app.request(clientUrl, {
+        headers: { cookie, ...sameOriginHeaders },
+      });
       const etag = currentClient.headers.get("etag");
       expect(etag).not.toBeNull();
 
@@ -358,6 +468,7 @@ mcpServer:
         method,
         headers: {
           cookie,
+          ...sameOriginHeaders,
           "idempotency-key": `dashboard-${method.toLowerCase()}-self`,
           "if-match": etag!,
           "x-caplets-csrf": csrfToken,
@@ -368,17 +479,75 @@ mcpServer:
 
       expect(response.status).toBe(200);
       expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+      expect(response.headers.getSetCookie()).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Path=/;"),
+          expect.stringContaining("Path=/dashboard;"),
+        ]),
+      );
+      expect(response.headers.getSetCookie()).toHaveLength(2);
       await expect(
         storage.dashboardSessions.get(sessionBody.session.sessionId),
       ).resolves.toBeUndefined();
       const expired = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
-        headers: { cookie },
+        headers: { cookie, ...sameOriginHeaders },
       });
       expect(expired.status).toBe(401);
 
       await engine.close();
     },
   );
+  it("runs session cleanup only when the acting session ends", async () => {
+    const { app, engine, store } = await testApp();
+    const { cookie, csrfToken } = await approvedDashboardSession(app, store);
+    const other = await approvedRemoteClient(store, "operator");
+    const otherUrl = `http://127.0.0.1:5387/api/v2/admin/remote-clients/${other.clientId}`;
+    const otherDetail = await app.request(otherUrl, {
+      headers: { cookie, ...sameOriginHeaders },
+    });
+    const otherEtag = otherDetail.headers.get("etag");
+    expect(otherEtag).not.toBeNull();
+
+    const revokeOther = await app.request(otherUrl, {
+      method: "DELETE",
+      headers: {
+        cookie,
+        ...sameOriginHeaders,
+        "idempotency-key": "dashboard-delete-other",
+        "if-match": otherEtag!,
+        "x-caplets-csrf": csrfToken,
+      },
+    });
+    expect(revokeOther.status).toBe(200);
+    expect(revokeOther.headers.getSetCookie()).toEqual([]);
+    expect(
+      (
+        await app.request("http://127.0.0.1:5387/dashboard/api/session", {
+          headers: { cookie, ...sameOriginHeaders },
+        })
+      ).status,
+    ).toBe(200);
+
+    const bearer = await approvedRemoteClient(store, "operator");
+    const bearerUrl = `http://127.0.0.1:5387/api/v2/admin/remote-clients/${bearer.clientId}`;
+    const bearerDetail = await app.request(bearerUrl, {
+      headers: { authorization: `Bearer ${bearer.accessToken}` },
+    });
+    const bearerEtag = bearerDetail.headers.get("etag");
+    expect(bearerEtag).not.toBeNull();
+    const revokeBearer = await app.request(bearerUrl, {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${bearer.accessToken}`,
+        "idempotency-key": "bearer-delete-self",
+        "if-match": bearerEtag!,
+      },
+    });
+    expect(revokeBearer.status).toBe(200);
+    expect(revokeBearer.headers.getSetCookie()).toEqual([]);
+
+    await engine.close();
+  });
 
   it("preserves a committed self-demotion response when session cleanup and reporting fail", async () => {
     const reports: string[] = [];
@@ -391,13 +560,15 @@ mcpServer:
     });
     const { cookie, csrfToken } = await approvedDashboardSession(app, store);
     const currentSession = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
-      headers: { cookie },
+      headers: { cookie, ...sameOriginHeaders },
     });
     const sessionBody = (await currentSession.json()) as {
       session: { sessionId: string; operatorClientId: string };
     };
-    const clientUrl = `http://127.0.0.1:5387/dashboard/api/v2/remote-clients/${sessionBody.session.operatorClientId}`;
-    const currentClient = await app.request(clientUrl, { headers: { cookie } });
+    const clientUrl = `http://127.0.0.1:5387/api/v2/admin/remote-clients/${sessionBody.session.operatorClientId}`;
+    const currentClient = await app.request(clientUrl, {
+      headers: { cookie, ...sameOriginHeaders },
+    });
     const etag = currentClient.headers.get("etag");
     expect(etag).not.toBeNull();
     vi.spyOn(storage.dashboardSessions, "delete").mockRejectedValueOnce(new Error(deleteSecret));
@@ -406,6 +577,7 @@ mcpServer:
       method: "PATCH",
       headers: {
         cookie,
+        ...sameOriginHeaders,
         "content-type": "application/merge-patch+json",
         "idempotency-key": "dashboard-self-demotion-cleanup-failure",
         "if-match": etag!,
@@ -501,7 +673,7 @@ mcpServer:
     try {
       lock.exec("BEGIN IMMEDIATE");
       const response = await setup.app.request("http://127.0.0.1:5387/dashboard/api/session", {
-        headers: { cookie },
+        headers: { cookie, ...sameOriginHeaders },
       });
 
       expect(response.status).toBe(503);
@@ -523,19 +695,24 @@ mcpServer:
 
     const missingCsrf = await app.request("http://127.0.0.1:5387/dashboard/api/logout", {
       method: "POST",
-      headers: { cookie },
+      headers: { cookie, ...sameOriginHeaders },
     });
     expect(missingCsrf.status).toBe(403);
+    const missingProvenance = await app.request("http://127.0.0.1:5387/dashboard/api/logout", {
+      method: "POST",
+      headers: { cookie, "x-caplets-csrf": csrfToken },
+    });
+    expect(missingProvenance.status).toBe(403);
 
     const logout = await app.request("http://127.0.0.1:5387/dashboard/api/logout", {
       method: "POST",
-      headers: { cookie, "x-caplets-csrf": csrfToken },
+      headers: { cookie, ...sameOriginHeaders, "x-caplets-csrf": csrfToken },
     });
     expect(logout.status).toBe(200);
     expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
 
     const session = await app.request("http://127.0.0.1:5387/dashboard/api/session", {
-      headers: { cookie },
+      headers: { cookie, ...sameOriginHeaders },
     });
     expect(session.status).toBe(401);
 
@@ -559,7 +736,7 @@ mcpServer:
       .spyOn(reloadedStorage.remoteSecurity, "listClients")
       .mockRejectedValue(new Error("dashboard session validation must not list clients"));
     const restored = await reloadedApp.request("http://127.0.0.1:5387/dashboard/api/session", {
-      headers: { cookie },
+      headers: { cookie, ...sameOriginHeaders },
     });
     expect(restored.status).toBe(200);
     const restoredBody = (await restored.json()) as { session: { operatorClientId: string } };
@@ -569,7 +746,7 @@ mcpServer:
       clientId: restoredBody.session.operatorClientId,
     });
     const revoked = await reloadedApp.request("http://127.0.0.1:5387/dashboard/api/session", {
-      headers: { cookie },
+      headers: { cookie, ...sameOriginHeaders },
     });
     expect(revoked.status).toBe(401);
 
@@ -607,6 +784,7 @@ async function approvedDashboardSession(
   });
   const response = await app.request("http://127.0.0.1:5387/dashboard/api/login/complete", {
     method: "POST",
+
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       flowId: started.flowId,
@@ -617,6 +795,24 @@ async function approvedDashboardSession(
   const cookie = response.headers.get("set-cookie") ?? "";
   const body = (await response.json()) as { session: { csrfToken: string } };
   return { cookie, csrfToken: body.session.csrfToken };
+}
+async function approvedRemoteClient(store: RemoteSecurityStore, role: "access" | "operator") {
+  const hostUrl = "http://127.0.0.1:5387/";
+  const pending = await store.createPendingLogin({
+    hostUrl,
+    requestedRole: role,
+    clientLabel: `${role} test client`,
+  });
+  await store.approvePendingLogin({
+    operatorClientId: "bootstrap_test",
+    operatorCode: pending.operatorCode,
+  });
+  return await store.completePendingLogin({
+    hostUrl,
+    flowId: pending.flowId,
+    pendingCompletionSecret: pending.pendingCompletionSecret,
+    requiredRole: role,
+  });
 }
 
 function approvalCode(command: string): string {
@@ -685,7 +881,6 @@ function httpOptions(
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     auth: { type: "remote_credentials" },
     remoteCredentialStateDir: stateDir,
     allowUnauthenticatedHttp: false,

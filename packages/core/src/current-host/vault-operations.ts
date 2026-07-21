@@ -44,10 +44,10 @@ export function createCurrentHostVaultOperations(dependencies: CurrentHostOperat
   const sqlValues = dependencies.vaultValues;
   const sqlGrants = dependencies.vaultGrants;
   const sqlState = dependencies.vaultState;
-  if (Boolean(sqlValues) !== Boolean(sqlGrants)) {
+  if (Boolean(sqlValues) !== Boolean(sqlGrants) || Boolean(sqlValues) !== Boolean(sqlState)) {
     throw new CapletsError(
       "INTERNAL_ERROR",
-      "SQL Vault values and grants must be configured together.",
+      "SQL Vault values, grants, and the atomic state coordinator must be configured together.",
     );
   }
   const fileVault = sqlValues ? undefined : vaultStoreForAuthDir(dependencies.control?.authDir);
@@ -232,56 +232,25 @@ async function sqlVaultSetOutcome(
             ? {}
             : { expectedResourceVersion: operation.expectedGrantResourceVersion }),
         };
-  const status = state
-    ? await state.setValueAndGrant({
-        key: storedKey,
-        value: operation.value,
-        force,
-        ...(valueCreateOnly === undefined ? {} : { createOnly: valueCreateOnly }),
-        ...(operation.expectedGeneration === undefined
-          ? {}
-          : { expectedGeneration: operation.expectedGeneration }),
-        ...(grant === undefined ? {} : { grant }),
-        ...(operation.grantCreateOnly === undefined
-          ? {}
-          : { grantCreateOnly: operation.grantCreateOnly }),
-        operatorClientId: principal.clientId,
-      })
-    : await setValueAndGrantWithRepositories(values, grants, {
-        key: storedKey,
-        value: operation.value,
-        force,
-        createOnly: valueCreateOnly,
-        expectedGeneration: operation.expectedGeneration,
-        grant,
-        operatorClientId: principal.clientId,
-      });
-  if (state) await dependencies.activateConfig?.();
-  else await dependencies.invalidateConfig?.(principal.clientId);
-  return { kind: "vault_set", status };
-}
-
-async function setValueAndGrantWithRepositories(
-  values: VaultValueRepository,
-  grants: VaultGrantStore,
-  input: {
-    key: string;
-    value: string;
-    force: boolean;
-    createOnly: boolean | undefined;
-    expectedGeneration: number | undefined;
-    grant: VaultGrantInput | undefined;
-    operatorClientId: string;
-  },
-) {
-  const status = await values.set(input.key, input.value, {
-    force: input.force,
-    ...(input.createOnly === undefined ? {} : { createOnly: input.createOnly }),
-    expectedGeneration: input.expectedGeneration,
-    operatorClientId: input.operatorClientId,
+  if (!state) {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Atomic Vault state is unavailable.");
+  }
+  const status = await state.setValueAndGrant({
+    key: storedKey,
+    value: operation.value,
+    force,
+    ...(valueCreateOnly === undefined ? {} : { createOnly: valueCreateOnly }),
+    ...(operation.expectedGeneration === undefined
+      ? {}
+      : { expectedGeneration: operation.expectedGeneration }),
+    ...(grant === undefined ? {} : { grant }),
+    ...(operation.grantCreateOnly === undefined
+      ? {}
+      : { grantCreateOnly: operation.grantCreateOnly }),
+    operatorClientId: principal.clientId,
   });
-  if (input.grant) await grants.grant(input.grant);
-  return status;
+  await dependencies.activateConfig?.();
+  return { kind: "vault_set", status };
 }
 
 async function sqlVaultDeleteOutcome(
@@ -437,12 +406,12 @@ function sqlOperator(principal: CurrentHostOperatorPrincipal) {
   return { role: "operator" as const, clientId: principal.clientId };
 }
 
-function vaultSetOutcome(
+async function vaultSetOutcome(
   dependencies: CurrentHostOperationsDependencies,
   vault: FileVaultStore,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultSetOperation,
-): VaultSetOutcome {
+): Promise<VaultSetOutcome> {
   const storedKey = validateVaultKeyName(operation.name);
   const capletId = operation.grant === undefined ? undefined : requiredCapletId(operation.grant);
   const referenceName =
@@ -475,14 +444,14 @@ function vaultSetOutcome(
       }
       throw error;
     }
-    dependencies.activityLog.append({
+    await dependencies.activityLog.append({
       actorClientId: principal.clientId,
       action: "vault_set",
       target: { type: "vault", id: status.key },
       metadata: { bytesWritten: status.valueBytes ?? null },
     });
     if (grant) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "vault_grant_added",
         target: { type: "vault", id: grant.storedKey },
@@ -495,29 +464,7 @@ function vaultSetOutcome(
     }
     return { kind: "vault_set", status };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "vault_set", { type: "vault", id: storedKey });
-    throw error;
-  }
-}
-
-function vaultDeleteOutcome(
-  dependencies: CurrentHostOperationsDependencies,
-  vault: FileVaultStore,
-  principal: CurrentHostOperatorPrincipal,
-  operation: VaultDeleteOperation,
-): VaultDeleteOutcome {
-  const storedKey = validateVaultKeyName(operation.name);
-  try {
-    const deleted = vault.delete(storedKey);
-    dependencies.activityLog.append({
-      actorClientId: principal.clientId,
-      action: "vault_deleted",
-      target: { type: "vault", id: deleted.key },
-      metadata: { deleted: deleted.deleted, grantsRetained: deleted.grantsRetained },
-    });
-    return { kind: "vault_delete", deleted };
-  } catch (error) {
-    appendFailureActivity(dependencies, principal, "vault_deleted", {
+    await appendFailureActivity(dependencies, principal, "vault_set", {
       type: "vault",
       id: storedKey,
     });
@@ -525,12 +472,37 @@ function vaultDeleteOutcome(
   }
 }
 
-function vaultGrantOutcome(
+async function vaultDeleteOutcome(
+  dependencies: CurrentHostOperationsDependencies,
+  vault: FileVaultStore,
+  principal: CurrentHostOperatorPrincipal,
+  operation: VaultDeleteOperation,
+): Promise<VaultDeleteOutcome> {
+  const storedKey = validateVaultKeyName(operation.name);
+  try {
+    const deleted = vault.delete(storedKey);
+    await dependencies.activityLog.append({
+      actorClientId: principal.clientId,
+      action: "vault_deleted",
+      target: { type: "vault", id: deleted.key },
+      metadata: { deleted: deleted.deleted, grantsRetained: deleted.grantsRetained },
+    });
+    return { kind: "vault_delete", deleted };
+  } catch (error) {
+    await appendFailureActivity(dependencies, principal, "vault_deleted", {
+      type: "vault",
+      id: storedKey,
+    });
+    throw error;
+  }
+}
+
+async function vaultGrantOutcome(
   dependencies: CurrentHostOperationsDependencies,
   vault: FileVaultStore,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultAccessGrantOperation,
-): VaultAccessGrantOutcome {
+): Promise<VaultAccessGrantOutcome> {
   const storedKey = validateVaultKeyName(operation.storedKey);
   const referenceName = validateVaultKeyName(operation.referenceName);
   const capletId = requiredCapletId(operation.capletId);
@@ -541,7 +513,7 @@ function vaultGrantOutcome(
       capletId,
       origin: vaultAccessOrigin(capletId, dependencies),
     });
-    dependencies.activityLog.append({
+    await dependencies.activityLog.append({
       actorClientId: principal.clientId,
       action: "vault_grant_added",
       target: { type: "vault", id: grant.storedKey },
@@ -553,7 +525,7 @@ function vaultGrantOutcome(
     });
     return { kind: "vault_access_grant", grant: redactedVaultGrant(grant) };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "vault_grant_added", {
+    await appendFailureActivity(dependencies, principal, "vault_grant_added", {
       type: "vault",
       id: storedKey,
     });
@@ -561,12 +533,12 @@ function vaultGrantOutcome(
   }
 }
 
-function vaultRevokeOutcome(
+async function vaultRevokeOutcome(
   dependencies: CurrentHostOperationsDependencies,
   vault: FileVaultStore,
   principal: CurrentHostOperatorPrincipal,
   operation: VaultAccessRevokeOperation,
-): VaultAccessRevokeOutcome {
+): Promise<VaultAccessRevokeOutcome> {
   const storedKey = validateVaultKeyName(operation.storedKey);
   const referenceName =
     operation.referenceName === undefined
@@ -581,7 +553,7 @@ function vaultRevokeOutcome(
       ...(capletId === undefined ? {} : { capletId }),
     });
     for (const grant of revoked) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "vault_grant_revoked",
         target: { type: "vault", id: grant.storedKey },
@@ -594,7 +566,7 @@ function vaultRevokeOutcome(
     }
     return { kind: "vault_access_revoke", revoked: revoked.map(redactedVaultGrant) };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "vault_grant_revoked", {
+    await appendFailureActivity(dependencies, principal, "vault_grant_revoked", {
       type: "vault",
       id: storedKey,
     });
@@ -669,13 +641,13 @@ function redactedVaultGrant(grant: {
   };
 }
 
-function appendFailureActivity(
+async function appendFailureActivity(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   action: "vault_set" | "vault_deleted" | "vault_grant_added" | "vault_grant_revoked",
   target: { type: "vault"; id: string },
-): void {
-  dependencies.activityLog.append({
+): Promise<void> {
+  await dependencies.activityLog.append({
     actorClientId: principal.clientId,
     action,
     outcome: "failure",

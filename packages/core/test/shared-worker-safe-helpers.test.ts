@@ -33,9 +33,9 @@ describe("shared Worker-safe helpers", () => {
   });
 
   it("shares runtime resource class ordering", () => {
-    expect(resourceClassRank("small")).toBeLessThan(resourceClassRank("medium"));
-    expect(resourceClassRank("standard")).toBe(resourceClassRank("medium"));
-    expect(isRuntimeResourceClassAllowed("medium", "small")).toBe(false);
-    expect(isRuntimeResourceClassAllowed("standard", "medium")).toBe(true);
+    expect(resourceClassRank("standard")).toBeLessThan(resourceClassRank("large"));
+    expect(resourceClassRank("large")).toBeLessThan(resourceClassRank("heavy"));
+    expect(isRuntimeResourceClassAllowed("heavy", "large")).toBe(false);
+    expect(isRuntimeResourceClassAllowed("standard", "large")).toBe(true);
   });
 });

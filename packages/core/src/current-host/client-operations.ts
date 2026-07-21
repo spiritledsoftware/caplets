@@ -237,7 +237,7 @@ async function pendingLoginApprovalOutcome(
       ? dependencies.remoteCredentialStore
       : authoritativeRemoteSecurityStore(dependencies);
   if (!store) {
-    appendFailureActivity(dependencies, principal, "pending_login_approved", {
+    await appendFailureActivity(dependencies, principal, "pending_login_approved", {
       type: "pending_login",
       id: flowId,
     });
@@ -259,7 +259,7 @@ async function pendingLoginApprovalOutcome(
             ...(operation.grantedRole === undefined ? {} : { grantedRole: operation.grantedRole }),
           });
     if (!(store instanceof RemoteSecurityStore)) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "pending_login_approved",
         target: { type: "pending_login", id: pendingLogin.flowId },
@@ -271,7 +271,7 @@ async function pendingLoginApprovalOutcome(
     }
     return { kind: "pending_login_approve", pendingLogin };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "pending_login_approved", {
+    await appendFailureActivity(dependencies, principal, "pending_login_approved", {
       type: "pending_login",
       id: flowId,
     });
@@ -290,7 +290,7 @@ async function pendingLoginDenialOutcome(
       ? dependencies.remoteCredentialStore
       : authoritativeRemoteSecurityStore(dependencies);
   if (!store) {
-    appendFailureActivity(dependencies, principal, "pending_login_denied", {
+    await appendFailureActivity(dependencies, principal, "pending_login_denied", {
       type: "pending_login",
       id: flowId,
     });
@@ -308,7 +308,7 @@ async function pendingLoginDenialOutcome(
           })
         : store.denyPendingLoginFlow({ flowId });
     if (!(store instanceof RemoteSecurityStore)) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "pending_login_denied",
         target: { type: "pending_login", id: pendingLogin.flowId },
@@ -317,7 +317,7 @@ async function pendingLoginDenialOutcome(
     }
     return { kind: "pending_login_deny", pendingLogin };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "pending_login_denied", {
+    await appendFailureActivity(dependencies, principal, "pending_login_denied", {
       type: "pending_login",
       id: flowId,
     });
@@ -350,7 +350,7 @@ async function clientRevokeOutcome(
   }
   const store = dependencies.remoteCredentialStore;
   if (!store) {
-    appendFailureActivity(dependencies, principal, "remote_client_revoked", {
+    await appendFailureActivity(dependencies, principal, "remote_client_revoked", {
       type: "remote_client",
       id: clientId,
     });
@@ -363,7 +363,7 @@ async function clientRevokeOutcome(
         ? store.revokeClient(clientId)
         : await store.revokeClient({ operatorClientId: principal.clientId, clientId });
     if (revoked && !client?.revokedAt && !(store instanceof RemoteSecurityStore)) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "remote_client_revoked",
         target: { type: "remote_client", id: clientId },
@@ -377,7 +377,7 @@ async function clientRevokeOutcome(
       sessionEnded: revoked && clientId === principal.clientId,
     };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "remote_client_revoked", {
+    await appendFailureActivity(dependencies, principal, "remote_client_revoked", {
       type: "remote_client",
       id: clientId,
     });
@@ -411,7 +411,7 @@ async function clientRoleOutcome(
   }
   const store = dependencies.remoteCredentialStore;
   if (!store) {
-    appendFailureActivity(dependencies, principal, "remote_client_role_changed", {
+    await appendFailureActivity(dependencies, principal, "remote_client_role_changed", {
       type: "remote_client",
       id: clientId,
     });
@@ -432,7 +432,7 @@ async function clientRoleOutcome(
     }
     const sessionEnded = client.clientId === principal.clientId && client.role !== "operator";
     if (!(store instanceof RemoteSecurityStore)) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "remote_client_role_changed",
         target: { type: "remote_client", id: client.clientId },
@@ -441,7 +441,7 @@ async function clientRoleOutcome(
     }
     return { kind: "client_change_role", status: "changed", client, sessionEnded };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "remote_client_role_changed", {
+    await appendFailureActivity(dependencies, principal, "remote_client_role_changed", {
       type: "remote_client",
       id: clientId,
     });
@@ -476,7 +476,7 @@ function assertRemoteClientRole(value: unknown): asserts value is "access" | "op
   throw new CapletsError("REQUEST_INVALID", "Remote client role is invalid.");
 }
 
-function appendFailureActivity(
+async function appendFailureActivity(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   action:
@@ -485,8 +485,8 @@ function appendFailureActivity(
     | "remote_client_revoked"
     | "remote_client_role_changed",
   target: { type: "pending_login" | "remote_client"; id: string },
-): void {
-  dependencies.activityLog.append({
+): Promise<void> {
+  await dependencies.activityLog.append({
     actorClientId: principal.clientId,
     action,
     outcome: "failure",

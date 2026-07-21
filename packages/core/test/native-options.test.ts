@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,7 +20,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
     ).toMatchObject({
       mode: "remote",
       remote: {
-        url: new URL("http://127.0.0.1:5387/v1/attach"),
+        origin: new URL("http://127.0.0.1:5387"),
         auth: { enabled: false, user: "caplets" },
         pollIntervalMs: 30_000,
       },
@@ -30,13 +30,13 @@ describe("resolveNativeCapletsServiceOptions", () => {
   it("uses explicit daemon mode with a credential-free loopback attach URL", () => {
     expect(
       resolveNativeCapletsServiceOptions(
-        { mode: "daemon", daemon: { url: "http://127.0.0.1:5387/caplets" } },
+        { mode: "daemon", daemon: { url: "http://127.0.0.1:5387" } },
         {},
       ),
     ).toMatchObject({
       mode: "daemon",
       remote: {
-        url: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        origin: new URL("http://127.0.0.1:5387"),
         auth: { enabled: false, user: "caplets" },
       },
     });
@@ -44,14 +44,11 @@ describe("resolveNativeCapletsServiceOptions", () => {
 
   it("uses CAPLETS_DAEMON_URL as daemon mode when no explicit non-daemon mode is set", () => {
     expect(
-      resolveNativeCapletsServiceOptions(
-        {},
-        { CAPLETS_DAEMON_URL: "http://127.0.0.1:5387/caplets" },
-      ),
+      resolveNativeCapletsServiceOptions({}, { CAPLETS_DAEMON_URL: "http://127.0.0.1:5387" }),
     ).toMatchObject({
       mode: "daemon",
       remote: {
-        url: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        origin: new URL("http://127.0.0.1:5387"),
         auth: { enabled: false, user: "caplets" },
       },
     });
@@ -59,75 +56,58 @@ describe("resolveNativeCapletsServiceOptions", () => {
 
   it("uses input daemon URL as daemon mode when no explicit non-daemon mode is set", () => {
     expect(
-      resolveNativeCapletsServiceOptions({ daemon: { url: "http://127.0.0.1:5387/caplets" } }, {}),
+      resolveNativeCapletsServiceOptions({ daemon: { url: "http://127.0.0.1:5387" } }, {}),
     ).toMatchObject({ mode: "daemon" });
   });
 
   it("rejects daemon mode URLs that are not loopback HTTP", () => {
     expect(() =>
       resolveNativeCapletsServiceOptions(
-        { mode: "daemon", daemon: { url: "http://192.0.2.10:5387/caplets" } },
+        { mode: "daemon", daemon: { url: "http://192.0.2.10:5387" } },
         {},
       ),
     ).toThrow(/loopback/u);
   });
 
-  it("uses cloud mode in auto when CAPLETS_REMOTE_URL points at Caplets Cloud", () => {
-    expect(
-      resolveNativeCapletsServiceOptions(
-        {},
-        {
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-          CAPLETS_REMOTE_WORKSPACE: "personal",
-        },
-      ),
-    ).toMatchObject({
-      mode: "cloud",
-      remote: {
-        url: new URL("https://cloud.caplets.dev/v1/ws/personal/attach"),
-      },
-    });
-  });
-
-  it("allows cloud mode without a workspace because Remote Profiles select it", () => {
-    expect(
-      resolveNativeCapletsServiceOptions(
-        {},
-        {
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        },
-      ),
-    ).toMatchObject({
-      mode: "cloud",
-      remote: {
-        url: new URL("https://cloud.caplets.dev/v1/attach"),
-      },
-    });
-  });
-
-  it("uses cloud mode when CAPLETS_MODE=cloud is explicit", () => {
-    expect(
-      resolveNativeCapletsServiceOptions(
-        {},
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-          CAPLETS_REMOTE_WORKSPACE: "personal",
-        },
-      ),
-    ).toMatchObject({ mode: "cloud" });
-  });
-
-  it("rejects CAPLETS_MODE=cloud with a self-hosted remote URL", () => {
+  it("rejects path-bearing remote and daemon origins before client I/O", () => {
+    const fetchStub = () => {
+      throw new Error("must not fetch");
+    };
     expect(() =>
       resolveNativeCapletsServiceOptions(
+        { remote: { url: "https://caplets.example.com/prefix", fetch: fetchStub } },
         {},
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        },
       ),
-    ).toThrow(/Caplets Cloud/u);
+    ).toThrow(/origin/u);
+    expect(() =>
+      resolveNativeCapletsServiceOptions(
+        {
+          mode: "daemon",
+          daemon: { url: "http://127.0.0.1:5387/prefix", fetch: fetchStub },
+        },
+        {},
+      ),
+    ).toThrow(/origin/u);
+  });
+
+  it("treats a former Cloud hostname as an ordinary remote origin", () => {
+    expect(
+      resolveNativeCapletsServiceOptions({}, { CAPLETS_REMOTE_URL: "https://cloud.caplets.dev" }),
+    ).toMatchObject({
+      mode: "remote",
+      remote: {
+        origin: new URL("https://cloud.caplets.dev"),
+      },
+    });
+  });
+
+  it("rejects the removed cloud mode", () => {
+    expect(() =>
+      resolveNativeCapletsServiceOptions({}, {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+      } as Record<string, string>),
+    ).toThrow(/Expected CAPLETS_MODE to be auto, local, or remote/u);
   });
 
   it("lets explicit local mode ignore server env vars", () => {
@@ -156,7 +136,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
   it("rejects non-loopback http URLs", () => {
     expect(() =>
       resolveNativeCapletsServiceOptions({ remote: { url: "http://caplets.example.com" } }, {}),
-    ).toThrow(/https/u);
+    ).toThrow(/loopback/u);
   });
 
   it("does not echo invalid credential-bearing remote URL inputs", () => {
@@ -173,7 +153,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
       "http://caplets:secret@127.0.0.1:5387",
     ]) {
       expect(() => resolveNativeCapletsServiceOptions({ remote: { url } }, {})).toThrow(
-        /must not include username, password, query string, or fragment/u,
+        /Current Host URL must be an HTTP\(S\) origin/u,
       );
     }
   });
@@ -183,7 +163,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
       resolveNativeCapletsServiceOptions(
         {
           remote: {
-            url: "https://configured.example.com/caplets",
+            url: "https://configured.example.com",
           },
         },
         {
@@ -196,7 +176,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
     ).toMatchObject({
       mode: "remote",
       remote: {
-        url: new URL("https://configured.example.com/caplets/v1/attach"),
+        origin: new URL("https://configured.example.com"),
         auth: { enabled: false, user: "caplets" },
       },
     });
@@ -224,7 +204,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
       {
         remote: {
           pollIntervalMs: 5_000,
-          url: "https://caplets.example.com/caplets",
+          url: "https://caplets.example.com",
           user: "caplets",
           password: ["remote", "password"].join("-"),
         },
@@ -232,8 +212,8 @@ describe("resolveNativeCapletsServiceOptions", () => {
       {},
     );
     expect(resolved.mode).toBe("remote");
-    expect(resolved.mode === "remote" ? resolved.remote.url : undefined).toEqual(
-      new URL("https://caplets.example.com/caplets/v1/attach"),
+    expect(resolved.mode === "remote" ? resolved.remote.origin : undefined).toEqual(
+      new URL("https://caplets.example.com"),
     );
     expect(resolved.mode === "remote" ? resolved.remote.pollIntervalMs : undefined).toBe(5_000);
     expect(
@@ -264,7 +244,7 @@ describe("native defaults store", () => {
     const path = join(dir, "native-defaults.json");
     try {
       writeNativeDefaults(
-        { daemon: { url: "http://127.0.0.1:5387/caplets" }, source: "setup" },
+        { daemon: { url: "http://127.0.0.1:5387" }, source: "setup" },
         { path, now: new Date("2026-06-30T00:00:00.000Z") },
       );
 
@@ -272,8 +252,23 @@ describe("native defaults store", () => {
         version: 1,
         source: "setup",
         updatedAt: "2026-06-30T00:00:00.000Z",
-        daemon: { url: "http://127.0.0.1:5387/caplets" },
+        daemon: { url: "http://127.0.0.1:5387" },
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unsafe daemon defaults before writing settings", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-native-defaults-rejected-"));
+    const path = join(dir, "native-defaults.json");
+    try {
+      for (const url of ["http://127.0.0.1:5387/prefix", "https://caplets.example.com"]) {
+        expect(() => writeNativeDefaults({ daemon: { url }, source: "setup" }, { path })).toThrow(
+          /loopback HTTP origin|Current Host URL/u,
+        );
+        expect(existsSync(path)).toBe(false);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -305,13 +300,13 @@ describe("native defaults store", () => {
           version: 1,
           source: "setup",
           updatedAt: "2026-06-30T00:00:00.000Z",
-          daemon: { url: "https://caplets.example.com/caplets" },
+          daemon: { url: "https://caplets.example.com" },
         }),
       );
       expect(
         readNativeDefaults({ path, writeWarning: (message) => warnings.push(message) }),
       ).toBeUndefined();
-      expect(warnings.join("\n")).toContain("loopback HTTP URL");
+      expect(warnings.join("\n")).toContain("loopback HTTP origin");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

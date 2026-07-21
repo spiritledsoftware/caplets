@@ -240,7 +240,7 @@ function assertSetupTargetKind(value: string): asserts value is SetupTargetKind 
   if (!isSetupTargetKind(value)) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "setup target must be one of: local_host, remote_host, hosted_sandbox",
+      "setup target must be one of: local_host, remote_host",
     );
   }
 }

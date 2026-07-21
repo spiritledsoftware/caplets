@@ -7,12 +7,24 @@ import {
 } from "../src";
 
 describe("createClient", () => {
-  it.each(["", "/caplets", "caplets.example", "//caplets.example", "ftp://caplets.example"])(
-    "rejects a non-HTTP service root: %j",
-    (baseUrl) => {
-      expect(() => createClient({ baseUrl })).toThrow(TypeError);
-    },
-  );
+  it.each([
+    "",
+    "/caplets",
+    "caplets.example",
+    "//caplets.example",
+    "ftp://caplets.example",
+    "https://caplets.example/service-root",
+    "https://caplets.example/service-root/",
+    "https://caplets.example//",
+    "https://caplets.example/.",
+    "https://caplets.example/foo/..",
+    "https://caplets.example/%2e",
+    "https://caplets.example\\admin",
+    "https://caplets.example\n",
+    "https://caplets.example ",
+  ])("rejects a value that is not a Current Host origin: %j", (baseUrl) => {
+    expect(() => createClient({ baseUrl })).toThrow(TypeError);
+  });
 
   it.each([
     "https://operator@caplets.example",
@@ -21,31 +33,31 @@ describe("createClient", () => {
     "https://caplets.example#admin",
     "https://caplets.example?",
     "https://caplets.example#",
-  ])("rejects service-root URL components that cannot prefix generated routes: %s", (baseUrl) => {
+  ])("rejects forbidden Current Host origin components: %s", (baseUrl) => {
     expect(() => createClient({ baseUrl })).toThrow(TypeError);
   });
 
-  it.each(["http://127.0.0.1:8787", "https://caplets.example"])(
-    "accepts an absolute HTTP service root: %s",
+  it.each(["http://caplets.example", "http://192.0.2.10:8787"])(
+    "rejects non-loopback plain HTTP Current Host origins: %s",
     (baseUrl) => {
-      expect(() => createClient({ baseUrl })).not.toThrow();
+      expect(() => createClient({ baseUrl })).toThrow(TypeError);
     },
   );
 
   it.each([
+    ["http://127.0.0.1:8787", "http://127.0.0.1:8787"],
+    ["http://localhost:8787/", "http://localhost:8787"],
+    ["http://[::1]:8787/", "http://[::1]:8787"],
     ["https://caplets.example", "https://caplets.example"],
     ["https://caplets.example/", "https://caplets.example"],
-    ["https://caplets.example////", "https://caplets.example"],
-    ["https://caplets.example/service-root", "https://caplets.example/service-root"],
-    ["https://caplets.example/service-root///", "https://caplets.example/service-root"],
-  ])("normalizes the supported root and deployment-prefix forms: %s", (baseUrl, normalized) => {
-    expect(createClient({ baseUrl }).getConfig().baseUrl).toBe(normalized);
+  ])("accepts and canonicalizes a Current Host origin: %s", (baseUrl, canonical) => {
+    expect(createClient({ baseUrl }).getConfig().baseUrl).toBe(canonical);
   });
 
-  it("normalizes the service-root path before appending generated routes", async () => {
+  it("resolves generated operations at the canonical API namespace", async () => {
     let request: Request | undefined;
     const client = createClient({
-      baseUrl: "https://caplets.example/edge/./tenant/../service-root///",
+      baseUrl: "https://caplets.example/",
       fetch: async (input, init) => {
         request = input instanceof Request ? input : new Request(input, init);
         return Response.json({ id: "host" });
@@ -55,14 +67,14 @@ describe("createClient", () => {
     const result = await adminV2GetHost({ client });
 
     expect(result.error).toBeUndefined();
-    expect(client.getConfig().baseUrl).toBe("https://caplets.example/edge/service-root");
-    expect(request?.url).toBe("https://caplets.example/edge/service-root/v2/admin/host");
+    expect(client.getConfig().baseUrl).toBe("https://caplets.example");
+    expect(request?.url).toBe("https://caplets.example/api/v2/admin/host");
   });
 
-  it("preserves deployment prefixes and uses the non-throwing fields defaults", async () => {
+  it("uses the non-throwing fields defaults", async () => {
     const requests: Request[] = [];
     const client = createClient({
-      baseUrl: "https://caplets.example/service-root/",
+      baseUrl: "https://caplets.example",
       fetch: async (input, init) => {
         const request = input instanceof Request ? input : new Request(input, init);
         requests.push(request);
@@ -75,9 +87,9 @@ describe("createClient", () => {
     const result = await adminV2GetHost({ client });
 
     expect(result.error).toBeUndefined();
-    expect(requests[0]?.url).toBe("https://caplets.example/service-root/v2/admin/host");
+    expect(requests[0]?.url).toBe("https://caplets.example/api/v2/admin/host");
     expect(client.getConfig()).toMatchObject({
-      baseUrl: "https://caplets.example/service-root",
+      baseUrl: "https://caplets.example",
       responseStyle: "fields",
       throwOnError: false,
     });
@@ -155,12 +167,12 @@ describe("createClient", () => {
     const asyncAuth = vi.fn(async () => "async-token");
     const staticClient = createClient({
       auth: "static-token",
-      baseUrl: "https://static.example/api",
+      baseUrl: "https://static.example",
       fetch: adapter,
     });
     const asyncClient = createClient({
       auth: asyncAuth,
-      baseUrl: "https://async.example/root",
+      baseUrl: "https://async.example",
       fetch: adapter,
     });
 
@@ -169,12 +181,13 @@ describe("createClient", () => {
 
     expect(requests.map(({ url }) => url)).toEqual([
       "https://static.example/api/v2/admin/host",
-      "https://async.example/root/v2/admin/host",
+      "https://async.example/api/v2/admin/host",
     ]);
     expect(requests.map((request) => request.headers.get("authorization"))).toEqual([
       "Bearer static-token",
       "Bearer async-token",
     ]);
+    expect(requests.map((request) => request.headers.get("cookie"))).toEqual([null, null]);
     expect(asyncAuth).toHaveBeenCalledOnce();
     expect(asyncAuth).toHaveBeenCalledWith(
       expect.objectContaining({ scheme: "bearer", type: "http" }),

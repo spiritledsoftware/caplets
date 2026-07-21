@@ -102,11 +102,12 @@ describe("dashboard Vault APIs", () => {
     const value = " \t\r\n ";
 
     const dashboardResponse = await setup.app.request(
-      "http://127.0.0.1:5387/dashboard/api/v2/vault-values/DASHBOARD_WHITESPACE",
+      "http://127.0.0.1:5387/api/v2/admin/vault-values/DASHBOARD_WHITESPACE",
       {
         method: "PUT",
         headers: {
           cookie: setup.cookie,
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
           "idempotency-key": "dashboard-whitespace",
           "if-none-match": "*",
@@ -131,7 +132,7 @@ describe("dashboard Vault APIs", () => {
       pendingCompletionSecret: pending.pendingCompletionSecret,
     });
     const bearerResponse = await setup.app.request(
-      "http://127.0.0.1:5387/v2/admin/vault-values/BEARER_WHITESPACE",
+      "http://127.0.0.1:5387/api/v2/admin/vault-values/BEARER_WHITESPACE",
       {
         method: "PUT",
         headers: {
@@ -191,6 +192,7 @@ async function dashboardPost(setup: Setup, path: string, body: unknown) {
     method: "POST",
     headers: {
       cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
       "x-caplets-csrf": setup.csrfToken,
       "content-type": "application/json",
     },
@@ -243,7 +245,6 @@ function httpOptions(stateDir: string): HttpServeOptions {
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     auth: { type: "remote_credentials" },
     remoteCredentialStateDir: stateDir,
     allowUnauthenticatedHttp: false,

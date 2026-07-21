@@ -15,7 +15,6 @@ import {
   addMcpCaplet,
   addOpenApiCaplet,
 } from "./cli/add";
-import { buildCloudCapletBundle } from "./cli/cloud-add";
 import {
   loginAuth,
   logoutAuth,
@@ -38,9 +37,6 @@ import {
   trailingSpaceCompletionToken,
   type CompletionShell,
 } from "./cli/completion";
-import { CloudAuthClient } from "./cloud-auth/client";
-import { openBrowserUrl } from "./cloud-auth/open-url";
-import { CapletsCloudClient } from "./cloud/client";
 import {
   formatCapletList,
   formatConfigPaths,
@@ -99,28 +95,19 @@ import { resolveAttachServeOptions, type AttachServeOptions } from "./attach/opt
 import { attachResolvedCaplets } from "./attach/server";
 import { attachProjectOnce } from "./project-binding/attach";
 import { ProjectBindingError } from "./project-binding/errors";
-import { RemoteControlClient } from "./remote-control/client";
 import { createSdkRemoteCapletsClient } from "./native/remote";
 import { createRemoteAdminCommandAdapter } from "./remote-cli/admin";
 import { createRemoteAttachCommandAdapter } from "./remote-cli/attach";
-import { MigratingRemoteCliClient, type RemoteCliCommandAdapter } from "./remote-cli/client";
+import { RemoteCliClient, type RemoteCliCommandAdapter } from "./remote-cli/client";
 import { createRemotePublicAuthAdapter } from "./remote-cli/public-auth";
 import { materializeRemoteBundleDownload, type RemoteBundleDownload } from "./remote-cli/bundle";
-import type { RemoteCliCommand } from "./remote-control/types";
-import {
-  cloudCredentialsFromRemoteProfile,
-  createRemoteProfileStore,
-  type FileRemoteProfileStore,
-} from "./remote/profile-store";
+import type { RemoteCliCommand } from "./remote-cli/types";
+import { createRemoteProfileStore, type FileRemoteProfileStore } from "./remote/profile-store";
 import type { RemoteClientRole } from "./remote/server-credentials";
 import { resolveRemoteSelection } from "./remote/selection";
-import {
-  hostedCloudWorkspaceFromRemoteUrl,
-  isCapletsCloudUrl,
-  normalizeRemoteProfileHostUrl,
-  resolveRemoteMode,
-} from "./remote/options";
-import type { RemoteProfileCredential, RemoteProfileStatus } from "./remote/profiles";
+import { resolveRemoteMode } from "./remote/options";
+import { remoteProfileStatus, type RemoteProfileStatus } from "./remote/profiles";
+import { canonicalizeCurrentHostOrigin } from "./current-host/origin";
 import {
   daemonLogs,
   daemonStatus,
@@ -144,7 +131,7 @@ import {
   defaultStateBaseDir,
   defaultTelemetryStateDir,
 } from "./config/paths";
-import { appendBasePath } from "./server/options";
+import { currentHostV1Url } from "./current-host/topology";
 import {
   acknowledgeTelemetryAttributionClaim,
   claimTelemetryAttribution,
@@ -329,7 +316,6 @@ function normalizeCompletionWords(words: string[]): string[] {
 type DaemonInstallCommandOptions = {
   host?: string;
   port?: string;
-  path?: string;
   remoteStatePath?: string;
   upstreamUrl?: string;
   allowUnauthenticatedHttp?: boolean;
@@ -367,7 +353,6 @@ function addDaemonInstallOptions(command: Command): Command {
   return addJsonOption(command)
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
-    .option("--path <path>", "HTTP service base path")
     .option("--remote-state-path <path>", "server-owned remote credential state directory")
     .option(
       "--upstream-url <url>",
@@ -476,9 +461,7 @@ function telemetryCommandFamilyFromArgs(
   if (command === cliCommands.add) return { commandFamily: "add", surface: "cli" };
   if (command === cliCommands.doctor) return { commandFamily: "doctor", surface: "cli" };
   if (command === cliCommands.auth) return { commandFamily: "auth", surface: "cli" };
-  if (command === cliCommands.remote || command === cliCommands.cloud) {
-    return { commandFamily: "remote", surface: "cli" };
-  }
+  if (command === cliCommands.remote) return { commandFamily: "remote", surface: "cli" };
   if (command === cliCommands.inspect) return { commandFamily: "inspect", surface: "cli" };
   if (command === cliCommands.checkBackend) return { commandFamily: "check", surface: "cli" };
   if (
@@ -672,7 +655,7 @@ function readUserConfigObject(path: string): Record<string, unknown> {
 
 function runtimeModeForEnv(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
   const mode = env.CAPLETS_MODE;
-  return mode === "remote" || mode === "cloud" || mode === "local" ? mode : "unknown";
+  return mode === "remote" || mode === "local" ? mode : "unknown";
 }
 
 const TELEMETRY_ARCHITECTURES = new Set([
@@ -772,7 +755,6 @@ function rejectAttachHttpServeFlags(options: {
   transport?: string;
   host?: string;
   port?: string;
-  path?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
 }): void {
@@ -780,7 +762,6 @@ function rejectAttachHttpServeFlags(options: {
     options.transport !== undefined ? "--transport" : undefined,
     options.host !== undefined ? "--host" : undefined,
     options.port !== undefined ? "--port" : undefined,
-    options.path !== undefined ? "--path" : undefined,
     options.allowUnauthenticatedHttp === true ? "--allow-unauthenticated-http" : undefined,
     options.trustProxy === true ? "--trust-proxy" : undefined,
   ].filter((value): value is string => value !== undefined);
@@ -836,17 +817,6 @@ async function useConfiguredHostStorage<T>(
   }
 }
 
-function compactCloudCaplet(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const record = value as Record<string, unknown>;
-  return {
-    ...(typeof record.id === "string" ? { id: record.id } : {}),
-    ...(typeof record.name === "string" ? { name: record.name } : {}),
-    ...(typeof record.description === "string" ? { description: record.description } : {}),
-    ...(typeof record.readinessState === "string" ? { readinessState: record.readinessState } : {}),
-  };
-}
-
 function isProjectBindingWebSocketUnavailable(error: unknown): boolean {
   return (
     error instanceof CapletsError &&
@@ -863,7 +833,6 @@ function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInsta
   return {
     ...(options.host !== undefined ? { host: options.host } : {}),
     ...(options.port !== undefined ? { port: options.port } : {}),
-    ...(options.path !== undefined ? { path: options.path } : {}),
     ...(options.remoteStatePath !== undefined ? { remoteStatePath: options.remoteStatePath } : {}),
     ...(options.upstreamUrl !== undefined ? { upstreamUrl: options.upstreamUrl } : {}),
     ...(options.allowUnauthenticatedHttp !== undefined
@@ -890,74 +859,6 @@ function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInsta
     ...(options.restart === false ? { noRestart: true } : {}),
     ...(options.noRestart !== undefined ? { noRestart: options.noRestart } : {}),
   };
-}
-
-async function waitForCloudLogin(
-  client: CloudAuthClient,
-  loginId: string,
-  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
-) {
-  const timeoutMs = numberEnv(env.CAPLETS_CLOUD_AUTH_TIMEOUT_MS, 120_000);
-  const intervalMs = numberEnv(env.CAPLETS_CLOUD_AUTH_POLL_INTERVAL_MS, 1_500);
-  const started = Date.now();
-  while (Date.now() - started <= timeoutMs) {
-    const result = await client.pollLogin(loginId);
-    if (result.status !== "pending" && result.status !== "workspace_selection_required") {
-      return result;
-    }
-    await sleep(intervalMs);
-  }
-  return { status: "expired" as const, message: "Cloud Auth login timed out." };
-}
-
-async function loginCloudRemoteProfile(
-  url: string,
-  options: {
-    workspace?: string;
-    deviceName?: string;
-    open?: boolean;
-    json?: boolean;
-  },
-  store: FileRemoteProfileStore,
-  io: {
-    env: NodeJS.ProcessEnv | Record<string, string | undefined>;
-    fetch?: typeof fetch;
-    writeOut: (value: string) => void;
-  },
-): Promise<RemoteProfileStatus> {
-  const client = new CloudAuthClient({ cloudUrl: url, ...(io.fetch ? { fetch: io.fetch } : {}) });
-  const requestedWorkspace = options.workspace ?? hostedCloudWorkspaceFromRemoteUrl(url);
-  const started = await client.startLogin({
-    requestedWorkspace,
-    deviceName: options.deviceName ?? io.env.CAPLETS_DEVICE_NAME ?? "Caplets CLI",
-  });
-  if (options.open !== false) await openBrowserUrl(started.loginUrl);
-  if (!options.json) {
-    io.writeOut(`Open ${started.loginUrl}\n`);
-    io.writeOut(`Enter code ${started.userCode} if prompted.\n`);
-  }
-
-  const completed = await waitForCloudLogin(client, started.loginId, io.env);
-  if (completed.status !== "completed") {
-    throw new CapletsError("AUTH_FAILED", `Remote Login Cloud flow ${completed.status}.`);
-  }
-  const exchanged = await client.exchangeToken({
-    loginId: started.loginId,
-    oneTimeCode: completed.oneTimeCode,
-  });
-  return store.saveCloudProfile({
-    hostUrl: exchanged.cloudUrl,
-    workspaceId: exchanged.workspaceId,
-    ...(exchanged.workspaceSlug ? { workspaceSlug: exchanged.workspaceSlug } : {}),
-    clientLabel: exchanged.deviceName ?? options.deviceName ?? "Caplets CLI",
-    credentials: {
-      accessToken: exchanged.accessToken,
-      refreshToken: exchanged.refreshToken ?? "",
-      expiresAt: exchanged.expiresAt,
-      scope: exchanged.scope,
-      tokenType: exchanged.tokenType,
-    },
-  });
 }
 
 async function readHiddenInput(
@@ -1012,7 +913,7 @@ async function readAllStdin(): Promise<string> {
 }
 
 type RemoteLoginCredentialsResponse = {
-  hostUrl?: string | undefined;
+  hostIdentity?: string | undefined;
   clientId: string;
   clientLabel: string;
   accessToken: string;
@@ -1052,7 +953,11 @@ async function parseRemoteLoginCredentials(
     );
   }
   return {
-    ...(typeof record.hostUrl === "string" ? { hostUrl: record.hostUrl } : {}),
+    ...(typeof record.origin === "string"
+      ? { hostIdentity: record.origin }
+      : typeof record.hostUrl === "string"
+        ? { hostIdentity: record.hostUrl }
+        : {}),
     clientId: record.clientId,
     clientLabel: typeof record.clientLabel === "string" ? record.clientLabel : "Caplets CLI",
     accessToken: record.accessToken,
@@ -1131,7 +1036,7 @@ async function parsePendingRemoteLoginStatus(response: Response): Promise<string
   return status;
 }
 
-async function selfHostedPendingRemoteLogin(
+async function pendingRemoteLogin(
   url: string,
   input: {
     clientLabel?: string | undefined;
@@ -1143,9 +1048,9 @@ async function selfHostedPendingRemoteLogin(
   },
 ): Promise<RemoteLoginCredentialsResponse> {
   const fetchImpl = input.fetch ?? fetch;
-  const baseUrl = new URL(normalizeRemoteProfileHostUrl(url));
+  const baseUrl = new URL(canonicalizeCurrentHostOrigin(url));
   const startBody = input.clientLabel ? { clientLabel: input.clientLabel } : {};
-  const start = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/start"), {
+  const start = await fetchImpl(currentHostV1Url(baseUrl, "remoteLoginStart"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(startBody),
@@ -1199,7 +1104,7 @@ async function selfHostedPendingRemoteLogin(
         throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
       }
       if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
-        const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
+        const refresh = await fetchImpl(currentHostV1Url(baseUrl, "remoteLoginRefresh"), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -1271,12 +1176,12 @@ async function completePendingRemoteLogin(
 ): Promise<Response> {
   try {
     return await fetchImpl(
-      appendBasePath(baseUrl, "v1/remote/login/complete"),
+      currentHostV1Url(baseUrl, "remoteLoginComplete"),
       pendingRemoteLoginCompletionRequest(pending, signal),
     );
   } catch {
     return fetchImpl(
-      appendBasePath(baseUrl, "v1/remote/login/complete"),
+      currentHostV1Url(baseUrl, "remoteLoginComplete"),
       pendingRemoteLoginCompletionRequest(pending),
     );
   }
@@ -1303,7 +1208,7 @@ async function fetchPendingRemoteLoginStatus(
   pending: PendingRemoteLoginStartResponse,
   signal?: AbortSignal | undefined,
 ): Promise<Response> {
-  return fetchImpl(appendBasePath(baseUrl, "v1/remote/login/poll"), {
+  return fetchImpl(currentHostV1Url(baseUrl, "remoteLoginPoll"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1319,7 +1224,7 @@ async function cancelPendingRemoteLogin(
   baseUrl: URL,
   pending: PendingRemoteLoginStartResponse,
 ): Promise<void> {
-  await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/cancel"), {
+  await fetchImpl(currentHostV1Url(baseUrl, "remoteLoginCancel"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1338,24 +1243,21 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-async function revokeSelfHostedRemoteClient(
+async function revokeRemoteClient(
   remoteUrl: string,
   accessToken: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  const revokeUrl = appendBasePath(
-    new URL(normalizeRemoteProfileHostUrl(remoteUrl)),
-    "v1/remote/client",
-  );
+  const revokeUrl = currentHostV1Url(remoteUrl, "remoteClient");
   await fetchImpl(revokeUrl, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }
 
-async function selfHostedLogoutAccessToken(
+async function refreshedRemoteAccessToken(
   remoteUrl: string,
-  credential: RemoteProfileCredential & { accessToken: string },
+  fallbackAccessToken: string,
   input: { authDir?: string | undefined; fetch?: typeof fetch | undefined },
   env: Record<string, string | undefined>,
 ): Promise<string> {
@@ -1368,9 +1270,9 @@ async function selfHostedLogoutAccessToken(
     },
     env,
   );
-  return selection.kind === "self_hosted_remote" && selection.remote.auth.type === "bearer"
+  return selection.kind === "remote" && selection.remote.auth.type === "bearer"
     ? selection.remote.auth.token
-    : credential.accessToken;
+    : fallbackAccessToken;
 }
 
 function writeRemoteStatus(
@@ -1382,39 +1284,12 @@ function writeRemoteStatus(
     writeOut(`${JSON.stringify(status, null, 2)}\n`);
     return;
   }
-  if (status.authenticated) {
-    const workspace =
-      typeof status.workspaceSlug === "string"
-        ? ` workspace ${status.workspaceSlug}`
-        : typeof status.workspaceId === "string"
-          ? ` workspace ${status.workspaceId}`
-          : "";
-    writeOut(`Authenticated to ${status.hostUrl}${workspace}.\n`);
-    return;
-  }
-  writeOut(`Not authenticated to ${status.hostUrl}.\n`);
-}
-
-async function loadCloudRemoteProfileCredentials(
-  store: FileRemoteProfileStore,
-  input: { cloudUrl: string; workspace?: string | undefined },
-): Promise<{ status: RemoteProfileStatus; credential: RemoteProfileCredential }> {
-  const status = await store.getCloudProfileStatus({
-    hostUrl: input.cloudUrl,
-    ...(input.workspace ? { workspace: input.workspace } : {}),
-  });
-  const credential = status ? await store.credentials.load(status.key) : undefined;
-  if (!status || !credential?.accessToken) {
-    throw new CapletsError("AUTH_REQUIRED", "Run caplets remote login <cloud-url> first.");
-  }
-  return { status, credential };
-}
-
-function defaultCloudUrl(
-  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
-  cloudUrl?: string,
-): string {
-  return cloudUrl ?? env.CAPLETS_CLOUD_URL ?? "https://cloud.caplets.dev";
+  const origin = typeof status.origin === "string" ? status.origin : "unknown Current Host";
+  writeOut(
+    status.authenticated
+      ? `Authenticated Remote Profile for ${origin}.\n`
+      : `No authenticated Remote Profile for ${origin}.\n`,
+  );
 }
 
 function terminalSafeText(value: string): string {
@@ -1801,7 +1676,6 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--transport <transport>", "server transport: stdio or http")
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
-    .option("--path <path>", "HTTP service base path")
     .option("--remote-state-path <path>", "server-owned remote credential state directory")
     .option(
       "--upstream-url <url>",
@@ -1826,7 +1700,6 @@ export function createProgram(io: CliIO = {}): Command {
         transport?: string;
         host?: string;
         port?: string;
-        path?: string;
         remoteStatePath?: string;
         upstreamUrl?: string;
         allowUnauthenticatedHttp?: boolean;
@@ -2026,14 +1899,12 @@ export function createProgram(io: CliIO = {}): Command {
     .addOption(hiddenOption("--transport <transport>", "server transport: stdio or http"))
     .addOption(hiddenOption("--host <host>", "HTTP bind host"))
     .addOption(hiddenOption("--port <port>", "HTTP bind port"))
-    .addOption(hiddenOption("--path <path>", "HTTP service base path"))
     .addOption(
       new Option(
         "--remote-url <url>",
         "legacy alias for the remote Caplets service base URL",
       ).hideHelp(),
     )
-    .option("--workspace <workspace>", "hosted Cloud workspace ID or slug")
     .addOption(
       hiddenOption(
         "--allow-unauthenticated-http",
@@ -2053,8 +1924,6 @@ export function createProgram(io: CliIO = {}): Command {
           transport?: string;
           host?: string;
           port?: string;
-          path?: string;
-          workspace?: string;
           allowUnauthenticatedHttp?: boolean;
           trustProxy?: boolean;
           json?: boolean;
@@ -2147,52 +2016,28 @@ export function createProgram(io: CliIO = {}): Command {
       },
     );
 
-  const remote = program.command(cliCommands.remote).description("Manage Caplets Remote Login.");
+  const remote = program
+    .command(cliCommands.remote)
+    .description("Manage Current Host Remote Profiles.");
   remote
     .command("login")
-    .description("Log this machine into a Caplets host.")
-    .argument("<url>", "Caplets host URL")
-    .option("--workspace <workspace>", "Cloud workspace ID or slug to select")
+    .description("Create a Remote Profile for a Current Host.")
+    .argument("<origin>", "Current Host origin")
     .option("--client-label <label>", "client label for this machine")
-    .option("--device-name <name>", "Cloud device label for this machine")
-    .addOption(new Option("--code <code>", "legacy Pairing Code input").hideHelp())
-    .addOption(new Option("--code-stdin", "legacy Pairing Code stdin input").hideHelp())
-    .option("--no-open", "print the Cloud login URL without opening a browser")
     .option("--json", "print JSON output")
     .action(
       async (
-        url: string,
+        originInput: string,
         options: {
-          workspace?: string;
           clientLabel?: string;
-          deviceName?: string;
-          code?: string;
-          codeStdin?: boolean;
-          open?: boolean;
           json?: boolean;
         },
       ) => {
-        const store = remoteProfileStore(io.authDir, env);
-        if (isCapletsCloudUrl(url)) {
-          const status = await loginCloudRemoteProfile(url, options, store, {
-            env,
-            ...(io.fetch ? { fetch: io.fetch } : {}),
-            writeOut,
-          });
-          writeRemoteStatus(status, options.json === true, writeOut);
-          return;
-        }
-
-        if (options.code?.trim() || options.codeStdin) {
-          throw new CapletsError(
-            "REQUEST_INVALID",
-            `Self-hosted Remote Login no longer accepts Pairing Codes. Run caplets remote login ${normalizeRemoteProfileHostUrl(url)} without --code and approve the pending login from the host.`,
-          );
-        }
+        const origin = canonicalizeCurrentHostOrigin(originInput);
         const interrupt = cliInterruptSignal(io.signal);
         let credentials: RemoteLoginCredentialsResponse;
         try {
-          credentials = await selfHostedPendingRemoteLogin(url, {
+          credentials = await pendingRemoteLogin(origin, {
             ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
             json: options.json,
             ...(io.fetch ? { fetch: io.fetch } : {}),
@@ -2203,9 +2048,11 @@ export function createProgram(io: CliIO = {}): Command {
         } finally {
           interrupt.dispose();
         }
-        const status = await store.saveSelfHostedProfile({
-          hostUrl: url,
-          hostIdentity: normalizeRemoteProfileHostUrl(credentials.hostUrl ?? url),
+        const status = await remoteProfileStore(io.authDir, env).saveRemoteProfile({
+          origin,
+          ...(credentials.hostIdentity
+            ? { hostIdentity: canonicalizeCurrentHostOrigin(credentials.hostIdentity) }
+            : {}),
           clientId: credentials.clientId,
           clientLabel: credentials.clientLabel,
           credentials: {
@@ -2225,123 +2072,75 @@ export function createProgram(io: CliIO = {}): Command {
 
   remote
     .command("status")
-    .description("Show saved Remote Login status.")
-    .argument("[url]", "Caplets host URL")
-    .option("--workspace <workspace>", "Cloud workspace ID or slug")
+    .description("Show the Remote Profile status for a Current Host.")
+    .argument("<origin>", "Current Host origin")
     .option("--json", "print JSON output")
-    .action(async (url: string | undefined, options: { workspace?: string; json?: boolean }) => {
-      if (!url) {
-        const store = remoteProfileStore(io.authDir, env);
-        const profiles = await store.listProfileStatuses();
-        if (options.json) {
-          writeOut(`${JSON.stringify({ profiles }, null, 2)}\n`);
-          return;
-        }
-        if (profiles.length === 0) {
-          writeOut("No saved Remote Login profiles.\n");
-          return;
-        }
-        for (const profile of profiles) {
-          writeRemoteStatus(profile, false, writeOut);
-        }
+    .action(async (originInput: string, options: { json?: boolean }) => {
+      const origin = canonicalizeCurrentHostOrigin(originInput);
+      const status =
+        (await remoteProfileStore(io.authDir, env).getRemoteProfileStatus({ origin })) ??
+        remoteProfileStatus({ origin });
+      writeRemoteStatus(status, options.json === true, writeOut);
+    });
+
+  remote
+    .command("list")
+    .description("List saved Current Host Remote Profiles.")
+    .option("--json", "print JSON output")
+    .action(async (options: { json?: boolean }) => {
+      const profiles = await remoteProfileStore(io.authDir, env).listRemoteProfileStatuses();
+      if (options.json) {
+        writeOut(`${JSON.stringify({ profiles }, null, 2)}\n`);
         return;
       }
-      const store = remoteProfileStore(io.authDir, env);
-      const normalizedHostUrl = normalizeRemoteProfileHostUrl(url);
-      const status = isCapletsCloudUrl(url)
-        ? await store.getCloudProfileStatus({ hostUrl: url, workspace: options.workspace })
-        : await store.getSelfHostedProfileStatus({ hostUrl: url });
-      writeRemoteStatus(
-        status ?? {
-          authenticated: false,
-          status: "unauthenticated",
-          hostUrl: normalizedHostUrl,
-          kind: isCapletsCloudUrl(url) ? "cloud" : "self-hosted",
-        },
-        options.json === true,
-        writeOut,
-      );
+      if (profiles.length === 0) {
+        writeOut("No saved Remote Profiles.\n");
+        return;
+      }
+      for (const profile of profiles) writeRemoteStatus(profile, false, writeOut);
     });
 
   remote
     .command("logout")
-    .description("Remove saved Remote Login credentials for a host.")
-    .argument("<url>", "Caplets host URL")
-    .option("--workspace <workspace>", "Cloud workspace ID or slug")
+    .description("Remove the Remote Profile for a Current Host.")
+    .argument("<origin>", "Current Host origin")
     .option("--json", "print JSON output")
-    .action(async (url: string, options: { workspace?: string; json?: boolean }) => {
+    .action(async (originInput: string, options: { json?: boolean }) => {
+      const origin = canonicalizeCurrentHostOrigin(originInput);
       const store = remoteProfileStore(io.authDir, env);
-      const status = isCapletsCloudUrl(url)
-        ? await store.getCloudProfileStatus({ hostUrl: url, workspace: options.workspace })
-        : await store.getSelfHostedProfileStatus({ hostUrl: url });
-      const credential = status ? await store.credentials.load(status.key) : undefined;
-      if (isCapletsCloudUrl(url) && credential?.refreshToken) {
-        await new CloudAuthClient({
-          cloudUrl: url,
-          ...(io.fetch ? { fetch: io.fetch } : {}),
-        })
-          .logout(credential.refreshToken)
-          .catch(() => undefined);
-      }
-      const storedAccessToken = credential?.accessToken;
-      if (!isCapletsCloudUrl(url) && storedAccessToken) {
-        const accessToken = await selfHostedLogoutAccessToken(
-          url,
-          { ...credential, accessToken: storedAccessToken },
+      const loaded = await store.refreshRemoteProfileIfNeeded({
+        origin,
+        needsRefresh: () => false,
+        refresh: async () => {
+          throw new CapletsError("AUTH_REFRESH_FAILED", "Unexpected Remote Profile refresh.");
+        },
+      });
+      const storedAccessToken = loaded?.credential.accessToken;
+      if (storedAccessToken) {
+        const accessToken = await refreshedRemoteAccessToken(
+          origin,
+          storedAccessToken,
           { authDir: io.authDir, ...(io.fetch ? { fetch: io.fetch } : {}) },
           env,
         ).catch(() => storedAccessToken);
-        await revokeSelfHostedRemoteClient(url, accessToken, io.fetch).catch(() => undefined);
+        await revokeRemoteClient(origin, accessToken, io.fetch).catch(() => undefined);
       }
-      const removed = status
-        ? isCapletsCloudUrl(url)
-          ? await store.logoutCloudProfile({ hostUrl: url, workspace: options.workspace })
-          : await store.logoutSelfHostedProfile({ hostUrl: url })
-        : false;
+      const removed = await store.logoutRemoteProfile({ origin });
       if (options.json) {
-        writeOut(
-          `${JSON.stringify({ loggedOut: removed, hostUrl: normalizeRemoteProfileHostUrl(url) }, null, 2)}\n`,
-        );
+        writeOut(`${JSON.stringify({ loggedOut: removed, origin }, null, 2)}\n`);
         return;
       }
       writeOut(
         removed
-          ? `Logged out of ${normalizeRemoteProfileHostUrl(url)}.\n`
-          : `No Remote Login profile found for ${normalizeRemoteProfileHostUrl(url)}.\n`,
+          ? `Logged out Remote Profile for ${origin}.\n`
+          : `No Remote Profile found for ${origin}.\n`,
       );
     });
 
-  const remoteHost = remote.command("host").description("Manage self-hosted remote credentials.");
-  remoteHost
-    .command("pair", { hidden: true })
-    .description("Deprecated. Pairing Code bootstrap is no longer supported.")
-    .option("--host-url <url>", "public Caplets host URL; defaults to CAPLETS_SERVER_URL")
-    .option("--state-path <path>", "server-owned remote credential state directory")
-    .option("--json", "print JSON output")
-    .action(async (options: { hostUrl?: string; statePath?: string; json?: boolean }) => {
-      const hostUrl = options.hostUrl ?? env.CAPLETS_SERVER_URL;
-      const guidance =
-        "Self-hosted Pairing Code bootstrap is no longer supported. Run caplets remote login <url> from the client, then approve the pending login with caplets remote host logins and caplets remote host approve <code> from the host.";
-      if (options.json) {
-        writeOut(
-          `${JSON.stringify(
-            {
-              supported: false,
-              deprecated: true,
-              ...(hostUrl ? { hostUrl: normalizeRemoteProfileHostUrl(hostUrl) } : {}),
-              message: guidance,
-            },
-            null,
-            2,
-          )}\n`,
-        );
-        return;
-      }
-      writeOut(`${guidance}\n`);
-    });
+  const remoteHost = remote.command("host").description("Manage Current Host remote credentials.");
   remoteHost
     .command("clients")
-    .description("List paired self-hosted remote clients from server state.")
+    .description("List paired Current Host remote clients from server state.")
     .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
     .action(async (options: { statePath?: string; json?: boolean }) => {
@@ -2366,7 +2165,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
   remoteHost
     .command("logins")
-    .description("List pending self-hosted Remote Login approvals from server state.")
+    .description("List pending Current Host Remote Login approvals from server state.")
     .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
     .action(async (options: { statePath?: string; json?: boolean }) => {
@@ -2391,7 +2190,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
   remoteHost
     .command("approve")
-    .description("Approve one pending self-hosted Remote Login code from server state.")
+    .description("Approve one pending Current Host Remote Login code from server state.")
     .argument("<code>", "operator-visible Remote Login code")
     .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--role <role>", "grant role override: access or operator", parseRemoteClientRole)
@@ -2424,7 +2223,7 @@ export function createProgram(io: CliIO = {}): Command {
     );
   remoteHost
     .command("deny")
-    .description("Deny one pending self-hosted Remote Login code from server state.")
+    .description("Deny one pending Current Host Remote Login code from server state.")
     .argument("<code>", "operator-visible Remote Login code")
     .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
@@ -2446,7 +2245,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
   remoteHost
     .command("revoke")
-    .description("Revoke one paired self-hosted remote client from server state.")
+    .description("Revoke one paired Current Host remote client from server state.")
     .argument("<client-id>", "remote client ID")
     .option("--state-path <path>", "deprecated; Authoritative Host State uses SQL storage")
     .option("--json", "print JSON output")
@@ -2462,234 +2261,6 @@ export function createProgram(io: CliIO = {}): Command {
       }
       writeOut(revoked ? `Revoked ${clientId}.\n` : `No remote client found for ${clientId}.\n`);
     });
-
-  const cloud = program.command(cliCommands.cloud).description("Manage hosted Caplets Cloud.");
-  const cloudAuth = cloud
-    .command("auth")
-    .description("Authenticate this Caplets client to hosted Caplets Cloud.");
-  cloudAuth
-    .command("login")
-    .description("Log in to hosted Caplets Cloud.")
-    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
-    .option("--workspace <workspace>", "workspace ID or slug to select")
-    .option("--device-name <name>", "device label for this Cloud Auth credential")
-    .option("--no-open", "print the login URL without opening a browser")
-    .option("--json", "print JSON output")
-    .action(
-      async (options: {
-        cloudUrl?: string;
-        workspace?: string;
-        deviceName?: string;
-        open?: boolean;
-        json?: boolean;
-      }) => {
-        const status = await loginCloudRemoteProfile(
-          defaultCloudUrl(env, options.cloudUrl),
-          options,
-          remoteProfileStore(io.authDir, env),
-          {
-            env,
-            ...(io.fetch ? { fetch: io.fetch } : {}),
-            writeOut,
-          },
-        );
-        writeRemoteStatus(status, options.json === true, writeOut);
-      },
-    );
-  cloudAuth
-    .command("status")
-    .description("Show hosted Caplets Cloud authentication status.")
-    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
-    .option("--workspace <workspace>", "workspace ID or slug")
-    .option("--json", "print JSON output")
-    .action(async (options: { cloudUrl?: string; workspace?: string; json?: boolean }) => {
-      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
-      const status = await remoteProfileStore(io.authDir, env).getCloudProfileStatus({
-        hostUrl: cloudUrl,
-        ...(options.workspace ? { workspace: options.workspace } : {}),
-      });
-      writeRemoteStatus(
-        status ?? {
-          authenticated: false,
-          status: "unauthenticated",
-          hostUrl: normalizeRemoteProfileHostUrl(cloudUrl),
-          kind: "cloud",
-        },
-        options.json === true,
-        writeOut,
-      );
-    });
-  cloudAuth
-    .command("logout")
-    .description("Log out of hosted Caplets Cloud.")
-    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
-    .option("--workspace <workspace>", "workspace ID or slug")
-    .option("--json", "print JSON output")
-    .action(async (options: { cloudUrl?: string; workspace?: string; json?: boolean }) => {
-      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
-      const store = remoteProfileStore(io.authDir, env);
-      const status = await store.getCloudProfileStatus({
-        hostUrl: cloudUrl,
-        ...(options.workspace ? { workspace: options.workspace } : {}),
-      });
-      const credential = status ? await store.credentials.load(status.key) : undefined;
-      if (credential?.refreshToken) {
-        await new CloudAuthClient({
-          cloudUrl,
-          ...(io.fetch ? { fetch: io.fetch } : {}),
-        })
-          .logout(credential.refreshToken)
-          .catch(() => undefined);
-      }
-      const removed = await store.logoutCloudProfile({
-        hostUrl: cloudUrl,
-        ...(options.workspace ? { workspace: options.workspace } : {}),
-      });
-      if (options.json) {
-        writeOut(
-          `${JSON.stringify({ loggedOut: removed, hostUrl: normalizeRemoteProfileHostUrl(cloudUrl) }, null, 2)}\n`,
-        );
-        return;
-      }
-      writeOut(
-        removed
-          ? `Logged out of ${normalizeRemoteProfileHostUrl(cloudUrl)}.\n`
-          : `No Remote Login profile found for ${normalizeRemoteProfileHostUrl(cloudUrl)}.\n`,
-      );
-    });
-  cloudAuth
-    .command("workspaces")
-    .description("List hosted Caplets Cloud workspaces.")
-    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
-    .option("--json", "print JSON output")
-    .action(async (options: { cloudUrl?: string; json?: boolean }) => {
-      const store = remoteProfileStore(io.authDir, env);
-      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
-      const loaded = await store.getCloudProfileStatus({ hostUrl: cloudUrl });
-      const credential = loaded ? await store.credentials.load(loaded.key) : undefined;
-      const credentials =
-        loaded && credential?.accessToken
-          ? cloudCredentialsFromRemoteProfile(loaded, credential)
-          : undefined;
-      const workspaces = credentials
-        ? (
-            await new CloudAuthClient({
-              cloudUrl: credentials.cloudUrl,
-              ...(io.fetch ? { fetch: io.fetch } : {}),
-            })
-              .workspaces(credentials.accessToken)
-              .catch(() => ({
-                workspaces: [
-                  {
-                    workspaceId: credentials.workspaceId,
-                    ...(credentials.workspaceSlug ? { slug: credentials.workspaceSlug } : {}),
-                  },
-                ],
-              }))
-          ).workspaces.map((workspace) => ({
-            ...workspace,
-            selected:
-              workspace.workspaceId === credentials.workspaceId ||
-              workspace.slug === credentials.workspaceSlug,
-          }))
-        : [];
-      if (options.json) {
-        writeOut(`${JSON.stringify({ workspaces }, null, 2)}\n`);
-        return;
-      }
-      if (workspaces.length === 0) {
-        writeOut(
-          "No hosted Caplets Cloud workspaces available. Run caplets remote login <cloud-url>.\n",
-        );
-        return;
-      }
-      for (const workspace of workspaces) {
-        writeOut(`${workspace.selected ? "* " : "  "}${workspace.slug ?? workspace.workspaceId}\n`);
-      }
-    });
-  cloudAuth
-    .command("switch")
-    .description("Switch the hosted Caplets Cloud Selected Workspace.")
-    .argument("<workspace>", "workspace ID or slug")
-    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
-    .option("--json", "print JSON output")
-    .action(async (workspace: string, options: { cloudUrl?: string; json?: boolean }) => {
-      const store = remoteProfileStore(io.authDir, env);
-      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
-      const loaded = await loadCloudRemoteProfileCredentials(store, { cloudUrl });
-      const credentials = cloudCredentialsFromRemoteProfile(loaded.status, loaded.credential);
-      const client = new CloudAuthClient({
-        cloudUrl: credentials.cloudUrl,
-        ...(io.fetch ? { fetch: io.fetch } : {}),
-      });
-      const switched = await client.switchWorkspace({
-        accessToken: credentials.accessToken,
-        refreshToken: credentials.refreshToken,
-        workspace,
-        deviceName: credentials.deviceName,
-      });
-      const status = await store.saveCloudProfile({
-        hostUrl: credentials.cloudUrl,
-        workspaceId: switched.workspaceId,
-        ...(switched.workspaceSlug ? { workspaceSlug: switched.workspaceSlug } : {}),
-        clientLabel: credentials.deviceName,
-        credentials: {
-          accessToken: switched.accessToken,
-          refreshToken: switched.refreshToken ?? credentials.refreshToken,
-          expiresAt: switched.expiresAt,
-          scope: switched.scope,
-          tokenType: switched.tokenType,
-        },
-      });
-      writeRemoteStatus(status, options.json === true, writeOut);
-    });
-
-  cloud
-    .command("add")
-    .description("Upload local caplet-files to the selected hosted Caplets Cloud workspace.")
-    .argument("[path]", "directory containing caplet-files", ".")
-    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
-    .option("--workspace <workspace>", "workspace ID or slug")
-    .option("--json", "print JSON output")
-    .action(
-      async (
-        pathInput: string,
-        options: { cloudUrl?: string; workspace?: string; json?: boolean },
-      ) => {
-        const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
-        const selection = await resolveRemoteSelection(
-          {
-            mode: "cloud",
-            remoteUrl: cloudUrl,
-            ...(options.workspace ? { workspace: options.workspace } : {}),
-            ...(io.authDir ? { authDir: io.authDir } : {}),
-            ...(io.fetch ? { fetch: io.fetch } : {}),
-          },
-          { ...env, CAPLETS_MODE: "cloud", CAPLETS_REMOTE_URL: cloudUrl },
-        );
-        if (selection.kind !== "hosted_cloud") {
-          throw new CapletsError("REQUEST_INVALID", "caplets cloud add requires Caplets Cloud.");
-        }
-        const workspace = selection.selectedWorkspace;
-        const bundle = buildCloudCapletBundle(pathInput);
-        const result = await new CloudAuthClient({
-          cloudUrl,
-          ...(io.fetch ? { fetch: io.fetch } : {}),
-        }).addCaplets({
-          accessToken: selection.credentials.accessToken,
-          workspace,
-          bundle,
-        });
-        const caplets = result.caplets.map(compactCloudCaplet);
-        if (options.json) {
-          writeOut(`${JSON.stringify({ caplets, workspace }, null, 2)}\n`);
-          return;
-        }
-        for (const caplet of caplets) {
-          writeOut(`Added ${caplet.name ?? caplet.id ?? "Caplet"} to ${workspace}.\n`);
-        }
-      },
-    );
 
   program
     .command(cliCommands.init)
@@ -2727,7 +2298,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--client <id>", "MCP client id to configure through add-mcp")
     .option("--dry-run", "print actions without running commands or writing files")
     .option("--yes", "approve Caplet setup commands for the exact current content hash")
-    .option("--target <target>", "Caplet setup target: local, remote, or cloud", parseSetupTarget)
+    .option("--target <target>", "Caplet setup target: local or remote", parseSetupTarget)
     .option("--format <format>", "output format: plain or json", parseSetupFormat)
     .action(
       async (
@@ -2740,7 +2311,7 @@ export function createProgram(io: CliIO = {}): Command {
           client?: string;
           dryRun?: boolean;
           yes?: boolean;
-          target?: "local" | "remote" | "cloud";
+          target?: "local" | "remote";
           format?: SetupFormat;
         },
       ) => {
@@ -4833,7 +4404,7 @@ function remoteClientForCli(
   if (!forceRemote && remoteUrl === undefined && resolveRemoteMode({}, env).mode !== "remote") {
     return undefined;
   }
-  return new MigratingRemoteCliClient({
+  return new RemoteCliClient({
     resolve: async () => {
       const selection = await resolveRemoteSelection(
         {
@@ -4844,8 +4415,11 @@ function remoteClientForCli(
         },
         env,
       );
-      if (selection.kind !== "self_hosted_remote") {
-        throw new CapletsError("REQUEST_INVALID", "--remote requires a self-hosted remote Host");
+      if (selection.kind !== "remote") {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "--remote requires a Current Host Remote Profile",
+        );
       }
       return {
         baseUrl: selection.remote.baseUrl,
@@ -4860,16 +4434,10 @@ function remoteClientForCli(
         bearerToken,
         ...(resolved.fetch ? { fetch: resolved.fetch } : {}),
       }),
-    createLegacy: (resolved) =>
-      new RemoteControlClient({
-        baseUrl: resolved.baseUrl,
-        requestInit: resolved.requestInit,
-        ...(resolved.fetch ? { fetch: resolved.fetch } : {}),
-      }),
     createAttach: (resolved) =>
       createRemoteAttachCommandAdapter({
         client: createSdkRemoteCapletsClient({
-          url: resolved.attachUrl,
+          origin: resolved.baseUrl,
           auth: { enabled: false, user: "caplets" },
           pollIntervalMs: 60_000,
           requestInit: resolved.requestInit,
@@ -4937,9 +4505,7 @@ type VaultTargetOptions = {
   remote?: boolean;
 };
 
-type VaultRemoteTarget =
-  | { kind: "self_hosted"; client: RemoteCliCommandAdapter }
-  | { kind: "cloud"; client: CapletsCloudClient; workspace: string };
+type VaultRemoteTarget = RemoteCliCommandAdapter;
 
 type AddCliResult = { path?: string; text: string; remote?: boolean };
 
@@ -5046,36 +4612,13 @@ function parseVaultTarget(options: VaultTargetOptions): VaultTarget {
 
 async function resolveVaultRemoteTarget(io: CliIO): Promise<VaultRemoteTarget> {
   const env = io.env ?? process.env;
-  const mode = resolveRemoteMode({}, env).mode;
-  if (mode === "remote") {
-    return { kind: "self_hosted", client: requireRemoteClientForTarget(io) };
-  }
-  if (mode !== "cloud") {
+  if (resolveRemoteMode({}, env).mode !== "remote") {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "--remote requires CAPLETS_MODE=remote or CAPLETS_MODE=cloud and CAPLETS_REMOTE_URL",
+      "--remote requires CAPLETS_MODE=remote and CAPLETS_REMOTE_URL",
     );
   }
-  const selection = await resolveRemoteSelection(
-    {
-      mode: "cloud",
-      ...(io.authDir ? { authDir: io.authDir } : {}),
-      ...(io.fetch ? { fetch: io.fetch } : {}),
-    },
-    env,
-  );
-  if (selection.kind !== "hosted_cloud") {
-    throw new CapletsError("REQUEST_INVALID", "--remote Vault target did not resolve to Cloud.");
-  }
-  return {
-    kind: "cloud",
-    workspace: selection.selectedWorkspace,
-    client: new CapletsCloudClient({
-      baseUrl: selection.remote.baseUrl,
-      accessToken: selection.credentials.accessToken,
-      ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
-    }),
-  };
+  return requireRemoteClientForTarget(io);
 }
 
 async function remoteVaultSet(
@@ -5088,71 +4631,48 @@ async function remoteVaultSet(
     referenceName?: string | undefined;
   },
 ): Promise<unknown> {
-  const target = await resolveVaultRemoteTarget(io);
-  if (target.kind === "self_hosted") return await target.client.request("vault_set", input);
-  return await target.client.setVaultValue({ workspace: target.workspace, ...input });
+  return await (await resolveVaultRemoteTarget(io)).request("vault_set", input);
 }
 
 async function remoteVaultGet(
   io: CliIO,
   input: { name: string; reveal: boolean },
 ): Promise<unknown> {
-  const target = await resolveVaultRemoteTarget(io);
-  if (target.kind === "self_hosted") {
-    return await target.client.request("vault_get", {
-      name: input.name,
-      reveal: input.reveal,
-    });
-  }
-  return await target.client.getVaultValue({
-    workspace: target.workspace,
+  return await (
+    await resolveVaultRemoteTarget(io)
+  ).request("vault_get", {
     name: input.name,
     reveal: input.reveal,
   });
 }
 
 async function remoteVaultList(io: CliIO): Promise<unknown> {
-  const target = await resolveVaultRemoteTarget(io);
-  if (target.kind === "self_hosted") return await target.client.request("vault_list", {});
-  return await target.client.listVaultValues({ workspace: target.workspace });
+  return await (await resolveVaultRemoteTarget(io)).request("vault_list", {});
 }
 
 async function remoteVaultDelete(io: CliIO, name: string): Promise<unknown> {
-  const target = await resolveVaultRemoteTarget(io);
-  if (target.kind === "self_hosted") return await target.client.request("vault_delete", { name });
-  return await target.client.deleteVaultValue({ workspace: target.workspace, name });
+  return await (await resolveVaultRemoteTarget(io)).request("vault_delete", { name });
 }
 
 async function remoteVaultAccessGrant(
   io: CliIO,
   input: { name: string; capletId: string; referenceName: string },
 ): Promise<unknown> {
-  const target = await resolveVaultRemoteTarget(io);
-  if (target.kind === "self_hosted")
-    return await target.client.request("vault_access_grant", input);
-  return await target.client.grantVaultAccess({ workspace: target.workspace, ...input });
+  return await (await resolveVaultRemoteTarget(io)).request("vault_access_grant", input);
 }
 
 async function remoteVaultAccessList(
   io: CliIO,
   input: { name?: string | undefined; capletId?: string | undefined },
 ): Promise<unknown> {
-  const target = await resolveVaultRemoteTarget(io);
-  if (target.kind === "self_hosted") {
-    return await target.client.request("vault_access_list", input);
-  }
-  return await target.client.listVaultAccess({ workspace: target.workspace, ...input });
+  return await (await resolveVaultRemoteTarget(io)).request("vault_access_list", input);
 }
 
 async function remoteVaultAccessRevoke(
   io: CliIO,
   input: { name: string; capletId: string; referenceName?: string | undefined },
 ): Promise<unknown> {
-  const target = await resolveVaultRemoteTarget(io);
-  if (target.kind === "self_hosted") {
-    return await target.client.request("vault_access_revoke", input);
-  }
-  return await target.client.revokeVaultAccess({ workspace: target.workspace, ...input });
+  return await (await resolveVaultRemoteTarget(io)).request("vault_access_revoke", input);
 }
 
 async function readVaultValue(io: CliIO): Promise<string> {
@@ -5560,9 +5080,9 @@ function parseSetupFormat(value: string): SetupFormat {
   throw new CapletsError("REQUEST_INVALID", "setup format must be plain or json");
 }
 
-function parseSetupTarget(value: string): "local" | "remote" | "cloud" {
-  if (value === "local" || value === "remote" || value === "cloud") return value;
-  throw new CapletsError("REQUEST_INVALID", "setup target must be local, remote, or cloud");
+function parseSetupTarget(value: string): "local" | "remote" {
+  if (value === "local" || value === "remote") return value;
+  throw new CapletsError("REQUEST_INVALID", "setup target must be local or remote");
 }
 
 function parseQualifiedTarget(

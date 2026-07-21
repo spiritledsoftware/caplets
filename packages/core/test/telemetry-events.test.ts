@@ -72,6 +72,16 @@ describe("telemetry event builders", () => {
     ).toThrow(/unknown telemetry property/u);
   });
 
+  it("rejects the removed Cloud runtime mode", () => {
+    expect(() =>
+      buildProductTelemetryEvent({
+        name: "caplets_cli_command",
+        distinctId: "anon_1234567890abcdef1234567890abcdef",
+        properties: { runtime_mode: "cloud" } as never,
+      }),
+    ).toThrow(/unsafe telemetry property/u);
+  });
+
   it("rejects path, URL, hostname, env, token, and id-shaped raw values", () => {
     for (const value of [
       "/home/ian/project",

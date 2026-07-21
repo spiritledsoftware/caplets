@@ -9,6 +9,8 @@
 > Integration point: execute on the Plan 000 branch after the canonical HTTP contract exists and before Plan 000 review, changeset validation, or commit
 > Decision context: ADR 0007 and the Plan 000 decisions, amended by this plan
 
+> **Pre-release integration:** This completed plan remains authoritative for the `@caplets/sdk` package seam, generated-operation discipline, streaming helpers, Project Binding coordinator, and caller cutover. After [Plan 022](022-remove-legacy-caplets-cloud.md) removes Legacy Caplets Cloud, [Plan 023](023-use-fixed-origin-protocol-namespaces.md) regenerates the SDK for the fixed origin-root route map and replaces this plan's root OpenAPI location, prefixed service-root inputs, Cloud workspace-path accommodation, and frozen v1 Admin surface before the first release. Old paths and client fallbacks do not survive.
+
 ## Executor instructions
 
 Follow this plan in order. Use red-green TDD at the package interface, generated-contract, Project Binding protocol, and consumer seams. Run each focused command before moving on. Do not reset, discard, or overwrite unrelated staged or untracked work.
@@ -56,7 +58,7 @@ This is a clean pre-release cutover inside Plan 000. `@caplets/core/admin-client
 19. Session events use an `onEvent` callback plus one terminal promise. If the callback throws, the coordinator finalizes and reports that failure.
 20. The coordinator follows fields-by-default failure semantics and supports `throwOnError: true`. Abort is a typed failure outcome after cleanup, not a successful terminal result.
 21. Finalization is attempted exactly once. Preserve the initiating failure and attach a safe secondary cleanup failure; a cleanup failure becomes primary only when no earlier failure exists.
-22. Migrate every repository caller and remove the core Admin client source, export, bundle entry, aliases, and generated-internal imports. Leave no compatibility alias.
+22. Migrate every repository caller and remove the core generated HTTP client source, export, bundle entry, aliases, and generated-internal imports. Leave no compatibility alias.
 23. Full public documentation is required: package README, docs-site page/navigation, root README, architecture/product/Project Binding docs, glossary, ADR/Plan notes, contributor package map, and release changeset.
 
 ## Current state to preserve or correct
@@ -494,6 +496,10 @@ Dashboard migration:
 - remove Astro/Vitest/TypeScript aliases to core source;
 - add the real workspace dependency and let Turbo build order follow package dependencies.
 
+> Superseded transport note: Plan 021 removes the dashboard-path rewrite. The dashboard now
+> configures this generated client with the injected service root and calls canonical `/v2/admin`
+> directly.
+
 Delete `packages/core/src/admin-client`, the core export, and the core Rolldown input only after searches show no callers.
 
 Required absence checks:
@@ -576,7 +582,7 @@ Release metadata:
 
 - add `"@caplets/sdk": minor` to `.changeset/current-host-admin-api.md` so `0.0.0` launches as `0.1.0`;
 - retain appropriate Plan 000 bumps for `@caplets/core` and `caplets`;
-- describe the whole public SDK, generated HTTP coverage, streaming helpers, Project Binding v1, and removal of the unreleased core Admin client path;
+- describe the whole public SDK, generated HTTP coverage, streaming helpers, Project Binding v1, and removal of the unreleased core generated HTTP client path;
 - do not create a second SDK-only changeset for the same launch.
 
 **Verify**:

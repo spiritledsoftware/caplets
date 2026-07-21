@@ -6,11 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   NativeProjectBindingLifecycle,
   type ProjectBindingSessionAdapter,
-} from "../src/native/project-binding-lifecycle";
+} from "../src/project-binding/lifecycle";
 import { CAPLETS_ATTACH_SESSION_HEADER, buildNativeAttachProjection } from "../src/attach/api";
 import { listCodeModeCallableCaplets } from "../src/code-mode/api";
 import { CapletsError } from "../src/errors";
-import { CloudAuthStore } from "../src/cloud-auth/store";
 import { CapletsEngine } from "../src/engine";
 import {
   createSdkRemoteCapletsClient,
@@ -28,7 +27,6 @@ import { recordTelemetryNoticeShown } from "../src/telemetry";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
-import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 function client(
   tools: RemoteCapletsTool[] = [{ name: "alpha", title: "Alpha", description: "Remote alpha" }],
@@ -190,6 +188,21 @@ function deferred<T = void>() {
 }
 
 describe("RemoteNativeCapletsService", () => {
+  it("rejects a path-bearing Current Host origin before Fetch", () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+
+    expect(() =>
+      createSdkRemoteCapletsClient({
+        origin: new URL("https://caplets.example.com/service-root"),
+        requestInit: {},
+        fetch,
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+      }),
+    ).toThrow(/Current Host URL.*origin/u);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("creates an attach session before fetching a session-aware manifest", async () => {
     const requests: Array<{ url: string; method: string; headers: Headers; body?: unknown }> = [];
     const fetchStub: typeof fetch = vi.fn(async (input, init) => {
@@ -213,7 +226,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true });
     });
     const client = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -229,10 +242,10 @@ describe("RemoteNativeCapletsService", () => {
     await client.close();
 
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-      "POST https://caplets.example.com/v1/attach/sessions",
-      "GET https://caplets.example.com/v1/attach/manifest",
-      "POST https://caplets.example.com/v1/attach/invoke",
-      "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_123",
+      "POST https://caplets.example.com/api/v1/attach/sessions",
+      "GET https://caplets.example.com/api/v1/attach/manifest",
+      "POST https://caplets.example.com/api/v1/attach/invoke",
+      "DELETE https://caplets.example.com/api/v1/attach/sessions/attach_session_123",
     ]);
     expect(requests[0]?.body).toEqual({
       projectRoot: "/repo",
@@ -264,7 +277,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const client = createSdkRemoteCapletsClient({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: {},
         fetch: fetchStub,
         auth: { enabled: false, user: "caplets" },
@@ -288,7 +301,7 @@ describe("RemoteNativeCapletsService", () => {
         manifestRequests.map((request) => request.headers.get(CAPLETS_ATTACH_SESSION_HEADER)),
       ).toEqual([null, null, "attach_session_123"]);
       expect(requests.map((request) => `${request.method} ${request.url}`)).toContain(
-        "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_123",
+        "DELETE https://caplets.example.com/api/v1/attach/sessions/attach_session_123",
       );
     } finally {
       dateNow.mockRestore();
@@ -320,7 +333,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true });
     });
     const client = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -332,8 +345,8 @@ describe("RemoteNativeCapletsService", () => {
     await client.close();
 
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-      "POST https://caplets.example.com/v1/attach/sessions",
-      "GET https://caplets.example.com/v1/attach/manifest",
+      "POST https://caplets.example.com/api/v1/attach/sessions",
+      "GET https://caplets.example.com/api/v1/attach/manifest",
     ]);
     expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBeNull();
   });
@@ -364,7 +377,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const client = createSdkRemoteCapletsClient({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: {},
         fetch: fetchStub,
         auth: { enabled: false, user: "caplets" },
@@ -375,7 +388,7 @@ describe("RemoteNativeCapletsService", () => {
       const listed = client.listTools();
       await vi.waitFor(() =>
         expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-          "POST https://caplets.example.com/v1/attach/sessions",
+          "POST https://caplets.example.com/api/v1/attach/sessions",
         ]),
       );
 
@@ -389,11 +402,11 @@ describe("RemoteNativeCapletsService", () => {
       await client.close();
 
       expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-        "POST https://caplets.example.com/v1/attach/sessions",
-        "GET https://caplets.example.com/v1/attach/manifest",
-        "POST https://caplets.example.com/v1/attach/sessions",
-        "GET https://caplets.example.com/v1/attach/manifest",
-        "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_2",
+        "POST https://caplets.example.com/api/v1/attach/sessions",
+        "GET https://caplets.example.com/api/v1/attach/manifest",
+        "POST https://caplets.example.com/api/v1/attach/sessions",
+        "GET https://caplets.example.com/api/v1/attach/manifest",
+        "DELETE https://caplets.example.com/api/v1/attach/sessions/attach_session_2",
       ]);
       expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBeNull();
       expect(requests[3]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBe("attach_session_2");
@@ -421,7 +434,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const client = createSdkRemoteCapletsClient({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: {},
         fetch: fetchStub,
         auth: { enabled: false, user: "caplets" },
@@ -432,7 +445,7 @@ describe("RemoteNativeCapletsService", () => {
       const listed = client.listTools();
       await vi.waitFor(() =>
         expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-          "POST https://caplets.example.com/v1/attach/sessions",
+          "POST https://caplets.example.com/api/v1/attach/sessions",
         ]),
       );
 
@@ -443,7 +456,7 @@ describe("RemoteNativeCapletsService", () => {
       sessionsStarted.resolve(Response.json({ sessionId: "attach_session_late" }, { status: 201 }));
       await vi.waitFor(() =>
         expect(requests.map((request) => `${request.method} ${request.url}`)).toContain(
-          "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_late",
+          "DELETE https://caplets.example.com/api/v1/attach/sessions/attach_session_late",
         ),
       );
       await client.close();
@@ -484,7 +497,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true });
     });
     const client = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -496,11 +509,11 @@ describe("RemoteNativeCapletsService", () => {
     await client.close();
 
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-      "POST https://caplets.example.com/v1/attach/sessions",
-      "GET https://caplets.example.com/v1/attach/manifest",
-      "POST https://caplets.example.com/v1/attach/sessions",
-      "GET https://caplets.example.com/v1/attach/manifest",
-      "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_2",
+      "POST https://caplets.example.com/api/v1/attach/sessions",
+      "GET https://caplets.example.com/api/v1/attach/manifest",
+      "POST https://caplets.example.com/api/v1/attach/sessions",
+      "GET https://caplets.example.com/api/v1/attach/manifest",
+      "DELETE https://caplets.example.com/api/v1/attach/sessions/attach_session_2",
     ]);
     expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBe("attach_session_1");
     expect(requests[3]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBe("attach_session_2");
@@ -519,7 +532,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true });
     });
     const client = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -530,7 +543,7 @@ describe("RemoteNativeCapletsService", () => {
     const listTools = client.listTools();
     await vi.waitFor(() =>
       expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
-        "POST https://caplets.example.com/v1/attach/sessions",
+        "POST https://caplets.example.com/api/v1/attach/sessions",
       ]),
     );
     const close = client.close();
@@ -539,7 +552,7 @@ describe("RemoteNativeCapletsService", () => {
     await expect(listTools).rejects.toThrow();
 
     expect(requests.map((request) => `${request.method} ${request.url}`)).toContain(
-      "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_123",
+      "DELETE https://caplets.example.com/api/v1/attach/sessions/attach_session_123",
     );
   });
 
@@ -567,7 +580,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true, data: { retried: true } });
     });
     const client = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -578,10 +591,10 @@ describe("RemoteNativeCapletsService", () => {
     await expect(client.callTool("remote", { ok: true })).resolves.toEqual({ retried: true });
 
     expect(requests.map((request) => request.url)).toEqual([
-      "https://caplets.example.com/v1/attach/manifest",
-      "https://caplets.example.com/v1/attach/invoke",
-      "https://caplets.example.com/v1/attach/manifest",
-      "https://caplets.example.com/v1/attach/invoke",
+      "https://caplets.example.com/api/v1/attach/manifest",
+      "https://caplets.example.com/api/v1/attach/invoke",
+      "https://caplets.example.com/api/v1/attach/manifest",
+      "https://caplets.example.com/api/v1/attach/invoke",
     ]);
     expect(requests[1]?.body).toMatchObject({ revision: "rev-1", exportId: "export-1" });
     expect(requests[3]?.body).toMatchObject({ revision: "rev-2", exportId: "export-2" });
@@ -611,7 +624,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true });
     });
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -657,7 +670,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true, data: { invoked: true } });
     });
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -709,7 +722,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true, data: { invoked: true } });
     });
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -740,7 +753,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("loads older attach manifests without Code Mode caplet entries", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -771,8 +784,10 @@ describe("RemoteNativeCapletsService", () => {
   it("notifies listeners when the attach events stream reports a manifest change", async () => {
     let eventController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();
+    const requestedUrls: string[] = [];
     const fetchStub: typeof fetch = vi.fn(async (input) => {
       const url = String(input);
+      requestedUrls.push(url);
       if (url.endsWith("/manifest")) return Response.json(attachManifest("rev-1", "export-1"));
       if (url.endsWith("/events")) {
         return new Response(
@@ -787,7 +802,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true });
     });
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -797,6 +812,7 @@ describe("RemoteNativeCapletsService", () => {
 
     remote.onToolsChanged(listener);
     await vi.waitFor(() => expect(eventController).toBeDefined());
+    expect(requestedUrls).toContain("https://caplets.example.com/api/v1/attach/events");
     eventController!.enqueue(
       encoder.encode('event: manifest_changed\ndata: {"revision":"rev-2"}\n\n'),
     );
@@ -825,7 +841,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const remote = createSdkRemoteCapletsClient({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: {},
         fetch: fetchStub,
         auth: { enabled: false, user: "caplets" },
@@ -867,7 +883,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const remoteOptions = () => ({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: { headers: { authorization: `Bearer ${token}` } },
         fetch: fetchStub,
         auth: { enabled: false, user: "caplets" } as const,
@@ -902,7 +918,7 @@ describe("RemoteNativeCapletsService", () => {
         throw error;
       });
       const remote = createSdkRemoteCapletsClient({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: {},
         fetch: vi.fn(async () => Response.json(attachManifest("rev-1", "export-1"))),
         auth: { enabled: false, user: "caplets" },
@@ -937,7 +953,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const remote = createSdkRemoteCapletsClient({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: {},
         fetch: fetchStub as typeof fetch,
         auth: { enabled: false, user: "caplets" },
@@ -969,7 +985,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const remote = createSdkRemoteCapletsClient({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: {},
         fetch: fetchStub as typeof fetch,
         auth: { enabled: false, user: "caplets" },
@@ -1006,7 +1022,7 @@ describe("RemoteNativeCapletsService", () => {
       );
     });
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -1019,15 +1035,15 @@ describe("RemoteNativeCapletsService", () => {
     });
 
     expect(requests.map((request) => request.url)).toEqual([
-      "https://caplets.example.com/v1/attach/manifest",
-      "https://caplets.example.com/v1/attach/invoke",
+      "https://caplets.example.com/api/v1/attach/manifest",
+      "https://caplets.example.com/api/v1/attach/invoke",
     ]);
     await remote.close();
   });
 
   it("preserves the source Caplet ID for remote direct-tool shadowing", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1050,7 +1066,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("uses attached direct tool schemas instead of progressive operation args", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1082,7 +1098,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("surfaces direct MCP resources and prompts as native primitive tools", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1115,7 +1131,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("surfaces completion-only manifest entries as native primitive tools", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1155,7 +1171,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("upgrades primitive tool shadowing when a later manifest entry uses namespace", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1195,7 +1211,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("passes prompt argument metadata through attached prompt lists", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1223,7 +1239,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("passes resource metadata through attached primitive lists", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1263,7 +1279,7 @@ describe("RemoteNativeCapletsService", () => {
   it("falls back to exact direct tool exports when names end with primitive suffixes", async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input, init) => {
         const url = String(input);
@@ -1314,7 +1330,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("does not overwrite real direct tools with generated primitive tools", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1369,7 +1385,7 @@ describe("RemoteNativeCapletsService", () => {
   it("invokes the direct resource template matching the requested resource URI", async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input, init) => {
         const url = String(input);
@@ -1468,7 +1484,7 @@ describe("RemoteNativeCapletsService", () => {
       return Response.json({ ok: true, data: { retried: true } });
     });
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: fetchStub,
       auth: { enabled: false, user: "caplets" },
@@ -1483,10 +1499,10 @@ describe("RemoteNativeCapletsService", () => {
     });
 
     expect(requests.map((request) => request.url)).toEqual([
-      "https://caplets.example.com/v1/attach/manifest",
-      "https://caplets.example.com/v1/attach/invoke",
-      "https://caplets.example.com/v1/attach/manifest",
-      "https://caplets.example.com/v1/attach/invoke",
+      "https://caplets.example.com/api/v1/attach/manifest",
+      "https://caplets.example.com/api/v1/attach/invoke",
+      "https://caplets.example.com/api/v1/attach/manifest",
+      "https://caplets.example.com/api/v1/attach/invoke",
     ]);
     expect(requests.at(-1)?.body).toMatchObject({
       revision: "rev-2",
@@ -1497,7 +1513,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("advertises the Code Mode run input schema for attached Code Mode", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1553,7 +1569,7 @@ describe("RemoteNativeCapletsService", () => {
 
   it("preserves non-JSON attach invoke HTTP status for auth classification", async () => {
     const remote = createSdkRemoteCapletsClient({
-      url: new URL("https://caplets.example.com/v1/attach"),
+      origin: new URL("https://caplets.example.com"),
       requestInit: {},
       fetch: vi.fn(async (input) => {
         if (String(input).endsWith("/manifest")) {
@@ -1567,14 +1583,13 @@ describe("RemoteNativeCapletsService", () => {
     const service = new RemoteNativeCapletsService({
       client: remote,
       pollIntervalMs: 60_000,
-      authKind: "hosted_cloud",
     });
 
     await service.reload();
 
     await expect(service.execute("remote", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: "Caplets Cloud authentication failed; run caplets remote login <cloud-url>.",
+      message: "Remote Caplets authentication failed; run caplets remote login <url>.",
     });
     await service.close();
   });
@@ -1866,7 +1881,7 @@ describe("RemoteNativeCapletsService", () => {
         return Response.json({ ok: true });
       });
       const remoteOptions = () => ({
-        url: new URL("https://caplets.example.com/v1/attach"),
+        origin: new URL("https://caplets.example.com"),
         requestInit: { headers: { authorization: `Bearer ${token}` } },
         fetch: fetchStub,
         auth: { enabled: false, user: "caplets" } as const,
@@ -1997,13 +2012,13 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("loads self-hosted native remote credentials from a saved Remote Profile", async () => {
+  it("loads native remote credentials from a saved Remote Profile", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
     await new FileRemoteProfileStore({
       root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    }).saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2017,7 +2032,7 @@ describe("createNativeCapletsService remote mode", () => {
       mode: "remote",
       authDir,
       remote: {
-        url: "https://caplets.example.com/caplets",
+        url: "https://caplets.example.com",
         fetch: (async (_input, init) => {
           authorizationHeaders.push(new Headers(init?.headers).get("authorization"));
           return Response.json(attachManifest("rev-1", "export-1"));
@@ -2032,54 +2047,12 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("preserves configured Cloud workspace when resolving profile-backed native remotes", async () => {
-    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-cloud-auth-"));
-    dirs.push(authDir);
-    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "workspace_team",
-      workspaceSlug: "team",
-      credentials: {
-        accessToken: "cloud-access-token",
-        refreshToken: "cloud-refresh-token",
-        expiresAt: "2099-06-19T12:00:00.000Z",
-        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-        tokenType: "Bearer",
-      },
-    });
-    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
-    const manifestUrls: string[] = [];
-    const service = createNativeCapletsService({
-      mode: "cloud",
-      authDir,
-      remote: {
-        url: "https://cloud.caplets.dev",
-        workspace: "team",
-        fetch: (async (input, init) => {
-          manifestUrls.push(String(input));
-          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer cloud-access-token");
-          return Response.json(attachManifest("rev-1", "export-1"));
-        }) as typeof fetch,
-      },
-    });
-
-    try {
-      await service.reload();
-
-      expect(manifestUrls).toContain("https://cloud.caplets.dev/v1/ws/team/attach/manifest");
-      expect(configuredCapletIds(service.listTools())).toContain("remote");
-    } finally {
-      await service.close();
-    }
-  });
-
-  it("refreshes saved self-hosted native remote credentials before reloading", async () => {
+  it("refreshes saved native remote credentials before reloading", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
     const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2093,9 +2066,9 @@ describe("createNativeCapletsService remote mode", () => {
       mode: "remote",
       authDir,
       remote: {
-        url: "https://caplets.example.com/caplets",
+        url: "https://caplets.example.com",
         fetch: (async (input, init) => {
-          if (String(input).endsWith("/v1/remote/refresh")) {
+          if (String(input).endsWith("/api/v1/remote/refresh")) {
             return Response.json({
               clientId: "client_123",
               clientLabel: "Native Test",
@@ -2111,8 +2084,8 @@ describe("createNativeCapletsService remote mode", () => {
     });
 
     await service.reload();
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2132,8 +2105,8 @@ describe("createNativeCapletsService remote mode", () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
     const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2146,10 +2119,10 @@ describe("createNativeCapletsService remote mode", () => {
       mode: "remote",
       authDir,
       remote: {
-        url: "https://caplets.example.com/caplets",
+        url: "https://caplets.example.com",
         fetch: (async (input, init) => {
           const url = String(input);
-          if (url.endsWith("/v1/remote/refresh")) {
+          if (url.endsWith("/api/v1/remote/refresh")) {
             return Response.json({
               clientId: "client_123",
               clientLabel: "Native Test",
@@ -2172,8 +2145,8 @@ describe("createNativeCapletsService remote mode", () => {
     await service.reload();
     const emitted = new Array<string[][]>();
     service.onToolsChanged((tools) => emitted.push(configuredCapletTitles(tools)));
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2193,8 +2166,8 @@ describe("createNativeCapletsService remote mode", () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
     const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveSelfHostedProfile({
-      hostUrl: "http://127.0.0.1:5387",
+    await store.saveRemoteProfile({
+      origin: "http://127.0.0.1:5387",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2207,11 +2180,11 @@ describe("createNativeCapletsService remote mode", () => {
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
-        if (url.pathname.endsWith("/v1/attach/sessions") && init?.method === "POST") {
+        if (url.pathname.endsWith("/api/v1/attach/sessions") && init?.method === "POST") {
           return Response.json({ sessionId: "attach_session_1" }, { status: 201 });
         }
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
           sessionStarts += 1;
@@ -2251,8 +2224,8 @@ describe("createNativeCapletsService remote mode", () => {
 
     await service.reload();
     await vi.waitFor(() => expect(sessionStarts).toBe(1));
-    await store.saveSelfHostedProfile({
-      hostUrl: "http://127.0.0.1:5387",
+    await store.saveRemoteProfile({
+      origin: "http://127.0.0.1:5387",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2269,7 +2242,7 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("does not start replacement presence when closed during remote replacement", async () => {
+  it("does not start replacement Project Binding when closed during remote replacement", async () => {
     const fixture = client([{ name: "alpha", title: "Alpha" }]);
     const previousCloseStarted = deferred();
     const releasePreviousClose = deferred();
@@ -2292,7 +2265,8 @@ describe("createNativeCapletsService remote mode", () => {
     }) as NativeCapletsService & {
       replaceRemote(
         remote: NativeCapletsService,
-        presence?: ProjectBindingSessionAdapter,
+        remoteIdentity: string,
+        projectBinding?: ProjectBindingSessionAdapter,
       ): Promise<boolean>;
     };
     const replacement = {
@@ -2302,29 +2276,29 @@ describe("createNativeCapletsService remote mode", () => {
       onToolsChanged: vi.fn(() => () => undefined),
       close: vi.fn(async () => undefined),
     };
-    const replacementPresence = {
+    const replacementProjectBinding = {
       start: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
       updateAllowedCapletIds: vi.fn(async () => undefined),
       dispose: vi.fn(),
     } satisfies ProjectBindingSessionAdapter;
 
-    const replacing = service.replaceRemote(replacement, replacementPresence);
+    const replacing = service.replaceRemote(replacement, "replacement", replacementProjectBinding);
     await previousCloseStarted.promise;
     const closing = service.close();
     releasePreviousClose.resolve();
     await Promise.all([replacing, closing]);
 
-    expect(replacementPresence.dispose).toHaveBeenCalledTimes(1);
-    expect(replacementPresence.start).not.toHaveBeenCalled();
+    expect(replacementProjectBinding.dispose).toHaveBeenCalledTimes(1);
+    expect(replacementProjectBinding.start).not.toHaveBeenCalled();
   });
 
   it("does not create a profile-backed delegate when closed while resolving credentials", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
     const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2348,10 +2322,10 @@ describe("createNativeCapletsService remote mode", () => {
       mode: "remote",
       authDir,
       remote: {
-        url: "https://caplets.example.com/caplets",
+        url: "https://caplets.example.com",
         fetch: (async (input) => {
           const url = String(input);
-          if (url.endsWith("/v1/remote/refresh")) {
+          if (url.endsWith("/api/v1/remote/refresh")) {
             refreshStarted.resolve();
             await releaseRefresh.promise;
             return Response.json({
@@ -2379,14 +2353,14 @@ describe("createNativeCapletsService remote mode", () => {
     expect(manifestRequests).toEqual([]);
   });
 
-  it("refreshes saved self-hosted native remote credentials before executing", async () => {
+  it("refreshes saved native remote credentials before executing", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-06-19T12:00:00.000Z"));
     const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2401,10 +2375,10 @@ describe("createNativeCapletsService remote mode", () => {
       mode: "remote",
       authDir,
       remote: {
-        url: "https://caplets.example.com/caplets",
+        url: "https://caplets.example.com",
         fetch: (async (input, init) => {
           const url = String(input);
-          if (url.endsWith("/v1/remote/refresh")) {
+          if (url.endsWith("/api/v1/remote/refresh")) {
             refreshCalls += 1;
             return Response.json({
               clientId: "client_123",
@@ -2450,7 +2424,7 @@ describe("createNativeCapletsService remote mode", () => {
     const service = createNativeCapletsService({
       mode: "remote",
       authDir,
-      remote: { url: "https://caplets.example.com/caplets" },
+      remote: { url: "https://caplets.example.com" },
       localServiceFactory: vi.fn(() => localService),
     });
 
@@ -2463,8 +2437,8 @@ describe("createNativeCapletsService remote mode", () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
     const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2485,9 +2459,9 @@ describe("createNativeCapletsService remote mode", () => {
       mode: "remote",
       authDir,
       remote: {
-        url: "https://caplets.example.com/caplets",
+        url: "https://caplets.example.com",
         fetch: (async (input) => {
-          if (String(input).endsWith("/v1/remote/refresh")) {
+          if (String(input).endsWith("/api/v1/remote/refresh")) {
             return Response.json({ ok: false }, { status: 401 });
           }
           return Response.json(attachManifest("rev-1", "export-1"));
@@ -2496,8 +2470,8 @@ describe("createNativeCapletsService remote mode", () => {
       localServiceFactory: vi.fn(() => localService),
     });
     await service.reload();
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "client_123",
       clientLabel: "Native Test",
       credentials: {
@@ -2824,7 +2798,7 @@ describe("createNativeCapletsService remote mode", () => {
       return Response.json({ ok: true });
     });
     const outerRemoteClient = createSdkRemoteCapletsClient({
-      url: new URL("http://127.0.0.1:5387/v1/attach"),
+      origin: new URL("http://127.0.0.1:5387"),
       requestInit: {},
       fetch: outerFetch,
       auth: { enabled: false, user: "caplets" },
@@ -2912,7 +2886,7 @@ describe("createNativeCapletsService remote mode", () => {
       return Response.json({ ok: true });
     });
     const outerRemoteClient = createSdkRemoteCapletsClient({
-      url: new URL("http://127.0.0.1:5387/v1/attach"),
+      origin: new URL("http://127.0.0.1:5387"),
       requestInit: {},
       fetch: outerFetch,
       auth: { enabled: false, user: "caplets" },
@@ -2950,7 +2924,7 @@ describe("createNativeCapletsService remote mode", () => {
       namespaceAliases: {
         local: "mac",
         upstreams: {
-          "http://127.0.0.1:5387/v1/attach": "vps",
+          "http://127.0.0.1:5387": "vps",
         },
       },
       mcpServers: {
@@ -3583,18 +3557,13 @@ describe("createNativeCapletsService remote mode", () => {
       watch: false,
     });
     const app = createHttpServeApp(httpOptions(), remoteEngine, { writeErr: () => {} });
-    const fetchFromApp: typeof fetch = async (input, init) => {
-      const request = new Request(input, init);
-      const headers = new Headers(request.headers);
-      headers.set("host", new URL(request.url).host);
-      return app.fetch(new Request(request, { headers }));
-    };
+    const fetchFromApp: typeof fetch = async (input, init) => app.fetch(new Request(input, init));
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-code-mode-auth-"));
     dirs.push(authDir);
     await new FileRemoteProfileStore({
       root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "http://127.0.0.1:5387",
+    }).saveRemoteProfile({
+      origin: "http://127.0.0.1:5387",
       clientId: "client_123",
       clientLabel: "Native Code Mode Test",
       credentials: {
@@ -3875,37 +3844,6 @@ describe("createNativeCapletsService remote mode", () => {
     }
   });
 
-  it("starts Cloud Project Binding when native service runs in cloud mode", async () => {
-    const path = tempCloudAuthPath();
-    vi.stubEnv("CAPLETS_CLOUD_AUTH_PATH", path);
-    await new CloudAuthStore({ path }).save(hostedCredentials({ accessToken: "cloud-access" }));
-    const factory = vi.fn(() => client([{ name: "remote", description: "Remote" }]).api);
-    const { dir, configPath, projectConfigPath } = tempConfig({
-      mcpServers: {
-        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
-      },
-    });
-    dirs.push(dir);
-
-    const service = createNativeCapletsService({
-      mode: "cloud",
-      remote: { url: "https://cloud.caplets.dev/v1/ws/personal/mcp" },
-      remoteClientFactory: factory,
-      configPath,
-      projectConfigPath,
-    });
-
-    await service.reload();
-    expect(service.listTools().map((tool) => tool.caplet)).toContain("remote");
-    expect(factory).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: new URL("https://cloud.caplets.dev/v1/ws/personal/attach"),
-        requestInit: { headers: { Authorization: "Bearer cloud-access" } },
-      }),
-    );
-    await service.close();
-  });
-
   it("picks up valid local overlay additions when existing warnings are unchanged", async () => {
     const fixture = client([{ name: "remote", title: "Remote" }]);
     const writeErr = vi.fn();
@@ -4038,82 +3976,13 @@ describe("createNativeCapletsService remote mode", () => {
     vi.useRealTimers();
   });
 
-  it("registers and tears down local presence in cloud remote mode", async () => {
-    const fixture = client();
-    const fetch = vi.fn(
-      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-        const url = new URL(input.toString());
-        if (url.pathname.endsWith("/api/project-bindings") && init?.method === "POST") {
-          return Response.json({
-            binding: { bindingId: "presence_1" },
-          });
-        }
-        if (url.pathname.endsWith("/api/project-bindings/presence_1") && init?.method === "PATCH") {
-          return Response.json({
-            binding: { bindingId: "presence_1" },
-          });
-        }
-        return new Response("not found", { status: 404 });
-      },
-    );
-    const { dir, configPath, projectConfigPath } = tempConfig({
-      mcpServers: {
-        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
-      },
-    });
-    dirs.push(dir);
-
-    const service = createNativeCapletsService({
-      mode: "remote",
-      remote: {
-        url: "http://127.0.0.1:5387",
-        fetch,
-        cloud: {
-          url: "https://cloud.caplets.dev",
-          accessToken: "token",
-          workspaceId: "ws_1",
-          projectRoot: dirname(dirname(projectConfigPath)),
-          heartbeatIntervalMs: 60_000,
-        },
-      },
-      remoteClientFactory: vi.fn(() => fixture.api),
-      configPath,
-      projectConfigPath,
-    });
-
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.any(URL), expect.anything()));
-    await service.close();
-
-    const projectBindingBodies = fetch.mock.calls
-      .map(([, init]) => init?.body)
-      .filter((body): body is string => typeof body === "string")
-      .map(
-        (body) =>
-          JSON.parse(body) as {
-            projectFiles?: Array<{ path: string; content: string }>;
-            allowedCapletIds?: string[];
-          },
-      );
-    expect(projectBindingBodies[0]?.projectFiles).toEqual([
-      { path: ".caplets/config.json", content: "{}" },
-    ]);
-    expect(projectBindingBodies[0]?.allowedCapletIds).toEqual(["code_mode", "local"]);
-    expect(fetch).toHaveBeenCalledWith(
-      new URL("https://cloud.caplets.dev/api/project-bindings/presence_1"),
-      expect.objectContaining({
-        method: "PATCH",
-        body: JSON.stringify({ state: "offline" }),
-      }),
-    );
-  });
-
-  it("starts and tears down upstream Project Binding for self-hosted remote sessions", async () => {
+  it("starts and tears down upstream Project Binding for remote sessions", async () => {
     const fixture = client();
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
           const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -4136,7 +4005,7 @@ describe("createNativeCapletsService remote mode", () => {
           return Response.json({ ok: true });
         }
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/binding_1/session") &&
           init?.method === "DELETE"
         ) {
           return Response.json({ ok: true });
@@ -4166,7 +4035,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await vi.waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        new URL("http://127.0.0.1:5387/v1/attach/project-bindings/sessions"),
+        new URL("http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions"),
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -4181,7 +4050,7 @@ describe("createNativeCapletsService remote mode", () => {
       projectFingerprint: expect.any(String),
     });
     expect(fetch).toHaveBeenCalledWith(
-      new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
+      new URL("http://127.0.0.1:5387/api/v1/attach/project-bindings/binding_1/session"),
       expect.objectContaining({ method: "DELETE" }),
     );
   });
@@ -4216,14 +4085,14 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("retries self-hosted Project Binding registration after an initial failure", async () => {
+  it("retries remote Project Binding registration after an initial failure", async () => {
     const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
     let bindingAvailable = false;
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
           if (!bindingAvailable) {
@@ -4238,7 +4107,7 @@ describe("createNativeCapletsService remote mode", () => {
           );
         }
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/binding_1/session") &&
           init?.method === "DELETE"
         ) {
           return Response.json({ ok: true });
@@ -4273,26 +4142,27 @@ describe("createNativeCapletsService remote mode", () => {
       expect(
         fetch.mock.calls.filter(
           ([input, init]) =>
-            new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-            init?.method === "POST",
+            new URL(input.toString()).pathname.endsWith(
+              "/api/v1/attach/project-bindings/sessions",
+            ) && init?.method === "POST",
         ),
       ).toHaveLength(2),
     );
     await service.close();
 
     expect(fetch).toHaveBeenCalledWith(
-      new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
+      new URL("http://127.0.0.1:5387/api/v1/attach/project-bindings/binding_1/session"),
       expect.objectContaining({ method: "DELETE" }),
     );
   });
 
-  it("stops retrying self-hosted Project Binding when upstream reports unsupported capability", async () => {
+  it("stops retrying remote Project Binding when upstream reports unsupported capability", async () => {
     const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
           return Response.json(
@@ -4300,8 +4170,7 @@ describe("createNativeCapletsService remote mode", () => {
               ok: false,
               error: {
                 code: "UNSUPPORTED_CAPABILITY",
-                message:
-                  "Self-hosted Project Binding sessions are not implemented by this runtime.",
+                message: "Remote Project Binding sessions are not implemented by this runtime.",
               },
             },
             { status: 501 },
@@ -4330,8 +4199,9 @@ describe("createNativeCapletsService remote mode", () => {
       expect(
         fetch.mock.calls.filter(
           ([input, init]) =>
-            new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-            init?.method === "POST",
+            new URL(input.toString()).pathname.endsWith(
+              "/api/v1/attach/project-bindings/sessions",
+            ) && init?.method === "POST",
         ),
       ).toHaveLength(1),
     );
@@ -4341,7 +4211,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(
       fetch.mock.calls.filter(
         ([input, init]) =>
-          new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          new URL(input.toString()).pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST",
       ),
     ).toHaveLength(1);
@@ -4349,13 +4219,13 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("reports unsupported capability errors that do not match self-hosted Project Binding support", async () => {
+  it("reports unrelated unsupported capability errors", async () => {
     const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
           return Response.json(
@@ -4398,15 +4268,16 @@ describe("createNativeCapletsService remote mode", () => {
       expect(
         fetch.mock.calls.filter(
           ([input, init]) =>
-            new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-            init?.method === "POST",
+            new URL(input.toString()).pathname.endsWith(
+              "/api/v1/attach/project-bindings/sessions",
+            ) && init?.method === "POST",
         ),
       ).toHaveLength(2),
     );
     await service.close();
   });
 
-  it("re-registers self-hosted Project Binding after heartbeat failure", async () => {
+  it("re-registers remote Project Binding after heartbeat failure", async () => {
     vi.useFakeTimers();
     try {
       const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
@@ -4416,7 +4287,7 @@ describe("createNativeCapletsService remote mode", () => {
         async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
           const url = new URL(input.toString());
           if (
-            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
             init?.method === "POST"
           ) {
             sessionCount += 1;
@@ -4467,145 +4338,6 @@ describe("createNativeCapletsService remote mode", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("updates local presence after local overlay reload changes the Caplet set", async () => {
-    const fixture = client();
-    const fetch = vi.fn(
-      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-        const url = new URL(input.toString());
-        if (url.pathname.endsWith("/api/project-bindings") && init?.method === "POST") {
-          return Response.json({
-            binding: { bindingId: "presence_1" },
-          });
-        }
-        if (url.pathname.endsWith("/api/project-bindings/presence_1") && init?.method === "PATCH") {
-          return Response.json({
-            binding: { bindingId: "presence_1" },
-          });
-        }
-        return new Response("not found", { status: 404 });
-      },
-    );
-    const { dir, configPath, projectConfigPath } = tempConfig({});
-    dirs.push(dir);
-    const service = createNativeCapletsService({
-      mode: "remote",
-      remote: {
-        url: "http://127.0.0.1:5387",
-        fetch,
-        cloud: {
-          url: "https://cloud.caplets.dev",
-          accessToken: "token",
-          workspaceId: "ws_1",
-          projectRoot: dirname(dirname(projectConfigPath)),
-        },
-      },
-      remoteClientFactory: vi.fn(() => fixture.api),
-      configPath,
-      projectConfigPath,
-    });
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.any(URL), expect.anything()));
-
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        mcpServers: {
-          local: { name: "Local", description: "Local Caplet.", command: process.execPath },
-        },
-      }),
-      "utf8",
-    );
-    await service.reload();
-
-    expect(fetch).toHaveBeenCalledWith(
-      new URL("https://cloud.caplets.dev/api/project-bindings"),
-      expect.objectContaining({ method: "POST" }),
-    );
-    await service.close();
-  });
-
-  it("updates binding IDs from resolved local watches and retains the last accepted IDs on failed reload", async () => {
-    const fixture = client();
-    const localListeners = new Set<(tools: NativeCapletTool[]) => void>();
-    const localTool = (caplet: string): NativeCapletTool => ({
-      caplet,
-      toolName: caplet,
-      title: caplet,
-      description: caplet,
-      promptGuidance: [],
-    });
-    let localTools: NativeCapletTool[] = [];
-    let localReloadSucceeds = true;
-    const localService: NativeCapletsService = {
-      listTools: () => localTools,
-      execute: vi.fn(async () => undefined),
-      reload: vi.fn(async () => localReloadSucceeds),
-      onToolsChanged: (listener) => {
-        localListeners.add(listener);
-        return () => localListeners.delete(listener);
-      },
-      close: vi.fn(async () => undefined),
-    };
-    const registrations: string[][] = [];
-    const updates: string[][] = [];
-    const fetch = vi.fn(
-      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-        const url = new URL(input.toString());
-        const body = JSON.parse(String(init?.body ?? "{}")) as { allowedCapletIds?: string[] };
-        if (url.pathname.endsWith("/api/project-bindings") && init?.method === "POST") {
-          registrations.push(body.allowedCapletIds ?? []);
-          return Response.json({ binding: { bindingId: "presence_1" } });
-        }
-        if (url.pathname.endsWith("/api/project-bindings/presence_1") && init?.method === "PATCH") {
-          if (body.allowedCapletIds) updates.push(body.allowedCapletIds);
-          return Response.json({ binding: { bindingId: "presence_1" } });
-        }
-        return new Response("not found", { status: 404 });
-      },
-    );
-    const { dir, configPath, projectConfigPath } = tempConfig({});
-    dirs.push(dir);
-    const service = createNativeCapletsService({
-      mode: "remote",
-      remote: {
-        url: "http://127.0.0.1:5387",
-        fetch,
-        cloud: {
-          url: "https://cloud.caplets.dev",
-          accessToken: "token",
-          workspaceId: "ws_1",
-          projectRoot: dirname(dirname(projectConfigPath)),
-        },
-      },
-      remoteClientFactory: vi.fn(() => fixture.api),
-      localServiceFactory: vi.fn(() => localService),
-      configPath,
-      projectConfigPath,
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    localTools = [localTool("alpha")];
-    for (const listener of localListeners) listener(localTools);
-
-    await vi.waitFor(() => expect(registrations).toEqual([["alpha"]]));
-    localTools = [localTool("bravo")];
-    for (const listener of localListeners) listener(localTools);
-    await vi.waitFor(() => expect(updates).toEqual([["bravo"]]));
-    for (const listener of localListeners) listener(localTools);
-    await Promise.resolve();
-
-    expect(updates).toEqual([["bravo"]]);
-
-    localTools = [localTool("charlie")];
-    localReloadSucceeds = false;
-    await service.reload();
-    expect(updates).toEqual([["bravo"]]);
-
-    localReloadSucceeds = true;
-    await service.reload();
-    await vi.waitFor(() => expect(updates).toEqual([["bravo"], ["charlie"]]));
-    await service.close();
   });
 
   it("restores the current remote subscription and closes an uncommitted remote after old cleanup fails", async () => {
@@ -4664,13 +4396,13 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("silently latches the exact legacy unsupported binding error during replacement", async () => {
+  it("silently latches the exact remote unsupported binding error during replacement", async () => {
     const fixture = client();
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
           return Response.json(
@@ -4685,7 +4417,7 @@ describe("createNativeCapletsService remote mode", () => {
           return Response.json({ ok: true });
         }
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/binding_1/session") &&
           init?.method === "DELETE"
         ) {
           return Response.json({ ok: true });
@@ -4717,7 +4449,7 @@ describe("createNativeCapletsService remote mode", () => {
       start: vi.fn(async () => {
         throw new CapletsError(
           "UNSUPPORTED_CAPABILITY",
-          "Self-hosted Project Binding sessions are not implemented by this runtime.",
+          "Remote Project Binding sessions are not implemented by this runtime.",
         );
       }),
       updateAllowedCapletIds: vi.fn(async () => undefined),
@@ -4728,7 +4460,7 @@ describe("createNativeCapletsService remote mode", () => {
       replaceRemote(
         remote: NativeCapletsService,
         remoteIdentity: string,
-        presence: ProjectBindingSessionAdapter,
+        projectBinding: ProjectBindingSessionAdapter,
       ): Promise<boolean>;
     };
 
@@ -4736,8 +4468,9 @@ describe("createNativeCapletsService remote mode", () => {
       expect(
         fetch.mock.calls.some(
           ([input, init]) =>
-            new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-            init?.method === "POST",
+            new URL(input.toString()).pathname.endsWith(
+              "/api/v1/attach/project-bindings/sessions",
+            ) && init?.method === "POST",
         ),
       ).toBe(true),
     );
@@ -4750,7 +4483,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(replacementClose).toHaveBeenCalledOnce();
   });
 
-  it("disconnects and re-registers self-hosted bindings after a heartbeat rejection", async () => {
+  it("disconnects and re-registers remote bindings after a heartbeat rejection", async () => {
     const fixture = client();
     const sessionBodies: string[] = [];
     let sessionCount = 0;
@@ -4759,7 +4492,7 @@ describe("createNativeCapletsService remote mode", () => {
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
         if (
-          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
           init?.method === "POST"
         ) {
           sessionCount += 1;
@@ -4822,7 +4555,7 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("keeps cleanup IDs through an in-flight self-hosted heartbeat failure during close", async () => {
+  it("keeps cleanup IDs through an in-flight remote heartbeat failure during close", async () => {
     vi.useFakeTimers();
     try {
       const fixture = client();
@@ -4833,7 +4566,7 @@ describe("createNativeCapletsService remote mode", () => {
         async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
           const url = new URL(input.toString());
           if (
-            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
             init?.method === "POST"
           ) {
             return Response.json(
@@ -4850,7 +4583,7 @@ describe("createNativeCapletsService remote mode", () => {
             return new Response("expired", { status: 503 });
           }
           if (
-            url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+            url.pathname.endsWith("/api/v1/attach/project-bindings/binding_1/session") &&
             init?.method === "DELETE"
           ) {
             deleteCalls += 1;
@@ -4874,8 +4607,9 @@ describe("createNativeCapletsService remote mode", () => {
         expect(
           fetch.mock.calls.some(
             ([input, init]) =>
-              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-              init?.method === "POST",
+              new URL(input.toString()).pathname.endsWith(
+                "/api/v1/attach/project-bindings/sessions",
+              ) && init?.method === "POST",
           ),
         ).toBe(true),
       );
@@ -4891,7 +4625,7 @@ describe("createNativeCapletsService remote mode", () => {
     }
   });
 
-  it("times out a stalled self-hosted heartbeat and releases re-registration and close", async () => {
+  it("times out a stalled remote heartbeat and releases re-registration and close", async () => {
     vi.useFakeTimers();
     try {
       const fixture = client();
@@ -4902,7 +4636,7 @@ describe("createNativeCapletsService remote mode", () => {
         async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
           const url = new URL(input.toString());
           if (
-            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
             init?.method === "POST"
           ) {
             sessionCount += 1;
@@ -4942,8 +4676,9 @@ describe("createNativeCapletsService remote mode", () => {
         expect(
           fetch.mock.calls.some(
             ([input, init]) =>
-              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-              init?.method === "POST",
+              new URL(input.toString()).pathname.endsWith(
+                "/api/v1/attach/project-bindings/sessions",
+              ) && init?.method === "POST",
           ),
         ).toBe(true),
       );
@@ -4970,7 +4705,7 @@ describe("createNativeCapletsService remote mode", () => {
         fetch.mock.calls.some(
           ([input, init]) =>
             new URL(input.toString()).pathname.endsWith(
-              "/v1/attach/project-bindings/binding_2/session",
+              "/api/v1/attach/project-bindings/binding_2/session",
             ) && init?.method === "DELETE",
         ),
       ).toBe(true);
@@ -4979,7 +4714,7 @@ describe("createNativeCapletsService remote mode", () => {
     }
   });
 
-  it("converges when a timed-out self-hosted DELETE later commits and retry gets 404", async () => {
+  it("converges when a timed-out remote DELETE later commits and retry gets 404", async () => {
     vi.useFakeTimers();
     try {
       const fixture = client();
@@ -4991,7 +4726,7 @@ describe("createNativeCapletsService remote mode", () => {
         async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
           const url = new URL(input.toString());
           if (
-            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
             init?.method === "POST"
           ) {
             return Response.json(
@@ -5002,7 +4737,7 @@ describe("createNativeCapletsService remote mode", () => {
               { status: 201 },
             );
           }
-          if (url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session")) {
+          if (url.pathname.endsWith("/api/v1/attach/project-bindings/binding_1/session")) {
             deleteCalls += 1;
             if (deleteCalls === 1) {
               deleteSignal = init?.signal ?? undefined;
@@ -5029,8 +4764,9 @@ describe("createNativeCapletsService remote mode", () => {
         expect(
           fetch.mock.calls.some(
             ([input, init]) =>
-              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-              init?.method === "POST",
+              new URL(input.toString()).pathname.endsWith(
+                "/api/v1/attach/project-bindings/sessions",
+              ) && init?.method === "POST",
           ),
         ).toBe(true),
       );
@@ -5050,7 +4786,7 @@ describe("createNativeCapletsService remote mode", () => {
     }
   });
 
-  it("coalesces self-hosted timer heartbeats while close remains the final mutation", async () => {
+  it("coalesces remote timer heartbeats while close remains the final mutation", async () => {
     vi.useFakeTimers();
     try {
       const fixture = client();
@@ -5073,7 +4809,7 @@ describe("createNativeCapletsService remote mode", () => {
         async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
           const url = new URL(input.toString());
           if (
-            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            url.pathname.endsWith("/api/v1/attach/project-bindings/sessions") &&
             init?.method === "POST"
           ) {
             return Response.json(
@@ -5091,7 +4827,7 @@ describe("createNativeCapletsService remote mode", () => {
             return Response.json({ ok: true });
           }
           if (
-            url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+            url.pathname.endsWith("/api/v1/attach/project-bindings/binding_1/session") &&
             init?.method === "DELETE"
           ) {
             deleteCalls += 1;
@@ -5117,8 +4853,9 @@ describe("createNativeCapletsService remote mode", () => {
         expect(
           fetch.mock.calls.some(
             ([input, init]) =>
-              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
-              init?.method === "POST",
+              new URL(input.toString()).pathname.endsWith(
+                "/api/v1/attach/project-bindings/sessions",
+              ) && init?.method === "POST",
           ),
         ).toBe(true),
       );
@@ -5181,7 +4918,7 @@ describe("createNativeCapletsService remote mode", () => {
   it("fails fast for invalid remote config", () => {
     expect(() =>
       createNativeCapletsService({ mode: "remote", remote: { url: "http://example.com" } }),
-    ).toThrow(/https/u);
+    ).toThrow(/loopback/u);
   });
 });
 
@@ -5269,7 +5006,7 @@ describe("NativeProjectBindingLifecycle", () => {
     await vi.waitFor(() => expect(updates).toEqual([["bravo"], ["charlie"]]));
   });
 
-  it("re-registers the newest accepted IDs after a self-hosted update disconnects", async () => {
+  it("re-registers the newest accepted IDs after a remote update disconnects", async () => {
     let active = false;
     const registrations: string[][] = [];
     const updates: string[][] = [];
@@ -5579,7 +5316,6 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     publicOrigin: undefined,
     auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: false,

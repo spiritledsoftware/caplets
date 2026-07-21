@@ -278,7 +278,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   function listHrefFromHistory(): string {
     const candidate = (window.history.state as Partial<CatalogHistoryState> | null)
       ?.catalogListHref;
-    return typeof candidate === "string" ? candidate : catalogListHref(window.location.pathname);
+    return typeof candidate === "string" ? candidate : catalogListHref();
   }
 
   function returnToList() {
@@ -306,7 +306,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
     window.history.pushState(
       { catalogListHref: origin } satisfies CatalogHistoryState,
       "",
-      catalogDetailHref(entry.entryKey, window.location.pathname),
+      catalogDetailHref(entry.entryKey),
     );
     setLocation({ mode: "detail", entryKey: entry.entryKey });
   }

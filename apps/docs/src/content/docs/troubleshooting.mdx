@@ -88,8 +88,7 @@ setup; project config is for capabilities that should travel with a repository.
 ### Serve defaults are not applying
 
 Expected symptom: `caplets serve --transport http` or `caplets daemon restart` still uses a
-different host, port, path, auth mode, or public origin than the `serve` block you edited.
-
+different host, port, auth mode, or public origin than the `serve` block you edited.
 Check the active user config path first:
 
 ```sh
@@ -100,6 +99,9 @@ The top-level `serve` block is respected only from user config. `.caplets/config
 cannot control local HTTP serving and is ignored with a warning for security. Command flags
 and environment variables also win over user config, so remove `--host`, `--port`,
 `CAPLETS_SERVER_URL`, or related overrides before expecting defaults to apply.
+
+`CAPLETS_SERVER_URL` must be a Current Host Origin such as `https://host.example`; non-root paths,
+queries, fragments, and embedded credentials are rejected. Route placement is not a serve default.
 
 For daemon changes, run:
 
@@ -206,7 +208,7 @@ Then run the repair command from `doctor`. For a missing grant it will look like
 caplets vault access grant GH_TOKEN github
 ```
 
-If the Caplet runs in a remote or Cloud runtime, target that runtime:
+If the Caplet runs in a generic remote Current Host, target that runtime:
 
 ```sh
 caplets vault access grant GH_TOKEN github --remote
@@ -222,61 +224,59 @@ Expected symptom: a tool result has a top-level `kind` of `local-artifact` or
 
 Binary downloads, Google media downloads, and oversized HTTP-like responses use Caplets media
 results. Local runtimes return `local-artifact`; read its `path` locally or pass its artifact URI
-back to another media-capable tool as `media.artifact`. Hosted runtimes return
-`remote-reference`; use its `uri` because hosted results intentionally do not expose filesystem
-paths. If you need a specific destination for a download, retry with `filename` or `outputPath`
-when the tool schema exposes those fields.
+back to another media-capable tool as `media.artifact`. Remote boundaries return
+`remote-reference`; use its `uri` because remote results do not expose filesystem path semantics. If
+you need a specific destination for a download, retry with `filename` or `outputPath` when the tool
+schema exposes those fields.
 
 ### Remote attach fails
 
 Expected symptom: remote mode starts, but attach cannot reach the runtime or authenticate.
 
-Confirm the remote environment:
+Confirm the generic Current Host selection:
 
 ```sh
-caplets remote login https://caplets.example.com/caplets
+caplets remote login https://caplets.example.com
+export CAPLETS_MODE=remote
+export CAPLETS_REMOTE_URL=https://caplets.example.com
 caplets doctor
-caplets attach https://caplets.example.com/caplets
+caplets attach https://caplets.example.com --once
 ```
 
-If the URL belongs to Caplets Cloud, log in through Remote Login and keep the Cloud URL
-selector consistent for that shell:
-
-```sh
-caplets remote login https://cloud.caplets.dev
-export CAPLETS_MODE=cloud
-export CAPLETS_REMOTE_URL=https://cloud.caplets.dev
-caplets attach --once
-```
-
-`caplets attach --once` validates the configured Project Binding WebSocket URL once and
+Current Host inputs contain only scheme, host, and optional port. A trailing root slash is
+normalized away; a non-root path, query, fragment, or embedded credential is rejected before
+network I/O. `caplets attach --once` validates the canonical Project Binding WebSocket URL once and
 exits.
+
+If a reverse proxy is involved, it must expose `/.well-known/caplets`, `/api`, exact `/mcp`, and
+`/dashboard` at the origin root and forward WebSocket upgrades at
+`/api/v1/attach/project-bindings/connect`. Prefix-only hosting is unsupported.
 
 If an old config uses `caplets attach --transport http` or attach HTTP bind flags, replace
 that server command with:
 
 ```sh
-caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+caplets serve --transport http --upstream-url https://caplets.example.com
 ```
 
 Keep MCP client configs on `caplets attach <url>`.
 
-### Attach URL or workspace is wrong
+### Attach origin is wrong
 
-Expected symptom: the agent connects to an unintended runtime or workspace.
+Expected symptom: the agent connects to an unintended Current Host or rejects the URL before
+connecting.
 
-Inspect the effective runtime selection rather than copying tokens or endpoint internals into
-agent configuration:
+Inspect the effective generic remote selection rather than copying tokens or endpoint internals
+into agent configuration:
 
 ```sh
 caplets remote status
 caplets doctor --json
-caplets attach <remote-url> --once
+caplets attach <current-host-origin> --once
 ```
 
-Correct `CAPLETS_MODE`, `CAPLETS_REMOTE_URL`, or `CAPLETS_REMOTE_WORKSPACE`, then restart the
-agent. Attach uses the runtime's `/v1/attach` API. Ordinary MCP clients that bypass attach use
-`/v1/mcp`; do not substitute one path for the other.
+Correct `CAPLETS_MODE` or the origin-only `CAPLETS_REMOTE_URL`, then restart the agent. Attach uses
+`/api/v1/attach/*`; ordinary Streamable HTTP MCP clients that bypass Attach use exact `/mcp`.
 
 ### Project Binding smoke check fails
 
@@ -291,12 +291,12 @@ ls .caplets/config.json
 caplets doctor
 ```
 
-Run the agent from the project root. Managed Project Binding currently runs through native Cloud
-sessions and native loopback daemon sessions that provide project context; ordinary CLI
-`caplets attach <url>` is only a thin MCP adapter, and self-hosted HTTPS native remotes do not
-currently establish a managed binding. Use `caplets attach <url> --once` only to validate the
-manifest policy and WebSocket endpoint. If the capability needs setup commands, run those listed
-in its `setup` metadata before asking the agent to call it.
+Run the agent from the project root. Managed Project Binding is available to native generic Current
+Host and loopback daemon sessions that provide project context when the host advertises support.
+Ordinary `caplets attach <origin>` is a thin MCP Adapter; use
+`caplets attach <origin> --once` only to validate manifest policy and the canonical WebSocket
+endpoint. If the capability needs setup commands, run those listed in its `setup` metadata before
+asking the agent to call it.
 
 See [Project Binding](/project-binding/) for exclusion rules, size limits, leases, and
 node-loss recovery.

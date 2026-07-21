@@ -55,7 +55,7 @@ import {
   type Client,
   type Problem,
 } from "@caplets/sdk";
-import type { RemoteCliRequest } from "../remote-control/types";
+import type { RemoteCliArguments } from "./types";
 import type { RemoteCliCommandAdapter } from "./client";
 import type { RemoteBundleDownload } from "./bundle";
 
@@ -75,7 +75,7 @@ type FieldsResult<T> =
 type SuccessfulFields<T> = { data: T; response?: Response };
 type RemoteVaultGrant = Omit<AdminVaultGrant, "resourceVersion">;
 
-/** Maps the frozen CLI intent vocabulary to generated Admin v2 operations and DTOs. */
+/** Maps stable CLI intent to generated Admin v2 operations and DTOs. */
 export function createRemoteAdminCommandAdapter(
   options: CreateRemoteAdminCommandAdapterOptions,
 ): RemoteAdminCommandAdapter {
@@ -269,11 +269,7 @@ export function createRemoteAdminCommandAdapter(
   };
 }
 
-async function refreshBackendAuth(
-  client: Client,
-  args: RemoteCliRequest["arguments"],
-  key: string,
-) {
+async function refreshBackendAuth(client: Client, args: RemoteCliArguments, key: string) {
   const serverId = requiredString(args, "server");
   const etag = await detailEtag(adminV2GetBackendAuth({ client, path: { serverId } }));
   const connection = requireResponseData(
@@ -290,7 +286,7 @@ async function refreshBackendAuth(
   return { server: connection.server };
 }
 
-async function deleteBackendAuth(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function deleteBackendAuth(client: Client, args: RemoteCliArguments, key: string) {
   const serverId = requiredString(args, "server");
   const etag = await detailEtag(adminV2GetBackendAuth({ client, path: { serverId } }));
   return (
@@ -304,7 +300,7 @@ async function deleteBackendAuth(client: Client, args: RemoteCliRequest["argumen
   ).data;
 }
 
-async function putVaultValue(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function putVaultValue(client: Client, args: RemoteCliArguments, key: string) {
   const storedKey = requiredString(args, "name");
   const value = requiredString(args, "value");
   const grant = typeof args.grant === "string" && args.grant.length > 0 ? args.grant : undefined;
@@ -376,7 +372,7 @@ async function vaultForceSetHeaders(client: Client, storedKey: string, key: stri
   return { "Idempotency-Key": key, "If-Match": etag };
 }
 
-async function deleteVaultValue(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function deleteVaultValue(client: Client, args: RemoteCliArguments, key: string) {
   const storedKey = requiredString(args, "name");
   const etag = await detailEtag(adminV2GetVaultValue({ client, path: { storedKey } }));
   return (
@@ -392,7 +388,7 @@ async function deleteVaultValue(client: Client, args: RemoteCliRequest["argument
 
 async function listVaultGrants(
   client: Client,
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
 ): Promise<AdminVaultGrant[]> {
   const storedKey = typeof args.name === "string" ? args.name : undefined;
   if (storedKey) {
@@ -416,7 +412,7 @@ async function listVaultGrants(
   );
 }
 
-async function putVaultGrant(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function putVaultGrant(client: Client, args: RemoteCliArguments, key: string) {
   const path = {
     storedKey: requiredString(args, "name"),
     capletId: requiredString(args, "capletId"),
@@ -452,7 +448,7 @@ async function putVaultGrant(client: Client, args: RemoteCliRequest["arguments"]
   return vaultGrant(grant);
 }
 
-async function revokeVaultGrants(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function revokeVaultGrants(client: Client, args: RemoteCliArguments, key: string) {
   const storedKey = requiredString(args, "name");
   const capletId = requiredString(args, "capletId");
   const referenceName =
@@ -514,7 +510,7 @@ function scopedRevokeIdempotencyKey(
 
 async function patchRecord(
   client: Client,
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
   body: { id?: string; historyLimit?: number | null },
   key: string,
 ) {
@@ -537,7 +533,7 @@ async function patchRecord(
   ).data;
 }
 
-async function deleteRecord(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function deleteRecord(client: Client, args: RemoteCliArguments, key: string) {
   const id = requiredString(args, "id");
   const etag = await generationCheckedEtag(
     adminV2GetCapletRecord({ client, path: { id } }),
@@ -556,7 +552,7 @@ async function deleteRecord(client: Client, args: RemoteCliRequest["arguments"],
   ).data;
 }
 
-async function restoreRevision(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function restoreRevision(client: Client, args: RemoteCliArguments, key: string) {
   const id = requiredString(args, "id");
   const etag = await generationCheckedEtag(
     adminV2GetCapletRecord({ client, path: { id } }),
@@ -576,7 +572,7 @@ async function restoreRevision(client: Client, args: RemoteCliRequest["arguments
   ).data;
 }
 
-async function deleteRevision(client: Client, args: RemoteCliRequest["arguments"], key: string) {
+async function deleteRevision(client: Client, args: RemoteCliArguments, key: string) {
   const id = requiredString(args, "id");
   const revisionKey = requiredString(args, "revisionKey");
   const parentEtag = await generationCheckedEtag(
@@ -630,11 +626,7 @@ async function listInstallationObservations(
   );
 }
 
-async function detachInstallation(
-  client: Client,
-  args: RemoteCliRequest["arguments"],
-  key: string,
-) {
+async function detachInstallation(client: Client, args: RemoteCliArguments, key: string) {
   const id = requiredString(args, "id");
   const active = (await listInstallations(client, id)).find((item) => item.status === "active");
   if (!active) throw new CapletsError("CONFIG_NOT_FOUND", "Active installation was not found.");
@@ -658,11 +650,7 @@ async function detachInstallation(
   ).data;
 }
 
-async function observeInstallation(
-  client: Client,
-  args: RemoteCliRequest["arguments"],
-  key: string,
-) {
+async function observeInstallation(client: Client, args: RemoteCliArguments, key: string) {
   const id = requiredString(args, "id");
   const active = (await listInstallations(client, id)).find((item) => item.status === "active");
   if (!active) throw new CapletsError("CONFIG_NOT_FOUND", "Active installation was not found.");
@@ -693,11 +681,7 @@ async function observeInstallation(
   ).data;
 }
 
-async function replaceInstallation(
-  client: Client,
-  args: RemoteCliRequest["arguments"],
-  key: string,
-) {
+async function replaceInstallation(client: Client, args: RemoteCliArguments, key: string) {
   const id = requiredString(args, "id");
   const requestedKey =
     typeof args.detachedInstallationKey === "string" ? args.detachedInstallationKey : undefined;
@@ -732,7 +716,7 @@ async function replaceInstallation(
 
 async function putRecordBundle(
   client: Client,
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
   key: string,
   create: boolean,
 ) {
@@ -785,7 +769,7 @@ async function putRecordBundle(
 
 async function getRecordBundle(
   client: Client,
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
 ): Promise<RemoteBundleDownload> {
   const id = requiredString(args, "id");
   const result =
@@ -814,7 +798,7 @@ async function getRecordBundle(
 }
 
 function bundleInstallation(
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
 ): { sourceKind: string; sourceIdentity: string; channel?: string } | undefined {
   const supplied =
     args.sourceKind !== undefined ||
@@ -928,7 +912,7 @@ async function collectPages<Item, Page extends { items: Item[]; nextCursor?: str
 
 async function generationCheckedEtag<T>(
   result: Promise<FieldsResult<T | undefined>>,
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
   generation: (detail: T) => number,
   resource: string,
 ): Promise<string> {
@@ -946,7 +930,7 @@ async function generationCheckedEtag<T>(
 }
 
 function assertGeneration(
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
   currentGeneration: number,
   resource: string,
 ): void {
@@ -1101,7 +1085,7 @@ function requireResponseData<T>(value: T | undefined): T {
   return value;
 }
 
-function requiredString(args: RemoteCliRequest["arguments"], key: string): string {
+function requiredString(args: RemoteCliArguments, key: string): string {
   const value = args[key];
   if (typeof value !== "string" || value.length === 0) {
     throw new CapletsError("REQUEST_INVALID", `Remote command requires ${key}.`);
@@ -1109,40 +1093,31 @@ function requiredString(args: RemoteCliRequest["arguments"], key: string): strin
   return value;
 }
 
-function optionalString(args: RemoteCliRequest["arguments"], key: string): Record<string, string> {
+function optionalString(args: RemoteCliArguments, key: string): Record<string, string> {
   const value = args[key];
   return typeof value === "string" && value.length > 0 ? { [key]: value } : {};
 }
 
 function optionalNullableString(
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
   key: string,
 ): Record<string, string | null> {
   const value = args[key];
   return value === null || typeof value === "string" ? { [key]: value } : {};
 }
 
-function optionalStringArray(
-  args: RemoteCliRequest["arguments"],
-  key: string,
-): Record<string, string[]> {
+function optionalStringArray(args: RemoteCliArguments, key: string): Record<string, string[]> {
   const value = args[key];
   return Array.isArray(value) && value.every((item) => typeof item === "string")
     ? { [key]: value }
     : {};
 }
 
-function optionalBoolean(
-  args: RemoteCliRequest["arguments"],
-  key: string,
-): Record<string, boolean> {
+function optionalBoolean(args: RemoteCliArguments, key: string): Record<string, boolean> {
   return typeof args[key] === "boolean" ? { [key]: args[key] } : {};
 }
 
-function nullableNonNegativeInteger(
-  args: RemoteCliRequest["arguments"],
-  key: string,
-): number | null {
+function nullableNonNegativeInteger(args: RemoteCliArguments, key: string): number | null {
   const value = args[key];
   if (value === null) return null;
   if (Number.isSafeInteger(value) && (value as number) >= 0) return value as number;

@@ -60,14 +60,14 @@ native-first run until a visible CLI telemetry notice has already been recorded.
 Remote native usage:
 
 ```sh
-caplets remote login https://caplets.example.com/caplets
-CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets opencode
+caplets remote login https://caplets.example.com
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com opencode
 ```
 
 ## Pi
 
 Pi can use Caplets through MCP or the native Pi integration. Native mode uses the same local,
-daemon, remote, and Cloud selection rules as OpenCode.
+daemon, and generic remote selection rules as OpenCode.
 
 ```sh
 caplets setup pi
@@ -83,23 +83,22 @@ native-first run until a visible CLI telemetry notice has already been recorded.
 
 OpenCode and Pi accept shared runtime selectors through integration settings or environment:
 
-| Mode     | Selection                                                                                            |
-| -------- | ---------------------------------------------------------------------------------------------------- |
-| `auto`   | Cloud for Cloud URLs, remote for other URLs, setup-written daemon defaults when present, then local. |
-| `local`  | Run Caplets in the agent process with user and project config.                                       |
-| `daemon` | Use the loopback runtime selected by `CAPLETS_DAEMON_URL`.                                           |
-| `remote` | Use the saved Remote Profile selected by `CAPLETS_REMOTE_URL`.                                       |
-| `cloud`  | Use the Cloud runtime selected by `CAPLETS_REMOTE_URL` and optional `CAPLETS_REMOTE_WORKSPACE`.      |
+| Mode     | Selection                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------- |
+| `auto`   | Use a configured generic remote, otherwise a setup-written daemon when present, then local. |
+| `local`  | Run Caplets in the agent process with user and project config.                              |
+| `daemon` | Use the loopback runtime selected by the origin-only `CAPLETS_DAEMON_URL`.                  |
+| `remote` | Use the saved generic Remote Profile selected by the origin-only `CAPLETS_REMOTE_URL`.      |
 
-Cloud native sessions and loopback daemon sessions with a project root can open
-[Project Binding](/project-binding/) for required Caplets. Self-hosted HTTPS native remotes do not
-currently establish that managed binding session; required project Caplets remain hidden.
+Generic Current Host and loopback daemon sessions that provide a project root can open
+[Project Binding](/project-binding/) when the host advertises support. Required project Caplets
+remain hidden until a managed binding is ready.
 
 Remote native usage:
 
 ```sh
-caplets remote login https://caplets.example.com/caplets
-CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets pi
+caplets remote login https://caplets.example.com
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com pi
 ```
 
 ## Other MCP clients
@@ -123,16 +122,17 @@ If you write config manually, keep the agent as a thin daemon client:
 }
 ```
 
-For remote-backed MCP, use `caplets attach <remote-url>` after `caplets remote login
-<remote-url>`. Agent configs should not contain Caplets remote tokens, passwords, or
-provider environment variables.
+For remote-backed MCP, use `caplets attach <current-host-origin>` after
+`caplets remote login <current-host-origin>`. The value must contain only scheme, host, and optional
+port; non-root paths, queries, fragments, and embedded credentials are rejected. Agent configs
+should not contain Caplets remote tokens, passwords, or provider environment variables.
 
-As an advanced manual fallback, `caplets serve` can still run a foreground HTTP or stdio
-runtime. If you want one local HTTP runtime to own environment, Vault, Remote Login,
-dashboard access, reloads, and logs while composing an upstream host, run:
+As an advanced alternative, `caplets serve` can run a foreground HTTP or stdio runtime. If you want
+one local HTTP runtime to own environment, Vault, Remote Login, dashboard access, reloads, and logs
+while composing an upstream Current Host, run:
 
 ```sh
-caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+caplets serve --transport http --upstream-url https://caplets.example.com
 ```
 
 Then configure the MCP client with `caplets attach <local-runtime-url>`. If you also need

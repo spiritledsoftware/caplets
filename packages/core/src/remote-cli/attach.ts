@@ -1,10 +1,10 @@
 import { CapletsError } from "../errors";
 import type { AttachManifest } from "../attach/api";
 import type { RemoteCapletsClient, RemoteCapletsTool } from "../native/remote";
-import type { RemoteCliCommand, RemoteCliRequest } from "../remote-control/types";
+import type { RemoteCliArguments, RemoteCliCommand } from "./types";
 
 export type RemoteAttachCommandAdapter = {
-  request(command: RemoteCliCommand, args: RemoteCliRequest["arguments"]): Promise<unknown>;
+  request(command: RemoteCliCommand, args: RemoteCliArguments): Promise<unknown>;
 };
 
 /** Routes the runtime-authoritative remote CLI commands through the native Attach client. */
@@ -51,7 +51,7 @@ export function capletRowsFromAttachManifest(
 
 export function completionSuggestionsFromAttachManifest(
   manifest: AttachManifest,
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
 ): string[] {
   return completionSuggestionsFromValues(
     [
@@ -73,10 +73,7 @@ function capletRowsFromTools(tools: RemoteCapletsTool[]): Array<Record<string, u
   );
 }
 
-function completionSuggestions(
-  tools: RemoteCapletsTool[],
-  args: RemoteCliRequest["arguments"],
-): string[] {
+function completionSuggestions(tools: RemoteCapletsTool[], args: RemoteCliArguments): string[] {
   return completionSuggestionsFromValues(
     tools.map((tool) => tool.name),
     tools.flatMap((tool) => (tool.capletId ? [tool.capletId] : [])),
@@ -114,7 +111,7 @@ function capletRows(
 function completionSuggestionsFromValues(
   toolNames: string[],
   capletIds: string[],
-  args: RemoteCliRequest["arguments"],
+  args: RemoteCliArguments,
 ): string[] {
   const words = Array.isArray(args.words)
     ? args.words.filter((word): word is string => typeof word === "string")

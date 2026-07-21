@@ -3,48 +3,44 @@ title: Remote Attach
 description: Connect an agent to a remote Caplets runtime.
 ---
 
-Use `caplets attach` when an agent should be a thin stdio client for a Caplets runtime.
-Daemon-first local setup points clients at the local Caplets daemon with `caplets attach
-<local-daemon-url>`; remote and Cloud setup use the same command shape with a remote URL.
-`caplets attach <url>` does not run an HTTP server.
+Use `caplets attach` when an agent should be a thin stdio client for a Current Host. Daemon-first
+local setup points clients at the local daemon with `caplets attach <local-daemon-origin>`; generic
+remote setup uses the same command shape with a Current Host Origin.
+`caplets attach <origin>` does not run an HTTP server.
 
-Use `caplets serve --transport http --upstream-url <url>` for a long-running stacked
-runtime that composes local user/global Caplets, per-session project Caplets, and an
-upstream Caplets host.
+Use `caplets serve --transport http --upstream-url <origin>` for a long-running stacked runtime
+that composes local user/global Caplets, per-session project Caplets, and an upstream Current Host.
 
 ## Modes
 
 Caplets native integrations use these shared runtime selection modes:
 
-| Mode     | Use it when                                                                                                                                      |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `local`  | The native integration should start local Caplets in-process against user and project config.                                                    |
-| `daemon` | The native integration should use the local Caplets daemon through a credential-free loopback attach URL.                                        |
-| `remote` | The agent should connect to a self-hosted Caplets service.                                                                                       |
-| `cloud`  | The agent should connect to Caplets Cloud through a saved Remote Profile.                                                                        |
-| `auto`   | Caplets should use Cloud for Cloud URLs, self-hosted remote for non-Cloud URLs, daemon defaults when setup wrote them, and local mode otherwise. |
+| Mode     | Use it when                                                                                                |
+| -------- | ---------------------------------------------------------------------------------------------------------- |
+| `local`  | The native integration should start local Caplets in-process against user and project config.              |
+| `daemon` | The native integration should use the local daemon through a credential-free loopback Current Host Origin. |
+| `remote` | The agent should connect through a saved generic Remote Profile selected by a Current Host Origin.         |
+| `auto`   | Use a configured generic remote, otherwise a setup-written daemon when present, then local.                |
 
 ## CLI Attach or SDK Project Binding
 
-Use the CLI Attach path when an MCP client needs a stdio adapter and Caplets should manage the
-surrounding Remote Profile workflow. The CLI uses saved profiles for Remote Login credentials and
-workspace selection, then connects the agent to the selected runtime. Keep credentials out of the
-agent's MCP configuration.
+Use CLI Attach when an MCP client needs a stdio Adapter and Caplets should manage the surrounding
+generic Remote Profile workflow. The CLI uses saved Remote Login credentials to connect the agent
+to the selected Current Host. Keep credentials out of the agent's MCP configuration.
 
 Use `@caplets/sdk/project-binding` instead when an application needs to embed a Project Binding
 session and already owns all surrounding policy. The SDK caller must provide:
 
-- an isolated `createClient` instance with an explicit HTTP service root and optional
+- an isolated `createClient` instance whose `baseUrl` is the Current Host Origin, with optional
   caller-owned static or async auth;
-- the exact `ws:` or `wss:` Project Binding `connect` URL selected by the application; and
-- the project root and caller-supplied fingerprint (or the Node-only filesystem fingerprint
-  helper).
+- the exact `ws:` or `wss:` `/api/v1/attach/project-bindings/connect` URL; and
+- the project root and caller-supplied fingerprint, or the Node-only filesystem fingerprint helper.
 
-The SDK does not read or write CLI Remote Profiles. It does not discover endpoints, select a
-workspace, persist credentials, start or poll Remote Login, or turn the Project Binding session
-into an MCP stdio adapter. Use `caplets remote login` and `caplets attach` when Caplets should own
-those managed behaviors. Use the SDK only when the embedding application owns them and can keep
-credentials out of URLs, events, errors, and logs.
+The SDK does not read or write CLI Remote Profiles. It does not discover endpoints, persist
+credentials, start or poll Remote Login, or turn the Project Binding session into an MCP stdio
+Adapter. Use `caplets remote login` and `caplets attach` when Caplets should own those managed
+behaviors. Use the SDK only when the embedding application owns them and can keep credentials out of
+URLs, events, errors, and logs.
 
 In both paths, Caplets core remains authoritative for binding leases, readiness, and synchronization
 policy; the client keeps the protocol session alive but does not choose those policies. See
@@ -65,7 +61,7 @@ Remote Codex config after Remote Login:
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach", "https://caplets.example.com/caplets"]
+args = ["attach", "https://caplets.example.com"]
 ```
 
 Generic MCP JSON:
@@ -75,7 +71,7 @@ Generic MCP JSON:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "https://caplets.example.com/caplets"]
+      "args": ["attach", "https://caplets.example.com"]
     }
   }
 }
@@ -83,10 +79,10 @@ Generic MCP JSON:
 
 ## Remote Login
 
-For a self-hosted remote, start Remote Login from the client:
+Start generic Current Host Remote Login from the client:
 
 ```sh
-caplets remote login https://caplets.example.com/caplets
+caplets remote login https://caplets.example.com
 ```
 
 The command prints a short operator code and waits. On the host, a server-local
@@ -106,7 +102,7 @@ or refresh credentials in shell history, agent configs, or environment variables
 After approval, configure the agent to launch attach:
 
 ```sh
-caplets attach https://caplets.example.com/caplets
+caplets attach https://caplets.example.com
 ```
 
 Remote Attach is the Access Client path. If you need host administration instead of agent runtime
@@ -118,30 +114,22 @@ use the dashboard's Vault, client-administration, and runtime-control surfaces. 
 For a stacked local runtime, run the HTTP service outside the agent process:
 
 ```sh
-caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+caplets serve --transport http --upstream-url https://caplets.example.com
 ```
 
 Then configure the agent with `caplets attach <local-runtime-url>`. The attach adapter
 sends its current working directory as the session project root, so project Caplets are
 resolved per attached client instead of from the long-running server's startup directory.
 
-For Caplets Cloud native integrations, log in once and then set the Cloud URL selector:
-
-```sh
-caplets remote login https://cloud.caplets.dev
-export CAPLETS_MODE=cloud
-export CAPLETS_REMOTE_URL=https://cloud.caplets.dev
-
-opencode
-```
-
-Saved Remote Profiles are used by `caplets attach` and native integrations. Agent configs
-should not contain Caplets remote tokens or passwords.
+Current Host inputs are origins: scheme, host, and optional port only. A trailing root slash is
+normalized away; non-root paths, queries, fragments, and embedded credentials are rejected before
+network I/O. Saved generic Remote Profiles are used by `caplets attach` and native integrations.
+Agent configs should not contain Caplets remote tokens or passwords.
 
 Run a finite Project Binding smoke path before wiring an agent:
 
 ```sh
-caplets attach https://caplets.example.com/caplets --once
+caplets attach https://caplets.example.com --once
 ```
 
 This validates the selected remote's Project Binding WebSocket URL once and
@@ -159,9 +147,8 @@ native session supplies a project root and the upstream supports Project Binding
 upstream binding path is unavailable, local project Caplets and non-project upstream
 Caplets remain available with a diagnostic.
 
-Attach connects to the runtime attach API at `/v1/attach`. Ordinary MCP clients that are
-not using attach continue to connect to `/v1/mcp`, which still honors the configured
-exposure mode for each Caplet.
+Attach connects to `/api/v1/attach/*`. Ordinary Streamable HTTP MCP clients that bypass Attach use
+exact `/mcp`, which continues to honor the configured exposure mode for each Caplet.
 
 Check remote health and binding diagnostics with:
 

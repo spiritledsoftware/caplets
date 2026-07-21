@@ -10,51 +10,12 @@ const { title } = Astro.props;
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#f6f0df" />
-  <meta name="caplets-dashboard-base-path" content="/dashboard" />
-  <link rel="icon" type="image/png" href="favicon.png" data-dashboard-asset="favicon.png" />
-  <link rel="apple-touch-icon" href="icon.png" data-dashboard-asset="icon.png" />
+  <link rel="icon" type="image/png" href="/dashboard/favicon.png" />
+  <link rel="apple-touch-icon" href="/dashboard/icon.png" />
   <script is:inline>
     (() => {
       const root = document.documentElement;
       const themeColor = document.querySelector('meta[name="theme-color"]');
-      const dashboardBasePathMeta = document.querySelector('meta[name="caplets-dashboard-base-path"]');
-      const dashboardRoutes = new Set([
-        "access",
-        "activity",
-        "caplets",
-        "catalog",
-        "runtime",
-        "settings",
-        "vault",
-      ]);
-      const normalizeBasePath = (path) => {
-        const withLeadingSlash = path.startsWith("/") ? path : `/${path}`;
-        return withLeadingSlash.replace(/\/+$/u, "");
-      };
-      const inferDashboardBasePath = () => {
-        const pathname = window.location.pathname.replace(/\/+$/u, "");
-        const segments = pathname.split("/").filter(Boolean);
-        const dashboardIndex = segments.lastIndexOf("dashboard");
-        if (dashboardIndex !== -1) {
-          return `/${segments.slice(0, dashboardIndex + 1).join("/")}`;
-        }
-        if (dashboardRoutes.has(segments.at(-1))) {
-          return normalizeBasePath(`/${segments.slice(0, -1).join("/")}`);
-        }
-        return normalizeBasePath(pathname || "/");
-      };
-      const dashboardBasePath = normalizeBasePath(
-        dashboardBasePathMeta instanceof HTMLMetaElement && dashboardBasePathMeta.content !== "/dashboard"
-          ? dashboardBasePathMeta.content
-          : inferDashboardBasePath(),
-      );
-      if (dashboardBasePathMeta instanceof HTMLMetaElement) {
-        dashboardBasePathMeta.content = dashboardBasePath || "/";
-      }
-      document.querySelectorAll("[data-dashboard-asset]").forEach((asset) => {
-        const assetPath = asset.getAttribute("data-dashboard-asset") ?? "";
-        asset.setAttribute("href", `${dashboardBasePath}/${assetPath.replace(/^\/+|\/+$/gu, "")}`);
-      });
       const applyTheme = (resolvedTheme) => {
         root.classList.toggle("dark", resolvedTheme === "dark");
         root.style.colorScheme = resolvedTheme;

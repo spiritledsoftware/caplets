@@ -1,6 +1,6 @@
 # Use One Resource-Oriented Admin API With Distinct Authentication Adapters
 
-Status: accepted
+Status: superseded by ADR 0008
 
 Caplets will expose Current Host administration through one versioned, resource-oriented Admin API. The canonical Operator-bearer surface is `/v2/admin`; the dashboard mounts the same relative resources at `/dashboard/api/v2` behind its existing cookie, session, and CSRF ceremony. Both Adapters invoke the same `CurrentHostOperations` semantic Module. Runtime tools, resources, prompts, and execution remain on Attach, node-filesystem `init` and `add` remain local-only, and Raw Vault Reveal remains a dashboard-private human ceremony.
 

@@ -102,6 +102,57 @@ describe("SQL setup state", () => {
       await firstStorage.close();
     }
   });
+
+  it("keeps historical hosted approvals inert and fail closed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-setup-state-hosted-"));
+    directories.push(root);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(root, "caplets.sqlite3"),
+    });
+    const now = "2026-07-18T12:00:00.000Z";
+
+    try {
+      if (storage.database.dialect !== "sqlite") {
+        throw new Error("Expected SQLite storage.");
+      }
+      const hostedPayload = {
+        projectFingerprint: "project-a",
+        capletId: "legacy-hosted",
+        contentHash: "sha256:legacy",
+        targetKind: "hosted_sandbox",
+        approvedAt: now,
+        actor: "automation",
+      };
+      storage.database.db
+        .insert(sqlite.setupApprovals)
+        .values({
+          ...hostedPayload,
+          generation: 0,
+          payload: hostedPayload,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+
+      const store = new SetupStateStore(storage.database);
+      await expect(
+        store.getApproval("project-a", "legacy-hosted", "sha256:legacy", "hosted_sandbox" as never),
+      ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+      await expect(
+        store.getApproval("project-a", "legacy-hosted", "sha256:legacy", "remote_host"),
+      ).resolves.toBeUndefined();
+
+      const hostedRow = storage.database.db
+        .select()
+        .from(sqlite.setupApprovals)
+        .all()
+        .find((row) => row.targetKind === "hosted_sandbox");
+      expect(hostedRow?.payload).toEqual(hostedPayload);
+    } finally {
+      await storage.close();
+    }
+  });
 });
 
 function attempt(attemptId: string, commandLabel: string, now: Date): SetupAttempt {

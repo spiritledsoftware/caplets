@@ -27,7 +27,7 @@ Plan 009 remains characterization-only. This completed prerequisite owns the pro
 ### Out of scope
 
 - Admin endpoint migration or legacy endpoint changes
-- Generated Admin client work
+- Generated Caplets SDK work
 - Dashboard copy or layout redesign
 - Changes to Raw Vault Reveal's private generation guard
 

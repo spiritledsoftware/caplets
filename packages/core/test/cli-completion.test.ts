@@ -51,6 +51,7 @@ describe("CLI completion resolver", () => {
     await expect(completeCliWords([""])).resolves.toEqual(
       expect.arrayContaining(["add", "auth", "call-tool", "completion", "serve", "storage"]),
     );
+    await expect(completeCliWords([""])).resolves.not.toContain("cloud");
   });
 
   it("keeps top-level command suggestions in sync with registered CLI commands", async () => {
@@ -89,6 +90,7 @@ describe("CLI completion resolver", () => {
       "login",
       "status",
       "logout",
+      "list",
       "host",
     ]);
     await expect(completeCliWords(["remote", "host", ""])).resolves.toEqual([

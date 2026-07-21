@@ -13,11 +13,10 @@ import { ProjectBindingError } from "./errors";
 import { bootstrapProjectBindingGitignore } from "./gitignore";
 import { buildMutagenSyncPolicy, type MutagenSyncPolicy } from "./mutagen";
 import { buildProjectSyncManifest } from "./sync-filter";
-import { enforceProjectSyncSizeLimits, type ProjectSyncTier } from "./sync-size";
+import { enforceProjectSyncSizeLimits } from "./sync-size";
 
 export type RawAttachOptions = {
   remoteUrl?: string;
-  workspace?: string;
   json?: boolean;
   verbose?: boolean;
   once?: boolean;
@@ -32,9 +31,8 @@ export type ResolvedAttachOptions = {
   verbose: boolean;
   once: boolean;
   remote: ResolvedCapletsRemote;
-  authMode: "local_daemon" | "self_hosted_remote" | "hosted_cloud";
+  authMode: "local_daemon" | "remote";
   syncPolicy: MutagenSyncPolicy;
-  selectedWorkspace?: string | undefined;
 };
 
 export async function resolveAttachOptions(
@@ -50,7 +48,6 @@ export async function resolveAttachOptionsForRun(
 ): Promise<ResolvedAttachOptions> {
   const remoteInput = {
     ...(raw.remoteUrl !== undefined ? { remoteUrl: raw.remoteUrl } : {}),
-    ...(raw.workspace !== undefined ? { workspace: raw.workspace } : {}),
     ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
     ...(raw.authDir !== undefined ? { authDir: raw.authDir } : {}),
   };
@@ -62,13 +59,8 @@ export async function resolveAttachOptionsForRun(
     verbose: raw.verbose === true,
     once: raw.once === true,
     remote: selection.remote,
-    authMode: selection.kind,
-    syncPolicy: preflightProjectSync(projectRoot, hostedTier(env)),
-    ...(selection.kind === "hosted_cloud"
-      ? { selectedWorkspace: selection.selectedWorkspace }
-      : raw.workspace
-        ? { selectedWorkspace: raw.workspace }
-        : {}),
+    authMode: selection.kind === "local_daemon" ? "local_daemon" : "remote",
+    syncPolicy: preflightProjectSync(projectRoot),
   };
 }
 
@@ -108,13 +100,10 @@ export async function attachProjectSession(
   } = {},
 ) {
   const resolved = await resolveAttachOptionsForRun(raw, env);
-  const pinnedRaw = resolved.selectedWorkspace
-    ? { ...raw, workspace: resolved.selectedWorkspace }
-    : raw;
   const resolveSessionRemote = async (): Promise<ResolvedCapletsRemote> =>
     resolved.authMode === "local_daemon"
       ? resolved.remote
-      : (await resolveAttachOptionsForRun(pinnedRaw, env)).remote;
+      : (await resolveAttachOptionsForRun(raw, env)).remote;
   const headers = new Headers(resolved.remote.requestInit.headers);
   headers.delete("authorization");
   const client = createClient({
@@ -131,7 +120,7 @@ export async function attachProjectSession(
   assertSyncPolicy(resolved.syncPolicy);
   const session = await runProjectBindingSession({
     client,
-    webSocketUrl: resolved.remote.projectBindingWebSocketUrl,
+    webSocketUrl: resolved.remote.projectBindingWebSocketUrl.toString(),
     projectRoot: resolved.projectRoot,
     projectFingerprint: fingerprintProjectRoot(resolved.projectRoot),
     throwOnError: true,
@@ -157,7 +146,7 @@ async function isWebSocketUpgradeRequired(response: Response): Promise<boolean> 
   return body?.error === "websocket_upgrade_required";
 }
 
-function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): MutagenSyncPolicy {
+function preflightProjectSync(projectRoot: string): MutagenSyncPolicy {
   if (!existsSync(projectRoot)) {
     return {
       ok: true,
@@ -169,7 +158,7 @@ function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): Mutag
     };
   }
   const manifest = buildProjectSyncManifest({ projectRoot });
-  const size = enforceProjectSyncSizeLimits({ tier, files: manifest.files });
+  const size = enforceProjectSyncSizeLimits({ files: manifest.files });
   return buildMutagenSyncPolicy({ manifest, size });
 }
 
@@ -181,9 +170,4 @@ function assertSyncPolicy(policy: MutagenSyncPolicy): void {
       recoveryCommand: policy.recoveryCommand,
     });
   }
-}
-
-function hostedTier(env: Record<string, string | undefined>): ProjectSyncTier {
-  const value = env.CAPLETS_CLOUD_TIER?.toLowerCase();
-  return value === "plus" || value === "pro" || value === "enterprise" ? value : "free";
 }

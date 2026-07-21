@@ -121,7 +121,7 @@ import {
   type DashboardSession,
 } from "@/lib/api";
 import { EPHEMERAL_REVEAL_TTL_MS, createEphemeralRevealExpiry } from "@/lib/ephemeral-reveal";
-import { dashboardBasePath, dashboardPath } from "@/lib/paths";
+import { dashboardPath } from "@/lib/paths";
 
 import { CatalogPage } from "@/components/catalog/CatalogPage";
 import { StoredCapletsPage } from "@/components/StoredCapletsPage";
@@ -1710,6 +1710,17 @@ function AccessPage({
   const { confirmAction, confirmTyped } = useActionConfirm();
   const pending = data.pending?.pendingLogins ?? [];
   const clients = data.clients?.clients ?? [];
+  async function updatePendingLogin(
+    flowId: string,
+    body: Parameters<typeof adminV2UpdateRemoteLoginRequest>[1],
+    successMessage: string,
+  ): Promise<void> {
+    const intent = createDashboardMutationIntent();
+    await action(successMessage, async () => {
+      const detail = await adminV2GetRemoteLoginRequest(flowId);
+      return adminV2UpdateRemoteLoginRequest(flowId, body, detail.etag, intent);
+    });
+  }
   if (loading && !data.clients && !data.pending) return <DashboardLoadingState title="Access" />;
   return (
     <PageFrame
@@ -1753,16 +1764,11 @@ function AccessPage({
                           ))
                         )
                           return;
-                        const intent = createDashboardMutationIntent();
-                        await action("Approved operator login", async () => {
-                          const detail = await adminV2GetRemoteLoginRequest(login.flowId);
-                          return adminV2UpdateRemoteLoginRequest(
-                            login.flowId,
-                            { action: "approve", grantedRole: "operator" },
-                            detail.etag,
-                            intent,
-                          );
-                        });
+                        await updatePendingLogin(
+                          login.flowId,
+                          { action: "approve", grantedRole: "operator" },
+                          "Approved operator login",
+                        );
                       }}
                     >
                       Approve operator
@@ -1779,16 +1785,11 @@ function AccessPage({
                           ))
                         )
                           return;
-                        const intent = createDashboardMutationIntent();
-                        await action("Approved access login", async () => {
-                          const detail = await adminV2GetRemoteLoginRequest(login.flowId);
-                          return adminV2UpdateRemoteLoginRequest(
-                            login.flowId,
-                            { action: "approve", grantedRole: "access" },
-                            detail.etag,
-                            intent,
-                          );
-                        });
+                        await updatePendingLogin(
+                          login.flowId,
+                          { action: "approve", grantedRole: "access" },
+                          "Approved access login",
+                        );
                       }}
                     >
                       Approve access
@@ -1805,16 +1806,7 @@ function AccessPage({
                           ))
                         )
                           return;
-                        const intent = createDashboardMutationIntent();
-                        await action("Denied login", async () => {
-                          const detail = await adminV2GetRemoteLoginRequest(login.flowId);
-                          return adminV2UpdateRemoteLoginRequest(
-                            login.flowId,
-                            { action: "deny" },
-                            detail.etag,
-                            intent,
-                          );
-                        });
+                        await updatePendingLogin(login.flowId, { action: "deny" }, "Denied login");
                       }}
                     >
                       Deny
@@ -3084,15 +3076,8 @@ function EmptyLine({ text }: { text: string }) {
 }
 
 export function routeFromPath(pathname: string): RouteKey {
-  const basePath = dashboardBasePath(pathname);
-  const normalizedPathname = pathname.replace(/\/+$/u, "");
-  const relativePath = normalizedPathname.startsWith(basePath)
-    ? normalizedPathname.slice(basePath.length)
-    : normalizedPathname;
-  const segment =
-    relativePath
-      .replace(/^\/+|\/+$/gu, "")
-      .split("/")
-      .shift() || "overview";
+  if (pathname === "/dashboard") return "overview";
+  if (!pathname.startsWith("/dashboard/") || pathname.endsWith("/")) return "overview";
+  const segment = pathname.slice("/dashboard/".length).split("/", 1)[0];
   return routes.some((route) => route.key === segment) ? (segment as RouteKey) : "overview";
 }

@@ -1,10 +1,11 @@
+import { canonicalizeCurrentHostOrigin } from "./current-host-origin";
 import {
   adminV2GetCapletRecordBundle,
   adminV2GetCapletRecordRevisionBundle,
   adminV2PutCapletRecordBundle,
 } from "./generated/sdk.gen";
 import { createClient as createGeneratedClient } from "./generated/client";
-import type { Client, Config, RequestResult } from "./generated/client";
+import type { Auth, Client, Config, RequestResult } from "./generated/client";
 import type {
   AdminV2PutCapletRecordBundleErrors,
   AdminV2PutCapletRecordBundleResponses,
@@ -30,39 +31,28 @@ export type CapletsClientConfig = Omit<Config, "baseUrl"> & {
   baseUrl: string;
 };
 
+type ConfiguredAuth = NonNullable<Config["auth"]>;
+
+function bearerOnlyAuth(auth: ConfiguredAuth) {
+  return async (security: Auth): Promise<string | undefined> => {
+    if (security.type !== "http" || security.scheme !== "bearer") return undefined;
+    return typeof auth === "function" ? await auth(security) : auth;
+  };
+}
+
 /**
- * Creates an isolated client for an HTTP(S) service root.
- * Deployment-prefix paths are URL-normalized; credentials, queries, and fragments are rejected.
+ * Creates an isolated client for an HTTP(S) Current Host origin.
+ * Plain HTTP is limited to loopback development hosts.
  */
 export function createClient(config: CapletsClientConfig): Client {
-  let serviceRoot: URL;
-  try {
-    serviceRoot = new URL(config.baseUrl);
-  } catch {
-    throw new TypeError("baseUrl must be an absolute HTTP(S) URL");
-  }
-  if (
-    (serviceRoot.protocol !== "http:" && serviceRoot.protocol !== "https:") ||
-    serviceRoot.host.length === 0
-  ) {
-    throw new TypeError("baseUrl must be an absolute HTTP(S) URL");
-  }
-  if (
-    serviceRoot.username.length > 0 ||
-    serviceRoot.password.length > 0 ||
-    serviceRoot.href.includes("?") ||
-    serviceRoot.href.includes("#")
-  ) {
-    throw new TypeError("baseUrl must not include credentials, a query, or a fragment");
-  }
-  const servicePath = serviceRoot.pathname.replace(/\/+$/u, "");
-  const normalizedBaseUrl = `${serviceRoot.origin}${servicePath}`;
-
+  const currentHostOrigin = canonicalizeCurrentHostOrigin(config.baseUrl);
+  const { auth, ...clientConfig } = config;
   return createGeneratedClient({
     responseStyle: "fields",
     throwOnError: false,
-    ...config,
-    baseUrl: normalizedBaseUrl,
+    ...clientConfig,
+    ...(auth === undefined ? {} : { auth: bearerOnlyAuth(auth) }),
+    baseUrl: currentHostOrigin,
   });
 }
 

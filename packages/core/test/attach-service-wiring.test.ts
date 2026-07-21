@@ -12,40 +12,22 @@ vi.mock("../src/native/service", () => ({
 }));
 
 describe("attach native service wiring", () => {
-  it("forwards the resolved Cloud workspace into profile-backed native remotes", () => {
+  it("wires an arbitrary Current Host selection as a generic profile-backed remote", () => {
     const selection: ResolvedRemoteSelection = {
-      kind: "hosted_cloud",
+      kind: "remote",
       remote: {
         baseUrl: new URL("https://cloud.caplets.dev/"),
-        mcpUrl: new URL("https://cloud.caplets.dev/v1/ws/team/mcp"),
-        attachUrl: new URL("https://cloud.caplets.dev/v1/ws/team/attach"),
-        controlUrl: new URL("https://cloud.caplets.dev/v1/admin"),
-        healthUrl: new URL("https://cloud.caplets.dev/v1/healthz"),
+        mcpUrl: new URL("https://cloud.caplets.dev/mcp"),
+        attachUrl: new URL("https://cloud.caplets.dev/api/v1/attach"),
+        adminUrl: new URL("https://cloud.caplets.dev/api/v2/admin"),
+        healthUrl: new URL("https://cloud.caplets.dev/api/v1/healthz"),
         projectBindingWebSocketUrl: new URL(
-          "wss://cloud.caplets.dev/v1/ws/team/attach/project-bindings/connect",
+          "wss://cloud.caplets.dev/api/v1/attach/project-bindings/connect",
         ),
-        auth: { type: "bearer", token: "cloud-access" },
-        requestInit: { headers: { Authorization: "Bearer cloud-access" } },
-        workspace: "team",
-      },
-      selectedWorkspace: "team",
-      credentials: {
-        cloudUrl: "https://cloud.caplets.dev",
-        workspaceId: "workspace_team",
-        workspaceSlug: "team",
-        accessToken: "cloud-access",
-        refreshToken: "cloud-refresh",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-        tokenType: "Bearer",
-        createdAt: "2026-06-19T00:00:00.000Z",
+        auth: { type: "bearer", token: "remote-access" },
+        requestInit: { headers: { Authorization: "Bearer remote-access" } },
       },
       credentialExpiresAt: "2999-01-01T00:00:00.000Z",
-      cloudPresence: {
-        url: new URL("https://cloud.caplets.dev/"),
-        accessToken: "cloud-access",
-        workspaceId: "workspace_team",
-      },
     };
 
     createAttachNativeServiceForTests(
@@ -61,25 +43,24 @@ describe("attach native service wiring", () => {
 
     expect(createNativeCapletsService).toHaveBeenCalledWith(
       expect.objectContaining({
-        mode: "cloud",
-        remote: expect.objectContaining({
+        mode: "remote",
+        remote: {
           url: "https://cloud.caplets.dev/",
-          workspace: "team",
-        }),
+        },
       }),
     );
   });
-  it("wires local daemon selections without Cloud workspace or Remote Profile fields", () => {
+  it("wires local daemon selections as ordinary remote Current Hosts", () => {
     const selection: ResolvedRemoteSelection = {
       kind: "local_daemon",
       remote: {
-        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
-        mcpUrl: new URL("http://127.0.0.1:5387/caplets/v1/mcp"),
-        attachUrl: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
-        controlUrl: new URL("http://127.0.0.1:5387/caplets/v1/admin"),
-        healthUrl: new URL("http://127.0.0.1:5387/caplets/v1/healthz"),
+        baseUrl: new URL("http://127.0.0.1:5387"),
+        mcpUrl: new URL("http://127.0.0.1:5387/mcp"),
+        attachUrl: new URL("http://127.0.0.1:5387/api/v1/attach"),
+        adminUrl: new URL("http://127.0.0.1:5387/api/v2/admin"),
+        healthUrl: new URL("http://127.0.0.1:5387/api/v1/healthz"),
         projectBindingWebSocketUrl: new URL(
-          "ws://127.0.0.1:5387/caplets/v1/attach/project-bindings/connect",
+          "ws://127.0.0.1:5387/api/v1/attach/project-bindings/connect",
         ),
         auth: { type: "none", user: "caplets" },
         requestInit: {},
@@ -100,14 +81,9 @@ describe("attach native service wiring", () => {
     expect(createNativeCapletsService).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "remote",
-        remote: expect.objectContaining({
-          url: "http://127.0.0.1:5387/caplets",
-        }),
-      }),
-    );
-    expect(createNativeCapletsService).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        remote: expect.objectContaining({ workspace: expect.anything() }),
+        remote: {
+          url: "http://127.0.0.1:5387/",
+        },
       }),
     );
   });

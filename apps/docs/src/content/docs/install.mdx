@@ -63,13 +63,16 @@ recommended first install because it is public and does not require credentials.
 
 ## Open the dashboard
 
-If you start or expose an HTTP runtime, the same host can now serve the browser admin surface at
-`/dashboard` under the configured serve path:
+If you start or expose an HTTP runtime, the same Current Host serves the browser administration
+surface at fixed `/dashboard`:
 
 ```text
 http://127.0.0.1:5387/dashboard
-https://caplets.example.com/caplets/dashboard
+https://caplets.example.com/dashboard
 ```
+
+Current Host protocol namespaces are origin-root paths. A reverse proxy must expose them directly;
+prefix-only hosting is unsupported.
 
 Use the dashboard when you need an Operator session for host administration rather than an Access
 session for agent/runtime use. Browser approval uses the same host-side remote credential state as
@@ -150,8 +153,8 @@ If you need to write a config by hand, keep it daemon-backed and secret-free:
 Replace `<local-daemon-url>` with the loopback daemon URL reported by `caplets setup` or
 `caplets daemon status`; the default is usually `http://127.0.0.1:5387/`.
 
-For an advanced manual fallback where the agent intentionally launches a foreground
-process instead of attaching to the daemon, configure `caplets serve` directly:
+For an advanced manual alternative where the agent intentionally launches a foreground process
+instead of attaching to the daemon, configure `caplets serve` directly:
 
 ```json
 {

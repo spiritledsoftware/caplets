@@ -88,7 +88,7 @@ it("finalizes and replays a maximum-domain Caplet Record mutation response", asy
   const router = (storage: HostStorage) =>
     createAdminV2Router({
       operations,
-      principalProvider: async () => principal,
+      authorityProvider: async () => ({ principal: await (async () => principal)() }),
       idempotencyStore: storage.idempotency,
       host: {
         baseUrl: "https://host.example",
@@ -174,7 +174,7 @@ it("finalizes and replays the maximum installation source identity and rejects o
   };
   const app = createAdminV2Router({
     operations: { execute } as unknown as CurrentHostOperations,
-    principalProvider: async () => principal,
+    authorityProvider: async () => ({ principal: await (async () => principal)() }),
     idempotencyStore: storage.idempotency,
     host: {
       baseUrl: "https://host.example",
@@ -263,7 +263,7 @@ it("bounds and durably replays catalog mutation summaries", async () => {
   };
   const app = createAdminV2Router({
     operations: { execute } as unknown as CurrentHostOperations,
-    principalProvider: async () => principal,
+    authorityProvider: async () => ({ principal: await (async () => principal)() }),
     idempotencyStore: storage.idempotency,
     host: {
       baseUrl: "https://host.example",
@@ -376,7 +376,7 @@ it("finalizes and replays a maximum installation risk and rejects one byte more"
   };
   const app = createAdminV2Router({
     operations: { execute } as unknown as CurrentHostOperations,
-    principalProvider: async () => principal,
+    authorityProvider: async () => ({ principal: await (async () => principal)() }),
     idempotencyStore: storage.idempotency,
     host: {
       baseUrl: "https://host.example",
@@ -472,7 +472,7 @@ it("finalizes and replays a maximum backend authorization URL and rejects an ove
   };
   const app = createAdminV2Router({
     operations: { execute } as unknown as CurrentHostOperations,
-    principalProvider: async () => principal,
+    authorityProvider: async () => ({ principal: await (async () => principal)() }),
     idempotencyStore: storage.idempotency,
     host: {
       baseUrl: "https://host.example",
@@ -542,7 +542,7 @@ it("finalizes a bounded Problem when a semantic outcome violates the response co
   };
   const app = createAdminV2Router({
     operations: { execute } as unknown as CurrentHostOperations,
-    principalProvider: async () => principal,
+    authorityProvider: async () => ({ principal: await (async () => principal)() }),
     idempotencyStore: storage.idempotency,
     host: {
       baseUrl: "https://host.example",

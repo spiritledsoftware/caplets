@@ -1,35 +1,20 @@
-import { CloudAuthClient } from "../cloud-auth/client";
-import type { CloudAuthCredentials } from "../cloud-auth/store";
-import { HOSTED_CLOUD_AUTH_SCOPES } from "../cloud-auth/types";
+import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
+import { currentHostV1Url } from "../current-host/topology";
 import { daemonClientBaseUrl } from "../daemon/client-url";
 import { readDaemonConfig } from "../daemon/config";
 import { createNativeDaemonManager } from "../daemon/manager";
 import { resolveDaemonPaths } from "../daemon/paths";
 import type { DaemonConfig, DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
-import { ProjectBindingError, projectBindingError } from "../project-binding/errors";
-import {
-  appendBasePath,
-  healthUrlForBase,
-  isLoopbackHost,
-  parseServerBaseUrl,
-} from "../server/options";
-import {
-  hostedCloudWorkspaceFromRemoteUrl,
-  normalizeRemoteProfileHostUrl,
-  resolveCapletsRemote,
-  resolveHostedCloudRemote,
-  resolveRemoteMode,
-  type ResolvedCapletsRemote,
-} from "./options";
-import { cloudCredentialsFromRemoteProfile, createRemoteProfileStore } from "./profile-store";
+import { ProjectBindingError } from "../project-binding/errors";
+import { resolveCapletsRemote, resolveRemoteMode, type ResolvedCapletsRemote } from "./options";
+import { createRemoteProfileStore } from "./profile-store";
 
-const SELF_HOSTED_REFRESH_TIMEOUT_MS = 15_000;
+const REMOTE_REFRESH_TIMEOUT_MS = 15_000;
 
 export type RemoteSelectionInput = {
   mode?: string;
   remoteUrl?: string;
-  workspace?: string;
   fetch?: typeof fetch;
   authDir?: string;
 };
@@ -44,21 +29,9 @@ export type ResolvedRemoteSelection =
       remote: ResolvedCapletsRemote;
     }
   | {
-      kind: "self_hosted_remote";
+      kind: "remote";
       remote: ResolvedCapletsRemote;
       credentialExpiresAt?: string | undefined;
-    }
-  | {
-      kind: "hosted_cloud";
-      remote: ResolvedCapletsRemote;
-      selectedWorkspace: string;
-      credentials: CloudAuthCredentials;
-      credentialExpiresAt?: string | undefined;
-      cloudPresence: {
-        url: URL;
-        accessToken: string;
-        workspaceId: string;
-      };
     };
 
 export async function resolveRemoteSelection(
@@ -82,211 +55,71 @@ export async function resolveRemoteSelection(
     );
   }
 
-  if (mode.mode === "remote") {
-    const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
-    if (!remoteUrl) {
-      throw new CapletsError("REQUEST_INVALID", "CAPLETS_REMOTE_URL or remoteUrl is required.");
-    }
-    const localDaemonFallback = isLocalDaemonRemoteUrl(remoteUrl);
-    const store = createRemoteProfileStore({ authDir: input.authDir, env });
-    const refreshed = await store.refreshSelfHostedProfileIfNeeded({
-      hostUrl: remoteUrl,
-      needsRefresh: (credential) =>
-        credentialsNeedRefresh({ expiresAt: credential.expiresAt ?? "" }),
-      refresh: async (status, credential) => {
-        if (!credential.refreshToken || !status.clientId) {
-          throw remoteLoginRequired(remoteUrl);
-        }
-        const refreshed = await refreshSelfHostedCredentials(
-          remoteUrl,
-          credential.refreshToken,
-          input.fetch ? { fetch: input.fetch } : {},
-        );
-        return {
-          hostUrl: refreshed.hostUrl ?? remoteUrl,
-          clientId: refreshed.clientId,
-          clientLabel: refreshed.clientLabel ?? status.clientLabel,
-          credentials: {
-            accessToken: refreshed.accessToken,
-            refreshToken: refreshed.refreshToken,
-            expiresAt: refreshed.expiresAt,
-            tokenType: refreshed.tokenType,
-          },
-        };
-      },
-    });
-    const credential = refreshed?.credential;
-    if (!credential?.accessToken) {
-      if (
-        localDaemonFallback &&
-        !refreshed &&
-        (await isSetupValidatedLocalDaemon(remoteUrl, input, env, dependencies))
-      ) {
-        return localDaemonRemoteSelection(remoteUrl, input.fetch);
-      }
-      const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
-      throw new ProjectBindingError({
-        code: "remote_credentials_required",
-        message: `Remote Login required for ${normalizedUrl}.`,
-        recoveryCommand: `caplets remote login ${normalizedUrl}`,
-      });
-    }
-    return {
-      kind: "self_hosted_remote",
-      remote: resolveCapletsRemote(
-        {
-          url: remoteUrl,
-          token: credential.accessToken,
-          ...(input.workspace !== undefined ? { workspace: input.workspace } : {}),
-          ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
-        },
-        env,
-      ),
-      ...(credential.expiresAt ? { credentialExpiresAt: credential.expiresAt } : {}),
-    };
-  }
-
-  const store = createRemoteProfileStore({ authDir: input.authDir, env });
   const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
   if (!remoteUrl) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL or remoteUrl.",
-    );
+    throw new CapletsError("REQUEST_INVALID", "CAPLETS_REMOTE_URL or remoteUrl is required.");
   }
-  const workspaceFromRemoteUrl = hostedCloudWorkspaceFromRemoteUrl(remoteUrl);
-  const explicitWorkspace =
-    input.workspace ?? (workspaceFromRemoteUrl ? undefined : env.CAPLETS_REMOTE_WORKSPACE);
-  const profileWorkspace = workspaceFromRemoteUrl ?? explicitWorkspace;
-  const normalizedRemoteUrl = normalizeRemoteProfileHostUrl(remoteUrl);
-  let status = await getCloudProfileStatusForSelection(store, {
-    hostUrl: normalizedRemoteUrl,
-    workspace: profileWorkspace,
-  });
-  if (!status && profileWorkspace) {
-    status = await getCloudProfileStatusForSelection(store, {
-      hostUrl: normalizedRemoteUrl,
-    });
-  }
-  let credential = status ? await store.credentials.load(status.key) : undefined;
-  if (!status || !credential?.accessToken) {
-    throw projectBindingError("cloud_auth_required");
-  }
-  let credentials: CloudAuthCredentials = cloudCredentialsFromRemoteProfile(status, credential);
-
-  if (credentialsNeedRefresh(credentials)) {
-    const refreshed = await store.refreshCloudProfileIfNeeded({
-      hostUrl: normalizedRemoteUrl,
-      workspace: profileWorkspace,
-      needsRefresh: (candidate) => credentialsNeedRefresh({ expiresAt: candidate.expiresAt ?? "" }),
-      refresh: async (candidateStatus, candidateCredential) => {
-        const candidateCredentials = cloudCredentialsFromRemoteProfile(
-          candidateStatus,
-          candidateCredential,
-        );
-        if (!candidateCredentials.refreshToken) {
-          throw projectBindingError("cloud_auth_required");
-        }
-        const refreshedCredentials = await new CloudAuthClient({
-          cloudUrl: candidateCredentials.cloudUrl,
-          ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
-        }).refresh({ refreshToken: candidateCredentials.refreshToken });
-        const nextCredentials = {
-          ...candidateCredentials,
-          ...refreshedCredentials,
-          refreshToken: refreshedCredentials.refreshToken ?? candidateCredentials.refreshToken,
-          createdAt: candidateCredentials.createdAt,
-          lastRefreshAt: new Date().toISOString(),
-        };
-        return {
-          hostUrl: nextCredentials.cloudUrl,
-          workspaceId: nextCredentials.workspaceId,
-          ...(nextCredentials.workspaceSlug
-            ? { workspaceSlug: nextCredentials.workspaceSlug }
-            : {}),
-          clientLabel: nextCredentials.deviceName,
-          credentials: {
-            accessToken: nextCredentials.accessToken,
-            refreshToken: nextCredentials.refreshToken,
-            expiresAt: nextCredentials.expiresAt,
-            scope: nextCredentials.scope,
-            tokenType: nextCredentials.tokenType,
-          },
-        };
-      },
-    });
-    if (!refreshed?.credential?.accessToken) {
-      throw projectBindingError("cloud_auth_required");
-    }
-    status = refreshed.status;
-    credential = refreshed.credential;
-    credentials = cloudCredentialsFromRemoteProfile(status, credential);
-  }
-
-  const selectedWorkspace = credentials.workspaceSlug ?? credentials.workspaceId;
-  if (
-    explicitWorkspace &&
-    explicitWorkspace !== credentials.workspaceId &&
-    explicitWorkspace !== credentials.workspaceSlug
-  ) {
-    throw projectBindingError(
-      "workspace_switch_required",
-      `Requested workspace ${explicitWorkspace} differs from saved Selected Workspace ${selectedWorkspace}.`,
-    );
-  }
-
-  if (
-    workspaceFromRemoteUrl &&
-    workspaceFromRemoteUrl !== credentials.workspaceSlug &&
-    workspaceFromRemoteUrl !== credentials.workspaceId
-  ) {
-    throw projectBindingError(
-      "workspace_switch_required",
-      `Requested workspace ${workspaceFromRemoteUrl} differs from saved Selected Workspace ${selectedWorkspace}.`,
-    );
-  }
-  const missingScope = requiredHostedCloudAttachScopes().find(
-    (scope) => !credentials.scope?.includes(scope),
-  );
-  if (missingScope) {
-    throw projectBindingError(
-      "cloud_auth_required",
-      `Hosted Cloud attach requires Cloud Auth scope ${missingScope}. Run caplets remote login ${credentials.cloudUrl} again.`,
-    );
-  }
-  const remote = resolveHostedCloudRemote(
-    {
-      url: remoteUrl,
-      token: credentials.accessToken,
-      workspace: selectedWorkspace,
-      ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+  const origin = canonicalizeCurrentHostOrigin(remoteUrl);
+  const localDaemonFallback = isLoopbackHttpOrigin(origin);
+  const store = createRemoteProfileStore({ authDir: input.authDir, env });
+  const refreshed = await store.refreshRemoteProfileIfNeeded({
+    origin,
+    needsRefresh: (credential) => credentialsNeedRefresh(credential.expiresAt),
+    refresh: async (status, credential) => {
+      if (!credential.refreshToken) throw remoteLoginRequired(origin);
+      const next = await refreshRemoteCredentials(
+        origin,
+        credential.refreshToken,
+        input.fetch ? { fetch: input.fetch } : {},
+      );
+      return {
+        origin: next.hostUrl ?? origin,
+        clientId: next.clientId,
+        clientLabel: next.clientLabel ?? status.clientLabel,
+        credentials: {
+          accessToken: next.accessToken,
+          refreshToken: next.refreshToken,
+          expiresAt: next.expiresAt,
+          tokenType: next.tokenType,
+        },
+      };
     },
-    {},
-  );
+  });
+  const credential = refreshed?.credential;
+  if (!credential?.accessToken) {
+    if (
+      localDaemonFallback &&
+      !refreshed &&
+      (await isSetupValidatedLocalDaemon(origin, input, env, dependencies))
+    ) {
+      return localDaemonRemoteSelection(origin, input.fetch);
+    }
+    throw remoteLoginRequired(origin);
+  }
 
   return {
-    kind: "hosted_cloud",
-    remote,
-    selectedWorkspace,
-    credentials,
-    credentialExpiresAt: credentials.expiresAt,
-    cloudPresence: {
-      url: remote.baseUrl,
-      accessToken: credentials.accessToken,
-      workspaceId: credentials.workspaceId,
-    },
+    kind: "remote",
+    remote: resolveCapletsRemote(
+      {
+        url: origin,
+        token: credential.accessToken,
+        ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+      },
+      {},
+    ),
+    ...(credential.expiresAt ? { credentialExpiresAt: credential.expiresAt } : {}),
   };
 }
 
 function localDaemonRemoteSelection(
-  remoteUrl: string,
+  origin: string,
   fetch: typeof globalThis.fetch | undefined,
 ): ResolvedRemoteSelection {
   return {
     kind: "local_daemon",
     remote: resolveCapletsRemote(
       {
-        url: remoteUrl,
+        url: origin,
         ...(fetch !== undefined ? { fetch } : {}),
       },
       {},
@@ -294,19 +127,18 @@ function localDaemonRemoteSelection(
   };
 }
 
-function isLocalDaemonRemoteUrl(value: string): boolean {
-  const url = parseServerBaseUrl(value);
-  return url.protocol === "http:" && isLoopbackHost(url.hostname);
+function isLoopbackHttpOrigin(value: string): boolean {
+  const url = new URL(value);
+  return url.protocol === "http:";
 }
 
 async function isSetupValidatedLocalDaemon(
-  value: string,
+  origin: string,
   input: RemoteSelectionInput,
   env: Record<string, string | undefined>,
   dependencies: RemoteSelectionDependencies,
 ): Promise<boolean> {
   try {
-    const requested = parseServerBaseUrl(value);
     const daemonOptions: DaemonOperationOptions = {
       ...dependencies.daemon,
       env,
@@ -314,40 +146,43 @@ async function isSetupValidatedLocalDaemon(
     };
     const paths = resolveDaemonPaths(daemonOptions);
     const config = readDaemonConfig(paths);
-    if (!config || daemonClientBaseUrl(config).href !== requested.href) return false;
+    if (!config) return false;
+    const daemonOrigin = canonicalizeCurrentHostOrigin(daemonClientBaseUrl(config).href);
+    if (daemonOrigin !== origin) return false;
     const native = await (daemonOptions.manager ?? createNativeDaemonManager(daemonOptions)).status(
       config,
       paths,
     );
     if (!native.running) return false;
-    return await isDaemonHealthOk(config, input.fetch);
+    return await isDaemonHealthOk(config, origin, input.fetch);
   } catch {
     return false;
   }
 }
 
 async function isDaemonHealthOk(
-  config: Pick<DaemonConfig, "serve">,
+  _config: Pick<DaemonConfig, "serve">,
+  origin: string,
   fetchInput: typeof globalThis.fetch | undefined,
 ): Promise<boolean> {
   const fetchImpl = fetchInput ?? globalThis.fetch;
   if (!fetchImpl) return false;
   try {
-    const response = await fetchImpl(healthUrlForBase(daemonClientBaseUrl(config)), {
-      signal: AbortSignal.timeout(2_000),
-    });
+    const { healthUrl } = resolveCapletsRemote({ url: origin }, {});
+    const response = await fetchImpl(healthUrl, { signal: AbortSignal.timeout(2_000) });
     return response.ok;
   } catch {
     return false;
   }
 }
 
-function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {
-  const expiresAt = Date.parse(credentials.expiresAt);
-  return Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60_000;
+function credentialsNeedRefresh(expiresAt: string | undefined): boolean {
+  if (!expiresAt) return false;
+  const parsed = Date.parse(expiresAt);
+  return Number.isFinite(parsed) && parsed <= Date.now() + 60_000;
 }
 
-type SelfHostedRefreshCredentials = {
+type RemoteRefreshCredentials = {
   hostUrl?: string | undefined;
   clientId: string;
   clientLabel?: string | undefined;
@@ -357,32 +192,30 @@ type SelfHostedRefreshCredentials = {
   expiresAt?: string | undefined;
 };
 
-async function refreshSelfHostedCredentials(
-  remoteUrl: string,
+async function refreshRemoteCredentials(
+  origin: string,
   refreshToken: string,
   options: { fetch?: typeof fetch },
-): Promise<SelfHostedRefreshCredentials> {
-  const refreshUrl = appendBasePath(
-    new URL(normalizeRemoteProfileHostUrl(remoteUrl)),
-    "v1/remote/refresh",
+): Promise<RemoteRefreshCredentials> {
+  const response = await fetchRemoteRefresh(
+    currentHostV1Url(origin, "remoteRefresh"),
+    refreshToken,
+    options,
   );
-  const response = await fetchSelfHostedRefresh(refreshUrl, refreshToken, options);
-  if (!response.ok) {
-    throw await selfHostedRefreshError(remoteUrl, response);
-  }
-  return parseSelfHostedRefreshCredentials(response);
+  if (!response.ok) throw await remoteRefreshError(origin, response);
+  return await parseRemoteRefreshCredentials(response);
 }
 
-async function selfHostedRefreshError(remoteUrl: string, response: Response): Promise<Error> {
-  const summary = await parseSelfHostedRefreshError(response);
+async function remoteRefreshError(origin: string, response: Response): Promise<Error> {
+  const summary = await parseRemoteRefreshError(response);
   if (
     response.status === 401 ||
     summary?.code === "AUTH_FAILED" ||
     summary?.code === "REMOTE_CREDENTIALS_REVOKED"
   ) {
-    return selfHostedRefreshLooksRevoked(summary)
-      ? remoteLoginRevoked(remoteUrl)
-      : remoteLoginRequired(remoteUrl);
+    return remoteRefreshLooksRevoked(summary)
+      ? remoteLoginRevoked(origin)
+      : remoteLoginRequired(origin);
   }
   if (response.status === 503 || summary?.code === "SERVER_UNAVAILABLE") {
     return new CapletsError(
@@ -396,7 +229,7 @@ async function selfHostedRefreshError(remoteUrl: string, response: Response): Pr
   );
 }
 
-async function parseSelfHostedRefreshError(
+async function parseRemoteRefreshError(
   response: Response,
 ): Promise<{ code?: string | undefined; message?: string | undefined } | undefined> {
   const parsed = await response
@@ -413,7 +246,7 @@ async function parseSelfHostedRefreshError(
   };
 }
 
-async function fetchSelfHostedRefresh(
+async function fetchRemoteRefresh(
   refreshUrl: URL,
   refreshToken: string,
   options: { fetch?: typeof fetch },
@@ -431,7 +264,7 @@ async function fetchSelfHostedRefresh(
       timeout = setTimeout(() => {
         controller.abort();
         reject(new CapletsError("SERVER_UNAVAILABLE", "Remote credential refresh timed out."));
-      }, SELF_HOSTED_REFRESH_TIMEOUT_MS);
+      }, REMOTE_REFRESH_TIMEOUT_MS);
     });
     return await Promise.race([refresh, timedOut]);
   } catch (error) {
@@ -442,64 +275,32 @@ async function fetchSelfHostedRefresh(
   }
 }
 
-function remoteLoginRequired(remoteUrl: string): ProjectBindingError {
+function remoteLoginRequired(origin: string): ProjectBindingError {
   return new ProjectBindingError({
     code: "remote_credentials_required",
-    message: `Remote Login required for ${normalizeRemoteProfileHostUrl(remoteUrl)}.`,
-    recoveryCommand: `caplets remote login ${normalizeRemoteProfileHostUrl(remoteUrl)}`,
+    message: `Remote Login required for ${origin}.`,
+    recoveryCommand: `caplets remote login ${origin}`,
   });
 }
 
-function remoteLoginRevoked(remoteUrl: string): ProjectBindingError {
-  const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
+function remoteLoginRevoked(origin: string): ProjectBindingError {
   return new ProjectBindingError({
     code: "remote_credentials_revoked",
-    message: `Remote credentials for ${normalizedUrl} were revoked or rejected. Run Remote Login again and ask the server operator to approve the pending login.`,
-    recoveryCommand: `caplets remote login ${normalizedUrl}`,
+    message: `Remote credentials for ${origin} were revoked or rejected. Run Remote Login again and ask the server operator to approve the pending login.`,
+    recoveryCommand: `caplets remote login ${origin}`,
   });
 }
 
-function selfHostedRefreshLooksRevoked(
+function remoteRefreshLooksRevoked(
   summary: { code?: string | undefined; message?: string | undefined } | undefined,
 ): boolean {
   if (summary?.code === "REMOTE_CREDENTIALS_REVOKED") return true;
   return /revoked|rejected|stale/iu.test(summary?.message ?? "");
 }
 
-async function getCloudProfileStatusForSelection(
-  store: ReturnType<typeof createRemoteProfileStore>,
-  input: { hostUrl: string; workspace?: string | undefined },
-): Promise<
-  Awaited<ReturnType<ReturnType<typeof createRemoteProfileStore>["getCloudProfileStatus"]>>
-> {
-  try {
-    return await store.getCloudProfileStatus(input);
-  } catch (error) {
-    if (isCloudWorkspaceAmbiguity(error)) {
-      throw projectBindingError(
-        "workspace_switch_required",
-        "Cloud Remote Profile requires a selected or explicit workspace.",
-      );
-    }
-    throw error;
-  }
-}
-
-function isCloudWorkspaceAmbiguity(error: unknown): boolean {
-  const details = error instanceof CapletsError ? error.details : undefined;
-  return (
-    error instanceof CapletsError &&
-    error.code === "REQUEST_INVALID" &&
-    typeof details === "object" &&
-    details !== null &&
-    !Array.isArray(details) &&
-    (details as Record<string, unknown>).reason === "cloud_workspace_ambiguous"
-  );
-}
-
-async function parseSelfHostedRefreshCredentials(
+async function parseRemoteRefreshCredentials(
   response: Response,
-): Promise<SelfHostedRefreshCredentials> {
+): Promise<RemoteRefreshCredentials> {
   const parsed = await response.json();
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new CapletsError(
@@ -527,8 +328,4 @@ async function parseSelfHostedRefreshCredentials(
     ...(typeof record.tokenType === "string" ? { tokenType: record.tokenType } : {}),
     ...(typeof record.expiresAt === "string" ? { expiresAt: record.expiresAt } : {}),
   };
-}
-
-function requiredHostedCloudAttachScopes(): string[] {
-  return HOSTED_CLOUD_AUTH_SCOPES.filter((scope) => scope !== "mcp:tools");
 }

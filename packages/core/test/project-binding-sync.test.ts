@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ProjectSyncCoordinator, projectSyncFiles, projectSyncManifest } from "../src/cloud/sync";
+import {
+  ProjectSyncCoordinator,
+  projectSyncFiles,
+  projectSyncManifest,
+} from "../src/project-binding/sync";
 
 describe("ProjectSyncCoordinator", () => {
   it("serializes mutating calls per project target", async () => {
@@ -33,7 +37,7 @@ describe("ProjectSyncCoordinator", () => {
     expect(task).toHaveBeenCalledTimes(2);
   });
 
-  it("builds hosted upload scope from the Project Binding sync filter", () => {
+  it("builds bounded Project Binding sync scope from the generic sync filter", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-sync-"));
     const external = mkdtempSync(join(tmpdir(), "caplets-sync-external-"));
     try {

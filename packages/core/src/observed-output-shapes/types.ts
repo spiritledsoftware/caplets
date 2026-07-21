@@ -38,8 +38,7 @@ export type ObservedOutputShape = {
 };
 
 export type ObservedOutputShapeKey = {
-  scope: "local" | "self_hosted" | "cloud";
-  workspaceId?: string | undefined;
+  scope: "local" | "remote";
   projectFingerprint?: string | undefined;
   capletId: string;
   backendKind: string;

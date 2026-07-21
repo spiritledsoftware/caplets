@@ -5,7 +5,7 @@ import {
   type SanitizedRuntimeException,
 } from "./privacy";
 
-export type RuntimeMode = "local" | "remote" | "cloud" | "unknown";
+export type RuntimeMode = "local" | "remote" | "unknown";
 export type CommandFamily =
   | "init"
   | "setup"

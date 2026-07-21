@@ -79,11 +79,7 @@ import {
 } from "@caplets/sdk";
 import { dashboardApiUrl } from "./paths";
 
-const CANONICAL_ADMIN_PATH = "/v2/admin";
-const GENERATED_BASE_URL =
-  typeof globalThis.location === "undefined" || globalThis.location.origin === "null"
-    ? "http://localhost"
-    : globalThis.location.origin;
+const CANONICAL_ADMIN_PATH = "/api/v2/admin";
 
 export type DashboardSession = {
   sessionId: string;
@@ -172,41 +168,39 @@ async function dashboardGeneratedFetch(
   init?: RequestInit,
 ): Promise<Response> {
   const request = input instanceof Request ? input : new Request(input, init);
-  const canonicalUrl = new URL(request.url);
-  if (
-    canonicalUrl.pathname !== CANONICAL_ADMIN_PATH &&
-    !canonicalUrl.pathname.startsWith(`${CANONICAL_ADMIN_PATH}/`)
-  ) {
-    throw new Error(
-      `Generated Admin request escaped the canonical mount: ${canonicalUrl.pathname}`,
-    );
+  const requestUrl = new URL(request.url);
+  const adminPath = CANONICAL_ADMIN_PATH;
+  if (requestUrl.pathname !== adminPath && !requestUrl.pathname.startsWith(`${adminPath}/`)) {
+    throw new Error(`Generated Admin request escaped the canonical mount: ${requestUrl.pathname}`);
   }
-
-  const suffix = canonicalUrl.pathname.slice(CANONICAL_ADMIN_PATH.length).replace(/^\/+/, "");
-  const mountedUrl = new URL(
-    dashboardApiUrl(suffix ? `v2/${suffix}` : "v2"),
-    typeof globalThis.location === "undefined" || globalThis.location.origin === "null"
-      ? "http://localhost"
-      : globalThis.location.origin,
-  );
-  mountedUrl.search = canonicalUrl.search;
   const method = request.method.toUpperCase();
-  const rewritten = new Request(mountedUrl, request);
-  const credentialed = new Request(rewritten, {
-    credentials: "same-origin",
-    headers: dashboardRequestHeaders(method, rewritten.headers),
-  });
-  return globalThis.fetch(credentialed);
+  return globalThis.fetch(
+    new Request(request, {
+      credentials: "same-origin",
+      headers: dashboardRequestHeaders(method, request.headers),
+    }),
+  );
 }
 
-const dashboardAdminClient = createClient({
-  auth: () => undefined,
-  baseUrl: GENERATED_BASE_URL,
-  credentials: "same-origin",
-  fetch: dashboardGeneratedFetch,
-  responseStyle: "fields",
-  throwOnError: false,
-});
+let configuredAdminClient: { baseUrl: string; client: ReturnType<typeof createClient> } | undefined;
+
+function dashboardAdminClient(): ReturnType<typeof createClient> {
+  const baseUrl =
+    typeof globalThis.location === "undefined" || globalThis.location.origin === "null"
+      ? "http://localhost"
+      : globalThis.location.origin;
+  if (configuredAdminClient?.baseUrl === baseUrl) return configuredAdminClient.client;
+  const client = createClient({
+    auth: () => undefined,
+    baseUrl,
+    credentials: "same-origin",
+    fetch: dashboardGeneratedFetch,
+    responseStyle: "fields",
+    throwOnError: false,
+  });
+  configuredAdminClient = { baseUrl, client };
+  return client;
+}
 
 function isProblem(value: unknown): value is Problem {
   if (!value || typeof value !== "object") return false;
@@ -262,7 +256,7 @@ export async function adminV2GetHost(
   options: DashboardRequestOptions = {},
 ): Promise<AdminV2GetHostResponse> {
   return generatedData<AdminV2GetHostResponse>(
-    await generatedAdminV2GetHost({ client: dashboardAdminClient, signal: options.signal }),
+    await generatedAdminV2GetHost({ client: dashboardAdminClient(), signal: options.signal }),
   );
 }
 
@@ -272,7 +266,7 @@ export async function adminV2CreateRuntimeRestart(
 ): Promise<AdminV2CreateRuntimeRestartResponse> {
   return generatedData<AdminV2CreateRuntimeRestartResponse>(
     await generatedAdminV2CreateRuntimeRestart({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       body: {},
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -315,7 +309,7 @@ export async function adminV2CreateCapletRecordFromDocument(
   ]);
   return generatedData<AdminV2PutCapletRecordBundleResponse>(
     await generatedAdminV2PutCapletRecordBundleFormData({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id },
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -333,7 +327,7 @@ export async function adminV2GetRemoteClient(
 ): Promise<VersionedDashboardResource<AdminV2GetRemoteClientResponse>> {
   return generatedVersionedData<AdminV2GetRemoteClientResponse>(
     await generatedAdminV2GetRemoteClient({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { clientId },
       signal: options.signal,
     }),
@@ -349,7 +343,7 @@ export async function adminV2UpdateRemoteClient(
 ): Promise<AdminV2UpdateRemoteClientResponse> {
   return generatedData<AdminV2UpdateRemoteClientResponse>(
     await generatedAdminV2UpdateRemoteClient({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { clientId },
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -365,7 +359,7 @@ export async function adminV2GetRuntime(
   options: DashboardRequestOptions = {},
 ): Promise<AdminV2GetRuntimeResponse> {
   return generatedData<AdminV2GetRuntimeResponse>(
-    await generatedAdminV2GetRuntime({ client: dashboardAdminClient, signal: options.signal }),
+    await generatedAdminV2GetRuntime({ client: dashboardAdminClient(), signal: options.signal }),
   );
 }
 
@@ -374,7 +368,7 @@ export async function adminV2ListLogs(
 ): Promise<AdminV2ListLogsResponse> {
   return generatedData<AdminV2ListLogsResponse>(
     await generatedAdminV2ListLogs({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { limit: options.limit ?? 100, sort: "desc" },
       signal: options.signal,
     }),
@@ -385,7 +379,10 @@ export async function adminV2GetDiagnostics(
   options: DashboardRequestOptions = {},
 ): Promise<AdminV2GetDiagnosticsResponse> {
   return generatedData<AdminV2GetDiagnosticsResponse>(
-    await generatedAdminV2GetDiagnostics({ client: dashboardAdminClient, signal: options.signal }),
+    await generatedAdminV2GetDiagnostics({
+      client: dashboardAdminClient(),
+      signal: options.signal,
+    }),
   );
 }
 
@@ -394,7 +391,7 @@ export async function adminV2GetProjectBinding(
 ): Promise<AdminV2GetProjectBindingResponse> {
   return generatedData<AdminV2GetProjectBindingResponse>(
     await generatedAdminV2GetProjectBinding({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       signal: options.signal,
     }),
   );
@@ -405,7 +402,7 @@ export async function adminV2ListActivity(
 ): Promise<AdminV2ListActivityResponse> {
   return generatedData<AdminV2ListActivityResponse>(
     await generatedAdminV2ListActivity({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { limit: options.limit ?? 50, sort: "desc" },
       signal: options.signal,
     }),
@@ -417,7 +414,7 @@ export async function adminV2ListEffectiveCaplets(
 ): Promise<AdminV2ListEffectiveCapletsResponse> {
   return generatedData<AdminV2ListEffectiveCapletsResponse>(
     await generatedAdminV2ListEffectiveCaplets({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
     }),
@@ -429,7 +426,7 @@ export async function adminV2ListCatalogEntries(
 ): Promise<AdminV2ListCatalogEntriesResponse> {
   return generatedData<AdminV2ListCatalogEntriesResponse>(
     await generatedAdminV2ListCatalogEntries({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: {
         cursor: options.cursor,
         limit: options.limit ?? 500,
@@ -447,7 +444,7 @@ export async function adminV2GetCatalogEntry(
 ): Promise<AdminV2GetCatalogEntryResponse> {
   return generatedData<AdminV2GetCatalogEntryResponse>(
     await generatedAdminV2GetCatalogEntry({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { entryKey },
       query: { source: "official" },
       signal: options.signal,
@@ -460,7 +457,7 @@ export async function adminV2ListCatalogUpdateCandidates(
 ): Promise<AdminV2ListCatalogUpdateCandidatesResponse> {
   return generatedData<AdminV2ListCatalogUpdateCandidatesResponse>(
     await generatedAdminV2ListCatalogUpdateCandidates({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
     }),
@@ -474,7 +471,7 @@ export async function adminV2InstallCatalogCaplets(
 ): Promise<AdminV2InstallCatalogCapletsResponse> {
   return generatedData<AdminV2InstallCatalogCapletsResponse>(
     await generatedAdminV2InstallCatalogCaplets({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       body,
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -492,7 +489,7 @@ export async function adminV2UpdateCatalogCaplets(
 ): Promise<AdminV2UpdateCatalogCapletsResponse> {
   return generatedData<AdminV2UpdateCatalogCapletsResponse>(
     await generatedAdminV2UpdateCatalogCaplets({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       body,
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -508,7 +505,7 @@ export async function adminV2ListRemoteClients(
 ): Promise<AdminV2ListRemoteClientsResponse> {
   return generatedData<AdminV2ListRemoteClientsResponse>(
     await generatedAdminV2ListRemoteClients({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
     }),
@@ -523,7 +520,7 @@ export async function adminV2DeleteRemoteClient(
 ): Promise<AdminV2DeleteRemoteClientResponse> {
   return generatedData<AdminV2DeleteRemoteClientResponse>(
     await generatedAdminV2DeleteRemoteClient({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { clientId },
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -539,7 +536,7 @@ export async function adminV2ListRemoteLoginRequests(
 ): Promise<AdminV2ListRemoteLoginRequestsResponse> {
   return generatedData<AdminV2ListRemoteLoginRequestsResponse>(
     await generatedAdminV2ListRemoteLoginRequests({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
     }),
@@ -552,7 +549,7 @@ export async function adminV2GetRemoteLoginRequest(
 ): Promise<VersionedDashboardResource<AdminV2GetRemoteLoginRequestResponse>> {
   return generatedVersionedData<AdminV2GetRemoteLoginRequestResponse>(
     await generatedAdminV2GetRemoteLoginRequest({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { flowId },
       signal: options.signal,
     }),
@@ -568,7 +565,7 @@ export async function adminV2UpdateRemoteLoginRequest(
 ): Promise<AdminV2UpdateRemoteLoginRequestResponse> {
   return generatedData<AdminV2UpdateRemoteLoginRequestResponse>(
     await generatedAdminV2UpdateRemoteLoginRequest({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { flowId },
       body,
       headers: {
@@ -585,7 +582,7 @@ export async function adminV2ListVaultValues(
 ): Promise<AdminV2ListVaultValuesResponse> {
   return generatedData<AdminV2ListVaultValuesResponse>(
     await generatedAdminV2ListVaultValues({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
     }),
@@ -597,7 +594,7 @@ export async function adminV2ListVaultGrants(
 ): Promise<AdminV2ListVaultGrantsResponse> {
   return generatedData<AdminV2ListVaultGrantsResponse>(
     await generatedAdminV2ListVaultGrants({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
     }),
@@ -610,7 +607,7 @@ export async function adminV2GetVaultValue(
 ): Promise<VersionedDashboardResource<AdminV2GetVaultValueResponse>> {
   return generatedVersionedData<AdminV2GetVaultValueResponse>(
     await generatedAdminV2GetVaultValue({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { storedKey },
       signal: options.signal,
     }),
@@ -630,7 +627,7 @@ export async function adminV2PutVaultValue(
       : { "Idempotency-Key": intent.idempotencyKey, "If-Match": etag };
   return generatedData<AdminV2PutVaultValueResponse>(
     await generatedAdminV2PutVaultValue({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { storedKey },
       body,
       headers,
@@ -647,7 +644,7 @@ export async function adminV2DeleteVaultValue(
 ): Promise<AdminV2DeleteVaultValueResponse> {
   return generatedData<AdminV2DeleteVaultValueResponse>(
     await generatedAdminV2DeleteVaultValue({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { storedKey },
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -663,7 +660,7 @@ export async function adminV2ListCapletRecords(
 ): Promise<AdminV2ListCapletRecordsResponse> {
   return generatedData<AdminV2ListCapletRecordsResponse>(
     await generatedAdminV2ListCapletRecords({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
     }),
@@ -676,7 +673,7 @@ export async function adminV2GetCapletRecord(
 ): Promise<VersionedDashboardResource<AdminV2GetCapletRecordResponse>> {
   return generatedVersionedData<AdminV2GetCapletRecordResponse>(
     await generatedAdminV2GetCapletRecord({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id },
       signal: options.signal,
     }),
@@ -692,7 +689,7 @@ export async function adminV2UpdateCapletRecord(
 ): Promise<AdminV2UpdateCapletRecordResponse> {
   return generatedData<AdminV2UpdateCapletRecordResponse>(
     await generatedAdminV2UpdateCapletRecord({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id },
       body,
       headers: {
@@ -712,7 +709,7 @@ export async function adminV2DeleteCapletRecord(
 ): Promise<AdminV2DeleteCapletRecordResponse> {
   return generatedData<AdminV2DeleteCapletRecordResponse>(
     await generatedAdminV2DeleteCapletRecord({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id },
       headers: {
         "Idempotency-Key": intent.idempotencyKey,
@@ -729,7 +726,7 @@ export async function adminV2ListCapletRecordRevisions(
 ): Promise<AdminV2ListCapletRecordRevisionsResponse> {
   return generatedData<AdminV2ListCapletRecordRevisionsResponse>(
     await generatedAdminV2ListCapletRecordRevisions({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id },
       query: { cursor: options.cursor, limit: options.limit ?? 500, sort: "desc" },
       signal: options.signal,
@@ -744,7 +741,7 @@ export async function adminV2GetCapletRecordRevision(
 ): Promise<VersionedDashboardResource<AdminV2GetCapletRecordRevisionResponse>> {
   return generatedVersionedData<AdminV2GetCapletRecordRevisionResponse>(
     await generatedAdminV2GetCapletRecordRevision({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id, revisionKey },
       signal: options.signal,
     }),
@@ -760,7 +757,7 @@ export async function adminV2PutCapletRecordCurrentRevision(
 ): Promise<AdminV2PutCapletRecordCurrentRevisionResponse> {
   return generatedData<AdminV2PutCapletRecordCurrentRevisionResponse>(
     await generatedAdminV2PutCapletRecordCurrentRevision({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id },
       body: { revisionKey },
       headers: {
@@ -782,7 +779,7 @@ export async function adminV2DeleteCapletRecordRevision(
 ): Promise<AdminV2DeleteCapletRecordRevisionResponse> {
   return generatedData<AdminV2DeleteCapletRecordRevisionResponse>(
     await generatedAdminV2DeleteCapletRecordRevision({
-      client: dashboardAdminClient,
+      client: dashboardAdminClient(),
       path: { id, revisionKey },
       headers: {
         "Idempotency-Key": intent.idempotencyKey,

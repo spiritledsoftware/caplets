@@ -24,21 +24,24 @@ tools still requires restarting OpenCode; newly added tools are not advertised u
 
 ## Runtime Selection
 
-`caplets setup opencode` installs the plugin and writes non-secret daemon defaults so the plugin connects to the local Caplets daemon by default. Use `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and `CAPLETS_REMOTE_*` to select local in-process, daemon, self-hosted remote, or Caplets Cloud behavior:
+`caplets setup opencode` installs the plugin and writes non-secret daemon defaults so the plugin
+connects to the local Caplets daemon by default. Use `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and
+`CAPLETS_REMOTE_URL` to select local in-process, daemon, or generic remote behavior:
 
 ```sh
 CAPLETS_MODE=local opencode
-CAPLETS_MODE=daemon CAPLETS_DAEMON_URL=http://127.0.0.1:5387/ opencode
-CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets opencode
-CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
+CAPLETS_MODE=daemon CAPLETS_DAEMON_URL=http://127.0.0.1:5387 opencode
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com opencode
 ```
 
-Run `caplets remote login <url>` before remote or Cloud mode. Native integrations use the saved Remote Profile, so remote credentials do not belong in the environment:
+Run `caplets remote login <origin>` before remote mode. Native integrations use the saved Remote
+Profile, so remote credentials do not belong in the environment. URL selectors are Current Host
+Origins; non-root paths, queries, fragments, and embedded credentials are rejected:
 
 ```sh
-caplets remote login https://caplets.example.com/caplets
+caplets remote login https://caplets.example.com
 CAPLETS_MODE=remote \
-CAPLETS_REMOTE_URL=https://caplets.example.com/caplets \
+CAPLETS_REMOTE_URL=https://caplets.example.com \
 opencode
 ```
 
@@ -52,7 +55,7 @@ export default {
       {
         mode: "remote",
         remote: {
-          url: "https://caplets.example.com/caplets",
+          url: "https://caplets.example.com",
           pollIntervalMs: 5_000,
         },
       },

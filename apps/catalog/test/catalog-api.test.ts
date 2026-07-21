@@ -4,6 +4,7 @@ import {
   getCatalogEntry,
   listCatalogEntries,
   listCompactCatalogEntries,
+  listCompactCatalogEntriesPage,
 } from "../src/lib/catalog-store";
 
 describe("catalog read model", () => {
@@ -39,6 +40,27 @@ describe("catalog read model", () => {
       installCommand: expect.objectContaining({ text: expect.any(String) }),
     });
     expect(compact.some((entry) => "contentMarkdown" in entry)).toBe(false);
+  });
+
+  it("returns deterministic keyset pages without materializing the complete index", async () => {
+    const first = await listCompactCatalogEntriesPage({
+      limit: 2,
+      sort: "asc",
+      query: "a",
+    });
+    expect(first.entries).toHaveLength(2);
+    expect(first.nextEntryKey).toBe(first.entries.at(-1)?.entryKey);
+
+    const second = await listCompactCatalogEntriesPage({
+      limit: 2,
+      sort: "asc",
+      query: "a",
+      after: first.nextEntryKey,
+    });
+    expect(second.entries.every((entry) => entry.entryKey > first.nextEntryKey!)).toBe(true);
+    expect(new Set([...first.entries, ...second.entries].map((entry) => entry.entryKey)).size).toBe(
+      first.entries.length + second.entries.length,
+    );
   });
 
   it("hides suppressed entries from list and detail reads", async () => {

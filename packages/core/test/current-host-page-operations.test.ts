@@ -129,6 +129,7 @@ describe("Current Host keyset page operations", () => {
         remoteCredentialStore: storage.remoteSecurity,
         vaultValues: storage.vaultValues,
         vaultGrants: storage.vaultGrants,
+        vaultState: storage.vaultState,
         version: "test-version",
       });
 
@@ -338,6 +339,7 @@ describe("Current Host keyset page operations", () => {
         remoteCredentialStore: storage.remoteSecurity,
         vaultValues: storage.vaultValues,
         vaultGrants: storage.vaultGrants,
+        vaultState: storage.vaultState,
         version: "test-version",
       });
 

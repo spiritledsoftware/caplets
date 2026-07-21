@@ -28,16 +28,6 @@ function setDashboardPath(pathname: string, origin = "https://current-host.examp
   });
 }
 
-function setDashboardBaseMeta(content: string) {
-  Object.defineProperty(globalThis, "document", {
-    configurable: true,
-    value: {
-      querySelector: (selector: string) =>
-        selector === 'meta[name="caplets-dashboard-base-path"]' ? { content } : null,
-    },
-  });
-}
-
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -82,16 +72,15 @@ const session = {
   csrfToken: "active-token",
 };
 
-describe("generated dashboard Admin client adapter", () => {
+describe("generated dashboard Caplets SDK adapter", () => {
   afterEach(() => {
     setDashboardSession(undefined);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    Reflect.deleteProperty(globalThis, "document");
     Reflect.deleteProperty(globalThis, "location");
   });
 
-  it("rewrites the canonical generated path to the mounted dashboard v2 alias with cookies and no GET CSRF", async () => {
+  it("calls the canonical Admin namespace with cookies and no GET CSRF", async () => {
     setDashboardPath("/tenant/tools/dashboard/access");
     setDashboardSession(session);
     const fetchMock = successfulFetch();
@@ -103,7 +92,7 @@ describe("generated dashboard Admin client adapter", () => {
       credentials: "same-origin",
       csrfHeaders: [],
       method: "GET",
-      pathname: "/tenant/tools/dashboard/api/v2/host",
+      pathname: "/api/v2/admin/host",
     });
   });
 
@@ -116,7 +105,7 @@ describe("generated dashboard Admin client adapter", () => {
 
     expect(observedRequest(fetchMock)).toMatchObject({
       credentials: "same-origin",
-      url: "https://current-host.example:9443/dashboard/api/v2/host",
+      url: "https://current-host.example:9443/api/v2/admin/host",
     });
   });
 
@@ -135,15 +124,14 @@ describe("generated dashboard Admin client adapter", () => {
     });
   });
 
-  it("honors an explicit site-root dashboard mount", async () => {
-    setDashboardPath("/access");
-    setDashboardBaseMeta("/");
+  it("never infers an Admin prefix from the dashboard pathname", async () => {
+    setDashboardPath("/removed-prefix/dashboard/access");
     const fetchMock = successfulFetch();
     vi.stubGlobal("fetch", fetchMock);
 
     await adminV2GetHost();
 
-    expect(observedRequest(fetchMock).pathname).toBe("/api/v2/host");
+    expect(observedRequest(fetchMock).pathname).toBe("/api/v2/admin/host");
   });
 
   it("reads the current session token once for unsafe generated methods", async () => {
@@ -200,7 +188,7 @@ describe("generated dashboard Admin client adapter", () => {
       csrfHeaders: [["x-caplets-csrf", "active-token"]],
       ifNoneMatchHeaders: [["if-none-match", "*"]],
       method: "PUT",
-      pathname: "/dashboard/api/v2/caplet-records/alpha/bundle",
+      pathname: "/api/v2/admin/caplet-records/alpha/bundle",
     });
     expect(submitted?.getAll("file")).toHaveLength(1);
     expect(JSON.parse(String(submitted?.get("manifest")))).toMatchObject({
@@ -255,7 +243,7 @@ describe("generated dashboard Admin client adapter", () => {
       ifMatchHeaders: [["if-match", '"revision-v1"']],
       parentIfMatchHeaders: [["x-caplets-parent-if-match", '"record-v2"']],
       method: "DELETE",
-      pathname: "/dashboard/api/v2/caplet-records/record-1/revisions/rev-1",
+      pathname: "/api/v2/admin/caplet-records/record-1/revisions/rev-1",
     });
   });
 
@@ -345,7 +333,6 @@ describe("private Vault reveal transport", () => {
     setDashboardSession(undefined);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    Reflect.deleteProperty(globalThis, "document");
     Reflect.deleteProperty(globalThis, "location");
   });
 
@@ -374,11 +361,10 @@ describe("handwritten dashboard session ceremony", () => {
     setDashboardSession(undefined);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    Reflect.deleteProperty(globalThis, "document");
     Reflect.deleteProperty(globalThis, "location");
   });
 
-  it("keeps session restore safe and login/logout on their legacy mounted paths", async () => {
+  it("keeps session restore safe and all private ceremonies in the fixed dashboard namespace", async () => {
     setDashboardPath("/tenant/dashboard/access");
     setDashboardSession(session);
     const fetchMock = vi
@@ -406,7 +392,7 @@ describe("handwritten dashboard session ceremony", () => {
     expect(observedRequest(fetchMock, 0)).toMatchObject({
       csrfHeaders: [],
       method: "GET",
-      pathname: "/tenant/dashboard/api/session",
+      pathname: "/dashboard/api/session",
     });
     expect(
       [1, 2, 3, 4].map((call) => ({
@@ -418,22 +404,22 @@ describe("handwritten dashboard session ceremony", () => {
       {
         csrf: [["x-caplets-csrf", "active-token"]],
         method: "POST",
-        pathname: "/tenant/dashboard/api/login/start",
+        pathname: "/dashboard/api/login/start",
       },
       {
         csrf: [["x-caplets-csrf", "active-token"]],
         method: "POST",
-        pathname: "/tenant/dashboard/api/login/poll",
+        pathname: "/dashboard/api/login/poll",
       },
       {
         csrf: [["x-caplets-csrf", "active-token"]],
         method: "POST",
-        pathname: "/tenant/dashboard/api/login/complete",
+        pathname: "/dashboard/api/login/complete",
       },
       {
         csrf: [["x-caplets-csrf", "active-token"]],
         method: "POST",
-        pathname: "/tenant/dashboard/api/logout",
+        pathname: "/dashboard/api/logout",
       },
     ]);
   });

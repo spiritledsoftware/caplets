@@ -88,9 +88,21 @@ _Avoid_: Admin device token, dashboard token
 The Caplets host that served the active dashboard session and owns the runtime state being administered in that session.
 _Avoid_: Only server, global host singleton
 
+**Current Host Origin**:
+The canonical HTTP(S) origin of a Current Host: scheme, host, and optional port, with no credentials, non-root path, query, or fragment. Current Host configuration and clients resolve fixed Protocol Namespaces from this origin.
+_Avoid_: Service root, base path, endpoint URL, host URL with path
+
+**Protocol Namespace**:
+A fixed origin-root path owned by one Current Host interface: discovery at `/.well-known/caplets`, public HTTP at `/api`, exact MCP at `/mcp`, or browser UI and private ceremonies beneath `/dashboard`. Protocol Namespaces are not deployment or reverse-proxy configuration.
+_Avoid_: Configured prefix, relocatable route root, service base path
+
+**Dashboard Session Credential**:
+A host-only, HttpOnly browser credential established from an approved Operator Client and accepted only by the canonical Admin API and dashboard-private ceremonies with same-origin and conditional CSRF checks.
+_Avoid_: Dashboard token, browser bearer, dashboard-wide authority
+
 **Admin API**:
-A versioned HTTP resource interface through which an Operator Client administers the Current Host. Dashboard and remote clients use the same resource semantics even though their authentication ceremonies differ.
-_Avoid_: Remote CLI RPC, dashboard backend, mixed-auth endpoint
+The canonical `/api/v2/admin/*` HTTP resource interface through which Operator bearer clients and same-origin Dashboard Session Credentials administer the Current Host under explicit credential-mode precedence.
+_Avoid_: Remote CLI RPC, dashboard backend, mixed-auth endpoint, dashboard Admin alias
 
 **Caplets SDK**:
 The typed client Module for the canonical public Caplets HTTP API and the versioned Attach Project Binding WebSocket session protocol. It excludes MCP and dashboard-private authentication ceremonies.

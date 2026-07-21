@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findProjectRoot } from "../src/cloud/project-root";
+import { findProjectRoot } from "../src/project-root";
 
 describe("project root detection", () => {
   const dirs: string[] = [];

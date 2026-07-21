@@ -47,7 +47,7 @@ afterEach(async () => {
 
 describe("host storage", () => {
   it("creates a ready migrated SQLite store by default", async () => {
-    expect(HOST_STORAGE_SCHEMA_VERSION).toBe(17);
+    expect(HOST_STORAGE_SCHEMA_VERSION).toBe(18);
     const directory = mkdtempSync(join(tmpdir(), "caplets-storage-"));
     directories.push(directory);
 

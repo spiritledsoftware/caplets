@@ -16,7 +16,7 @@ Large MCP and API setups give agents too much surface area too early:
 - Agents choose tools before they understand the capability domain.
 - Multi-step discovery produces repeated model/tool round trips.
 - Schema-less or generic outputs make agents over-carry raw payloads.
-- Local, remote, Cloud, and native agent integrations need the same capability model.
+- Local, generic remote, and native agent integrations need the same capability model.
 
 Caplets should make backends usable as capability domains without hiding the exact operations, schemas, resources, prompts, results, or errors that agents need to complete work.
 
@@ -27,7 +27,7 @@ Caplets should make backends usable as capability domains without hiding the exa
 - Preserve direct MCP access for explicitly exposed tools, resources, resource templates, and prompts.
 - Keep downstream calls lossless enough for agents to cite evidence and recover from errors.
 - Keep secrets redacted while exposing enough auth and status detail for debugging.
-- Support local, self-hosted remote, and hosted Cloud routes through the same capability semantics.
+- Support local and generic Current Host remote routes through the same capability semantics.
 - Keep benchmark claims reproducible, with live results clearly marked as environment-dependent.
 
 ## Non-Goals
@@ -35,7 +35,6 @@ Caplets should make backends usable as capability domains without hiding the exa
 - Do not claim Code Mode is a sandbox security boundary.
 - Do not flatten every downstream tool into the initial tool list by default.
 - Do not make progressive discovery the product frame; it is one supported exposure mode.
-- Do not require hosted Cloud for local Caplets usage.
 - Do not expose arbitrary shell access through CLI-backed Caplets.
 - Do not treat live benchmark runs as deterministic product claims.
 
@@ -62,11 +61,17 @@ The `caplets` package installs the CLI. Important commands include:
 
 ### Native Integrations
 
-OpenCode and Pi use the native service from `@caplets/core/native`. They expose `caplets__code_mode` for Code Mode, `caplets__<id>` tools for progressive exposure, and operation-level `caplets__<id>__<operation>` tools for direct exposure. Native integrations share the same local, remote, and Cloud selection rules as the CLI.
+OpenCode and Pi use the native service from `@caplets/core/native`. They expose
+`caplets__code_mode` for Code Mode, `caplets__<id>` tools for progressive exposure, and
+operation-level `caplets__<id>__<operation>` tools for direct exposure. Native integrations share
+the same local, daemon, and generic remote selection rules as the CLI.
 
-### Remote And Cloud
+### Generic Remote
 
-Self-hosted remotes and hosted Cloud use `caplets remote login <url>` to create a saved Remote Profile, then use `CAPLETS_MODE` with `CAPLETS_REMOTE_URL` as a non-secret selector. Project Binding connects a local project root to a remote runtime when Cloud or remote workflows need project-local files.
+`caplets remote login <origin>` creates a saved Remote Profile. Native integrations use
+`CAPLETS_MODE=remote` with the origin-only `CAPLETS_REMOTE_URL` as a non-secret selector. Project
+Binding connects a local project root to a generic Current Host when remote workflows need
+project-local files.
 
 ## Capability Model
 
@@ -156,5 +161,5 @@ Live Pi evals compare Caplets modes against vanilla MCP and Executor in opt-in, 
 
 - Which Code Mode result-shaping hints should become stable public contract versus internal prompt guidance?
 - How much direct exposure should be enabled by default for clients that support resources and prompts well?
-- Which Cloud runtime and Project Binding semantics should move from implementation detail to public product contract?
+- Which generic Project Binding semantics should move from implementation detail to public product contract?
 - Which historical benchmark suites should remain supported as long-term regression tests versus local research harnesses?

@@ -4,14 +4,14 @@ import { createCurrentHostOperations } from "../src/current-host/operations";
 
 const mocks = vi.hoisted(() => ({
   installed: vi.fn(),
-  index: vi.fn(),
+  page: vi.fn(),
   updates: vi.fn(),
 }));
 
 vi.mock("../src/current-host/catalog", async (importOriginal) => ({
   ...(await importOriginal<typeof CatalogModule>()),
   currentHostInstalledCaplets: mocks.installed,
-  currentHostCatalogIndex: mocks.index,
+  currentHostCatalogEntriesPage: mocks.page,
   currentHostCatalogUpdateReadiness: mocks.updates,
 }));
 
@@ -34,9 +34,35 @@ const entries = ["charlie", "alpha", "bravo"].map((id) => ({
 describe("Current Host canonical catalog pages", () => {
   beforeEach(() => {
     mocks.installed.mockReset();
-    mocks.index.mockReset();
+    mocks.page.mockReset();
     mocks.updates.mockReset();
-    mocks.index.mockResolvedValue({ entries });
+    mocks.page.mockImplementation(
+      async (input: { limit: number; sort: "asc" | "desc"; after?: { entryKey: string } }) => {
+        const direction = input.sort === "asc" ? 1 : -1;
+        const ordered = [...entries].sort(
+          (left, right) =>
+            direction *
+            (left.entryKey < right.entryKey ? -1 : left.entryKey > right.entryKey ? 1 : 0),
+        );
+        const remaining =
+          input.after === undefined
+            ? ordered
+            : ordered.filter(
+                (entry) =>
+                  direction *
+                    (entry.entryKey < input.after!.entryKey
+                      ? -1
+                      : entry.entryKey > input.after!.entryKey
+                        ? 1
+                        : 0) >
+                  0,
+              );
+        const items = remaining.slice(0, input.limit);
+        return remaining.length > input.limit
+          ? { items, nextKey: { entryKey: items.at(-1)!.entryKey } }
+          : { items };
+      },
+    );
     mocks.installed.mockReturnValue([
       { id: "zulu", name: "Zulu" },
       { id: "alpha", name: "Alpha" },
@@ -119,24 +145,55 @@ describe("Current Host canonical catalog pages", () => {
     ]);
     expect(descendingCaplets.page.items[0]).toEqual(expect.objectContaining({ id: "zulu" }));
     expect(descendingCandidates.page.items[0]).toEqual(expect.objectContaining({ id: "zulu" }));
-    expect(mocks.index).toHaveBeenCalledTimes(3);
-    expect(mocks.index).toHaveBeenCalledWith({ source: "official" });
-  });
-  it("uses code-unit order consistently when advancing catalog cursors", async () => {
-    mocks.index.mockResolvedValue({
-      entries: [
-        {
-          ...entries[0]!,
-          entryKey: "entry-a",
-          id: "a",
-        },
-        {
-          ...entries[1]!,
-          entryKey: "entry-Z",
-          id: "Z",
-        },
-      ],
+    expect(mocks.page).toHaveBeenCalledTimes(3);
+    expect(mocks.page).toHaveBeenCalledWith({
+      source: "official",
+      query: "entry",
+      limit: 2,
+      sort: "asc",
     });
+  });
+
+  it("uses code-unit order consistently when advancing catalog cursors", async () => {
+    const alternateEntries = [
+      {
+        ...entries[0]!,
+        entryKey: "entry-a",
+        id: "a",
+      },
+      {
+        ...entries[1]!,
+        entryKey: "entry-Z",
+        id: "Z",
+      },
+    ];
+    mocks.page.mockImplementation(
+      async (input: { limit: number; sort: "asc" | "desc"; after?: { entryKey: string } }) => {
+        const direction = input.sort === "asc" ? 1 : -1;
+        const ordered = [...alternateEntries].sort(
+          (left, right) =>
+            direction *
+            (left.entryKey < right.entryKey ? -1 : left.entryKey > right.entryKey ? 1 : 0),
+        );
+        const remaining =
+          input.after === undefined
+            ? ordered
+            : ordered.filter(
+                (entry) =>
+                  direction *
+                    (entry.entryKey < input.after!.entryKey
+                      ? -1
+                      : entry.entryKey > input.after!.entryKey
+                        ? 1
+                        : 0) >
+                  0,
+              );
+        const items = remaining.slice(0, input.limit);
+        return remaining.length > input.limit
+          ? { items, nextKey: { entryKey: items.at(-1)!.entryKey } }
+          : { items };
+      },
+    );
     const operations = createCurrentHostOperations({
       engine: { enabledServers: () => [] },
       activityLog: { append: vi.fn(), list: vi.fn().mockReturnValue({ entries: [] }) },

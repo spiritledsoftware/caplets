@@ -72,7 +72,7 @@ describe("runProjectBindingSession", () => {
         sessionId: SESSION_ID,
         projectRoot: ROOT,
         projectFingerprint: FINGERPRINT,
-        webSocketUrl: "wss://host.example/v1/attach/project-bindings/connect",
+        webSocketUrl: "wss://host.example/api/v1/attach/project-bindings/connect",
         ended: true,
       },
       error: undefined,
@@ -128,35 +128,58 @@ describe("runProjectBindingSession", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each([
-    "https://host.example/v1/attach/project-bindings/connect",
-    "wss://host.example/v1/attach/project-bindings/not-connect",
-    "/v1/attach/project-bindings/connect",
-    "wss://host.example/v1/attach/project-bindings/connect?workspace=other",
-    "wss://host.example/v1/attach/project-bindings/connect#other",
-    "wss://host.example/v1/attach/project-bindings/connect?",
-    "wss://host.example/v1/attach/project-bindings/connect#",
-  ])("rejects invalid connect URL %s before network activity", async (webSocketUrl) => {
-    const http = new HttpHarness();
-    const client = createClient({ baseUrl: "https://unused.example", fetch: http.fetch });
-    const result = await runProjectBindingSession({
-      client,
-      webSocketUrl,
-      projectRoot: ROOT,
-      projectFingerprint: FINGERPRINT,
-    });
-    expect(result.error?.kind).toBe("protocol");
-    expect(http.requests).toHaveLength(0);
-  });
   it("rejects blank project identity before network activity", async () => {
     const http = new HttpHarness();
     const client = createClient({ baseUrl: "https://unused.example", fetch: http.fetch });
     const result = await runProjectBindingSession({
       client,
-      webSocketUrl: "wss://host.example/v1/attach/project-bindings/connect",
+      webSocketUrl: "wss://unused.example/api/v1/attach/project-bindings/connect",
       projectRoot: " ",
       projectFingerprint: "",
     });
+    expect(result.error?.kind).toBe("protocol");
+    expect(http.requests).toHaveLength(0);
+  });
+
+  it.each([
+    ["a missing endpoint", undefined],
+    ["an HTTP endpoint", "https://host.example/api/v1/attach/project-bindings/connect"],
+    ["a different route", "wss://host.example/api/v1/attach/project-bindings/sessions"],
+    [
+      "a normalized dot-segment route",
+      "wss://host.example/prefix/../api/v1/attach/project-bindings/connect",
+    ],
+    [
+      "an encoded dot-segment route",
+      "wss://host.example/prefix/%2e%2e/api/v1/attach/project-bindings/connect",
+    ],
+    [
+      "an endpoint with trailing whitespace",
+      "wss://host.example/api/v1/attach/project-bindings/connect\n",
+    ],
+    ["a cross-origin endpoint", "wss://other.example/api/v1/attach/project-bindings/connect"],
+    [
+      "an endpoint with credentials",
+      "wss://user:secret@host.example/api/v1/attach/project-bindings/connect",
+    ],
+    [
+      "an endpoint with a query",
+      "wss://host.example/api/v1/attach/project-bindings/connect?token=secret",
+    ],
+    [
+      "an endpoint with a fragment",
+      "wss://host.example/api/v1/attach/project-bindings/connect#secret",
+    ],
+  ])("rejects %s before network activity", async (_name, webSocketUrl) => {
+    const http = new HttpHarness();
+    const client = createClient({ baseUrl: "https://host.example", fetch: http.fetch });
+    const result = await runProjectBindingSession({
+      client,
+      projectRoot: ROOT,
+      projectFingerprint: FINGERPRINT,
+      ...(webSocketUrl === undefined ? {} : { webSocketUrl }),
+    } as Parameters<typeof runProjectBindingSession>[0]);
+
     expect(result.error?.kind).toBe("protocol");
     expect(http.requests).toHaveLength(0);
   });
@@ -334,7 +357,6 @@ describe("runProjectBindingSession", () => {
     const events: ProjectBindingSessionEvent[] = [];
     const promise = runSession(http, sockets.factory, {
       auth: token,
-      webSocketUrl: "wss://host.example/v1/attach/project-bindings/connect",
       onEvent: (event) => events.push(event),
     });
     await until(() => sockets.sockets.length === 1);
@@ -354,40 +376,26 @@ describe("runProjectBindingSession", () => {
     expect(exposed).not.toContain(rawReason);
   });
 
-  it.each([
-    {
-      name: "a prefixed self-hosted route",
-      webSocketUrl: "ws://self.example:8080/caplets/v1/attach/project-bindings/connect",
-      sessionsUrl: "http://self.example:8080/caplets/v1/attach/project-bindings/sessions",
-      heartbeatUrl:
-        "http://self.example:8080/caplets/v1/attach/project-bindings/binding-1/heartbeat",
-    },
-    {
-      name: "a Cloud workspace route",
-      webSocketUrl: "wss://cloud.example/workspaces/workspace-7/v1/attach/project-bindings/connect",
-      sessionsUrl:
-        "https://cloud.example/workspaces/workspace-7/v1/attach/project-bindings/sessions",
-      heartbeatUrl:
-        "https://cloud.example/workspaces/workspace-7/v1/attach/project-bindings/binding-1/heartbeat",
-    },
-  ])(
-    "derives sibling HTTP paths for $name",
-    async ({ webSocketUrl, sessionsUrl, heartbeatUrl }) => {
-      const http = new HttpHarness();
-      const sockets = new SocketHarness();
-      const promise = runSession(http, sockets.factory, { webSocketUrl });
-      await until(() => sockets.sockets.length === 1);
-      sockets.sockets[0]!.open();
-      await until(() => http.heartbeatRequests.length === 1);
+  it("derives fixed HTTP siblings from the explicit WebSocket endpoint", async () => {
+    const http = new HttpHarness();
+    const sockets = new SocketHarness();
+    const promise = runSession(http, sockets.factory);
+    await until(() => sockets.sockets.length === 1);
+    sockets.sockets[0]!.open();
+    await until(() => http.heartbeatRequests.length === 1);
 
-      expect(http.createRequests[0]!.url).toBe(sessionsUrl);
-      expect(http.heartbeatRequests[0]!.url).toBe(heartbeatUrl);
-      expect(new URL(sockets.urls[0]!).pathname).toMatch(/\/connect$/u);
-      expect(new URL(sockets.urls[0]!).searchParams.get("bindingId")).toBe(BINDING_ID);
-      sockets.sockets[0]!.receive({ type: "ended", reason: ENDED_REASON });
-      await promise;
-    },
-  );
+    expect(http.createRequests[0]!.url).toBe(
+      "https://host.example/api/v1/attach/project-bindings/sessions",
+    );
+    expect(http.heartbeatRequests[0]!.url).toBe(
+      "https://host.example/api/v1/attach/project-bindings/binding-1/heartbeat",
+    );
+    const socketUrl = new URL(sockets.urls[0]!);
+    expect(socketUrl.pathname).toBe("/api/v1/attach/project-bindings/connect");
+    expect(socketUrl.searchParams.get("bindingId")).toBe(BINDING_ID);
+    sockets.sockets[0]!.receive({ type: "ended", reason: ENDED_REASON });
+    await promise;
+  });
 
   it("emits every client message union member named by the shared fixture", async () => {
     expect(fixtures.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
@@ -454,6 +462,63 @@ describe("runProjectBindingSession", () => {
       expect(http.deleteRequests).toHaveLength(0);
     },
   );
+
+  it.each([
+    "cloud_auth_required",
+    "cloud_auth_expired",
+    "cloud_auth_revoked",
+    "workspace_selection_required",
+    "workspace_switch_required",
+    "workspace_forbidden",
+    "usage_limit_reached",
+    "billing_required",
+    "subscription_past_due",
+    "email_verification_required",
+  ])("rejects removed hosted terminal reason %s", async (code) => {
+    const http = new HttpHarness();
+    const sockets = new SocketHarness();
+    const promise = runSession(http, sockets.factory);
+    await until(() => sockets.sockets.length === 1);
+    const socket = sockets.sockets[0]!;
+    socket.onSend = (sent) => {
+      if (sent.type === "end") socket.receive(FIXTURE_ENDED_MESSAGE);
+    };
+    socket.open();
+    socket.receive({ type: "blocked", reason: { code, message: "Removed." } });
+
+    const result = await promise;
+    expect(result.error).toBeInstanceOf(ProjectBindingSessionError);
+    expect(result.error?.kind).toBe("protocol");
+    expect(http.deleteRequests).toHaveLength(0);
+  });
+
+  it.each([
+    "project_binding_forbidden",
+    "endpoint_unavailable",
+    "websocket_upgrade_required",
+    "sync_required",
+    "sync_failed",
+    "sync_size_limit_exceeded",
+    "lease_conflict",
+    "lease_expired",
+    "policy_denied",
+    "remote_credentials_required",
+    "remote_credentials_revoked",
+    "remote_auth_failed",
+    "interrupted",
+    "completed",
+  ])("accepts surviving terminal reason %s", async (code) => {
+    const http = new HttpHarness();
+    const sockets = new SocketHarness();
+    const promise = runSession(http, sockets.factory);
+    await until(() => sockets.sockets.length === 1);
+    const socket = sockets.sockets[0]!;
+    socket.open();
+    socket.receive({ type: "ended", reason: { code, message: "Terminal." } });
+
+    await expect(promise).resolves.toMatchObject({ error: undefined });
+    expect(http.deleteRequests).toHaveLength(0);
+  });
 
   it.each([
     ["malformed JSON", "{"],
@@ -827,7 +892,6 @@ describe("runProjectBindingSession", () => {
 
 type RunOptions = {
   auth?: string | ((auth: Auth) => string | undefined | Promise<string | undefined>);
-  webSocketUrl?: string;
   signal?: AbortSignal;
   onEvent?: (event: ProjectBindingSessionEvent) => void;
 };
@@ -838,13 +902,13 @@ function runSession(
   options: RunOptions = {},
 ) {
   const client = createClient({
-    baseUrl: "https://unused.example/service-prefix",
+    baseUrl: "https://host.example",
     fetch: http.fetch,
     ...(options.auth !== undefined ? { auth: options.auth } : {}),
   });
   return runProjectBindingSession({
     client,
-    webSocketUrl: options.webSocketUrl ?? "wss://host.example/v1/attach/project-bindings/connect",
+    webSocketUrl: "wss://host.example/api/v1/attach/project-bindings/connect",
     projectRoot: ROOT,
     projectFingerprint: FINGERPRINT,
     webSocketFactory,
@@ -858,10 +922,10 @@ function runSessionThrowing(
   webSocketFactory: ProjectBindingWebSocketFactory,
   signal: AbortSignal,
 ) {
-  const client = createClient({ baseUrl: "https://unused.example", fetch: http.fetch });
+  const client = createClient({ baseUrl: "https://host.example", fetch: http.fetch });
   return runProjectBindingSession({
     client,
-    webSocketUrl: "wss://host.example/v1/attach/project-bindings/connect",
+    webSocketUrl: "wss://host.example/api/v1/attach/project-bindings/connect",
     projectRoot: ROOT,
     projectFingerprint: FINGERPRINT,
     webSocketFactory,

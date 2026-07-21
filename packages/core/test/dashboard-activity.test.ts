@@ -29,7 +29,7 @@ describe("dashboard activity and access actions", () => {
 
     const approved = await dashboardPatch(
       setup,
-      `/dashboard/api/v2/remote-login-requests/${approveTarget.flowId}`,
+      `/api/v2/admin/remote-login-requests/${approveTarget.flowId}`,
       { action: "approve", grantedRole: "access" },
     );
     expect(approved.status).toBe(200);
@@ -41,13 +41,13 @@ describe("dashboard activity and access actions", () => {
 
     const denied = await dashboardPatch(
       setup,
-      `/dashboard/api/v2/remote-login-requests/${denyTarget.flowId}`,
+      `/api/v2/admin/remote-login-requests/${denyTarget.flowId}`,
       { action: "deny" },
     );
     expect(denied.status).toBe(200);
     await expect(denied.json()).resolves.toMatchObject({ status: "denied" });
 
-    const activity = await dashboardGet(setup, "/dashboard/api/v2/activity");
+    const activity = await dashboardGet(setup, "/api/v2/admin/activity");
     expect(activity.status).toBe(200);
     const text = await activity.text();
     expect(text).toContain('"action":"remote_pending_login_approved"');
@@ -72,7 +72,7 @@ describe("dashboard activity and access actions", () => {
 
     const approved = await dashboardPatch(
       setup,
-      `/dashboard/api/v2/remote-login-requests/${expired.flowId}`,
+      `/api/v2/admin/remote-login-requests/${expired.flowId}`,
       { action: "approve", grantedRole: "operator" },
     );
 
@@ -109,7 +109,7 @@ describe("dashboard activity and access actions", () => {
 
     const revoked = await dashboardDelete(
       setup,
-      `/dashboard/api/v2/remote-clients/${otherCredentials.clientId}`,
+      `/api/v2/admin/remote-clients/${otherCredentials.clientId}`,
     );
     expect(revoked.status).toBe(200);
     await expect(revoked.json()).resolves.toMatchObject({
@@ -119,7 +119,7 @@ describe("dashboard activity and access actions", () => {
 
     const downgraded = await dashboardPatch(
       setup,
-      `/dashboard/api/v2/remote-clients/${setup.operatorClientId}`,
+      `/api/v2/admin/remote-clients/${setup.operatorClientId}`,
       { role: "access" },
     );
     expect(downgraded.status).toBe(200);
@@ -127,11 +127,11 @@ describe("dashboard activity and access actions", () => {
       role: "access",
     });
 
-    const summary = await dashboardGet(setup, "/dashboard/api/v2/host");
+    const summary = await dashboardGet(setup, "/api/v2/admin/host");
     expect(summary.status).toBe(401);
 
-    const activity = await setup.app.request("http://127.0.0.1:5387/dashboard/api/v2/activity", {
-      headers: { cookie: setup.cookie },
+    const activity = await setup.app.request("http://127.0.0.1:5387/api/v2/admin/activity", {
+      headers: { cookie: setup.cookie, "sec-fetch-site": "same-origin" },
     });
     expect(activity.status).toBe(401);
 
@@ -217,7 +217,7 @@ async function authenticatedDashboard() {
 
 async function dashboardGet(setup: Setup, path: string) {
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
-    headers: { cookie: setup.cookie },
+    headers: { cookie: setup.cookie, "sec-fetch-site": "same-origin" },
   });
 }
 
@@ -242,6 +242,7 @@ async function dashboardConditionalMutation(
     method,
     headers: {
       cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
       "x-caplets-csrf": setup.csrfToken,
       "content-type": method === "PATCH" ? "application/merge-patch+json" : "application/json",
       "idempotency-key": crypto.randomUUID(),
@@ -296,7 +297,6 @@ function httpOptions(stateDir: string): HttpServeOptions {
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     auth: { type: "remote_credentials" },
     remoteCredentialStateDir: stateDir,
     allowUnauthenticatedHttp: false,

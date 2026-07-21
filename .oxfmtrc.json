@@ -1,6 +1,10 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["**/.brv/**", "apps/catalog/src/data/official-catalog.json"],
+  "ignorePatterns": [
+    "**/.brv/**",
+    "apps/catalog/src/data/official-catalog.json",
+    "schemas/caplets-http.openapi.json"
+  ],
   "plugins": ["prettier-plugin-astro"],
   "overrides": [
     {

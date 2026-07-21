@@ -10,6 +10,8 @@
 > Decision: ADR 0007
 > Completion slice: [Plan 020](020-publish-caplets-sdk.md)
 
+> **Pre-release integration:** This completed plan is the implemented semantic and protocol baseline, not the release route map. After [Plan 022](022-remove-legacy-caplets-cloud.md) removes Legacy Caplets Cloud, [Plan 023](023-use-fixed-origin-protocol-namespaces.md) replaces this plan's route locations, root OpenAPI location, deployment-prefix support, and frozen v1 Admin compatibility before the first release. Plan 000's `CurrentHostOperations` Interface, resource semantics, authentication policy, storage behavior, and streaming contracts remain authoritative behind Plan 023's fixed origin-root topology; every old path is removed without an alias, redirect, or fallback.
+
 ## Why this matters
 
 `POST /v1/admin` multiplexes runtime execution, host administration, backend auth, Vault, catalog, and Caplet Record commands through one `RemoteCliRequest`. The route always returns an RPC envelope, most argument schemas are reconstructed manually, large bundles are JSON/base64, and CLI and dashboard clients maintain separate path and response knowledge. Policy has already moved toward `CurrentHostOperations`, but backend auth and full-bundle storage still bypass that Module.
@@ -37,7 +39,7 @@ If any prerequisite is not green on the implementation branch, stop. Do not fold
 3. Access Clients remain limited to MCP, Attach, Project Binding, and credential-owner self-revocation. Operator authority is required for both Admin mounts.
 4. Runtime tool/resource/prompt discovery and execution use Attach, not Admin resources.
 5. Remote `init` and `add` become local-only. V2 has no equivalents; v1 rejects them when v2 launches.
-6. Raw Vault Reveal moves to `/dashboard/api/private/vault-reveals`; it is excluded from the Admin router, root OpenAPI document, and generated Admin client.
+6. Raw Vault Reveal moves to `/dashboard/api/private/vault-reveals`; it is excluded from the Admin router, root OpenAPI document, and generated Caplets SDK client.
 7. V2 success bodies are direct resource representations. Errors use `application/problem+json` with RFC 9457 fields and a stable `code` extension.
 8. Malformed protocol input returns 400. A decoded representation that violates Caplet domain rules returns 422.
 9. Mutable resources expose strong opaque ETags. Creation uses `If-None-Match: *`; mutation and deletion require `If-Match`; missing preconditions return 428 and stale validators return 412.
@@ -173,7 +175,7 @@ Pin exact compatible versions of `@hono/zod-openapi`, `@hey-api/openapi-ts`, the
 - Problem Details errors remain typed;
 - separate Fetch client instances can inject CSRF/session or bearer credentials without global mutable configuration.
 
-If either streaming proof fails, keep HeyAPI for standard operations and add operation-local serializer/parser hooks. Do not handwrite a second general Admin client.
+If either streaming proof fails, keep HeyAPI for standard operations and add operation-local serializer/parser hooks. Do not handwrite a second general Caplets SDK client.
 
 Generate checked client artifacts under a browser-safe `@caplets/core` subpath. Keep generated files isolated from handwritten authentication/base-URL adapters and add a staleness check. Stable operation IDs, not generated function spelling, are the compatibility anchor.
 

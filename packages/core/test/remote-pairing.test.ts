@@ -25,7 +25,7 @@ describe("self-hosted remote pairing", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
 
     const accessPending = store.createPendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       now: new Date("2026-06-19T12:00:00.000Z"),
     });
     expect(store.listPendingLogins(new Date("2026-06-19T12:00:01.000Z"))).toContainEqual(
@@ -33,7 +33,7 @@ describe("self-hosted remote pairing", () => {
     );
 
     const operatorPending = store.createPendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       requestedRole: "operator",
       clientLabel: "Dashboard",
       now: new Date("2026-06-19T12:01:00.000Z"),
@@ -50,7 +50,7 @@ describe("self-hosted remote pairing", () => {
     ).toMatchObject({ requestedRole: "operator", grantedRole: "operator" });
 
     const operatorCredentials = store.completePendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       flowId: operatorPending.flowId,
       pendingCompletionSecret: operatorPending.pendingCompletionSecret,
       now: new Date("2026-06-19T12:03:00.000Z"),
@@ -61,14 +61,14 @@ describe("self-hosted remote pairing", () => {
     );
     expect(
       store.validateAccessToken({
-        hostUrl: "https://caplets.example.com/caplets",
+        hostUrl: "https://caplets.example.com",
         accessToken: operatorCredentials.accessToken,
         now: new Date("2026-06-19T12:04:00.000Z"),
       }),
     ).toMatchObject({ role: "operator" });
 
     const refreshed = store.refreshClientCredentials({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       refreshToken: operatorCredentials.refreshToken,
       now: new Date("2026-06-19T12:05:00.000Z"),
     });
@@ -85,7 +85,7 @@ describe("self-hosted remote pairing", () => {
   it("allows approvers to override the requested remote client role", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const pending = store.createPendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       requestedRole: "operator",
       now: new Date("2026-06-19T12:00:00.000Z"),
     });
@@ -99,7 +99,7 @@ describe("self-hosted remote pairing", () => {
     ).toMatchObject({ requestedRole: "operator", grantedRole: "access" });
     expect(
       store.completePendingLogin({
-        hostUrl: "https://caplets.example.com/caplets",
+        hostUrl: "https://caplets.example.com",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
         now: new Date("2026-06-19T12:02:00.000Z"),
@@ -111,7 +111,7 @@ describe("self-hosted remote pairing", () => {
     const dir = tempDir();
     const store = new RemoteServerCredentialStore({ dir });
     const pending = store.createPendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       requestedRole: "operator",
       now: new Date("2026-06-19T12:00:00.000Z"),
     });
@@ -120,7 +120,7 @@ describe("self-hosted remote pairing", () => {
       now: new Date("2026-06-19T12:01:00.000Z"),
     });
     const credentials = store.completePendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       flowId: pending.flowId,
       pendingCompletionSecret: pending.pendingCompletionSecret,
       now: new Date("2026-06-19T12:02:00.000Z"),
@@ -147,8 +147,8 @@ describe("self-hosted remote pairing", () => {
   it("creates pending login flows that approve and complete with separate possession material", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const pending = store.createPendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
-      hostIdentity: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
+      hostIdentity: "https://caplets.example.com",
       clientLabel: "MacBook Pro",
       clientFingerprint: "fp_123",
       sourceHint: "127.0.0.1",
@@ -179,7 +179,7 @@ describe("self-hosted remote pairing", () => {
 
     expect(() =>
       store.completePendingLogin({
-        hostUrl: "https://caplets.example.com/caplets",
+        hostUrl: "https://caplets.example.com",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
         now: new Date("2026-06-19T12:01:30.000Z"),
@@ -208,13 +208,13 @@ describe("self-hosted remote pairing", () => {
     ).toThrow(/approved/u);
 
     const credentials = store.completePendingLogin({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       flowId: pending.flowId,
       pendingCompletionSecret: pending.pendingCompletionSecret,
       now: new Date("2026-06-19T12:03:00.000Z"),
     });
     expect(credentials).toMatchObject({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       clientLabel: "MacBook Pro",
       tokenType: "Bearer",
     });
@@ -225,7 +225,7 @@ describe("self-hosted remote pairing", () => {
     ]);
     expect(
       store.completePendingLogin({
-        hostUrl: "https://caplets.example.com/caplets",
+        hostUrl: "https://caplets.example.com",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
         now: new Date("2026-06-19T12:03:10.000Z"),
@@ -234,7 +234,7 @@ describe("self-hosted remote pairing", () => {
     expect(store.listClients()).toHaveLength(1);
     expect(() =>
       store.completePendingLogin({
-        hostUrl: "https://caplets.example.com/caplets",
+        hostUrl: "https://caplets.example.com",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
         now: new Date("2026-06-19T12:03:31.000Z"),
@@ -638,7 +638,7 @@ describe("self-hosted remote pairing", () => {
   it("issues one-time Pairing Codes that exchange for client credentials", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const issued = store.createPairingCode({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       clientLabel: "MacBook Pro",
       now: new Date("2026-06-19T12:00:00.000Z"),
     });
@@ -647,7 +647,7 @@ describe("self-hosted remote pairing", () => {
     expect(JSON.stringify(store.dumpForTest())).not.toContain(issued.code);
 
     const exchanged = store.exchangePairingCode({
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       code: issued.code,
       clientLabel: "MacBook Pro",
       now: new Date("2026-06-19T12:01:00.000Z"),
@@ -655,7 +655,7 @@ describe("self-hosted remote pairing", () => {
 
     expect(exchanged).toMatchObject({
       clientLabel: "MacBook Pro",
-      hostUrl: "https://caplets.example.com/caplets",
+      hostUrl: "https://caplets.example.com",
       tokenType: "Bearer",
     });
     expect(exchanged.accessToken).not.toBe(issued.code);
@@ -663,7 +663,7 @@ describe("self-hosted remote pairing", () => {
 
     expect(() =>
       store.exchangePairingCode({
-        hostUrl: "https://caplets.example.com/caplets",
+        hostUrl: "https://caplets.example.com",
         code: issued.code,
       }),
     ).toThrow(/used/u);

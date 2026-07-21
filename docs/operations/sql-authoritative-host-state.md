@@ -76,7 +76,7 @@ separately if they matter; SQL does not make their bytes durable.
    matching object-store snapshot when S3 assets were in use.
 4. Remove stale SQLite `-wal` and `-shm` files only after preserving them and only while no process
    has the database open.
-5. Start one node and require both `caplets storage status --json` and `/v1/healthz` to report ready
+5. Start one node and require both `caplets storage status --json` and `/api/v1/healthz` to report ready
    before returning traffic.
 
 ```sh
@@ -338,7 +338,7 @@ passwords are reconciled by the pre-start job.
 Check readiness and inspect logs:
 
 ```sh
-curl --fail http://127.0.0.1:5387/v1/healthz
+curl --fail http://127.0.0.1:5387/api/v1/healthz
 docker compose -f <selected-compose-file> logs --tail 100
 ```
 
@@ -365,7 +365,7 @@ cross-host or high-availability storage.
 
 ### Readiness and fail-closed behavior
 
-`GET /v1/healthz` is the readiness probe and returns HTTP 503 when the host is not ready. PostgreSQL
+`GET /api/v1/healthz` is the readiness probe and returns HTTP 503 when the host is not ready. PostgreSQL
 readiness requires:
 
 - authoritative database connectivity and the exact released schema version;
@@ -636,7 +636,7 @@ Caplets.
 2. Render a new owner-only global config selecting the verified PostgreSQL schema/runtime URL.
 3. Atomically rename it over the global config on the same filesystem, or atomically promote the
    orchestrator release/secret version.
-4. Start one node; require storage status and `/v1/healthz` readiness. Confirm global-file manifest
+4. Start one node; require storage status and `/api/v1/healthz` readiness. Confirm global-file manifest
    parity and critical read-only Caplet operations.
 5. Start remaining nodes and only then move traffic.
 6. Retain the untouched SQLite backup/config and object snapshot for the rollback window.

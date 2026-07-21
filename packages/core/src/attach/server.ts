@@ -33,27 +33,14 @@ export async function attachResolvedCaplets(
 
 function createAttachNativeService(options: AttachServeOptions, io: AttachServeIo) {
   return createNativeCapletsService({
-    mode: options.selection.kind === "hosted_cloud" ? "cloud" : "remote",
+    mode: "remote",
     configPath: options.configPath,
     projectRoot: options.projectRoot,
     projectConfigPath: options.projectConfigPath,
     ...(options.authDir ? { authDir: options.authDir } : {}),
     remote: {
       url: options.selection.remote.baseUrl.toString(),
-      ...(options.selection.kind === "hosted_cloud"
-        ? { workspace: options.selection.selectedWorkspace }
-        : {}),
       ...(options.selection.remote.fetch ? { fetch: options.selection.remote.fetch } : {}),
-      ...(options.selection.kind === "hosted_cloud"
-        ? {
-            cloud: {
-              url: options.selection.cloudPresence.url.toString(),
-              accessToken: options.selection.cloudPresence.accessToken,
-              workspaceId: options.selection.cloudPresence.workspaceId,
-              projectRoot: options.projectRoot,
-            },
-          }
-        : {}),
     },
     exposeLocalArtifactPaths: false,
     ...(io.writeErr ? { writeErr: io.writeErr } : {}),

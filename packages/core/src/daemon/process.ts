@@ -49,8 +49,6 @@ export function daemonServeArgs(options: HttpServeOptions): string[] {
     options.host,
     "--port",
     String(options.port),
-    "--path",
-    options.path,
   ];
   args.push(
     "--admin-upload-staging-dir",

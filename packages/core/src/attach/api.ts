@@ -393,7 +393,7 @@ export async function invokeAttachExport(
   }
   throw new CapletsError(
     "REQUEST_INVALID",
-    "Attach export kind is not invokable via /v1/attach/invoke.",
+    "Attach export kind is not invokable via /api/v1/attach/invoke.",
   );
 }
 

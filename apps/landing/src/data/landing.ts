@@ -109,10 +109,10 @@ caplets attach <url>`,
 } as const;
 
 export const remoteEndpoints = [
-  { label: "MCP", value: "/caplets/v1/mcp" },
-  { label: "Attach", value: "/caplets/v1/attach" },
-  { label: "Admin", value: "/caplets/v1/admin" },
-  { label: "Health", value: "/caplets/v1/healthz" },
+  { label: "MCP", value: "/mcp" },
+  { label: "Attach", value: "/api/v1/attach" },
+  { label: "Admin", value: "/api/v2/admin" },
+  { label: "Health", value: "/api/v1/healthz" },
 ] as const;
 
 export const remoteComparison = [

@@ -3,20 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNativeCapletsService } from "../native/service";
-import { findProjectRoot } from "../cloud/project-root";
-import { CloudAuthStore } from "../cloud-auth/store";
-import { projectBindingWorkspacePaths } from "../project-binding/workspaces";
+import { findProjectRoot } from "../project-root";
+import { createRemoteProfileStore } from "../remote/profile-store";
+import type { RemoteProfileCredential, RemoteProfileStatus } from "../remote/profiles";
 import {
-  hostedCloudWorkspaceFromRemoteUrl,
-  isCapletsCloudUrl,
-  normalizeRemoteProfileHostUrl,
   resolveCapletsRemote,
-  resolveHostedCloudRemote,
   resolveRemoteMode,
   type ResolvedCapletsRemote,
 } from "../remote/options";
-import { createRemoteProfileStore } from "../remote/profile-store";
-import type { RemoteProfileCredential, RemoteProfileStatus } from "../remote/profiles";
+import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
 import { resolveCapletsServer } from "../server/options";
 import type { MutagenProjectSyncDoctorData } from "../project-binding/mutagen";
 import { generateCodeModeDeclarations } from "../code-mode/declarations";
@@ -46,7 +41,6 @@ export type DoctorOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   cwd?: string;
   syncStatus?: MutagenProjectSyncDoctorData;
-  cloudAuthStore?: CloudAuthStore;
   authDir?: string;
   observedOutputShapeCacheDir?: string;
   daemon?: DaemonOperationOptions;
@@ -70,7 +64,6 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
   const env = options.env ?? process.env;
   const root = findProjectRoot(options.cwd ?? process.cwd());
   const projectFingerprint = fingerprintProjectRoot(root);
-  const paths = projectBindingWorkspacePaths(projectFingerprint, { env });
   const remoteLogin = await resolveRemoteLoginSection(options, env);
   const server = resolveServerSection(env);
   const remote = resolveRemoteSection(env, remoteLogin);
@@ -83,15 +76,11 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
       state: "not_attached",
       projectRoot: root,
       projectFingerprint,
-      workspacePath: paths.project,
       authMode: remoteLogin.authenticated
-        ? remoteLogin.kind === "cloud"
-          ? "hosted_cloud"
-          : "self_hosted_remote"
+        ? "remote"
         : remote.configured || remoteLogin.configured
           ? "remote_login_required"
           : "unconfigured",
-      selectedWorkspace: remoteLogin.selectedWorkspace ?? remote.workspace ?? null,
       webSocketUrl: remote.webSocketUrl,
       sessionSupport: sessionSupport.value,
       lease: null,
@@ -130,7 +119,7 @@ export async function formatDoctorReport(
     ...(report.remote.configured
       ? [
           `  MCP URL: ${report.remote.mcpUrl}`,
-          `  Control URL: ${report.remote.controlUrl}`,
+          `  Admin URL: ${report.remote.adminUrl}`,
           `  Health URL: ${report.remote.healthUrl}`,
           `  WebSocket URL: ${report.remote.webSocketUrl}`,
           `  Auth: ${report.remote.auth}`,
@@ -141,9 +130,7 @@ export async function formatDoctorReport(
     `  State: ${report.projectBinding.state}`,
     `  Project root: ${report.projectBinding.projectRoot}`,
     `  Project fingerprint: ${report.projectBinding.projectFingerprint}`,
-    `  Workspace path: ${report.projectBinding.workspacePath}`,
     `  Auth mode: ${report.projectBinding.authMode}`,
-    `  Selected Workspace: ${report.projectBinding.selectedWorkspace ?? "none"}`,
     `  Binding Session: ${report.projectBinding.state}`,
     ...(report.projectBinding.sessionSupport !== "unknown"
       ? [`  Session support: ${report.projectBinding.sessionSupport}`]
@@ -164,13 +151,7 @@ export async function formatDoctorReport(
     "Remote Login",
     `  Configured: ${yesNo(Boolean(report.remoteLogin.configured))}`,
     `  Authenticated: ${yesNo(Boolean(report.remoteLogin.authenticated))}`,
-    ...(report.remoteLogin.hostUrl ? [`  Host URL: ${report.remoteLogin.hostUrl}`] : []),
-    ...(report.remoteLogin.kind ? [`  Kind: ${report.remoteLogin.kind}`] : []),
-    ...(report.remoteLogin.workspaceSlug || report.remoteLogin.workspaceId
-      ? [
-          `  Selected Workspace: ${report.remoteLogin.workspaceSlug ?? report.remoteLogin.workspaceId}`,
-        ]
-      : []),
+    ...(report.remoteLogin.origin ? [`  Origin: ${report.remoteLogin.origin}`] : []),
     ...(report.remoteLogin.clientId ? [`  Client: ${report.remoteLogin.clientId}`] : []),
     "",
     "Vault",
@@ -225,7 +206,7 @@ function formatDoctorMarkdownReport(report: DoctorJsonReport): string {
     ...(report.remote.configured
       ? [
           `- MCP URL: ${report.remote.mcpUrl}`,
-          `- Control URL: ${report.remote.controlUrl}`,
+          `- Admin URL: ${report.remote.adminUrl}`,
           `- Health URL: ${report.remote.healthUrl}`,
           `- WebSocket URL: ${report.remote.webSocketUrl}`,
           `- Auth: ${report.remote.auth}`,
@@ -236,9 +217,7 @@ function formatDoctorMarkdownReport(report: DoctorJsonReport): string {
     `- State: ${report.projectBinding.state}`,
     `- Project root: ${report.projectBinding.projectRoot}`,
     `- Project fingerprint: ${report.projectBinding.projectFingerprint}`,
-    `- Workspace path: ${report.projectBinding.workspacePath}`,
     `- Auth mode: ${report.projectBinding.authMode}`,
-    `- Selected Workspace: ${report.projectBinding.selectedWorkspace ?? "none"}`,
     `- Binding Session: ${report.projectBinding.state}`,
     ...(report.projectBinding.sessionSupport !== "unknown"
       ? [`- Session support: ${report.projectBinding.sessionSupport}`]
@@ -259,13 +238,7 @@ function formatDoctorMarkdownReport(report: DoctorJsonReport): string {
     "## Remote Login",
     `- Configured: ${yesNo(Boolean(report.remoteLogin.configured))}`,
     `- Authenticated: ${yesNo(Boolean(report.remoteLogin.authenticated))}`,
-    ...(report.remoteLogin.hostUrl ? [`- Host URL: ${report.remoteLogin.hostUrl}`] : []),
-    ...(report.remoteLogin.kind ? [`- Kind: ${report.remoteLogin.kind}`] : []),
-    ...(report.remoteLogin.workspaceSlug || report.remoteLogin.workspaceId
-      ? [
-          `- Selected Workspace: ${report.remoteLogin.workspaceSlug ?? report.remoteLogin.workspaceId}`,
-        ]
-      : []),
+    ...(report.remoteLogin.origin ? [`- Origin: ${report.remoteLogin.origin}`] : []),
     ...(report.remoteLogin.clientId ? [`- Client: ${report.remoteLogin.clientId}`] : []),
     "",
     "## Vault",
@@ -350,7 +323,6 @@ function projectBindingRecovery(
   sessionSupport: ProjectBindingSessionSupport,
 ): string {
   if (remoteLogin.authenticated) {
-    if (remoteLogin.kind === "cloud") return "caplets attach --once";
     if (sessionSupport === "supported") return "caplets attach --once";
     if (sessionSupport === "unsupported") {
       return "Upgrade the remote Caplets service and rerun caplets doctor.";
@@ -358,9 +330,9 @@ function projectBindingRecovery(
     return "caplets doctor";
   }
   if (remote.configured || remoteLogin.configured) {
-    return `caplets remote login ${remoteLogin.hostUrl ?? "<url>"}`;
+    return `caplets remote login ${remoteLogin.origin ?? "<origin>"}`;
   }
-  return "caplets remote login <url>";
+  return "caplets remote login <origin>";
 }
 
 type ProjectBindingSessionSupport = "supported" | "unsupported" | "unknown";
@@ -370,14 +342,13 @@ async function resolveProjectBindingSessionSupport(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
   remoteLogin: DoctorRemoteLoginSection,
 ): Promise<{ value: ProjectBindingSessionSupport; lastError: string | null }> {
-  if (remoteLogin.kind !== "self-hosted") return { value: "unknown", lastError: null };
   if (!remoteLogin.authenticated || !remoteLogin.credential?.accessToken) {
     return { value: "unknown", lastError: null };
   }
 
   let remote: ResolvedCapletsRemote;
   try {
-    remote = resolveCapletsRemote(selfHostedDoctorInput(remoteLogin), env);
+    remote = resolveCapletsRemote(remoteDoctorInput(remoteLogin), env);
   } catch (error) {
     return { value: "unknown", lastError: errorMessage(error) };
   }
@@ -629,7 +600,7 @@ function resolveServerSection(env: NodeJS.ProcessEnv | Record<string, string | u
       configured: true,
       baseUrl: server.baseUrl.href,
       mcpUrl: server.mcpUrl.href,
-      controlUrl: server.controlUrl.href,
+      adminUrl: server.adminUrl.href,
       healthUrl: server.healthUrl.href,
       auth: server.auth.type,
     };
@@ -642,9 +613,7 @@ type DoctorRemoteLoginSection = {
   report: Record<string, unknown>;
   configured: boolean;
   authenticated: boolean;
-  kind?: "cloud" | "self-hosted" | undefined;
-  hostUrl?: string | undefined;
-  selectedWorkspace?: string | undefined;
+  origin?: string | undefined;
   status?: RemoteProfileStatus | undefined;
   credential?: RemoteProfileCredential | undefined;
 };
@@ -661,35 +630,35 @@ async function resolveRemoteLoginSection(
       report: { configured: false, authenticated: false },
     };
   }
-  const store = createRemoteProfileStore({
-    authDir: options.authDir,
-    env,
-    ...(options.cloudAuthStore ? { legacyCloudAuthStore: options.cloudAuthStore } : {}),
-  });
-  let hostUrl: string | undefined;
+
+  let origin: string | undefined;
   let status: RemoteProfileStatus | undefined;
+  let credential: RemoteProfileCredential | undefined;
   let statusError: string | undefined;
   try {
-    hostUrl = normalizeRemoteProfileHostUrl(remoteUrl);
-    status = isCapletsCloudUrl(remoteUrl)
-      ? await store.getCloudProfileStatus({
-          hostUrl,
-          workspace: env.CAPLETS_REMOTE_WORKSPACE ?? hostedCloudWorkspaceFromRemoteUrl(remoteUrl),
-        })
-      : await store.getSelfHostedProfileStatus({ hostUrl });
+    origin = canonicalizeCurrentHostOrigin(remoteUrl);
+    const loaded = await createRemoteProfileStore({
+      authDir: options.authDir,
+      env,
+    }).refreshRemoteProfileIfNeeded({
+      origin,
+      needsRefresh: () => false,
+      refresh: async () => {
+        throw new Error("Unexpected Remote Profile refresh.");
+      },
+    });
+    status = loaded?.status;
+    credential = loaded?.credential;
   } catch (error) {
     statusError = error instanceof Error ? error.message : String(error);
   }
-  const credential = status ? await store.credentials.load(status.key) : undefined;
-  const selectedWorkspace = status?.workspaceSlug ?? status?.workspaceId;
+  const authenticated = Boolean(status?.authenticated && credential?.accessToken);
   const report = {
     configured: true,
-    authenticated: Boolean(status?.authenticated && credential?.accessToken),
-    kind: isCapletsCloudUrl(remoteUrl) ? "cloud" : "self-hosted",
-    ...(hostUrl ? { hostUrl } : {}),
+    authenticated,
+    ...(origin ? { origin } : {}),
     ...(status?.key ? { key: status.key } : {}),
-    ...(status?.workspaceId ? { workspaceId: status.workspaceId } : {}),
-    ...(status?.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
+    ...(status?.hostIdentity ? { hostIdentity: status.hostIdentity } : {}),
     ...(status?.clientId ? { clientId: status.clientId } : {}),
     ...(status?.clientLabel ? { clientLabel: status.clientLabel } : {}),
     ...(status?.expiresAt ? { expiresAt: status.expiresAt } : {}),
@@ -699,10 +668,8 @@ async function resolveRemoteLoginSection(
   };
   return {
     configured: true,
-    authenticated: Boolean(status?.authenticated && credential?.accessToken),
-    kind: isCapletsCloudUrl(remoteUrl) ? "cloud" : "self-hosted",
-    hostUrl,
-    selectedWorkspace,
+    authenticated,
+    ...(origin ? { origin } : {}),
     status,
     credential,
     report,
@@ -714,39 +681,28 @@ function resolveRemoteSection(
   remoteLogin: DoctorRemoteLoginSection,
 ) {
   try {
-    const mode = resolveRemoteMode({}, env);
-    const remote =
-      mode.mode === "cloud"
-        ? resolveHostedCloudRemote(hostedCloudDoctorInput(remoteLogin), env)
-        : resolveCapletsRemote(selfHostedDoctorInput(remoteLogin), env);
+    if (resolveRemoteMode({}, env).mode !== "remote") return { configured: false };
+    const remote = resolveCapletsRemote(remoteDoctorInput(remoteLogin), env);
     return {
       configured: true,
       baseUrl: remote.baseUrl.href,
       mcpUrl: remote.mcpUrl.href,
-      controlUrl: remote.controlUrl.href,
+      adminUrl: remote.adminUrl.href,
       healthUrl: remote.healthUrl.href,
       webSocketUrl: remote.projectBindingWebSocketUrl.href,
       auth: remote.auth.type,
       tokenPresent: remote.auth.type === "bearer",
-      workspace: remote.workspace ?? null,
     };
   } catch {
     return { configured: false };
   }
 }
 
-function hostedCloudDoctorInput(remoteLogin: DoctorRemoteLoginSection) {
-  if (!remoteLogin.credential?.accessToken) return {};
-  const workspace = remoteLogin.selectedWorkspace;
+function remoteDoctorInput(remoteLogin: DoctorRemoteLoginSection) {
   return {
-    token: remoteLogin.credential.accessToken,
-    ...(workspace ? { workspace } : {}),
+    ...(remoteLogin.origin ? { url: remoteLogin.origin } : {}),
+    ...(remoteLogin.credential?.accessToken ? { token: remoteLogin.credential.accessToken } : {}),
   };
-}
-
-function selfHostedDoctorInput(remoteLogin: DoctorRemoteLoginSection) {
-  if (!remoteLogin.credential?.accessToken) return {};
-  return { token: remoteLogin.credential.accessToken };
 }
 
 function yesNo(value: boolean): string {

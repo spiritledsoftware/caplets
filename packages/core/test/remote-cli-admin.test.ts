@@ -13,7 +13,7 @@ import {
 import { parseAdminBundleUpload } from "../src/admin-api/bundle-upload-parser";
 import { createRemoteAdminCommandAdapter } from "../src/remote-cli/admin";
 
-const baseUrl = new URL("https://host.example/caplets/");
+const baseUrl = new URL("https://host.example");
 const temporaryDirectories: string[] = [];
 function vaultGrantFixture(referenceName: string, capletId = "github") {
   return {
@@ -123,7 +123,7 @@ describe("remote CLI public SDK Admin adapter", () => {
     });
     expect(requests).toHaveLength(2);
     for (const request of requests) {
-      expect(request.url).toBe("https://host.example/caplets/v2/admin/catalog/installations");
+      expect(request.url).toBe("https://host.example/api/v2/admin/catalog/installations");
       expect(request.headers.get("authorization")).toBe("Bearer paired-operator-token");
       expect(request.headers.get("idempotency-key")).toBe("intent-fixed");
       expect(request.body).toEqual({ repo: "owner/repo", capletIds: ["github"], force: false });
@@ -222,12 +222,12 @@ describe("remote CLI public SDK Admin adapter", () => {
       return Response.json({ items: [{ server: "linear" }], nextCursor: null });
     });
     const firstClient = createRemoteAdminCommandAdapter({
-      baseUrl: new URL("https://first.example/caplets/"),
+      baseUrl: new URL("https://first.example"),
       bearerToken: "first-operator-token",
       fetch: firstFetch,
     });
     const secondClient = createRemoteAdminCommandAdapter({
-      baseUrl: new URL("https://second.example/service/"),
+      baseUrl: new URL("https://second.example"),
       bearerToken: "second-operator-token",
       fetch: secondFetch,
     });
@@ -238,10 +238,10 @@ describe("remote CLI public SDK Admin adapter", () => {
     expect(firstRequests).toHaveLength(1);
     expect(secondRequests).toHaveLength(1);
     expect(firstRequests[0]?.url).toBe(
-      "https://first.example/caplets/v2/admin/backend-auth-connections",
+      "https://first.example/api/v2/admin/backend-auth-connections",
     );
     expect(secondRequests[0]?.url).toBe(
-      "https://second.example/service/v2/admin/backend-auth-connections",
+      "https://second.example/api/v2/admin/backend-auth-connections",
     );
     expect(firstRequests[0]?.headers.get("authorization")).toBe("Bearer first-operator-token");
     expect(secondRequests[0]?.headers.get("authorization")).toBe("Bearer second-operator-token");
@@ -737,9 +737,9 @@ describe("remote CLI public SDK Admin adapter", () => {
       ],
     });
     expect(requests).toEqual([
-      "https://host.example/caplets/v2/admin/caplet-records/github/installations",
-      "https://host.example/caplets/v2/admin/caplet-records/github/installation-observations",
-      "https://host.example/caplets/v2/admin/caplet-records/github/installation-observations?cursor=observation-next",
+      "https://host.example/api/v2/admin/caplet-records/github/installations",
+      "https://host.example/api/v2/admin/caplet-records/github/installation-observations",
+      "https://host.example/api/v2/admin/caplet-records/github/installation-observations?cursor=observation-next",
     ]);
   });
 
@@ -992,7 +992,7 @@ describe("remote CLI public SDK Admin adapter", () => {
       ],
     });
 
-    expect(request?.url).toBe("https://host.example/caplets/v2/admin/caplet-records/github/bundle");
+    expect(request?.url).toBe("https://host.example/api/v2/admin/caplet-records/github/bundle");
     expect(request?.headers.get("idempotency-key")).toBe("bundle-intent");
     expect(request?.headers.get("if-none-match")).toBe("*");
     const form = await request!.clone().formData();

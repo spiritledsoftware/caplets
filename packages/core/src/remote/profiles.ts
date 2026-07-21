@@ -1,12 +1,7 @@
-import { CapletsError } from "../errors";
-import { hostedCloudWorkspaceFromRemoteUrl, normalizeRemoteProfileHostUrl } from "./options";
-
-export type RemoteProfileKind = "cloud" | "self-hosted";
+import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
 
 export type RemoteProfileKeyInput = {
-  kind: RemoteProfileKind;
-  hostUrl: string;
-  workspace?: string | undefined;
+  origin: string;
 };
 
 export type RemoteProfileCredential = {
@@ -20,14 +15,10 @@ export type RemoteProfileCredential = {
 };
 
 export type RemoteProfileStatusInput = {
-  kind: RemoteProfileKind;
-  hostUrl: string;
+  origin: string;
   hostIdentity?: string | undefined;
   key?: string | undefined;
-  workspaceId?: string | undefined;
-  workspaceSlug?: string | undefined;
   clientId?: string | undefined;
-  selected?: boolean | undefined;
   clientLabel?: string | undefined;
   createdAt?: string | undefined;
   updatedAt?: string | undefined;
@@ -36,14 +27,10 @@ export type RemoteProfileStatusInput = {
 
 export type RemoteProfileStatus = {
   authenticated: boolean;
-  kind: RemoteProfileKind;
   key: string;
-  hostUrl: string;
+  origin: string;
   hostIdentity?: string | undefined;
-  workspaceId?: string | undefined;
-  workspaceSlug?: string | undefined;
   clientId?: string | undefined;
-  selected: boolean;
   clientLabel?: string | undefined;
   createdAt?: string | undefined;
   updatedAt?: string | undefined;
@@ -53,49 +40,21 @@ export type RemoteProfileStatus = {
 };
 
 export function remoteProfileKey(input: RemoteProfileKeyInput): string {
-  const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
-  if (input.kind === "cloud") {
-    const workspace = input.workspace ?? hostedCloudWorkspaceFromRemoteUrl(input.hostUrl);
-    if (!workspace) {
-      throw new CapletsError("REQUEST_INVALID", "Cloud Remote Profile requires a workspace.");
-    }
-    return `cloud:${hostUrl}:${workspace}`;
-  }
-  return `self-hosted:${hostUrl}`;
-}
-
-export function selectedWorkspaceKey(hostUrl: string): string {
-  return `cloud:${normalizeRemoteProfileHostUrl(hostUrl)}:selected-workspace`;
+  return `remote:${canonicalizeCurrentHostOrigin(input.origin)}`;
 }
 
 export function remoteProfileStatus(input: RemoteProfileStatusInput): RemoteProfileStatus {
-  const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
-  const key =
-    input.key ??
-    remoteProfileKey({
-      kind: input.kind,
-      hostUrl,
-      workspace: input.workspaceSlug ?? input.workspaceId,
-    });
-  const expiresAt = input.credential?.expiresAt;
-  const expired = Number.isFinite(Date.parse(expiresAt ?? ""))
-    ? Date.parse(expiresAt ?? "") <= Date.now()
-    : false;
-  const hasAccessToken = Boolean(input.credential?.accessToken);
+  const origin = canonicalizeCurrentHostOrigin(input.origin);
   return {
-    authenticated: hasAccessToken && !expired,
-    kind: input.kind,
-    key,
-    hostUrl,
+    authenticated: Boolean(input.credential?.accessToken),
+    key: input.key ?? remoteProfileKey({ origin }),
+    origin,
     ...(input.hostIdentity ? { hostIdentity: input.hostIdentity } : {}),
-    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-    ...(input.workspaceSlug ? { workspaceSlug: input.workspaceSlug } : {}),
     ...(input.clientId ? { clientId: input.clientId } : {}),
-    selected: Boolean(input.selected),
     ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
     ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
-    ...(expiresAt ? { expiresAt } : {}),
+    ...(input.credential?.expiresAt ? { expiresAt: input.credential.expiresAt } : {}),
     ...(input.credential?.scope ? { scope: input.credential.scope } : {}),
     ...(input.credential?.tokenType ? { tokenType: input.credential.tokenType } : {}),
   };

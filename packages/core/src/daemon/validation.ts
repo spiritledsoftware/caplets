@@ -1,5 +1,5 @@
 import { CapletsError } from "../errors";
-import { servicePaths } from "../serve/http";
+import { CURRENT_HOST_PATHS } from "../current-host/topology";
 import type { DaemonConfig, DaemonHealthResult } from "./types";
 import { serviceCommand, shellCommandLine } from "./shell";
 
@@ -153,12 +153,12 @@ export async function allocateLoopbackPort(): Promise<number> {
   return address.port;
 }
 
-function formatHost(host: string): string {
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
 function healthUrl(config: DaemonConfig, port = config.serve.port): string {
-  return `http://${formatHost(config.serve.host)}:${port}${servicePaths(config.serve.path).health}`;
+  const host =
+    config.serve.host.includes(":") && !config.serve.host.startsWith("[")
+      ? `[${config.serve.host}]`
+      : config.serve.host;
+  return new URL(CURRENT_HOST_PATHS.health, `http://${host}:${port}`).href;
 }
 
 export function validationSpawnCommand(config: DaemonConfig): { command: string; args: string[] } {

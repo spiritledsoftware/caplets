@@ -10,16 +10,24 @@ export type BundleMultipartStream = {
   boundary: string;
 };
 
+export type BundleMultipartMetadata = {
+  contentType: string;
+  boundary: string;
+};
+
+export function createBundleMultipartMetadata(
+  inputSources: readonly ReopenableBundleFileSource[],
+  options: { boundary?: string | undefined } = {},
+): BundleMultipartMetadata {
+  const { boundary } = prepareBundleMultipart(inputSources, options.boundary);
+  return { contentType: `multipart/mixed; boundary=${boundary}`, boundary };
+}
+
 export function createBundleMultipartStream(
   inputSources: readonly ReopenableBundleFileSource[],
   options: { boundary?: string | undefined } = {},
 ): BundleMultipartStream {
-  if (inputSources.length === 0) {
-    throw new CapletsError("REQUEST_INVALID", "A Caplet Bundle must contain files.");
-  }
-  const boundary = validBoundary(options.boundary ?? `caplets-${randomUUID()}`);
-  const paths = validateBundlePathSet(inputSources.map((source) => source.path));
-  const sources = inputSources.map((source, index) => validatedSource(source, paths[index]!));
+  const { boundary, sources } = prepareBundleMultipart(inputSources, options.boundary);
   const manifest = JSON.stringify({
     version: 1,
     files: sources.map(({ path, size, sha256, executable }) => ({
@@ -48,6 +56,19 @@ export function createBundleMultipartStream(
     contentType: `multipart/mixed; boundary=${boundary}`,
     boundary,
   };
+}
+
+function prepareBundleMultipart(
+  inputSources: readonly ReopenableBundleFileSource[],
+  boundaryInput: string | undefined,
+): { boundary: string; sources: ReopenableBundleFileSource[] } {
+  if (inputSources.length === 0) {
+    throw new CapletsError("REQUEST_INVALID", "A Caplet Bundle must contain files.");
+  }
+  const boundary = validBoundary(boundaryInput ?? `caplets-${randomUUID()}`);
+  const paths = validateBundlePathSet(inputSources.map((source) => source.path));
+  const sources = inputSources.map((source, index) => validatedSource(source, paths[index]!));
+  return { boundary, sources };
 }
 
 class MultipartProducer {

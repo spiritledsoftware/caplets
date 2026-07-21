@@ -72,27 +72,27 @@ Mode service; separate CLI processes do not share a QuickJS heap.
 
 ## Serve, daemon, and attach
 
-| Command                                     | Purpose                                                                               |
-| ------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `caplets serve`                             | Run configured Caplets as a foreground MCP stdio or HTTP server.                      |
-| `caplets daemon install`                    | Install or update the managed local daemon.                                           |
-| `caplets daemon start` / `restart` / `stop` | Control the managed daemon.                                                           |
-| `caplets daemon status`                     | Inspect daemon configuration and health.                                              |
-| `caplets daemon logs`                       | Read or follow daemon stdout/stderr.                                                  |
-| `caplets daemon uninstall`                  | Remove the daemon; `--purge` also removes its config, state, and logs.                |
-| `caplets attach [url]`                      | Run a thin stdio MCP adapter backed by a local daemon, remote host, or Cloud runtime. |
+| Command                                     | Purpose                                                                        |
+| ------------------------------------------- | ------------------------------------------------------------------------------ |
+| `caplets serve`                             | Run configured Caplets as a foreground MCP stdio or HTTP server.               |
+| `caplets daemon install`                    | Install or update the managed local daemon.                                    |
+| `caplets daemon start` / `restart` / `stop` | Control the managed daemon.                                                    |
+| `caplets daemon status`                     | Inspect daemon configuration and health.                                       |
+| `caplets daemon logs`                       | Read or follow daemon stdout/stderr.                                           |
+| `caplets daemon uninstall`                  | Remove the daemon; `--purge` also removes its config, state, and logs.         |
+| `caplets attach [origin]`                   | Run a thin stdio MCP Adapter backed by a local daemon or generic Current Host. |
 
-`attach` is stdio-only and does not open an HTTP listener. Use `serve --transport http
---upstream-url <url>` for a long-running stacked HTTP runtime.
+`attach` is stdio-only and does not open an HTTP listener. Use
+`serve --transport http --upstream-url <origin>` for a long-running stacked HTTP runtime. Current
+Host inputs contain only scheme, host, and optional port. They never select a configured protocol
+prefix.
 
-## Remote Login and Cloud
-
-Self-hosted Remote Login:
+## Remote Login
 
 ```text
-caplets remote login <url>
-caplets remote status [url]
-caplets remote logout <url>
+caplets remote login <origin>
+caplets remote status [origin]
+caplets remote logout <origin>
 caplets remote host clients
 caplets remote host logins
 caplets remote host approve <code> --yes
@@ -101,20 +101,12 @@ caplets remote host revoke <client-id>
 ```
 
 Host administration uses the SQL Authoritative Host State selected by user config. The deprecated
-`--state-path` option is rejected.
+`--state-path` option is rejected. Saved generic Remote Profiles and their credentials belong in
+Caplets client state, not agent config.
 
-Hosted Cloud commands:
-
-```text
-caplets cloud auth login
-caplets cloud auth status
-caplets cloud auth logout
-caplets cloud auth workspaces
-caplets cloud auth switch <workspace>
-caplets cloud add [path]
-```
-
-Saved Remote Profiles and Cloud credentials belong in Caplets client state, not agent config.
+Every Current Host exposes fixed origin-root protocol paths: `/.well-known/caplets`,
+`/api/openapi.json`, `/api/v1/*`, `/api/v2/admin/*`, exact `/mcp`, and `/dashboard` with
+`/dashboard/api/*`. CLI and SDK clients do not retry old or configured-prefix paths.
 
 ## Vault and backend OAuth
 
@@ -196,18 +188,18 @@ DOSKEY completion macro. Persist the generated script using your shell's normal 
 
 ## Environment selectors and controls
 
-| Variable                             | Effect                                                                          |
-| ------------------------------------ | ------------------------------------------------------------------------------- |
-| `CAPLETS_CONFIG`                     | Override the user config path.                                                  |
-| `CAPLETS_PROJECT_CONFIG`             | Override the project config path.                                               |
-| `CAPLETS_MODE`                       | Select `auto`, `local`, `daemon`, `remote`, or `cloud` for native integrations. |
-| `CAPLETS_DAEMON_URL`                 | Select the local loopback daemon for native mode.                               |
-| `CAPLETS_REMOTE_URL`                 | Select a self-hosted or Cloud remote base URL.                                  |
-| `CAPLETS_REMOTE_WORKSPACE`           | Select a workspace for a saved remote profile.                                  |
-| `CAPLETS_DISABLE_TELEMETRY=1`        | Disable anonymous telemetry for the process.                                    |
-| `CAPLETS_DISABLE_UPDATE_CHECK=1`     | Disable passive update metadata and notices.                                    |
-| `CAPLETS_DISABLE_CATALOG_INDEXING=1` | Disable best-effort public catalog indexing requests.                           |
-| `CAPLETS_ENCRYPTION_KEY`             | Supply the 32-byte base64url Vault encryption key.                              |
+| Variable                             | Effect                                                                 |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| `CAPLETS_CONFIG`                     | Override the user config path.                                         |
+| `CAPLETS_PROJECT_CONFIG`             | Override the project config path.                                      |
+| `CAPLETS_MODE`                       | Select `auto`, `local`, `daemon`, or `remote` for native integrations. |
+| `CAPLETS_DAEMON_URL`                 | Select the loopback daemon by Current Host Origin.                     |
+| `CAPLETS_REMOTE_URL`                 | Select a generic remote by Current Host Origin.                        |
+| `CAPLETS_SERVER_URL`                 | Set the serving Current Host Origin; non-root paths are rejected.      |
+| `CAPLETS_DISABLE_TELEMETRY=1`        | Disable anonymous telemetry for the process.                           |
+| `CAPLETS_DISABLE_UPDATE_CHECK=1`     | Disable passive update metadata and notices.                           |
+| `CAPLETS_DISABLE_CATALOG_INDEXING=1` | Disable best-effort public catalog indexing requests.                  |
+| `CAPLETS_ENCRYPTION_KEY`             | Supply the 32-byte base64url Vault encryption key.                     |
 
 User-config fields, command flags, and environment variables have command-specific precedence. See
 [Configuration](/configuration/) and the selected command's help rather than assuming every flag has

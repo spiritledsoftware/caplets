@@ -16,8 +16,6 @@ import type {
   AdminVaultValuePutRequest,
 } from "@caplets/sdk";
 import { createRootOpenApiDocument } from "../src/admin-api/openapi";
-import { MAX_BUNDLE_FILES } from "../src/storage/caplet-records";
-import { validateOperationRequest } from "../src/tools";
 import { PROJECT_BINDING_ERROR_CODES } from "../src/project-binding/errors";
 import {
   bindingTerminalReasonSchema,
@@ -52,7 +50,13 @@ interface OpenApiOperation {
   deprecated?: boolean;
   description?: string;
   security?: Array<Record<string, string[]>>;
-  parameters?: Array<{ name?: string; in?: string; schema?: OpenApiSchema }>;
+  parameters?: Array<{
+    name?: string;
+    in?: string;
+    required?: boolean;
+    description?: string;
+    schema?: OpenApiSchema;
+  }>;
   requestBody?: {
     content?: Record<string, { schema?: OpenApiSchema }>;
   };
@@ -72,6 +76,10 @@ interface OpenApiDocumentView {
   paths?: Record<string, Partial<Record<(typeof HTTP_METHODS)[number], OpenApiOperation>>>;
   components?: {
     schemas?: Record<string, OpenApiSchema>;
+    securitySchemes?: Record<
+      string,
+      { type?: string; in?: string; name?: string; scheme?: string; description?: string }
+    >;
   };
 }
 
@@ -170,67 +178,65 @@ function maximumOpenApiValue(
 }
 
 const REQUIRED_PATHS = [
-  "/",
-  "/v1",
-  "/v2",
-  "/v1/healthz",
-  "/v1/remote/login/start",
-  "/v1/remote/login/poll",
-  "/v1/remote/login/refresh",
-  "/v1/remote/login/complete",
-  "/v1/remote/login/cancel",
-  "/v1/remote/refresh",
-  "/v1/remote/client",
-  "/v1/attach/sessions",
-  "/v1/attach/sessions/{sessionId}",
-  "/v1/attach/manifest",
-  "/v1/attach/invoke",
-  "/v1/attach/events",
-  "/v1/attach/project-bindings/connect",
-  "/v1/attach/project-bindings/sessions",
-  "/v1/attach/project-bindings/{bindingId}/status",
-  "/v1/attach/project-bindings/{bindingId}/session",
-  "/v1/attach/project-bindings/{bindingId}/heartbeat",
-  "/v1/admin",
-  "/v2/admin/host",
-  "/v2/admin/runtime",
-  "/v2/admin/runtime-restarts",
-  "/v2/admin/logs",
-  "/v2/admin/diagnostics",
-  "/v2/admin/project-binding",
-  "/v2/admin/events",
-  "/v2/admin/activity",
-  "/v2/admin/caplets",
-  "/v2/admin/catalog/entries",
-  "/v2/admin/catalog/entries/{entryKey}",
-  "/v2/admin/catalog/update-candidates",
-  "/v2/admin/catalog/installations",
-  "/v2/admin/catalog/update-runs",
-  "/v2/admin/remote-clients",
-  "/v2/admin/remote-clients/{clientId}",
-  "/v2/admin/remote-login-requests",
-  "/v2/admin/remote-login-requests/{flowId}",
-  "/v2/admin/backend-auth-connections",
-  "/v2/admin/backend-auth-connections/{serverId}",
-  "/v2/admin/backend-auth-flows",
-  "/v2/admin/backend-auth-flows/{flowId}",
-  "/v2/admin/backend-auth-flows/{flowId}/callback",
-  "/v2/admin/backend-auth-refreshes",
-  "/v2/admin/vault-values",
-  "/v2/admin/vault-values/{storedKey}",
-  "/v2/admin/vault-grants",
-  "/v2/admin/vault-values/{storedKey}/grants",
-  "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
-  "/v2/admin/caplet-records",
-  "/v2/admin/caplet-records/{id}",
-  "/v2/admin/caplet-records/{id}/bundle",
-  "/v2/admin/caplet-records/{id}/revisions",
-  "/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
-  "/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
-  "/v2/admin/caplet-records/{id}/current-revision",
-  "/v2/admin/caplet-records/{id}/installations",
-  "/v2/admin/caplet-records/{id}/installations/{installationKey}",
-  "/v2/admin/caplet-records/{id}/installation-observations",
+  "/api",
+  "/api/v1",
+  "/api/v1/healthz",
+  "/api/v1/remote/login/start",
+  "/api/v1/remote/login/poll",
+  "/api/v1/remote/login/refresh",
+  "/api/v1/remote/login/complete",
+  "/api/v1/remote/login/cancel",
+  "/api/v1/remote/refresh",
+  "/api/v1/remote/client",
+  "/api/v1/attach/sessions",
+  "/api/v1/attach/sessions/{sessionId}",
+  "/api/v1/attach/manifest",
+  "/api/v1/attach/invoke",
+  "/api/v1/attach/events",
+  "/api/v1/attach/project-bindings/connect",
+  "/api/v1/attach/project-bindings/sessions",
+  "/api/v1/attach/project-bindings/{bindingId}/status",
+  "/api/v1/attach/project-bindings/{bindingId}/session",
+  "/api/v1/attach/project-bindings/{bindingId}/heartbeat",
+  "/api/v2/admin/host",
+  "/api/v2/admin/runtime",
+  "/api/v2/admin/runtime-restarts",
+  "/api/v2/admin/logs",
+  "/api/v2/admin/diagnostics",
+  "/api/v2/admin/project-binding",
+  "/api/v2/admin/events",
+  "/api/v2/admin/activity",
+  "/api/v2/admin/caplets",
+  "/api/v2/admin/catalog/entries",
+  "/api/v2/admin/catalog/entries/{entryKey}",
+  "/api/v2/admin/catalog/update-candidates",
+  "/api/v2/admin/catalog/installations",
+  "/api/v2/admin/catalog/update-runs",
+  "/api/v2/admin/remote-clients",
+  "/api/v2/admin/remote-clients/{clientId}",
+  "/api/v2/admin/remote-login-requests",
+  "/api/v2/admin/remote-login-requests/{flowId}",
+  "/api/v2/admin/backend-auth-connections",
+  "/api/v2/admin/backend-auth-connections/{serverId}",
+  "/api/v2/admin/backend-auth-flows",
+  "/api/v2/admin/backend-auth-flows/{flowId}",
+  "/api/v2/admin/backend-auth-flows/{flowId}/callback",
+  "/api/v2/admin/backend-auth-refreshes",
+  "/api/v2/admin/vault-values",
+  "/api/v2/admin/vault-values/{storedKey}",
+  "/api/v2/admin/vault-grants",
+  "/api/v2/admin/vault-values/{storedKey}/grants",
+  "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
+  "/api/v2/admin/caplet-records",
+  "/api/v2/admin/caplet-records/{id}",
+  "/api/v2/admin/caplet-records/{id}/bundle",
+  "/api/v2/admin/caplet-records/{id}/revisions",
+  "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
+  "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
+  "/api/v2/admin/caplet-records/{id}/current-revision",
+  "/api/v2/admin/caplet-records/{id}/installations",
+  "/api/v2/admin/caplet-records/{id}/installations/{installationKey}",
+  "/api/v2/admin/caplet-records/{id}/installation-observations",
 ] as const;
 
 describe("canonical root OpenAPI contract", () => {
@@ -239,14 +245,14 @@ describe("canonical root OpenAPI contract", () => {
     const second = documentView();
 
     expect(first.openapi).toBe("3.1.0");
-    expect(first.servers).toEqual([{ url: "/", description: "Current Caplets service root" }]);
+    expect(first.servers).toEqual([{ url: "/" }]);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
 
     const ids = operations(first).map(({ operation }) => operation.operationId);
     expect(ids.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
     for (const { path, operation } of operations(first).filter(({ path }) =>
-      path.startsWith("/v2/admin"),
+      path.startsWith("/api/v2/admin"),
     )) {
       expect(operation.operationId, path).toMatch(/^adminV2/);
     }
@@ -258,13 +264,18 @@ describe("canonical root OpenAPI contract", () => {
 
     for (const path of REQUIRED_PATHS) expect(paths, path).toContain(path);
     expect(
-      operationAt(document, "/v1/attach/project-bindings/connect", "get").responses,
+      operationAt(document, "/api/v1/attach/project-bindings/connect", "get").responses,
     ).toHaveProperty("101");
 
     expect(paths.some((path) => path.includes("/mcp"))).toBe(false);
     expect(paths.some((path) => path.startsWith("/dashboard"))).toBe(false);
     expect(paths.some((path) => path.includes("/private/"))).toBe(false);
     expect(paths.some((path) => path.includes("websocket"))).toBe(false);
+    expect(paths).not.toContain("/");
+    expect(paths).not.toContain("/.well-known/caplets");
+    expect(paths).not.toContain("/api/openapi.json");
+    expect(paths.some((path) => path.startsWith("/v1"))).toBe(false);
+    expect(paths.some((path) => path.startsWith("/v2"))).toBe(false);
   });
 
   it("publishes mounted Remote Login and Attach success and legacy error envelopes", () => {
@@ -273,39 +284,39 @@ describe("canonical root OpenAPI contract", () => {
       operationAt(document, path, method).responses?.[status]?.content?.["application/json"]?.schema
         ?.$ref;
 
-    expect(responseRef("/v1/remote/login/start", "post", "200")).toBe(
+    expect(responseRef("/api/v1/remote/login/start", "post", "200")).toBe(
       "#/components/schemas/RemoteLoginStartResponse",
     );
-    expect(responseRef("/v1/remote/login/poll", "post", "200")).toBe(
+    expect(responseRef("/api/v1/remote/login/poll", "post", "200")).toBe(
       "#/components/schemas/RemoteLoginPollResponse",
     );
-    expect(responseRef("/v1/remote/login/refresh", "post", "200")).toBe(
+    expect(responseRef("/api/v1/remote/login/refresh", "post", "200")).toBe(
       "#/components/schemas/RemoteLoginRefreshResponse",
     );
-    expect(responseRef("/v1/remote/login/complete", "post", "200")).toBe(
+    expect(responseRef("/api/v1/remote/login/complete", "post", "200")).toBe(
       "#/components/schemas/RemoteLoginCompletionResponse",
     );
-    expect(responseRef("/v1/remote/login/cancel", "post", "200")).toBe(
+    expect(responseRef("/api/v1/remote/login/cancel", "post", "200")).toBe(
       "#/components/schemas/RemoteLoginCancelResponse",
     );
-    expect(responseRef("/v1/remote/login/start", "post", "400")).toBe(
+    expect(responseRef("/api/v1/remote/login/start", "post", "400")).toBe(
       "#/components/schemas/RemoteLoginErrorResponse",
     );
-    expect(responseRef("/v1/remote/login/poll", "post", "401")).toBe(
+    expect(responseRef("/api/v1/remote/login/poll", "post", "401")).toBe(
       "#/components/schemas/RemoteLoginErrorResponse",
     );
 
-    expect(responseRef("/v1/attach/sessions", "post", "201")).toBe(
+    expect(responseRef("/api/v1/attach/sessions", "post", "201")).toBe(
       "#/components/schemas/AttachSessionCreateResponse",
     );
-    expect(responseRef("/v1/attach/sessions/{sessionId}", "delete", "200")).toBe(
+    expect(responseRef("/api/v1/attach/sessions/{sessionId}", "delete", "200")).toBe(
       "#/components/schemas/AttachSessionDeleteResponse",
     );
-    expect(responseRef("/v1/attach/invoke", "post", "200")).toBe(
+    expect(responseRef("/api/v1/attach/invoke", "post", "200")).toBe(
       "#/components/schemas/AttachInvokeResponse",
     );
     for (const status of ["400", "404", "409", "500"]) {
-      expect(responseRef("/v1/attach/invoke", "post", status)).toBe(
+      expect(responseRef("/api/v1/attach/invoke", "post", status)).toBe(
         "#/components/schemas/AttachErrorResponse",
       );
     }
@@ -337,15 +348,15 @@ describe("canonical root OpenAPI contract", () => {
     expect(document.components?.schemas?.AttachManifest?.required).toContain("codeModeCaplets");
 
     for (const path of [
-      "/v1/remote/login/start",
-      "/v1/remote/login/poll",
-      "/v1/remote/login/refresh",
-      "/v1/remote/login/complete",
-      "/v1/remote/login/cancel",
-      "/v1/attach/sessions",
-      "/v1/attach/sessions/{sessionId}",
-      "/v1/attach/manifest",
-      "/v1/attach/invoke",
+      "/api/v1/remote/login/start",
+      "/api/v1/remote/login/poll",
+      "/api/v1/remote/login/refresh",
+      "/api/v1/remote/login/complete",
+      "/api/v1/remote/login/cancel",
+      "/api/v1/attach/sessions",
+      "/api/v1/attach/sessions/{sessionId}",
+      "/api/v1/attach/manifest",
+      "/api/v1/attach/invoke",
     ]) {
       expect(JSON.stringify(document.paths?.[path]), path).not.toContain(
         "application/problem+json",
@@ -360,7 +371,7 @@ describe("canonical root OpenAPI contract", () => {
     const document = documentView();
     const operation = operationAt(
       document,
-      "/v2/admin/caplet-records/{id}/installation-observations",
+      "/api/v2/admin/caplet-records/{id}/installation-observations",
       "get",
     );
 
@@ -381,7 +392,7 @@ describe("canonical root OpenAPI contract", () => {
     ).toBe("#/components/schemas/AdminCapletInstallationObservation");
   });
 
-  it("publishes exact Project Binding HTTP and socket components without Problem Details drift", () => {
+  it("publishes exact Project Binding HTTP components without WebSocket payload drift", () => {
     const document = documentView();
     const requestRef = (path: string, method: (typeof HTTP_METHODS)[number]) =>
       operationAt(document, path, method).requestBody?.content?.["application/json"]?.schema?.$ref;
@@ -389,25 +400,25 @@ describe("canonical root OpenAPI contract", () => {
       operationAt(document, path, method).responses?.[status]?.content?.["application/json"]?.schema
         ?.$ref;
 
-    expect(requestRef("/v1/attach/project-bindings/sessions", "post")).toBe(
+    expect(requestRef("/api/v1/attach/project-bindings/sessions", "post")).toBe(
       "#/components/schemas/ProjectBindingSessionCreateRequest",
     );
-    expect(requestRef("/v1/attach/project-bindings/{bindingId}/heartbeat", "post")).toBe(
+    expect(requestRef("/api/v1/attach/project-bindings/{bindingId}/heartbeat", "post")).toBe(
       "#/components/schemas/ProjectBindingHeartbeatRequest",
     );
-    expect(responseRef("/v1/attach/project-bindings/sessions", "post", "201")).toBe(
+    expect(responseRef("/api/v1/attach/project-bindings/sessions", "post", "201")).toBe(
       "#/components/schemas/ProjectBindingSessionCreateResponse",
     );
-    expect(responseRef("/v1/attach/project-bindings/{bindingId}/status", "get")).toBe(
+    expect(responseRef("/api/v1/attach/project-bindings/{bindingId}/status", "get")).toBe(
       "#/components/schemas/ProjectBindingStatusResponse",
     );
-    expect(responseRef("/v1/attach/project-bindings/{bindingId}/session", "get")).toBe(
+    expect(responseRef("/api/v1/attach/project-bindings/{bindingId}/session", "get")).toBe(
       "#/components/schemas/ProjectBindingSessionGetResponse",
     );
-    expect(responseRef("/v1/attach/project-bindings/{bindingId}/heartbeat", "post")).toBe(
+    expect(responseRef("/api/v1/attach/project-bindings/{bindingId}/heartbeat", "post")).toBe(
       "#/components/schemas/ProjectBindingHeartbeatResponse",
     );
-    expect(responseRef("/v1/attach/project-bindings/{bindingId}/session", "delete")).toBe(
+    expect(responseRef("/api/v1/attach/project-bindings/{bindingId}/session", "delete")).toBe(
       "#/components/schemas/ProjectBindingSessionDeleteResponse",
     );
 
@@ -427,14 +438,11 @@ describe("canonical root OpenAPI contract", () => {
     expect(heartbeatRequest?.required?.sort()).toEqual(["sessionId", "state", "syncState"]);
     expect(heartbeatRequest?.additionalProperties).toBe(false);
 
-    const clientSocket = document.components?.schemas?.ProjectBindingSocketClientMessage;
-    const serverSocket = document.components?.schemas?.ProjectBindingSocketServerMessage;
-    expect(clientSocket?.oneOf ?? clientSocket?.anyOf).toHaveLength(2);
-    expect(serverSocket?.oneOf ?? serverSocket?.anyOf).toHaveLength(4);
-    expect(document.components?.schemas?.BindingTerminalReason?.additionalProperties).toBe(false);
+    expect(document.components?.schemas).not.toHaveProperty("ProjectBindingSocketClientMessage");
+    expect(document.components?.schemas).not.toHaveProperty("ProjectBindingSocketServerMessage");
 
     const bindingOperations = operations(document).filter(({ path }) =>
-      path.startsWith("/v1/attach/project-bindings"),
+      path.startsWith("/api/v1/attach/project-bindings"),
     );
     for (const { path, method, operation } of bindingOperations) {
       expect(JSON.stringify(operation), `${method.toUpperCase()} ${path}`).not.toContain(
@@ -448,12 +456,16 @@ describe("canonical root OpenAPI contract", () => {
       );
     }
 
-    const connect = operationAt(document, "/v1/attach/project-bindings/connect", "get");
+    const connect = operationAt(document, "/api/v1/attach/project-bindings/connect", "get");
     expect(connect.description ?? connect.responses?.["101"]?.description).toContain(
       "caplets.project-binding.v1",
     );
-    expect(connect.responses?.["101"]?.description).toContain("ProjectBindingSocketClientMessage");
-    expect(connect.responses?.["101"]?.description).toContain("ProjectBindingSocketServerMessage");
+    expect(connect.responses?.["101"]?.description).not.toContain(
+      "ProjectBindingSocketClientMessage",
+    );
+    expect(connect.responses?.["101"]?.description).not.toContain(
+      "ProjectBindingSocketServerMessage",
+    );
     const negotiatedProtocol =
       connect.responses?.["101"]?.headers?.["Sec-WebSocket-Protocol"]?.schema;
     expect(negotiatedProtocol?.const ?? negotiatedProtocol?.enum?.[0]).toBe(
@@ -463,7 +475,7 @@ describe("canonical root OpenAPI contract", () => {
     expect(Object.keys(connect.responses?.["401"]?.content ?? {})).toEqual(["text/plain"]);
     expect(
       Object.keys(
-        operationAt(document, "/v1/attach/project-bindings/sessions", "post").responses?.["400"]
+        operationAt(document, "/api/v1/attach/project-bindings/sessions", "post").responses?.["400"]
           ?.content ?? {},
       ),
     ).toEqual(["application/json"]);
@@ -574,15 +586,33 @@ describe("canonical root OpenAPI contract", () => {
     ).toBe(false);
   });
 
-  it("declares bearer security on canonical Admin operations except the no-store OAuth callback", () => {
+  it("declares bearer and dashboard-session alternatives on canonical Admin operations", () => {
     const document = documentView();
-    const callbackPath = "/v2/admin/backend-auth-flows/{flowId}/callback";
-    const adminOperations = operations(document).filter(({ path }) => path.startsWith("/v2/admin"));
+    const callbackPath = "/api/v2/admin/backend-auth-flows/{flowId}/callback";
+    const adminOperations = operations(document).filter(({ path }) =>
+      path.startsWith("/api/v2/admin"),
+    );
 
+    expect(document.components?.securitySchemes?.dashboardSession).toMatchObject({
+      type: "apiKey",
+      in: "cookie",
+      name: "caplets_dashboard_session",
+    });
     for (const { path, method, operation } of adminOperations) {
       expect(operation.security, `${method.toUpperCase()} ${path}`).toEqual(
-        path === callbackPath ? [] : [{ bearerAuth: [] }],
+        path === callbackPath ? [] : [{ bearerAuth: [] }, { dashboardSession: [] }],
       );
+      const csrfParameter = operation.parameters?.find(
+        (parameter) => parameter.in === "header" && parameter.name === "X-Caplets-CSRF",
+      );
+      if (method === "get") {
+        expect(csrfParameter, `${method.toUpperCase()} ${path}`).toBeUndefined();
+      } else {
+        expect(csrfParameter, `${method.toUpperCase()} ${path}`).toMatchObject({
+          required: false,
+          description: expect.stringContaining("dashboard session"),
+        });
+      }
     }
 
     const callback = operationAt(document, callbackPath, "get");
@@ -591,126 +621,10 @@ describe("canonical root OpenAPI contract", () => {
     ]);
   });
 
-  it("marks frozen v1 Admin deprecated and models its command discriminant and legacy envelopes", () => {
-    const document = createRootOpenApiDocument() as OpenApiDocumentView & {
-      components?: {
-        schemas?: Record<string, { oneOf?: unknown[]; anyOf?: unknown[] }>;
-      };
-    };
-    const legacy = operationAt(document, "/v1/admin", "post");
-
-    expect(legacy.deprecated).toBe(true);
-    expect(legacy.operationId).toBe("adminV1DispatchCommand");
-    const successHeaders = legacy.responses?.["200"]?.headers;
-
-    expect(successHeaders?.["Cache-Control"]?.schema?.enum).toEqual(["no-store"]);
-    expect(successHeaders?.Deprecation?.schema?.enum).toEqual(["true"]);
-    expect(successHeaders?.Deprecation?.description).toEqual(expect.any(String));
-    expect(successHeaders?.Link?.schema?.enum).toEqual([
-      '</v2/admin/host>; rel="successor-version"',
-    ]);
-    expect(successHeaders?.Link?.description).toEqual(expect.any(String));
-    expect(successHeaders).not.toHaveProperty("Sunset");
-    const requestVariants = document.components?.schemas?.LegacyAdminRequest?.oneOf;
-    expect(requestVariants?.length).toBeGreaterThan(40);
-    expect(document.components?.schemas?.LegacyAdminResponse?.anyOf?.length).toBeGreaterThan(2);
-    const variants = requestVariants as OpenApiSchema[];
-    const byCommand = (command: string) =>
-      variants.find((variant) => variant.properties?.command?.enum?.includes(command));
-    expect(byCommand("vault_set")?.properties?.arguments?.required).toEqual(["name", "value"]);
-    expect(byCommand("storage_records_restore")?.properties?.arguments?.required).toEqual([
-      "id",
-      "revisionKey",
-      "expectedGeneration",
-    ]);
-    expect(byCommand("search_tools")?.properties?.arguments?.properties?.request?.required).toEqual(
-      ["operation", "query"],
-    );
-    expect(byCommand("auth_list")?.properties?.arguments?.additionalProperties).toBe(false);
-    expect(
-      byCommand("storage_records_import")?.properties?.arguments?.properties?.files?.maxItems,
-    ).toBe(MAX_BUNDLE_FILES + 1);
-    expect(
-      byCommand("storage_records_update")?.properties?.arguments?.properties?.files?.maxItems,
-    ).toBe(MAX_BUNDLE_FILES + 1);
-    expect(
-      variants.some((variant) => variant.properties?.command?.enum?.includes("runtime_restart")),
-    ).toBe(false);
-    const responseVariants = document.components?.schemas?.LegacyAdminResponse
-      ?.anyOf as OpenApiSchema[];
-    const successResults = responseVariants
-      .filter((variant) => variant.properties?.ok?.enum?.includes(true))
-      .map((variant) => variant.properties!.result!);
-    expect(
-      successResults.some(
-        (result) =>
-          result.type === "array" && result.items?.properties?.backend?.enum?.includes("attach"),
-      ),
-    ).toBe(true);
-    const getPromptRequest = byCommand("get_prompt")?.properties?.arguments?.properties?.request;
-    expect(getPromptRequest?.required).toEqual(["operation", "name"]);
-    expect(
-      validateOperationRequest({ operation: "get_prompt", name: "review" }, 100, "mcp"),
-    ).toEqual({
-      operation: "get_prompt",
-      name: "review",
-      args: {},
-    });
-    expect(
-      validateOperationRequest(
-        { operation: "get_prompt", name: "review", args: { issue: "CAP-123" } },
-        100,
-        "mcp",
-      ),
-    ).toEqual({
-      operation: "get_prompt",
-      name: "review",
-      args: { issue: "CAP-123" },
-    });
-    expect(successResults.some((result) => result.properties?.content?.type === "array")).toBe(
-      true,
-    );
-    expect(successResults.some((result) => result.properties?.remote?.enum?.includes(true))).toBe(
-      true,
-    );
-    expect(
-      successResults.some(
-        (result) => result.type === "array" && result.items?.properties?.status !== undefined,
-      ),
-    ).toBe(true);
-    expect(
-      successResults.some(
-        (result) =>
-          result.properties?.key !== undefined && result.properties?.present !== undefined,
-      ),
-    ).toBe(true);
-    expect(
-      successResults.some(
-        (result) =>
-          result.properties?.record !== undefined && result.properties?.files?.type === "array",
-      ),
-    ).toBe(true);
-    expect(
-      successResults.some(
-        (result) =>
-          result.properties?.installations?.type === "array" &&
-          result.properties?.observations?.type === "array",
-      ),
-    ).toBe(true);
-    expect(
-      responseVariants.some(
-        (variant) =>
-          variant.properties?.ok?.enum?.includes(false) &&
-          variant.properties?.error?.required?.includes("code"),
-      ),
-    ).toBe(true);
-  });
-
   it("matches mounted public response media and direct Admin resource shapes", () => {
     const document = documentView();
-    const remoteRefresh = operationAt(document, "/v1/remote/refresh", "post");
-    const remoteClient = operationAt(document, "/v1/remote/client", "delete");
-    const legacyAdmin = operationAt(document, "/v1/admin", "post");
+    const remoteRefresh = operationAt(document, "/api/v1/remote/refresh", "post");
+    const remoteClient = operationAt(document, "/api/v1/remote/client", "delete");
 
     expect(remoteRefresh.responses?.["401"]?.content?.["application/json"]?.schema?.$ref).toBe(
       "#/components/schemas/RemoteLoginErrorResponse",
@@ -723,22 +637,20 @@ describe("canonical root OpenAPI contract", () => {
       "text/plain",
     ]);
     expect(Object.keys(remoteClient.responses?.["403"]?.content ?? {})).toEqual(["text/plain"]);
-    expect(Object.keys(legacyAdmin.responses?.["401"]?.content ?? {})).toEqual(["text/plain"]);
-    expect(Object.keys(legacyAdmin.responses?.["403"]?.content ?? {})).toEqual(["text/plain"]);
 
     const projectBinding = document.components?.schemas?.AdminProjectBinding;
     expect(projectBinding?.required).toEqual(["state", "affectedCaplets", "actions"]);
     expect(projectBinding?.properties).not.toHaveProperty("projectBinding");
     expect(
-      operationAt(document, "/v2/admin/vault-values/{storedKey}", "get").responses?.["200"]
+      operationAt(document, "/api/v2/admin/vault-values/{storedKey}", "get").responses?.["200"]
         ?.content?.["application/json"]?.schema?.$ref,
     ).toBe("#/components/schemas/AdminVaultValue");
   });
 
   it("models Attach and Admin SSE data as strict named runtime objects", () => {
     const document = documentView();
-    const attachEvent = operationAt(document, "/v1/attach/events", "get");
-    const adminEvent = operationAt(document, "/v2/admin/events", "get");
+    const attachEvent = operationAt(document, "/api/v1/attach/events", "get");
+    const adminEvent = operationAt(document, "/api/v2/admin/events", "get");
     expect(attachEvent.responses?.["200"]?.content?.["text/event-stream"]?.schema?.$ref).toBe(
       "#/components/schemas/AttachManifestRevisionEvent",
     );
@@ -778,11 +690,11 @@ describe("canonical root OpenAPI contract", () => {
 
     for (const { path, method, operation } of operations(document)) {
       if (
-        path.startsWith("/v1/attach") ||
-        path.startsWith("/v1/remote/login") ||
-        path === "/v1/remote/refresh" ||
-        path === "/v1/remote/client" ||
-        path === "/v1/admin"
+        path.startsWith("/api/v1/attach") ||
+        path.startsWith("/api/v1/remote/login") ||
+        path === "/api/v1/remote/refresh" ||
+        path === "/api/v1/remote/client" ||
+        path === "/api/v1/admin"
       ) {
         continue;
       }
@@ -794,7 +706,7 @@ describe("canonical root OpenAPI contract", () => {
       ).toBe(true);
     }
 
-    const patchRecord = operationAt(document, "/v2/admin/caplet-records/{id}", "patch");
+    const patchRecord = operationAt(document, "/api/v2/admin/caplet-records/{id}", "patch");
     expect(patchRecord.parameters).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "If-Match", in: "header" })]),
     );
@@ -802,7 +714,7 @@ describe("canonical root OpenAPI contract", () => {
       "application/merge-patch+json",
     );
 
-    const restart = operationAt(document, "/v2/admin/runtime-restarts", "post");
+    const restart = operationAt(document, "/api/v2/admin/runtime-restarts", "post");
     expect(restart.parameters).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "Idempotency-Key", in: "header" })]),
     );
@@ -815,7 +727,7 @@ describe("canonical root OpenAPI contract", () => {
 
     const vaultGrantDetail = operationAt(
       document,
-      "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
+      "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
       "get",
     );
     expect(vaultGrantDetail.operationId).toBe("adminV2GetVaultGrant");
@@ -823,7 +735,7 @@ describe("canonical root OpenAPI contract", () => {
       "#/components/schemas/AdminVaultGrant",
     );
     expect(vaultGrantDetail.responses?.["200"]?.headers).toHaveProperty("ETag");
-    const putVaultValue = operationAt(document, "/v2/admin/vault-values/{storedKey}", "put");
+    const putVaultValue = operationAt(document, "/api/v2/admin/vault-values/{storedKey}", "put");
     expect(putVaultValue.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -838,7 +750,7 @@ describe("canonical root OpenAPI contract", () => {
     );
     const deleteRevision = operationAt(
       document,
-      "/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
+      "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
       "delete",
     );
     expect(deleteRevision.parameters).toEqual(
@@ -855,7 +767,7 @@ describe("canonical root OpenAPI contract", () => {
       expect.arrayContaining(["200", "412", "428", "default"]),
     );
 
-    const putBundle = operationAt(document, "/v2/admin/caplet-records/{id}/bundle", "put");
+    const putBundle = operationAt(document, "/api/v2/admin/caplet-records/{id}/bundle", "put");
     expect(putBundle.parameters).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "If-Match", in: "header" }),
@@ -865,7 +777,7 @@ describe("canonical root OpenAPI contract", () => {
     expect(Object.keys(putBundle.requestBody?.content ?? {})).toContain("multipart/form-data");
     expect(Object.keys(putBundle.responses?.["200"]?.content ?? {})).toContain("application/json");
     for (const status of ["401", "403"] as const) {
-      const response = operationAt(document, "/v2/admin/host", "get").responses?.[status];
+      const response = operationAt(document, "/api/v2/admin/host", "get").responses?.[status];
       expect(Object.keys(response?.content ?? {})).toEqual(["application/problem+json"]);
       expect(response?.headers).toHaveProperty("Cache-Control");
     }
@@ -879,10 +791,10 @@ describe("canonical root OpenAPI contract", () => {
       }),
     );
 
-    const getBundle = operationAt(document, "/v2/admin/caplet-records/{id}/bundle", "get");
+    const getBundle = operationAt(document, "/api/v2/admin/caplet-records/{id}/bundle", "get");
     const getRevisionBundle = operationAt(
       document,
-      "/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
+      "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
       "get",
     );
     expect(Object.keys(getBundle.responses?.["200"]?.content ?? {})).toEqual(["multipart/mixed"]);
@@ -892,7 +804,7 @@ describe("canonical root OpenAPI contract", () => {
   });
 
   it("documents the complete bounded Operator Activity action vocabulary", () => {
-    const activity = operationAt(documentView(), "/v2/admin/activity", "get");
+    const activity = operationAt(documentView(), "/api/v2/admin/activity", "get");
     const action = activity.parameters?.find(
       (parameter) => parameter.name === "action" && parameter.in === "query",
     )?.schema;
@@ -909,7 +821,7 @@ describe("canonical root OpenAPI contract", () => {
   it("bounds every accepted Admin mutation response below durable replay capacity", () => {
     const document = documentView();
     const mutationOperations = operations(document).filter(
-      ({ path, method }) => path.startsWith("/v2/admin/") && method !== "get",
+      ({ path, method }) => path.startsWith("/api/v2/admin/") && method !== "get",
     );
     expect(mutationOperations.map(({ operation }) => operation.operationId).sort()).toEqual([
       "adminV2CreateCapletRecordInstallationObservation",
@@ -964,57 +876,59 @@ describe("canonical root OpenAPI contract", () => {
     ) =>
       operationAt(document, path, method).responses?.[status]?.content?.[mediaType]?.schema?.$ref;
 
-    expect(responseRef("/v2/admin/host", "get")).toBe("#/components/schemas/AdminHostSummary");
-    expect(responseRef("/v2/admin/runtime", "get")).toBe("#/components/schemas/AdminRuntime");
-    expect(responseRef("/v2/admin/logs", "get")).toBe("#/components/schemas/AdminLogPage");
-    expect(responseRef("/v2/admin/diagnostics", "get")).toBe(
+    expect(responseRef("/api/v2/admin/host", "get")).toBe("#/components/schemas/AdminHostSummary");
+    expect(responseRef("/api/v2/admin/runtime", "get")).toBe("#/components/schemas/AdminRuntime");
+    expect(responseRef("/api/v2/admin/logs", "get")).toBe("#/components/schemas/AdminLogPage");
+    expect(responseRef("/api/v2/admin/diagnostics", "get")).toBe(
       "#/components/schemas/AdminDiagnostics",
     );
-    expect(responseRef("/v2/admin/project-binding", "get")).toBe(
+    expect(responseRef("/api/v2/admin/project-binding", "get")).toBe(
       "#/components/schemas/AdminProjectBinding",
     );
-    expect(responseRef("/v2/admin/activity", "get")).toBe("#/components/schemas/AdminActivityPage");
-    expect(responseRef("/v2/admin/caplets", "get")).toBe(
+    expect(responseRef("/api/v2/admin/activity", "get")).toBe(
+      "#/components/schemas/AdminActivityPage",
+    );
+    expect(responseRef("/api/v2/admin/caplets", "get")).toBe(
       "#/components/schemas/AdminEffectiveCapletPage",
     );
-    expect(responseRef("/v2/admin/catalog/entries", "get")).toBe(
+    expect(responseRef("/api/v2/admin/catalog/entries", "get")).toBe(
       "#/components/schemas/AdminCatalogEntryPage",
     );
-    expect(responseRef("/v2/admin/catalog/entries/{entryKey}", "get")).toBe(
+    expect(responseRef("/api/v2/admin/catalog/entries/{entryKey}", "get")).toBe(
       "#/components/schemas/AdminCatalogEntryDetail",
     );
-    expect(responseRef("/v2/admin/catalog/update-runs", "post", "201")).toBe(
+    expect(responseRef("/api/v2/admin/catalog/update-runs", "post", "201")).toBe(
       "#/components/schemas/AdminCatalogMutationResult",
     );
-    expect(responseRef("/v2/admin/remote-clients", "get")).toBe(
+    expect(responseRef("/api/v2/admin/remote-clients", "get")).toBe(
       "#/components/schemas/AdminRemoteClientPage",
     );
-    expect(responseRef("/v2/admin/remote-login-requests/{flowId}", "patch")).toBe(
+    expect(responseRef("/api/v2/admin/remote-login-requests/{flowId}", "patch")).toBe(
       "#/components/schemas/AdminRemoteLoginRequest",
     );
-    expect(responseRef("/v2/admin/backend-auth-connections", "get")).toBe(
+    expect(responseRef("/api/v2/admin/backend-auth-connections", "get")).toBe(
       "#/components/schemas/AdminBackendAuthConnectionPage",
     );
-    expect(responseRef("/v2/admin/backend-auth-flows/{flowId}", "get")).toBe(
+    expect(responseRef("/api/v2/admin/backend-auth-flows/{flowId}", "get")).toBe(
       "#/components/schemas/AdminBackendAuthFlow",
     );
-    expect(responseRef("/v2/admin/vault-values", "get")).toBe(
+    expect(responseRef("/api/v2/admin/vault-values", "get")).toBe(
       "#/components/schemas/AdminVaultValuePage",
     );
-    expect(responseRef("/v2/admin/vault-grants", "get")).toBe(
+    expect(responseRef("/api/v2/admin/vault-grants", "get")).toBe(
       "#/components/schemas/AdminVaultGrantPage",
     );
-    expect(responseRef("/v2/admin/caplet-records", "get")).toBe(
+    expect(responseRef("/api/v2/admin/caplet-records", "get")).toBe(
       "#/components/schemas/AdminCapletRecordPage",
     );
-    expect(responseRef("/v2/admin/caplet-records/{id}", "get")).toBe(
+    expect(responseRef("/api/v2/admin/caplet-records/{id}", "get")).toBe(
       "#/components/schemas/AdminCapletRecordDetail",
     );
-    expect(responseRef("/v2/admin/caplet-records/{id}/revisions", "get")).toBe(
+    expect(responseRef("/api/v2/admin/caplet-records/{id}/revisions", "get")).toBe(
       "#/components/schemas/AdminCapletRevisionPage",
     );
     expect(
-      responseRef("/v2/admin/caplet-records/{id}/installations/{installationKey}", "get"),
+      responseRef("/api/v2/admin/caplet-records/{id}/installations/{installationKey}", "get"),
     ).toBe("#/components/schemas/AdminCapletInstallation");
 
     const recordPage = document.components?.schemas?.AdminCapletRecordPage;
@@ -1043,28 +957,36 @@ describe("canonical root OpenAPI contract", () => {
       "#/components/schemas/AdminCapletRecord",
     );
     for (const [path, method, status] of [
-      ["/v2/admin/caplet-records/{id}", "patch", "200"],
-      ["/v2/admin/caplet-records/{id}/bundle", "put", "200"],
-      ["/v2/admin/caplet-records/{id}/bundle", "put", "201"],
-      ["/v2/admin/caplet-records/{id}/current-revision", "put", "200"],
+      ["/api/v2/admin/caplet-records/{id}", "patch", "200"],
+      ["/api/v2/admin/caplet-records/{id}/bundle", "put", "200"],
+      ["/api/v2/admin/caplet-records/{id}/bundle", "put", "201"],
+      ["/api/v2/admin/caplet-records/{id}/current-revision", "put", "200"],
     ] as const) {
       expect(responseRef(path, method, status)).toBe(
         "#/components/schemas/AdminCapletRecordSummary",
       );
     }
     expect(
-      responseRef("/v2/admin/caplet-records/{id}/installations/{installationKey}", "put", "200"),
+      responseRef(
+        "/api/v2/admin/caplet-records/{id}/installations/{installationKey}",
+        "put",
+        "200",
+      ),
     ).toBe("#/components/schemas/AdminCapletInstallationMutationResult");
     expect(
-      responseRef("/v2/admin/caplet-records/{id}/installations/{installationKey}", "put", "201"),
+      responseRef(
+        "/api/v2/admin/caplet-records/{id}/installations/{installationKey}",
+        "put",
+        "201",
+      ),
     ).toBe("#/components/schemas/AdminCapletInstallationMutationResult");
     expect(
-      responseRef("/v2/admin/caplet-records/{id}/installation-observations", "post", "201"),
+      responseRef("/api/v2/admin/caplet-records/{id}/installation-observations", "post", "201"),
     ).toBe("#/components/schemas/AdminCapletInstallationObservationMutationResult");
 
     const adminJson = JSON.stringify(
       Object.fromEntries(
-        Object.entries(document.paths ?? {}).filter(([path]) => path.startsWith("/v2/admin")),
+        Object.entries(document.paths ?? {}).filter(([path]) => path.startsWith("/api/v2/admin")),
       ),
     );
     expect(adminJson).not.toContain("#/components/schemas/AdminResource");
@@ -1098,35 +1020,35 @@ describe("canonical root OpenAPI contract", () => {
     const requestRef = (path: string, method: (typeof HTTP_METHODS)[number], mediaType: string) =>
       operationAt(document, path, method).requestBody?.content?.[mediaType]?.schema?.$ref;
 
-    expect(requestRef("/v2/admin/catalog/update-runs", "post", "application/json")).toBe(
+    expect(requestRef("/api/v2/admin/catalog/update-runs", "post", "application/json")).toBe(
       "#/components/schemas/AdminCatalogUpdateRequest",
     );
     expect(
       requestRef(
-        "/v2/admin/remote-login-requests/{flowId}",
+        "/api/v2/admin/remote-login-requests/{flowId}",
         "patch",
         "application/merge-patch+json",
       ),
     ).toBe("#/components/schemas/AdminRemoteLoginRequestPatch");
-    expect(requestRef("/v2/admin/backend-auth-flows", "post", "application/json")).toBe(
+    expect(requestRef("/api/v2/admin/backend-auth-flows", "post", "application/json")).toBe(
       "#/components/schemas/AdminBackendAuthFlowStartRequest",
     );
-    expect(requestRef("/v2/admin/vault-values/{storedKey}", "put", "application/json")).toBe(
+    expect(requestRef("/api/v2/admin/vault-values/{storedKey}", "put", "application/json")).toBe(
       "#/components/schemas/AdminVaultValuePutRequest",
     );
     expect(
-      requestRef("/v2/admin/caplet-records/{id}", "patch", "application/merge-patch+json"),
+      requestRef("/api/v2/admin/caplet-records/{id}", "patch", "application/merge-patch+json"),
     ).toBe("#/components/schemas/AdminCapletRecordPatch");
     expect(
       requestRef(
-        "/v2/admin/caplet-records/{id}/installations/{installationKey}",
+        "/api/v2/admin/caplet-records/{id}/installations/{installationKey}",
         "put",
         "application/json",
       ),
     ).toBe("#/components/schemas/AdminCapletInstallationPutRequest");
     expect(
       requestRef(
-        "/v2/admin/caplet-records/{id}/installation-observations",
+        "/api/v2/admin/caplet-records/{id}/installation-observations",
         "post",
         "application/json",
       ),
@@ -1173,7 +1095,7 @@ describe("canonical root OpenAPI contract", () => {
     expect(document.components?.schemas?.AdminCapletRecord?.required).toContain("headGeneration");
     expect(document.components?.schemas?.AdminCapletInstallation?.required).toContain("generation");
 
-    const created = operationAt(document, "/v2/admin/catalog/installations", "post");
+    const created = operationAt(document, "/api/v2/admin/catalog/installations", "post");
     expect(created.responses?.["201"]?.headers).toEqual(
       expect.objectContaining({
         ETag: expect.anything(),
@@ -1183,7 +1105,7 @@ describe("canonical root OpenAPI contract", () => {
     );
     expect(created.responses?.default?.headers).toHaveProperty("Retry-After");
 
-    const recordPatch = operationAt(document, "/v2/admin/caplet-records/{id}", "patch");
+    const recordPatch = operationAt(document, "/api/v2/admin/caplet-records/{id}", "patch");
     expect(recordPatch.responses?.["200"]?.headers).toEqual(
       expect.objectContaining({
         ETag: expect.anything(),
@@ -1191,7 +1113,7 @@ describe("canonical root OpenAPI contract", () => {
       }),
     );
 
-    const backendRefresh = operationAt(document, "/v2/admin/backend-auth-refreshes", "post");
+    const backendRefresh = operationAt(document, "/api/v2/admin/backend-auth-refreshes", "post");
     expect(backendRefresh.parameters).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "If-Match", in: "header" })]),
     );
@@ -1205,8 +1127,8 @@ describe("canonical root OpenAPI contract", () => {
     );
 
     for (const path of [
-      "/v2/admin/caplet-records/{id}/bundle",
-      "/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
+      "/api/v2/admin/caplet-records/{id}/bundle",
+      "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
     ]) {
       expect(operationAt(document, path, "get").responses?.["200"]?.headers).toHaveProperty(
         "Content-Disposition",
@@ -1235,11 +1157,11 @@ describe("canonical root OpenAPI contract", () => {
     const document = documentView();
     const paths = Object.keys(document.paths ?? {});
 
-    expect(paths).not.toContain("/v2/admin/settings");
+    expect(paths).not.toContain("/api/v2/admin/settings");
     expect(paths).not.toContain("/dashboard/api/v2");
-    expect(operationAt(document, "/v2", "get").security).toEqual([]);
+    expect(paths).not.toContain("/v2");
     expect(
-      operationAt(document, "/v2/admin/backend-auth-flows/{flowId}/callback", "get").security,
+      operationAt(document, "/api/v2/admin/backend-auth-flows/{flowId}/callback", "get").security,
     ).toEqual([]);
   });
 });

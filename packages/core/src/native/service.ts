@@ -1,23 +1,18 @@
 import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { isLoopbackHost } from "../server/options";
-import type { NativeCapletsServiceResolutionInput } from "./options";
+import { isLoopbackCurrentHostHostname } from "../current-host/origin";
 import {
   resolveNativeCapletsServiceOptions,
+  type NativeCapletsServiceResolutionInput,
   type NativeRemoteAuthOptions,
-  type ResolvedNativeCloudPresenceOptions,
+  type ResolvedNativeRemoteOptions,
 } from "./options";
-import { CapletsCloudClient } from "../cloud/client";
-import { ProjectBindingSessionManager } from "../cloud/presence";
 import {
   NativeProjectBindingLifecycle,
-  withProjectBindingMutationDeadline,
   type ProjectBindingLifecycle,
   type ProjectBindingSessionAdapter,
-} from "./project-binding-lifecycle";
-import { projectSyncFiles } from "../cloud/sync";
-import { findProjectRoot } from "../cloud/project-root";
+} from "../project-binding/lifecycle";
 import {
   createSdkRemoteCapletsClient,
   RemoteNativeCapletsService,
@@ -62,6 +57,10 @@ import {
 } from "../code-mode/declarations";
 import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
 import { runCodeMode } from "../code-mode/runner";
+import {
+  isUnsupportedRemoteProjectBinding,
+  RemoteProjectBindingSessionManager,
+} from "../project-binding/session";
 import { CodeModeSessionManager } from "../code-mode/sessions";
 import { CodeModeJournalStore } from "../code-mode/journal";
 import {
@@ -85,8 +84,6 @@ import { resolveRemoteSelection, type ResolvedRemoteSelection } from "../remote/
 
 const REMOTE_PROJECT_BINDING_FALLBACK_WARNING =
   "Remote project binding unavailable; using local Caplets only. Run caplets doctor for details.\n";
-const SELF_HOSTED_PROJECT_BINDING_UNSUPPORTED_MESSAGE =
-  "Self-hosted Project Binding sessions are not implemented by this runtime.";
 let hasWarnedRemoteProjectBindingFallback = false;
 
 export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & {
@@ -151,7 +148,7 @@ export function createNativeCapletsService(
     if (options.remoteClientFactory) {
       const local = createLocalOverlayService(options);
       try {
-        return createCompositeRemoteService(resolved.remote, local, options, "self_hosted_remote");
+        return createCompositeRemoteService(resolved.remote, local, options);
       } catch (error) {
         if (options.mode !== "remote") {
           warnRemoteProjectBindingFallback(options);
@@ -166,17 +163,13 @@ export function createNativeCapletsService(
         throw error;
       }
     }
-    return new ProfileBackedNativeCapletsService(options, resolved.remote, "self_hosted_remote");
-  }
-  if (resolved.mode === "cloud") {
-    return new ProfileBackedNativeCapletsService(options, resolved.remote, "hosted_cloud");
+    return new ProfileBackedNativeCapletsService(options, resolved.remote);
   }
   if (resolved.mode === "daemon") {
     const remote = new RemoteNativeCapletsService({
-      client: createRemoteClient(resolved.remote, options, "self_hosted_remote"),
-      clientFactory: () => createRemoteClient(resolved.remote, options, "self_hosted_remote"),
+      client: createRemoteClient(resolved.remote, options),
+      clientFactory: () => createRemoteClient(resolved.remote, options),
       pollIntervalMs: resolved.remote.pollIntervalMs,
-      authKind: "self_hosted_remote",
       ...(options.writeErr ? { writeErr: options.writeErr } : {}),
     });
     return remote;
@@ -663,11 +656,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function runtimeModeFromNativeOptions(options: NativeCapletsServiceOptions) {
   if (options.mode === "local") return "local";
   if (options.mode === "remote") return "remote";
-  if (options.mode === "cloud") return "cloud";
   if (options.mode === "daemon") return "remote";
   if (options.remote?.url) return "remote";
   const envMode = options.telemetryEnv?.CAPLETS_MODE ?? process.env.CAPLETS_MODE;
-  if (envMode === "remote" || envMode === "cloud" || envMode === "local") return envMode;
+  if (envMode === "remote" || envMode === "local") return envMode;
   return "local";
 }
 
@@ -769,12 +761,15 @@ async function executeCodeModeRunNative(
       meta: emptyCodeModeRunMeta(),
     };
   }
+  const runtimeScopeInput = process.env.CAPLETS_MODE?.trim();
+  const runtimeScope =
+    runtimeScopeInput === "remote" || runtimeScopeInput === "daemon" ? runtimeScopeInput : "local";
   return await runCodeMode({
     code: parsed.data.code,
     service,
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
     ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
-    runtimeScope: process.env.CAPLETS_MODE?.trim() || "local",
+    runtimeScope,
     journalStore: new CodeModeJournalStore(),
     ...(sessionManager === undefined ? {} : { sessionManager }),
   });
@@ -785,11 +780,6 @@ function createDefaultNativeCapletsService(
 ): NativeCapletsService {
   return new DefaultNativeCapletsService(options);
 }
-
-type ResolvedNativeRemoteOptions = Extract<
-  Exclude<ReturnType<typeof resolveNativeCapletsServiceOptions>, { mode: "local" }>,
-  { remote: unknown }
->["remote"];
 
 function createLocalOverlayService(options: NativeCapletsServiceOptions): NativeCapletsService {
   const localOptions = {
@@ -804,47 +794,36 @@ function createCompositeRemoteService(
   remoteOptions: ResolvedNativeRemoteOptions,
   local: NativeCapletsService,
   options: NativeCapletsServiceOptions,
-  authKind: "self_hosted_remote" | "hosted_cloud",
 ): NativeCapletsService {
-  const { remote, presence } = createCompositeRemoteParts(remoteOptions, local, options, authKind);
+  const { remote, projectBinding } = createCompositeRemoteParts(remoteOptions, options);
   return new CompositeNativeCapletsService(
     remote,
     local,
     options,
-    remoteOptions.url.toString(),
-    presence,
+    remoteOptions.origin.origin,
+    projectBinding,
   );
 }
 
 function createCompositeRemoteParts(
   remoteOptions: ResolvedNativeRemoteOptions,
-  local: NativeCapletsService,
   options: NativeCapletsServiceOptions,
-  authKind: "self_hosted_remote" | "hosted_cloud",
   resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
-): { remote: NativeCapletsService; presence?: ProjectBindingSessionAdapter } {
-  const client = createRemoteClient(remoteOptions, options, authKind, resolveRuntimeRemoteOptions);
+): { remote: NativeCapletsService; projectBinding?: ProjectBindingSessionAdapter } {
+  const client = createRemoteClient(remoteOptions, options, resolveRuntimeRemoteOptions);
   const remote = new RemoteNativeCapletsService({
     client,
-    clientFactory: () =>
-      createRemoteClient(remoteOptions, options, authKind, resolveRuntimeRemoteOptions),
+    clientFactory: () => createRemoteClient(remoteOptions, options, resolveRuntimeRemoteOptions),
     pollIntervalMs: remoteOptions.pollIntervalMs,
-    authKind,
     ...(options.writeErr ? { writeErr: options.writeErr } : {}),
   });
-  const presence = createProjectBindingSessionManager(
-    remoteOptions.cloud,
-    remoteOptions,
-    local,
-    options,
-  );
-  return { remote, ...(presence ? { presence } : {}) };
+  const projectBinding = createProjectBindingSessionManager(remoteOptions, options);
+  return { remote, ...(projectBinding ? { projectBinding } : {}) };
 }
 
 function createRemoteClient(
   remoteOptions: ResolvedNativeRemoteOptions,
   options: NativeCapletsServiceOptions,
-  authKind: "self_hosted_remote" | "hosted_cloud",
   resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
 ): RemoteCapletsClient {
   if (options.remoteClientFactory) {
@@ -855,7 +834,6 @@ function createRemoteClient(
     : undefined;
   const sdkOptions: SdkRemoteCapletsClientOptions = {
     ...remoteOptions,
-    authKind,
     ...(options.writeErr ? { writeErr: options.writeErr } : {}),
     ...(attachSessionMetadata ? { attachSessionMetadata } : {}),
     ...(resolveRuntimeRemoteOptions ? { resolveRuntimeOptions: resolveRuntimeRemoteOptions } : {}),
@@ -898,7 +876,10 @@ function projectBindingContextForNativeOptions(
 }
 
 function isLoopbackRemote(remoteOptions: ResolvedNativeRemoteOptions): boolean {
-  return remoteOptions.url.protocol === "http:" && isLoopbackHost(remoteOptions.url.hostname);
+  return (
+    remoteOptions.origin.protocol === "http:" &&
+    isLoopbackCurrentHostHostname(remoteOptions.origin.hostname)
+  );
 }
 
 class ProfileBackedNativeCapletsService implements NativeCapletsService {
@@ -914,7 +895,6 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
   constructor(
     private readonly options: NativeCapletsServiceOptions,
     private readonly baseRemote: ResolvedNativeRemoteOptions,
-    private readonly authKind: "self_hosted_remote" | "hosted_cloud",
   ) {
     this.local = createLocalOverlayService(options);
   }
@@ -981,19 +961,17 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
       if (this.closed) return;
       const signature = remoteOptionsSignature(remoteOptions);
       if (!this.delegate) {
-        const { remote, presence } = createCompositeRemoteParts(
+        const { remote, projectBinding } = createCompositeRemoteParts(
           remoteOptions,
-          this.local,
           this.options,
-          this.authKind,
           () => this.resolveProfileRemoteOptions(),
         );
         this.delegate = new CompositeNativeCapletsService(
           remote,
           this.local,
           this.options,
-          remoteOptions.url.toString(),
-          presence,
+          remoteOptions.origin.origin,
+          projectBinding,
         );
         this.unsubscribeDelegate = this.delegate.onToolsChanged((tools) => this.emit(tools));
         this.remoteSignature = signature;
@@ -1001,28 +979,26 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
         return;
       }
       if (signature === this.remoteSignature) return;
-      const { remote, presence } = createCompositeRemoteParts(
+      const { remote, projectBinding } = createCompositeRemoteParts(
         remoteOptions,
-        this.local,
         this.options,
-        this.authKind,
         () => this.resolveProfileRemoteOptions(),
       );
       if (!(await remote.reload())) {
-        presence?.dispose?.();
+        projectBinding?.dispose?.();
         await remote.close();
         return;
       }
       const bindingReady = await this.delegate.replaceRemote(
         remote,
-        remoteOptions.url.toString(),
-        presence,
+        remoteOptions.origin.origin,
+        projectBinding,
       );
       if (!bindingReady) return;
       this.remoteSignature = signature;
       this.credentialExpiresAt = remoteOptions.credentialExpiresAt;
     } catch (error) {
-      if (this.options.mode === "cloud" || this.options.mode === "remote") {
+      if (this.options.mode === "remote") {
         if (this.delegate) throw error;
         await this.close().catch((closeError: unknown) => {
           writeErr(
@@ -1038,50 +1014,23 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
   }
 
   private async resolveProfileRemoteOptions(): Promise<ProfileResolvedNativeRemoteOptions> {
-    const cloudFetch = this.options.remote?.fetch;
+    const remoteFetch = this.options.remote?.fetch;
     const remoteUrl =
-      this.options.remote?.url ??
-      process.env.CAPLETS_REMOTE_URL ??
-      this.baseRemote.url.toString().replace(/\/v1(?:\/ws\/[^/]+)?\/attach$/u, "");
+      this.options.remote?.url ?? process.env.CAPLETS_REMOTE_URL ?? this.baseRemote.origin.origin;
     const selection = await resolveRemoteSelection(
       {
-        mode: this.authKind === "hosted_cloud" ? "cloud" : "remote",
+        mode: "remote",
         remoteUrl,
-        ...(this.options.remote?.workspace ? { workspace: this.options.remote.workspace } : {}),
         ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
-        ...(cloudFetch ? { fetch: cloudFetch } : {}),
+        ...(remoteFetch ? { fetch: remoteFetch } : {}),
       },
       {
         ...process.env,
-        CAPLETS_MODE: this.authKind === "hosted_cloud" ? "cloud" : "remote",
+        CAPLETS_MODE: "remote",
         CAPLETS_REMOTE_URL: remoteUrl,
       },
     );
-    if (this.authKind === "hosted_cloud" && selection.kind !== "hosted_cloud") {
-      throw new CapletsError("REQUEST_INVALID", "CAPLETS_MODE=cloud requires Caplets Cloud.");
-    }
-    if (this.authKind === "self_hosted_remote" && selection.kind !== "self_hosted_remote") {
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        "CAPLETS_MODE=remote requires self-hosted Caplets.",
-      );
-    }
-    const cloudPresence =
-      selection.kind === "hosted_cloud"
-        ? ({
-            url: selection.cloudPresence.url,
-            accessToken: selection.cloudPresence.accessToken,
-            workspaceId: selection.cloudPresence.workspaceId,
-            ...(this.options.remote?.cloud?.projectRoot
-              ? { projectRoot: this.options.remote.cloud.projectRoot }
-              : {}),
-            heartbeatIntervalMs:
-              this.options.remote?.cloud?.heartbeatIntervalMs ??
-              this.baseRemote.cloud?.heartbeatIntervalMs ??
-              30_000,
-          } satisfies ResolvedNativeCloudPresenceOptions)
-        : undefined;
-    return remoteOptionsFromSelection(selection, this.baseRemote, cloudPresence);
+    return remoteOptionsFromSelection(selection, this.baseRemote);
   }
 }
 
@@ -1092,35 +1041,24 @@ type ProfileResolvedNativeRemoteOptions = ResolvedNativeRemoteOptions & {
 function remoteOptionsFromSelection(
   selection: ResolvedRemoteSelection,
   baseRemote: ResolvedNativeRemoteOptions,
-  cloudPresence: ResolvedNativeCloudPresenceOptions | undefined,
 ): ProfileResolvedNativeRemoteOptions {
   return {
     ...baseRemote,
-    url: selection.remote.attachUrl,
+    origin: selection.remote.baseUrl,
     auth: nativeAuthFromRemoteAuth(selection.remote.auth),
     requestInit: selection.remote.requestInit,
     ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
-    ...(cloudPresence ? { cloud: cloudPresence } : {}),
     ...("credentialExpiresAt" in selection && selection.credentialExpiresAt
       ? { credentialExpiresAt: selection.credentialExpiresAt }
       : {}),
-  } satisfies ProfileResolvedNativeRemoteOptions;
+  };
 }
 
 function remoteOptionsSignature(remoteOptions: ProfileResolvedNativeRemoteOptions): string {
   return JSON.stringify({
-    url: remoteOptions.url.toString(),
+    origin: remoteOptions.origin.origin,
     requestInit: remoteOptions.requestInit,
     credentialExpiresAt: remoteOptions.credentialExpiresAt,
-    cloud: remoteOptions.cloud
-      ? {
-          url: remoteOptions.cloud.url.toString(),
-          accessToken: remoteOptions.cloud.accessToken,
-          workspaceId: remoteOptions.cloud.workspaceId,
-          projectRoot: remoteOptions.cloud.projectRoot,
-          heartbeatIntervalMs: remoteOptions.cloud.heartbeatIntervalMs,
-        }
-      : undefined,
   });
 }
 
@@ -1172,7 +1110,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     this.unsubscribeLocal = this.local.onToolsChanged((tools) => {
       this.acceptLocalTools(tools);
       void this.projectBinding?.start().catch((error) => {
-        if (isUnsupportedProjectBinding(error)) return;
+        if (isUnsupportedRemoteProjectBinding(error)) return;
         writeErr(
           this.options,
           `Could not start upstream Project Binding: ${errorMessage(error)}\n`,
@@ -1198,7 +1136,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     this.namespaceDiagnostics = merged.namespaceDiagnostics;
     if (initialLocalTools.length > 0) {
       void this.projectBinding?.start().catch((error) => {
-        if (isUnsupportedProjectBinding(error)) return;
+        if (isUnsupportedRemoteProjectBinding(error)) return;
         writeErr(
           this.options,
           `Could not start upstream Project Binding: ${errorMessage(error)}\n`,
@@ -1258,7 +1196,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     }
     this.telemetry.config = telemetryConfigFromNativeOptions(this.options);
     void this.projectBinding?.start().catch((error) => {
-      if (isUnsupportedProjectBinding(error)) return;
+      if (isUnsupportedRemoteProjectBinding(error)) return;
       writeErr(this.options, `Could not start upstream Project Binding: ${errorMessage(error)}\n`);
     });
     this.updateMergedTools();
@@ -1301,15 +1239,11 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   async replaceRemote(
     remote: NativeCapletsService,
-    remoteIdentityOrPresence?: string | ProjectBindingSessionAdapter,
-    presence?: ProjectBindingSessionAdapter,
+    remoteIdentity: string,
+    nextProjectBinding?: ProjectBindingSessionAdapter,
   ): Promise<boolean> {
-    const remoteIdentity =
-      typeof remoteIdentityOrPresence === "string" ? remoteIdentityOrPresence : this.remoteIdentity;
-    const nextPresence =
-      typeof remoteIdentityOrPresence === "string" ? presence : remoteIdentityOrPresence;
     if (this.closed || this.closing) {
-      nextPresence?.dispose?.();
+      nextProjectBinding?.dispose?.();
       await remote.close();
       return false;
     }
@@ -1332,17 +1266,17 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     previousUnsubscribe();
     try {
       if (this.projectBinding) {
-        await this.projectBinding.replace(nextPresence, closePreviousRemote);
+        await this.projectBinding.replace(nextProjectBinding, closePreviousRemote);
       } else {
         await closePreviousRemote();
         if (this.closed || this.closing) {
-          nextPresence?.dispose?.();
+          nextProjectBinding?.dispose?.();
           await remote.close();
           return false;
         }
-        if (nextPresence) {
+        if (nextProjectBinding) {
           this.projectBinding = new NativeProjectBindingLifecycle(
-            nextPresence,
+            nextProjectBinding,
             this.local.listTools().map((tool) => tool.caplet),
           );
         }
@@ -1357,7 +1291,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
         if (!this.closed && !this.closing) {
           this.unsubscribeRemote = previousRemote.onToolsChanged(() => this.updateMergedTools());
         }
-        if (!hadProjectBinding) nextPresence?.dispose?.();
+        if (!hadProjectBinding) nextProjectBinding?.dispose?.();
         await remote.close().catch(() => undefined);
         throw error;
       }
@@ -1372,7 +1306,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     this.remoteIdentity = remoteIdentity;
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
     if (bindingStartError) {
-      if (!isUnsupportedProjectBinding(bindingStartError)) {
+      if (!isUnsupportedRemoteProjectBinding(bindingStartError)) {
         writeErr(
           this.options,
           `Could not start upstream Project Binding: ${errorMessage(bindingStartError)}\n`,
@@ -1380,7 +1314,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       }
     } else {
       void this.projectBinding?.start().catch((error) => {
-        if (isUnsupportedProjectBinding(error)) return;
+        if (isUnsupportedRemoteProjectBinding(error)) return;
         writeErr(
           this.options,
           `Could not start upstream Project Binding: ${errorMessage(error)}\n`,
@@ -1388,7 +1322,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       });
     }
     this.updateMergedTools();
-    return bindingStartError === undefined || isUnsupportedProjectBinding(bindingStartError);
+    return bindingStartError === undefined || isUnsupportedRemoteProjectBinding(bindingStartError);
   }
 
   private updateMergedTools(): void {
@@ -1570,317 +1504,18 @@ function remoteCodeModeCallableNativeTools(tools: NativeCapletTool[]): NativeCap
 }
 
 function createProjectBindingSessionManager(
-  cloud: ResolvedNativeRemoteOptions["cloud"],
   remoteOptions: ResolvedNativeRemoteOptions,
-  local: NativeCapletsService,
   options: NativeCapletsServiceOptions,
 ): ProjectBindingSessionAdapter | undefined {
-  if (cloud) {
-    const allowedCapletIds = local.listTools().map((tool) => tool.caplet);
-    const projectRoot = cloud.projectRoot ?? findProjectRoot();
-    const cloudFetch = options.remote?.fetch;
-    const clientOptions = {
-      baseUrl: cloud.url,
-      accessToken: cloud.accessToken,
-      ...(cloudFetch ? { fetch: cloudFetch } : {}),
-    };
-    return new ProjectBindingSessionManager({
-      client: new CapletsCloudClient(clientOptions),
-      workspaceId: cloud.workspaceId,
-      projectRoot,
-      projectFingerprint: fingerprintProjectRoot(projectRoot),
-      projectFiles: projectSyncFiles(projectRoot),
-      allowedCapletIds,
-      heartbeatIntervalMs: cloud.heartbeatIntervalMs,
-      onError: (error) => {
-        writeErr(
-          options,
-          `Caplets Cloud Project Binding heartbeat failed: ${errorMessage(error)}\n`,
-        );
-      },
-    });
-  }
-  if (!options.projectRoot || !isLoopbackRemote(remoteOptions)) {
-    return undefined;
-  }
+  if (!options.projectRoot || !isLoopbackRemote(remoteOptions)) return undefined;
   return new RemoteProjectBindingSessionManager({
-    attachUrl: remoteOptions.url,
+    origin: remoteOptions.origin,
     requestInit: remoteOptions.requestInit,
-    fetch: remoteOptions.fetch,
+    ...(remoteOptions.fetch ? { fetch: remoteOptions.fetch } : {}),
     projectRoot: options.projectRoot,
     heartbeatIntervalMs: 30_000,
-    writeErr: options.writeErr,
+    ...(options.writeErr ? { writeErr: options.writeErr } : {}),
   });
-}
-
-class RemoteProjectBindingSessionManager implements ProjectBindingSessionAdapter {
-  private bindingId: string | undefined;
-  private sessionId: string | undefined;
-  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  private mutationChain: Promise<void> = Promise.resolve();
-  private startInFlight: Promise<boolean> | undefined;
-  private closeInFlight: Promise<void> | undefined;
-  private mutationSequence = 0;
-  private closeMutationBoundary = 0;
-  private unsupported = false;
-  private preparingClose = false;
-  private closing = false;
-  private closed = false;
-  private timerHeartbeatQueued = false;
-
-  constructor(
-    private readonly options: {
-      attachUrl: URL;
-      requestInit: RequestInit;
-      fetch?: typeof fetch | undefined;
-      projectRoot: string;
-      heartbeatIntervalMs: number;
-      writeErr?: ((value: string) => void) | undefined;
-    },
-  ) {}
-
-  hasActiveSession(): boolean {
-    return this.bindingId !== undefined && this.sessionId !== undefined;
-  }
-
-  async start(): Promise<boolean> {
-    if (this.unsupported || this.closed || this.closing || this.bindingId) return false;
-    if (this.startInFlight) {
-      return await this.startInFlight;
-    }
-
-    const mutationSequence = ++this.mutationSequence;
-    const start = this.enqueue(async (): Promise<boolean> => {
-      if (
-        this.unsupported ||
-        this.closed ||
-        this.bindingId ||
-        (this.closing && mutationSequence > this.closeMutationBoundary)
-      ) {
-        return false;
-      }
-      const projectFingerprint = fingerprintProjectRoot(this.options.projectRoot);
-      const response = await this.fetchJson<{
-        binding?: { bindingId?: string | undefined };
-        sessionId?: string | undefined;
-      }>(projectBindingUrl(this.options.attachUrl, "sessions"), {
-        method: "POST",
-        body: {
-          projectRoot: this.options.projectRoot,
-          projectFingerprint,
-        },
-      });
-      if (!response.binding?.bindingId || !response.sessionId) {
-        throw new CapletsError(
-          "SERVER_UNAVAILABLE",
-          "Project Binding session response was invalid.",
-        );
-      }
-      this.bindingId = response.binding.bindingId;
-      this.sessionId = response.sessionId;
-      if (!this.preparingClose) this.startHeartbeat();
-      return true;
-    });
-    this.startInFlight = start;
-    void start.catch((error) => {
-      if (isUnsupportedProjectBinding(error)) this.unsupported = true;
-    });
-    try {
-      return await start;
-    } finally {
-      if (this.startInFlight === start) this.startInFlight = undefined;
-    }
-  }
-
-  async updateAllowedCapletIds(): Promise<void> {
-    if (this.closed || this.closing) return;
-    const mutationSequence = ++this.mutationSequence;
-    try {
-      await this.enqueue(async () => {
-        if (this.closed || (this.closing && mutationSequence > this.closeMutationBoundary)) return;
-        await this.heartbeat();
-      });
-    } catch (error) {
-      this.disconnect();
-      this.options.writeErr?.(`Remote Project Binding heartbeat failed: ${errorMessage(error)}\n`);
-      throw error;
-    }
-  }
-
-  prepareClose(): void {
-    this.preparingClose = true;
-    this.stopHeartbeat();
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
-    if (this.closeInFlight) {
-      await this.closeInFlight;
-      return;
-    }
-
-    this.prepareClose();
-    this.closeMutationBoundary = this.mutationSequence;
-    this.closing = true;
-    const close = this.enqueue(async () => {
-      const bindingId = this.bindingId;
-      const sessionId = this.sessionId;
-      if (bindingId && sessionId) {
-        await this.fetchJson(projectBindingUrl(this.options.attachUrl, bindingId, "session"), {
-          method: "DELETE",
-          body: {
-            sessionId,
-            terminalReason: { code: "completed", message: "Binding Session completed." },
-          },
-        });
-      }
-      this.bindingId = undefined;
-      this.sessionId = undefined;
-      this.closed = true;
-    });
-    this.closeInFlight = close;
-    try {
-      await close;
-    } finally {
-      if (this.closeInFlight === close && !this.closed) this.closeInFlight = undefined;
-    }
-  }
-
-  dispose(): void {
-    this.preparingClose = true;
-    this.closing = true;
-    this.closed = true;
-    this.bindingId = undefined;
-    this.sessionId = undefined;
-    this.stopHeartbeat();
-  }
-
-  private enqueue<T>(mutation: () => Promise<T>): Promise<T> {
-    const next = this.mutationChain.then(mutation, mutation);
-    this.mutationChain = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
-  }
-
-  private startHeartbeat(): void {
-    if (this.preparingClose || this.closed || this.closing) return;
-    this.stopHeartbeat();
-    this.heartbeatTimer = setInterval(() => {
-      if (this.timerHeartbeatQueued) return;
-      this.timerHeartbeatQueued = true;
-      const mutationSequence = ++this.mutationSequence;
-      void this.enqueue(async () => {
-        if (
-          this.preparingClose ||
-          this.closed ||
-          (this.closing && mutationSequence > this.closeMutationBoundary)
-        ) {
-          return;
-        }
-        await this.heartbeat();
-      })
-        .catch((error) => {
-          this.disconnect();
-          this.options.writeErr?.(
-            `Remote Project Binding heartbeat failed: ${errorMessage(error)}\n`,
-          );
-        })
-        .finally(() => {
-          this.timerHeartbeatQueued = false;
-        });
-    }, this.options.heartbeatIntervalMs);
-    this.heartbeatTimer.unref?.();
-  }
-
-  private stopHeartbeat(): void {
-    if (!this.heartbeatTimer) return;
-    clearInterval(this.heartbeatTimer);
-    this.heartbeatTimer = undefined;
-  }
-
-  private disconnect(): void {
-    this.stopHeartbeat();
-    if (this.preparingClose || this.closing) return;
-    this.bindingId = undefined;
-    this.sessionId = undefined;
-    this.startInFlight = undefined;
-  }
-
-  private async heartbeat(): Promise<void> {
-    if (!this.bindingId || !this.sessionId) return;
-    await this.fetchJson(projectBindingUrl(this.options.attachUrl, this.bindingId, "heartbeat"), {
-      method: "POST",
-      body: {
-        sessionId: this.sessionId,
-        state: "ready",
-        syncState: "idle",
-      },
-    });
-  }
-
-  private async fetchJson<T = unknown>(
-    url: URL,
-    input: { method: "POST" | "DELETE"; body: unknown },
-  ): Promise<T> {
-    return await withProjectBindingMutationDeadline((signal) =>
-      this.fetchJsonWithinDeadline<T>(url, input, signal),
-    );
-  }
-
-  private async fetchJsonWithinDeadline<T>(
-    url: URL,
-    input: { method: "POST" | "DELETE"; body: unknown },
-    signal: AbortSignal,
-  ): Promise<T> {
-    const headers = new Headers(this.options.requestInit.headers);
-    headers.set("content-type", "application/json");
-    const response = await (this.options.fetch ?? fetch)(url, {
-      ...this.options.requestInit,
-      method: input.method,
-      headers,
-      body: JSON.stringify(input.body),
-      signal,
-    });
-    if (input.method === "DELETE" && response.status === 404) {
-      return {} as T;
-    }
-    if (!response.ok) {
-      let payload: unknown;
-      try {
-        payload = (await response.json()) as unknown;
-      } catch {
-        payload = undefined;
-      }
-      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
-      if (error?.code === "UNSUPPORTED_CAPABILITY" && typeof error.message === "string") {
-        throw new CapletsError("UNSUPPORTED_CAPABILITY", error.message);
-      }
-      throw new CapletsError(
-        "SERVER_UNAVAILABLE",
-        `Project Binding request failed (${response.status}).`,
-      );
-    }
-    return (await response.json().catch(() => ({}))) as T;
-  }
-}
-
-function isUnsupportedProjectBinding(error: unknown): boolean {
-  return (
-    isRecord(error) &&
-    error.code === "UNSUPPORTED_CAPABILITY" &&
-    error.message === SELF_HOSTED_PROJECT_BINDING_UNSUPPORTED_MESSAGE
-  );
-}
-
-function projectBindingUrl(attachUrl: URL, ...segments: string[]): URL {
-  const url = new URL(attachUrl);
-  const base = url.pathname.replace(/\/+$/u, "");
-  url.pathname = [base, "project-bindings", ...segments.map(encodeURIComponent)].join("/");
-  url.search = "";
-  url.hash = "";
-  return url;
 }
 
 function createLocalOverlayConfigLoader(options: NativeCapletsServiceOptions) {

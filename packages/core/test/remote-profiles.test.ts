@@ -1,546 +1,589 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  readlinkSync,
   readdirSync,
   rmSync,
   statSync,
-  utimesSync,
+  symlinkSync,
+  writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { CloudAuthStore, type CloudAuthCredentials } from "../src/cloud-auth/store";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsError } from "../src/errors";
-import { FileRemoteCredentialStore } from "../src/remote/credential-store";
-import { FileRemoteProfileStore } from "../src/remote/profile-store";
-import {
-  remoteProfileKey,
-  remoteProfileStatus,
-  selectedWorkspaceKey,
-} from "../src/remote/profiles";
+import { FileRemoteProfileStore, createRemoteProfileStore } from "../src/remote/profile-store";
+import type {
+  RefreshRemoteProfileInput,
+  RemoteProfileStoreFaultPoint,
+} from "../src/remote/profile-store";
+import { remoteProfileKey, remoteProfileStatus } from "../src/remote/profiles";
+const filesystemTrap = vi.hoisted(() => ({
+  accesses: [] as string[],
+  forbidden: new Set<string>(),
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const guarded =
+    (operation: string, implementation: unknown) =>
+    (...args: unknown[]) => {
+      const attempted = args
+        .slice(0, operation === "renameSync" ? 2 : 1)
+        .filter((value): value is string => typeof value === "string")
+        .find((path) => filesystemTrap.forbidden.has(path));
+      if (attempted) {
+        filesystemTrap.accesses.push(`${operation}:${attempted}`);
+        throw new Error(`Forbidden Cloud filesystem access: ${operation}`);
+      }
+      return Reflect.apply(implementation as (...values: unknown[]) => unknown, actual, args);
+    };
+  return {
+    ...actual,
+    chmodSync: guarded("chmodSync", actual.chmodSync),
+    existsSync: guarded("existsSync", actual.existsSync),
+    lstatSync: guarded("lstatSync", actual.lstatSync),
+    openSync: guarded("openSync", actual.openSync),
+    readFileSync: guarded("readFileSync", actual.readFileSync),
+    renameSync: guarded("renameSync", actual.renameSync),
+    rmSync: guarded("rmSync", actual.rmSync),
+    statSync: guarded("statSync", actual.statSync),
+    writeFileSync: guarded("writeFileSync", actual.writeFileSync),
+  };
+});
 
 const tempDirs: string[] = [];
-
-const cloudCredentials = {
+const credential = {
   accessToken: "access_secret",
   refreshToken: "refresh_secret",
+  tokenType: "Bearer",
   expiresAt: "2099-06-19T12:00:00.000Z",
   scope: ["mcp:tools"],
-  tokenType: "Bearer",
   clientSecret: "client_secret",
   pairingCode: "pairing_code",
 };
 
+const faultPoints: RemoteProfileStoreFaultPoint[] = [
+  "before-credential-write",
+  "after-credential-write",
+  "after-credential-flush",
+  "before-credential-rename",
+  "after-credential-rename",
+  "before-profile-write",
+  "after-profile-write",
+  "after-profile-flush",
+  "before-profile-rename",
+  "after-profile-rename",
+  "before-verification",
+  "after-verification",
+  "before-legacy-profile-delete",
+  "after-legacy-profile-delete",
+  "before-legacy-credential-delete",
+  "after-legacy-credential-delete",
+];
+
 afterEach(() => {
+  filesystemTrap.forbidden.clear();
+  filesystemTrap.accesses.length = 0;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("Remote Profile storage", () => {
-  it("saves a self-hosted profile with redacted status and credential storage", async () => {
-    const store = tempRemoteProfileStore();
+describe("generic Remote Profile storage", () => {
+  it("stores one versioned remote profile with redacted status", async () => {
+    const root = tempRoot();
+    const store = new FileRemoteProfileStore({ root });
 
-    const status = await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets/",
-      hostIdentity: "host_self_123",
+    const status = await store.saveRemoteProfile({
+      origin: "https://CAPLETS.Example.COM:443/",
+      hostIdentity: "host_123",
       clientId: "rcli_123",
-      clientLabel: "Ian's MacBook",
-      credentials: {
-        accessToken: "self_hosted_access_secret",
-        refreshToken: "self_hosted_refresh_secret",
-        tokenType: "Bearer",
-        expiresAt: "2099-06-19T12:00:00.000Z",
-      },
+      clientLabel: "Test Device",
+      credentials: credential,
       now: new Date("2026-06-19T10:00:00.000Z"),
     });
 
     expect(status).toEqual({
       authenticated: true,
-      kind: "self-hosted",
-      key: remoteProfileKey({
-        kind: "self-hosted",
-        hostUrl: "https://caplets.example.com/caplets",
-      }),
-      hostUrl: "https://caplets.example.com/caplets",
-      hostIdentity: "host_self_123",
+      key: "remote:https://caplets.example.com",
+      origin: "https://caplets.example.com",
+      hostIdentity: "host_123",
       clientId: "rcli_123",
-      selected: false,
-      clientLabel: "Ian's MacBook",
+      clientLabel: "Test Device",
       createdAt: "2026-06-19T10:00:00.000Z",
       updatedAt: "2026-06-19T10:00:00.000Z",
-      expiresAt: "2099-06-19T12:00:00.000Z",
+      expiresAt: credential.expiresAt,
+      scope: credential.scope,
       tokenType: "Bearer",
     });
-    expect(JSON.stringify(status)).not.toContain("self_hosted_access_secret");
-    expect(JSON.stringify(status)).not.toContain("self_hosted_refresh_secret");
-
-    await expect(
-      store.getSelfHostedProfileStatus({
-        hostUrl: "https://caplets.example.com/caplets",
-        hostIdentity: "host_self_123",
-      }),
-    ).resolves.toMatchObject({
+    expect(JSON.stringify(status)).not.toMatch(
+      /access_secret|refresh_secret|client_secret|pairing_code/u,
+    );
+    expect(readJson(profilePath(root, status.key))).toEqual({
+      version: 2,
+      key: status.key,
+      origin: status.origin,
+      hostIdentity: "host_123",
       clientId: "rcli_123",
-      clientLabel: "Ian's MacBook",
-      hostIdentity: "host_self_123",
+      clientLabel: "Test Device",
+      createdAt: "2026-06-19T10:00:00.000Z",
+      updatedAt: "2026-06-19T10:00:00.000Z",
     });
-    await expect(
-      store.credentials.load(
-        remoteProfileKey({
-          kind: "self-hosted",
-          hostUrl: "https://caplets.example.com/caplets",
-        }),
-      ),
-    ).resolves.toMatchObject({ accessToken: "self_hosted_access_secret" });
+    expect(await store.getRemoteProfileStatus({ origin: status.origin })).toEqual(status);
+    expect(await store.listRemoteProfileStatuses()).toEqual([status]);
+    if (process.platform !== "win32") {
+      expect(statSync(join(root, "profiles")).mode & 0o777).toBe(0o700);
+      expect(statSync(profilePath(root, status.key)).mode & 0o777).toBe(0o600);
+      expect(statSync(credentialPath(root, status.key)).mode & 0o777).toBe(0o600);
+    }
   });
 
-  it("fails closed when a self-hosted profile identity does not match the contacted host", async () => {
-    const store = tempRemoteProfileStore();
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com",
+  it("rejects invalid origins before creating the store root", async () => {
+    for (const origin of [
+      "https://user:pass@caplets.example.com",
+      "https://caplets.example.com/base",
+      "https://caplets.example.com?workspace=team",
+      "https://caplets.example.com/#fragment",
+      "file:///tmp/caplets",
+      "http://caplets.example.com",
+    ]) {
+      const root = join(tempDir("caplets-invalid-origin-"), "not-created");
+      await expect(
+        new FileRemoteProfileStore({ root }).saveRemoteProfile({
+          origin,
+          clientId: "rcli_123",
+          credentials: credential,
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+      expect(existsSync(root)).toBe(false);
+    }
+  });
+
+  it("fails closed on host identity mismatch", async () => {
+    const store = new FileRemoteProfileStore({ root: tempRoot() });
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       hostIdentity: "host_original",
       clientId: "rcli_123",
-      credentials: {
-        accessToken: "self_hosted_access_secret",
-        refreshToken: "self_hosted_refresh_secret",
-      },
+      credentials: credential,
     });
 
     await expect(
-      store.getSelfHostedProfileStatus({
-        hostUrl: "https://caplets.example.com",
+      store.getRemoteProfileStatus({
+        origin: "https://caplets.example.com",
         hostIdentity: "host_replaced",
       }),
     ).rejects.toThrow(expect.objectContaining({ code: "AUTH_FAILED" }) as CapletsError);
   });
 
-  it("preserves self-hosted profile identity when refreshing stored credentials", async () => {
-    const store = tempRemoteProfileStore();
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com",
+  it("refreshes once under contention and preserves identity and creation time", async () => {
+    const root = tempRoot();
+    const storeA = new FileRemoteProfileStore({ root, lease: testLease() });
+    const storeB = new FileRemoteProfileStore({ root, lease: testLease() });
+    await storeA.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       hostIdentity: "host_original",
       clientId: "rcli_123",
-      credentials: {
-        accessToken: "old_access",
-        refreshToken: "old_refresh",
-      },
+      credentials: { ...credential, accessToken: "old", expiresAt: "2000-01-01T00:00:00Z" },
       now: new Date("2026-06-19T10:00:00.000Z"),
     });
+    let refreshCalls = 0;
+    const started = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const refresh = async () => {
+      refreshCalls += 1;
+      started.resolve();
+      await resume.promise;
+      return {
+        origin: "https://caplets.example.com",
+        clientId: "rcli_123",
+        credentials: { ...credential, accessToken: "new", expiresAt: "2999-01-01T00:00:00Z" },
+        now: new Date("2026-06-19T10:05:00.000Z"),
+      };
+    };
+    const input: RefreshRemoteProfileInput = {
+      origin: "https://caplets.example.com",
+      needsRefresh: (candidate) => candidate.accessToken === "old",
+      refresh,
+    };
 
-    const refreshed = await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com",
-      clientId: "rcli_123",
-      credentials: {
-        accessToken: "new_access",
-        refreshToken: "new_refresh",
-      },
-      now: new Date("2026-06-19T10:05:00.000Z"),
-    });
+    const firstPending = storeA.refreshRemoteProfileIfNeeded(input);
+    await started.promise;
+    const secondPending = storeB.refreshRemoteProfileIfNeeded(input);
+    resume.resolve();
+    const [first, second] = await Promise.all([firstPending, secondPending]);
 
-    expect(refreshed).toMatchObject({
+    expect(refreshCalls).toBe(1);
+    expect(first?.credential.accessToken).toBe("new");
+    expect(second?.credential.accessToken).toBe("new");
+    expect(first?.status).toMatchObject({
       hostIdentity: "host_original",
       createdAt: "2026-06-19T10:00:00.000Z",
       updatedAt: "2026-06-19T10:05:00.000Z",
     });
-    await expect(
-      store.getSelfHostedProfileStatus({
-        hostUrl: "https://caplets.example.com",
-        hostIdentity: "host_replaced",
+  });
+});
+
+describe("self-hosted profile migration", () => {
+  it("rejects a path-bearing legacy profile without rewriting it", async () => {
+    const root = tempRoot();
+    const legacy = writeLegacyPair(root, "https://CAPLETS.Example.COM:443/caplets/", {
+      hostIdentity: "host_legacy",
+      clientId: "rcli_legacy",
+      clientLabel: "Legacy Device",
+      createdAt: "2026-06-18T08:00:00.000Z",
+      updatedAt: "2026-06-18T09:00:00.000Z",
+    });
+    const before = snapshotTree(root);
+
+    await expect(new FileRemoteProfileStore({ root }).listRemoteProfileStatuses()).rejects.toEqual(
+      expect.objectContaining({
+        code: "REQUEST_INVALID",
+        message: expect.stringContaining("Current Host origin"),
       }),
-    ).rejects.toThrow(expect.objectContaining({ code: "AUTH_FAILED" }) as CapletsError);
+    );
+
+    expect(snapshotTree(root)).toEqual(before);
+    expect(existsSync(legacy.profilePath)).toBe(true);
+    expect(existsSync(legacy.credentialPath)).toBe(true);
   });
 
-  it("logs out a self-hosted profile without touching Cloud profiles", async () => {
-    const store = tempRemoteProfileStore();
-    await store.saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com",
-      clientId: "rcli_123",
-      credentials: {
-        accessToken: "self_hosted_access_secret",
-        refreshToken: "self_hosted_refresh_secret",
+  it.each(["missing", "malformed", "symlink", "non-regular"] as const)(
+    "fails closed on a %s legacy credential",
+    async (failure) => {
+      const root = tempRoot();
+      const legacy = writeLegacyPair(root, "https://caplets.example.com");
+      if (failure === "missing") rmSync(legacy.credentialPath);
+      if (failure === "malformed")
+        writeFileSync(legacy.credentialPath, "not-json", { mode: 0o600 });
+      if (failure === "symlink") {
+        rmSync(legacy.credentialPath);
+        symlinkSync(join(root, "missing-target"), legacy.credentialPath);
+      }
+      if (failure === "non-regular") {
+        rmSync(legacy.credentialPath);
+        mkdirSync(legacy.credentialPath);
+      }
+
+      await expect(
+        new FileRemoteProfileStore({ root }).listRemoteProfileStatuses(),
+      ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+      expect(existsSync(legacy.profilePath)).toBe(true);
+      expect(existsSync(profilePath(root, "remote:https://caplets.example.com"))).toBe(false);
+    },
+  );
+  it.each(["missing", "malformed", "symlink", "non-regular"] as const)(
+    "fails closed on a %s legacy profile",
+    async (failure) => {
+      const root = tempRoot();
+      const legacy = writeLegacyPair(root, "https://caplets.example.com");
+      if (failure === "missing") rmSync(legacy.profilePath);
+      if (failure === "malformed") writeFileSync(legacy.profilePath, "not-json", { mode: 0o600 });
+      if (failure === "symlink") {
+        rmSync(legacy.profilePath);
+        symlinkSync(join(root, "missing-target"), legacy.profilePath);
+      }
+      if (failure === "non-regular") {
+        rmSync(legacy.profilePath);
+        mkdirSync(legacy.profilePath);
+      }
+
+      await expect(
+        new FileRemoteProfileStore({ root }).listRemoteProfileStatuses(),
+      ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+      expect(existsSync(legacy.credentialPath)).toBe(true);
+      expect(existsSync(profilePath(root, "remote:https://caplets.example.com"))).toBe(false);
+    },
+  );
+
+  it("fails closed on a conflicting generic destination", async () => {
+    const root = tempRoot();
+    const legacy = writeLegacyPair(root, "https://caplets.example.com");
+    const key = "remote:https://caplets.example.com";
+    writeFileSync(
+      profilePath(root, key),
+      `${JSON.stringify({
+        version: 2,
+        key,
+        origin: "https://caplets.example.com",
+        clientId: "different_client",
+        createdAt: "2026-06-18T08:00:00.000Z",
+        updatedAt: "2026-06-18T09:00:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    writeFileSync(credentialPath(root, key), '{"accessToken":"different_access"}\n', {
+      mode: 0o600,
+    });
+    const before = snapshotTree(root);
+
+    await expect(new FileRemoteProfileStore({ root }).listRemoteProfileStatuses()).rejects.toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
+    );
+
+    expect(snapshotTree(root)).toEqual(before);
+    expect(existsSync(legacy.profilePath)).toBe(true);
+  });
+
+  it.each(faultPoints)("recovers idempotently after %s", async (faultPoint) => {
+    const root = tempRoot();
+    const legacy = writeLegacyPair(root, "https://caplets.example.com");
+    let injected = false;
+    const crashing = new FileRemoteProfileStore({
+      root,
+      faultInjection: (point) => {
+        if (!injected && point === faultPoint) {
+          injected = true;
+          throw new Error(`crash:${point}`);
+        }
       },
     });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_123",
-      workspaceSlug: "team",
-      credentials: cloudCredentials,
-    });
 
-    await expect(
-      store.logoutSelfHostedProfile({ hostUrl: "https://caplets.example.com" }),
-    ).resolves.toBe(true);
+    await expect(crashing.listRemoteProfileStatuses()).rejects.toThrow(`crash:${faultPoint}`);
+    const recovered = await new FileRemoteProfileStore({ root }).listRemoteProfileStatuses();
 
-    await expect(
-      store.getSelfHostedProfileStatus({ hostUrl: "https://caplets.example.com" }),
-    ).resolves.toBeUndefined();
-    await expect(
-      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev" }),
-    ).resolves.toMatchObject({ workspaceSlug: "team" });
-  });
-
-  it("saves a Cloud profile with redacted status and selected workspace pointer", async () => {
-    const store = tempRemoteProfileStore();
-
-    const status = await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev/v1/ws/team/mcp",
-      workspaceId: "ws_123",
-      workspaceSlug: "team",
-      clientLabel: "Ian's MacBook",
-      credentials: cloudCredentials,
-      now: new Date("2026-06-19T10:00:00.000Z"),
-    });
-
-    expect(status).toEqual({
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      key: "remote:https://caplets.example.com",
+      clientId: "rcli_legacy",
       authenticated: true,
-      kind: "cloud",
-      key: remoteProfileKey({
-        kind: "cloud",
-        hostUrl: "https://cloud.caplets.dev/",
-        workspace: "team",
-      }),
-      hostUrl: "https://cloud.caplets.dev/",
-      workspaceId: "ws_123",
-      workspaceSlug: "team",
-      selected: true,
-      clientLabel: "Ian's MacBook",
-      createdAt: "2026-06-19T10:00:00.000Z",
-      updatedAt: "2026-06-19T10:00:00.000Z",
-      expiresAt: "2099-06-19T12:00:00.000Z",
-      scope: ["mcp:tools"],
-      tokenType: "Bearer",
     });
-    expect(JSON.stringify(status)).not.toContain("access_secret");
-    expect(JSON.stringify(status)).not.toContain("refresh_secret");
-    expect(JSON.stringify(status)).not.toContain("client_secret");
-    expect(JSON.stringify(status)).not.toContain("pairing_code");
-    await expect(
-      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev" }),
-    ).resolves.toMatchObject({ workspaceSlug: "team", selected: true });
+    expect(readFileSync(credentialPath(root, recovered[0]!.key))).toEqual(
+      Buffer.from(defaultRawCredential),
+    );
+    expect(existsSync(legacy.profilePath)).toBe(false);
+    expect(existsSync(legacy.credentialPath)).toBe(false);
   });
 
-  it("keeps Cloud workspaces distinct under one host and only logs out the selected profile", async () => {
-    const store = tempRemoteProfileStore();
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_a",
-      workspaceSlug: "alpha",
-      credentials: { ...cloudCredentials, accessToken: "alpha_access" },
-    });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_b",
-      workspaceSlug: "beta",
-      credentials: { ...cloudCredentials, accessToken: "beta_access" },
-    });
-
-    expect(await store.listCloudProfileStatuses("https://cloud.caplets.dev")).toEqual([
-      expect.objectContaining({ workspaceSlug: "alpha", selected: false }),
-      expect.objectContaining({ workspaceSlug: "beta", selected: true }),
-    ]);
-
-    await store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev" });
-
-    expect(await store.listCloudProfileStatuses("https://cloud.caplets.dev")).toEqual([
-      expect.objectContaining({ workspaceSlug: "alpha", selected: false }),
-    ]);
-    await expect(
-      store.credentials.load(
-        remoteProfileKey({
-          kind: "cloud",
-          hostUrl: "https://cloud.caplets.dev/",
-          workspace: "alpha",
-        }),
-      ),
-    ).resolves.toMatchObject({ accessToken: "alpha_access" });
-  });
-
-  it("requires an explicit workspace before mutating a bare Cloud host with no selected workspace", async () => {
-    const store = tempRemoteProfileStore();
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_a",
-      workspaceSlug: "alpha",
-      credentials: cloudCredentials,
-    });
-    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
-
-    await expect(
-      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev" }),
-    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
-    await expect(
-      store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev" }),
-    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
-  });
-
-  it("refreshes explicit Cloud workspaces without changing the selected workspace", async () => {
-    const store = tempRemoteProfileStore();
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_alpha",
-      workspaceSlug: "alpha",
-      credentials: { ...cloudCredentials, accessToken: "alpha_access" },
-    });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_beta",
-      workspaceSlug: "beta",
-      credentials: { ...cloudCredentials, accessToken: "beta_access" },
-    });
-
-    const refreshed = await store.refreshCloudProfileIfNeeded({
-      hostUrl: "https://cloud.caplets.dev/v1/ws/alpha/mcp",
-      needsRefresh: () => true,
-      refresh: async (status) => ({
-        hostUrl: status.hostUrl,
-        workspaceId: status.workspaceId ?? "",
-        ...(status.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
-        credentials: { ...cloudCredentials, accessToken: "alpha_refreshed" },
-      }),
-    });
-
-    expect(refreshed?.status).toMatchObject({ workspaceSlug: "alpha", selected: false });
-    await expect(
-      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev" }),
-    ).resolves.toMatchObject({ workspaceSlug: "beta", selected: true });
-    await expect(
-      store.credentials.load(
-        remoteProfileKey({
-          kind: "cloud",
-          hostUrl: "https://cloud.caplets.dev/",
-          workspace: "alpha",
-        }),
-      ),
-    ).resolves.toMatchObject({ accessToken: "alpha_refreshed" });
-  });
-
-  it("recovers stale mutation locks left by crashed processes", async () => {
-    const root = tempDir("caplets-remote-profiles-");
-    const lockPath = join(root, "remote-profiles.lock");
-    mkdirSync(lockPath, { recursive: true });
-    const staleTime = new Date(Date.now() - 60_000);
-    utimesSync(lockPath, staleTime, staleTime);
+  it("does not resurrect a migrated legacy pair after logout", async () => {
+    const root = tempRoot();
+    const legacy = writeLegacyPair(root, "https://caplets.example.com");
     const store = new FileRemoteProfileStore({ root });
+    await store.listRemoteProfileStatuses();
+    writeLegacyPair(root, "https://caplets.example.com");
 
     await expect(
-      store.saveSelfHostedProfile({
-        hostUrl: "https://caplets.example.com",
+      store.logoutRemoteProfile({ origin: "https://caplets.example.com" }),
+    ).resolves.toBe(true);
+    await expect(
+      new FileRemoteProfileStore({ root }).getRemoteProfileStatus({
+        origin: "https://caplets.example.com",
+      }),
+    ).resolves.toBeUndefined();
+    expect(existsSync(legacy.profilePath)).toBe(false);
+    expect(existsSync(legacy.credentialPath)).toBe(false);
+  });
+});
+
+describe("Remote Profile lock leases", () => {
+  it("does not reclaim an expired lease owned by a live process", async () => {
+    const root = tempRoot();
+    const lockPath = join(root, "remote-profiles.lock");
+    writeLockOwner(lockPath, {
+      token: "live-owner",
+      pid: process.pid,
+      hostname: hostname(),
+      leaseExpiresAt: Date.now() - 10_000,
+    });
+    const store = new FileRemoteProfileStore({
+      root,
+      lease: { acquireTimeoutMs: 40, durationMs: 20, renewIntervalMs: 5 },
+    });
+
+    await expect(
+      store.saveRemoteProfile({
+        origin: "https://caplets.example.com",
         clientId: "rcli_123",
-        credentials: { accessToken: "access", refreshToken: "refresh" },
+        credentials: credential,
+      }),
+    ).rejects.toThrow(expect.objectContaining({ code: "SERVER_UNAVAILABLE" }) as CapletsError);
+    expect(readJson(join(lockPath, "owner.json"))).toMatchObject({ token: "live-owner" });
+  });
+
+  it("reclaims only an expired lease whose owner is proven dead", async () => {
+    const root = tempRoot();
+    const lockPath = join(root, "remote-profiles.lock");
+    writeLockOwner(lockPath, {
+      token: "dead-owner",
+      pid: 2_147_483_647,
+      hostname: hostname(),
+      leaseExpiresAt: Date.now() - 10_000,
+    });
+
+    await expect(
+      new FileRemoteProfileStore({ root, lease: testLease() }).saveRemoteProfile({
+        origin: "https://caplets.example.com",
+        clientId: "rcli_123",
+        credentials: credential,
       }),
     ).resolves.toMatchObject({ authenticated: true });
     expect(existsSync(lockPath)).toBe(false);
   });
 
-  it("does not wait for a refresh lock when self-hosted credentials are still fresh", async () => {
-    const root = tempDir("caplets-remote-profiles-");
-    const store = new FileRemoteProfileStore({ root });
-    const hostUrl = "https://caplets.example.com";
-    await store.saveSelfHostedProfile({
-      hostUrl,
+  it("renews a refresh lease while work exceeds the lease duration", async () => {
+    const root = tempRoot();
+    const store = new FileRemoteProfileStore({ root, lease: testLease() });
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
       clientId: "rcli_123",
-      credentials: {
-        accessToken: "fresh_access",
-        refreshToken: "fresh_refresh",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-      },
+      credentials: { ...credential, accessToken: "old" },
     });
-    const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
-    const refreshLockPath = join(
-      root,
-      "remote-profile-refresh-locks",
-      `${encodeURIComponent(key)}.lock`,
-    );
-    mkdirSync(refreshLockPath, { recursive: true });
-    let refreshCalls = 0;
-
-    await expect(
-      store.refreshSelfHostedProfileIfNeeded({
-        hostUrl,
-        needsRefresh: (credential) => Date.parse(credential.expiresAt ?? "") <= Date.now() + 60_000,
+    const started = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.useFakeTimers();
+    try {
+      const pending = store.refreshRemoteProfileIfNeeded({
+        origin: "https://caplets.example.com",
+        needsRefresh: (candidate) => candidate.accessToken === "old",
         refresh: async () => {
-          refreshCalls += 1;
-          throw new Error("unexpected refresh");
+          started.resolve();
+          await resume.promise;
+          return {
+            origin: "https://caplets.example.com",
+            clientId: "rcli_123",
+            credentials: { ...credential, accessToken: "new" },
+          };
         },
-      }),
-    ).resolves.toMatchObject({
-      credential: { accessToken: "fresh_access" },
-      status: { authenticated: true },
-    });
-    expect(refreshCalls).toBe(0);
-    expect(existsSync(refreshLockPath)).toBe(true);
-  });
-
-  it("rejects credential-bearing remote URLs before persisting profile data", async () => {
-    const root = tempDir("caplets-remote-profiles-");
-    const store = new FileRemoteProfileStore({ root });
-
-    await expect(
-      store.saveCloudProfile({
-        hostUrl: "https://user:pass@cloud.caplets.dev/v1/ws/team/mcp?token=query#refresh",
-        workspaceId: "ws_123",
-        workspaceSlug: "team",
-        credentials: cloudCredentials,
-      }),
-    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
-    expect(readdirSync(root)).toEqual([]);
-  });
-
-  it("creates private directories and credential files with restrictive permissions", async () => {
-    const root = tempDir("caplets-remote-credentials-");
-    const credentials = new FileRemoteCredentialStore({ root });
-
-    await credentials.save("profile-key", cloudCredentials);
-
-    expect(await credentials.load("profile-key")).toEqual(cloudCredentials);
-    if (process.platform !== "win32") {
-      expect(statSync(root).mode & 0o777).toBe(0o700);
-      expect(statSync(credentials.pathForKey("profile-key")).mode & 0o777).toBe(0o600);
+      });
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(100);
+      const key = remoteProfileKey({ origin: "https://caplets.example.com" });
+      const owner = readJsonRecord(
+        join(root, "remote-profile-refresh-locks", `${encodeURIComponent(key)}.lock`, "owner.json"),
+      );
+      expect(owner).toMatchObject({ leaseExpiresAt: expect.any(Number) });
+      expect(owner.leaseExpiresAt).toBeGreaterThan(Date.now());
+      resume.resolve();
+      await expect(pending).resolves.toMatchObject({ credential: { accessToken: "new" } });
+    } finally {
+      vi.useRealTimers();
     }
   });
 
-  it("migrates legacy Cloud Auth through the remote profile store without deleting legacy state", async () => {
-    const legacyPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
-    const legacy = new CloudAuthStore({ path: legacyPath });
-    await legacy.save({
-      ...legacyCloudCredentials,
-      cloudUrl: "https://cloud.caplets.dev",
-      workspaceSlug: "team",
+  it("does not release or commit after its owner token is replaced", async () => {
+    const root = tempRoot();
+    const store = new FileRemoteProfileStore({ root, lease: testLease() });
+    await store.saveRemoteProfile({
+      origin: "https://caplets.example.com",
+      clientId: "rcli_123",
+      credentials: { ...credential, accessToken: "old" },
     });
-    const store = tempRemoteProfileStore({ legacyCloudAuthStore: legacy });
+    const key = remoteProfileKey({ origin: "https://caplets.example.com" });
+    const lockPath = join(root, "remote-profile-refresh-locks", `${encodeURIComponent(key)}.lock`);
+    const started = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const paused = store.refreshRemoteProfileIfNeeded({
+      origin: "https://caplets.example.com",
+      needsRefresh: () => true,
+      refresh: async () => {
+        started.resolve();
+        await resume.promise;
+        return {
+          origin: "https://caplets.example.com",
+          clientId: "rcli_123",
+          credentials: { ...credential, accessToken: "new" },
+        };
+      },
+    });
+    await started.promise;
+    const owner = readJsonRecord(join(lockPath, "owner.json"));
+    writeFileSync(
+      join(lockPath, "owner.json"),
+      JSON.stringify({ ...owner, token: "replacement-owner" }),
+      { mode: 0o600 },
+    );
+    resume.resolve();
 
-    const status = await store.getCloudProfileStatus({
-      hostUrl: "https://cloud.caplets.dev",
-      workspace: "team",
-    });
+    await expect(paused).rejects.toThrow(
+      expect.objectContaining({ code: "SERVER_UNAVAILABLE" }) as CapletsError,
+    );
+    expect(readJson(join(lockPath, "owner.json"))).toMatchObject({ token: "replacement-owner" });
+    expect(readJson(credentialPath(root, key))).toMatchObject({ accessToken: "old" });
+  });
+});
 
-    expect(status).toMatchObject({
-      authenticated: true,
-      kind: "cloud",
-      hostUrl: "https://cloud.caplets.dev/",
-      workspaceId: "ws_123",
-      workspaceSlug: "team",
-      selected: true,
-    });
-    expect(existsSync(legacyPath)).toBe(true);
-    expect(JSON.stringify(status)).not.toContain("legacy_access");
-    await expect(
-      store.credentials.load(
-        remoteProfileKey({
-          kind: "cloud",
-          hostUrl: "https://cloud.caplets.dev/",
-          workspace: "team",
-        }),
+describe("legacy Cloud state quarantine", () => {
+  it("ignores Cloud auth root selection and leaves Cloud files untouched", async () => {
+    const authDir = tempDir("caplets-generic-auth-");
+    const root = join(authDir, "remote-profiles");
+    const externalCloudPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
+    writeFileSync(externalCloudPath, "cloud-auth-secret", { mode: 0o600 });
+    mkdirSync(join(root, "profiles"), { recursive: true });
+    mkdirSync(join(root, "credentials"), { recursive: true });
+    mkdirSync(join(root, "selections"), { recursive: true });
+    const cloudPaths = [
+      join(root, "profiles", `${encodeURIComponent("cloud:https://cloud.caplets.dev/:team")}.json`),
+      join(
+        root,
+        "credentials",
+        `${encodeURIComponent("cloud:https://cloud.caplets.dev/:team")}.json`,
       ),
-    ).resolves.toMatchObject({ accessToken: "legacy_access", refreshToken: "legacy_refresh" });
-  });
+      join(
+        root,
+        "selections",
+        `${encodeURIComponent("cloud:https://cloud.caplets.dev/:selected-workspace")}.json`,
+      ),
+    ];
+    writeFileSync(cloudPaths[0]!, "not-json-cloud-profile", { mode: 0o600 });
+    writeFileSync(cloudPaths[1]!, "cloud-credential-secret", { mode: 0o600 });
+    symlinkSync(join(root, "missing-cloud-selection"), cloudPaths[2]!);
+    const before = cloudPaths.map(snapshotPath);
+    for (const path of [...cloudPaths, externalCloudPath]) filesystemTrap.forbidden.add(path);
+    filesystemTrap.accesses.length = 0;
 
-  it("clears matching legacy Cloud Auth when logging out a migrated Cloud Remote Profile", async () => {
-    const legacyPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
-    const legacy = new CloudAuthStore({ path: legacyPath });
-    await legacy.save({
-      ...legacyCloudCredentials,
-      cloudUrl: "https://cloud.caplets.dev",
-      workspaceSlug: "team",
+    const env = { CAPLETS_CLOUD_AUTH_PATH: externalCloudPath };
+    const derived = createRemoteProfileStore({ env });
+    expect(derived.root).not.toBe(join(tempDirs[1]!, "remote-profiles"));
+    const store = createRemoteProfileStore({ authDir, env });
+    await store.saveRemoteProfile({
+      origin: "https://cloud.caplets.dev",
+      clientId: "rcli_generic",
+      credentials: credential,
     });
-    const store = tempRemoteProfileStore({ legacyCloudAuthStore: legacy });
-    await store.getCloudProfileStatus({
-      hostUrl: "https://cloud.caplets.dev",
-      workspace: "team",
+    await store.getRemoteProfileStatus({ origin: "https://cloud.caplets.dev" });
+    await store.listRemoteProfileStatuses();
+    await store.refreshRemoteProfileIfNeeded({
+      origin: "https://cloud.caplets.dev",
+      needsRefresh: () => false,
+      refresh: async () => {
+        throw new Error("must not refresh");
+      },
     });
+    await store.logoutRemoteProfile({ origin: "https://cloud.caplets.dev" });
+    filesystemTrap.forbidden.clear();
+    expect(filesystemTrap.accesses).toEqual([]);
 
-    await expect(
-      store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev", workspace: "team" }),
-    ).resolves.toBe(true);
-
-    expect(existsSync(legacyPath)).toBe(false);
-    await expect(
-      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev", workspace: "team" }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("keeps mismatched legacy Cloud Auth when logging out a different workspace profile", async () => {
-    const legacyPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
-    const legacy = new CloudAuthStore({ path: legacyPath });
-    await legacy.save({
-      ...legacyCloudCredentials,
-      cloudUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_other",
-      workspaceSlug: "other",
-    });
-    const store = tempRemoteProfileStore({ legacyCloudAuthStore: legacy });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_123",
-      workspaceSlug: "team",
-      credentials: cloudCredentials,
-    });
-
-    await expect(
-      store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev", workspace: "team" }),
-    ).resolves.toBe(true);
-
-    expect(existsSync(legacyPath)).toBe(true);
-  });
-
-  it("keeps no-slug legacy Cloud Auth when logging out a different no-slug workspace", async () => {
-    const legacyPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
-    const legacy = new CloudAuthStore({ path: legacyPath });
-    const { workspaceSlug: _workspaceSlug, ...legacyWithoutSlug } = legacyCloudCredentials;
-    await legacy.save({
-      ...legacyWithoutSlug,
-      cloudUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_legacy",
-    });
-    const store = tempRemoteProfileStore({ legacyCloudAuthStore: legacy });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "ws_profile",
-      credentials: cloudCredentials,
-    });
-
-    await expect(
-      store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev", workspace: "ws_profile" }),
-    ).resolves.toBe(true);
-
-    expect(existsSync(legacyPath)).toBe(true);
+    expect(cloudPaths.map(snapshotPath)).toEqual(before);
+    expect(readFileSync(externalCloudPath, "utf8")).toBe("cloud-auth-secret");
   });
 });
 
 describe("Remote Profile helpers", () => {
-  it("derives normalized profile and selected workspace keys", () => {
-    expect(
-      remoteProfileKey({
-        kind: "cloud",
-        hostUrl: "https://cloud.caplets.dev/v1/ws/team/mcp",
-        workspace: "team",
-      }),
-    ).toBe("cloud:https://cloud.caplets.dev/:team");
-    expect(selectedWorkspaceKey("https://cloud.caplets.dev/v1/ws/team/mcp")).toBe(
-      "cloud:https://cloud.caplets.dev/:selected-workspace",
+  it("derives generic canonical keys and redacted status", () => {
+    expect(remoteProfileKey({ origin: "https://CAPLETS.Example.COM:443/" })).toBe(
+      "remote:https://caplets.example.com",
+    );
+    const status = remoteProfileStatus({
+      origin: "https://caplets.example.com",
+      clientId: "rcli_123",
+      credential,
+    });
+    expect(status).toMatchObject({
+      authenticated: true,
+      key: "remote:https://caplets.example.com",
+      origin: "https://caplets.example.com",
+    });
+    expect(JSON.stringify(status)).not.toMatch(
+      /access_secret|refresh_secret|client_secret|pairing_code/u,
     );
   });
 
-  it("redacts raw credential-shaped fields from profile status helpers", () => {
-    expect(
-      JSON.stringify(
-        remoteProfileStatus({
-          kind: "cloud",
-          hostUrl: "https://cloud.caplets.dev",
-          workspaceId: "ws_123",
-          workspaceSlug: "team",
-          clientLabel: "Test",
-          credential: cloudCredentials,
-        }),
-      ),
-    ).not.toMatch(/access_secret|refresh_secret|client_secret|pairing_code/u);
-  });
-
-  it("does not report partial credentials without access tokens as authenticated", () => {
+  it("does not report partial credentials as authenticated", () => {
     expect(
       remoteProfileStatus({
-        kind: "self-hosted",
-        hostUrl: "https://caplets.example.com",
+        origin: "https://caplets.example.com",
         clientId: "rcli_123",
         credential: { refreshToken: "refresh_secret" },
       }),
@@ -548,30 +591,115 @@ describe("Remote Profile helpers", () => {
   });
 });
 
-const legacyCloudCredentials: CloudAuthCredentials = {
-  version: 2,
-  cloudUrl: "https://cloud.caplets.dev",
-  workspaceId: "ws_123",
-  workspaceSlug: "team",
-  accessToken: "legacy_access",
-  refreshToken: "legacy_refresh",
-  expiresAt: "2099-06-19T12:00:00.000Z",
-  scope: ["mcp:tools"],
-  tokenType: "Bearer",
-  credentialFamilyId: "family_123",
-  deviceName: "Legacy CLI",
-  createdAt: "2026-06-19T09:00:00.000Z",
-  lastRefreshAt: "2026-06-19T09:00:00.000Z",
-};
+const defaultRawCredential = `${JSON.stringify(credential, null, 2)}\n`;
 
-function tempRemoteProfileStore(
-  options: { legacyCloudAuthStore?: CloudAuthStore } = {},
-): FileRemoteProfileStore {
-  return new FileRemoteProfileStore({
-    root: tempDir("caplets-remote-profiles-"),
-    credentials: new FileRemoteCredentialStore({ root: tempDir("caplets-remote-credentials-") }),
-    legacyCloudAuthStore: options.legacyCloudAuthStore,
+function writeLegacyPair(
+  root: string,
+  hostUrl: string,
+  options: {
+    rawCredential?: string;
+    hostIdentity?: string;
+    clientId?: string;
+    clientLabel?: string;
+    createdAt?: string;
+    updatedAt?: string;
+  } = {},
+): { key: string; profilePath: string; credentialPath: string } {
+  const key = `self-hosted:${hostUrl}`;
+  const paths = {
+    key,
+    profilePath: profilePath(root, key),
+    credentialPath: credentialPath(root, key),
+  };
+  mkdirSync(join(root, "profiles"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, "credentials"), { recursive: true, mode: 0o700 });
+  writeFileSync(
+    paths.profilePath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        kind: "self-hosted",
+        key,
+        hostUrl,
+        ...(options.hostIdentity ? { hostIdentity: options.hostIdentity } : {}),
+        clientId: options.clientId ?? "rcli_legacy",
+        ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
+        createdAt: options.createdAt ?? "2026-06-18T08:00:00.000Z",
+        updatedAt: options.updatedAt ?? "2026-06-18T09:00:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(paths.credentialPath, options.rawCredential ?? defaultRawCredential, {
+    mode: 0o600,
   });
+  return paths;
+}
+
+function writeLockOwner(
+  path: string,
+  owner: { token: string; pid: number; hostname: string; leaseExpiresAt: number },
+): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(path, "owner.json"),
+    JSON.stringify({ version: 1, acquiredAt: Date.now() - 20_000, ...owner }),
+    { mode: 0o600 },
+  );
+}
+
+function testLease(): { acquireTimeoutMs: number; durationMs: number; renewIntervalMs: number } {
+  return { acquireTimeoutMs: 1_000, durationMs: 30, renewIntervalMs: 5 };
+}
+
+function profilePath(root: string, key: string): string {
+  return join(root, "profiles", `${encodeURIComponent(key)}.json`);
+}
+
+function credentialPath(root: string, key: string): string {
+  return join(root, "credentials", `${encodeURIComponent(key)}.json`);
+}
+
+function readJson(path: string): unknown {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readJsonRecord(path: string): Record<string, unknown> {
+  const value = readJson(path);
+  if (!isJsonRecord(value)) {
+    throw new Error(`Expected an object in ${path}`);
+  }
+  return value;
+}
+
+function snapshotTree(root: string): Record<string, Buffer> {
+  const result: Record<string, Buffer> = {};
+  for (const directory of ["profiles", "credentials", "selections"]) {
+    const path = join(root, directory);
+    if (!existsSync(path)) continue;
+    for (const name of readdirSync(path)) {
+      const entry = join(path, name);
+      if (lstatSync(entry).isFile()) result[`${directory}/${name}`] = readFileSync(entry);
+    }
+  }
+  return result;
+}
+
+function snapshotPath(path: string): unknown {
+  const stat = lstatSync(path);
+  return stat.isSymbolicLink()
+    ? { mode: stat.mode, mtimeMs: stat.mtimeMs, target: readlinkSync(path) }
+    : { mode: stat.mode, mtimeMs: stat.mtimeMs, bytes: readFileSync(path) };
+}
+
+function tempRoot(): string {
+  return tempDir("caplets-remote-profiles-");
 }
 
 function tempDir(prefix: string): string {

@@ -1,11 +1,14 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { discoverCapletFiles } from "../caplet-files";
+import { readFileSync, type Dirent } from "node:fs";
+import { lstat, opendir } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { discoverCapletFiles, readCapletFileText, readCapletFileTextSync } from "../caplet-files";
+import { validateCapletId } from "../caplet-files-bundle";
 import type { CapletConfig } from "../config";
 import { defaultCapletsLockfilePath } from "../config";
 import { CapletsError } from "../errors";
 import {
   catalogAuthRequiredFromFrontmatter,
+  catalogEntryKey,
   catalogIconFromFrontmatter,
   catalogMutatesExternalStateFromFrontmatter,
   catalogProjectBindingRequiredFromFrontmatter,
@@ -23,6 +26,11 @@ import {
   type CatalogCompactEntry,
   type CatalogSourceIdentity,
 } from "../catalog";
+import {
+  storagePageLimit,
+  type KeysetSortDirection,
+  type StorageKeysetPage,
+} from "../storage/keyset-page";
 
 export type CurrentHostCatalogContext = {
   globalLockfilePath?: string | undefined;
@@ -168,6 +176,61 @@ export async function currentHostCatalogIndex(input: {
   };
 }
 
+export async function currentHostCatalogEntriesPage(input: {
+  source: string;
+  query?: string | undefined;
+  limit: number;
+  sort: KeysetSortDirection;
+  after?: { entryKey: string } | undefined;
+}): Promise<StorageKeysetPage<CatalogCompactEntry, { entryKey: string }>> {
+  const limit = storagePageLimit(input.limit);
+  const query = normalizedCatalogQuery(input.query);
+  if (input.source.trim() === "official") {
+    return await fetchOfficialCatalogPage({
+      limit,
+      sort: input.sort,
+      ...(query === undefined ? {} : { query }),
+      ...(input.after === undefined ? {} : { after: input.after.entryKey }),
+    });
+  }
+
+  const resolvedSource = resolveCurrentHostCatalogSource(input.source);
+  const sourceRoot = join(resolvedSource.root, "caplets");
+  const direction = input.sort === "asc" ? 1 : -1;
+  const items: CatalogCompactEntry[] = [];
+  const directory = await opendir(sourceRoot);
+  for await (const directoryEntry of directory) {
+    const candidate = await localCatalogFile(sourceRoot, directoryEntry);
+    if (!candidate) continue;
+    validateCapletId(candidate.id, candidate.path);
+    const sourcePath = sourceRelativePath(resolvedSource.root, candidate.path);
+    const entryKey = catalogEntryKey({
+      source: resolvedSource.source,
+      sourcePath,
+      capletId: candidate.id,
+    });
+    if (
+      input.after !== undefined &&
+      direction * compareCodeUnits(entryKey, input.after.entryKey) <= 0
+    ) {
+      continue;
+    }
+    const entry = compactCatalogEntry(
+      catalogEntryFromContent(
+        resolvedSource,
+        candidate.id,
+        sourcePath,
+        await readCapletFileText(candidate.path),
+      ),
+    );
+    if (!catalogEntryMatches(entry, query)) continue;
+    insertBoundedCatalogEntry(items, entry, limit + 1, direction);
+  }
+  const hasMore = items.length > limit;
+  if (hasMore) items.pop();
+  return hasMore ? { items, nextKey: { entryKey: items[items.length - 1]!.entryKey } } : { items };
+}
+
 export function currentHostCatalogUpdateReadiness(input: { context: CurrentHostCatalogContext }): {
   updates: Array<{ id: string; status: "locked"; risk: unknown }>;
 } {
@@ -199,44 +262,94 @@ type ResolvedCurrentHostCatalogSource = {
 
 type LockEntry = { id: string; source?: { type?: string; repository?: string }; risk?: unknown };
 
+async function localCatalogFile(
+  sourceRoot: string,
+  entry: Dirent,
+): Promise<{ id: string; path: string } | undefined> {
+  if (entry.name === "auth" || entry.name === "config.json") return undefined;
+  const path = join(sourceRoot, entry.name);
+  if (entry.isFile() && extname(entry.name).toLowerCase() === ".md") {
+    return { id: basename(entry.name, extname(entry.name)), path };
+  }
+  if (!entry.isDirectory()) return undefined;
+  const capletPath = join(path, "CAPLET.md");
+  try {
+    return (await lstat(capletPath)).isFile() ? { id: entry.name, path: capletPath } : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function insertBoundedCatalogEntry(
+  items: CatalogCompactEntry[],
+  candidate: CatalogCompactEntry,
+  maximum: number,
+  direction: 1 | -1,
+): void {
+  const insertionIndex = items.findIndex(
+    (item) => direction * compareCodeUnits(candidate.entryKey, item.entryKey) < 0,
+  );
+  if (insertionIndex === -1) {
+    if (items.length < maximum) items.push(candidate);
+    return;
+  }
+  items.splice(insertionIndex, 0, candidate);
+  if (items.length > maximum) items.pop();
+}
+
 async function catalogEntriesFromSource(sourceInput: string): Promise<CatalogEntry[]> {
   if (sourceInput.trim() === "official") return await fetchOfficialCatalogEntries();
   const resolvedSource = resolveCurrentHostCatalogSource(sourceInput);
   const sourceRoot = join(resolvedSource.root, "caplets");
-  const files = discoverCapletFiles(sourceRoot);
-  return files
-    .map(({ id, path }) => {
-      const contentMarkdown = readFileSync(path, "utf8");
-      const frontmatter = readCatalogCapletFrontmatterFromMarkdown(contentMarkdown);
-      const sourcePath = sourceRelativePath(resolvedSource.root, path);
-      return createCatalogEntry({
-        id,
-        name: catalogStringFromFrontmatter(frontmatter.name) ?? id,
-        description:
-          catalogStringFromFrontmatter(frontmatter.description) ?? `Catalog Caplet ${id}.`,
-        source: resolvedSource.source,
-        sourcePath,
-        trustLevel: resolvedSource.trustLevel,
-        contentMarkdown,
-        icon: catalogIconFromFrontmatter(frontmatter, {
-          id,
-          source: resolvedSource.source,
-          sourcePath,
-          trustLevel: resolvedSource.trustLevel,
-        }),
-        tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
-        setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
-        authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
-        projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),
-        workflow: catalogWorkflowSummaryFromFrontmatter(frontmatter, {
-          kind: "code_mode",
-          label: "Code Mode",
-        }),
-        mutatesExternalState: catalogMutatesExternalStateFromFrontmatter(frontmatter),
-        localControl: catalogUsesLocalControlFromFrontmatter(frontmatter),
-      });
-    })
+  return discoverCapletFiles(sourceRoot)
+    .map(({ id, path }) =>
+      catalogEntryFromFile(resolvedSource, id, path, sourceRelativePath(resolvedSource.root, path)),
+    )
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function catalogEntryFromFile(
+  resolvedSource: ResolvedCurrentHostCatalogSource,
+  id: string,
+  path: string,
+  sourcePath: string,
+): CatalogEntry {
+  return catalogEntryFromContent(resolvedSource, id, sourcePath, readCapletFileTextSync(path));
+}
+
+function catalogEntryFromContent(
+  resolvedSource: ResolvedCurrentHostCatalogSource,
+  id: string,
+  sourcePath: string,
+  contentMarkdown: string,
+): CatalogEntry {
+  const frontmatter = readCatalogCapletFrontmatterFromMarkdown(contentMarkdown);
+  return createCatalogEntry({
+    id,
+    name: catalogStringFromFrontmatter(frontmatter.name) ?? id,
+    description: catalogStringFromFrontmatter(frontmatter.description) ?? `Catalog Caplet ${id}.`,
+    source: resolvedSource.source,
+    sourcePath,
+    trustLevel: resolvedSource.trustLevel,
+    contentMarkdown,
+    icon: catalogIconFromFrontmatter(frontmatter, {
+      id,
+      source: resolvedSource.source,
+      sourcePath,
+      trustLevel: resolvedSource.trustLevel,
+    }),
+    tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
+    setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
+    authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
+    projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),
+    workflow: catalogWorkflowSummaryFromFrontmatter(frontmatter, {
+      kind: "code_mode",
+      label: "Code Mode",
+    }),
+    mutatesExternalState: catalogMutatesExternalStateFromFrontmatter(frontmatter),
+    localControl: catalogUsesLocalControlFromFrontmatter(frontmatter),
+  });
 }
 
 function resolveCurrentHostCatalogSource(sourceInput: string): ResolvedCurrentHostCatalogSource {
@@ -283,6 +396,45 @@ async function fetchOfficialCatalogIndex(): Promise<CatalogCompactEntry[]> {
   return payload.entries;
 }
 
+async function fetchOfficialCatalogPage(input: {
+  limit: number;
+  sort: KeysetSortDirection;
+  query?: string | undefined;
+  after?: string | undefined;
+}): Promise<StorageKeysetPage<CatalogCompactEntry, { entryKey: string }>> {
+  const url = new URL(officialCatalogApiUrl);
+  url.searchParams.set("view", "compact");
+  url.searchParams.set("limit", String(input.limit));
+  url.searchParams.set("sort", input.sort);
+  if (input.query !== undefined) url.searchParams.set("q", input.query);
+  if (input.after !== undefined) url.searchParams.set("after", input.after);
+  const payload = await fetchOfficialJson(url.toString(), maxCatalogIndexBytes);
+  if (
+    !isRecord(payload) ||
+    payload.version !== 1 ||
+    payload.view !== "compact" ||
+    !Array.isArray(payload.entries) ||
+    payload.entries.length > input.limit ||
+    !payload.entries.every(isCompactCatalogEntry) ||
+    !isValidCatalogPage(payload.entries, input)
+  ) {
+    throw invalidCatalogResponse();
+  }
+  const nextEntryKey = payload.nextEntryKey;
+  if (
+    nextEntryKey !== undefined &&
+    (typeof nextEntryKey !== "string" ||
+      payload.entries.length === 0 ||
+      payload.entries[payload.entries.length - 1]?.entryKey !== nextEntryKey)
+  ) {
+    throw invalidCatalogResponse();
+  }
+  return {
+    items: payload.entries,
+    ...(typeof nextEntryKey === "string" ? { nextKey: { entryKey: nextEntryKey } } : {}),
+  };
+}
+
 async function fetchOfficialCatalogDetail(entryKey: string): Promise<CatalogEntry | undefined> {
   const payload = await fetchOfficialJson(
     `${officialCatalogApiUrl}/entries/${encodeURIComponent(entryKey)}`,
@@ -299,6 +451,60 @@ async function fetchOfficialCatalogDetail(entryKey: string): Promise<CatalogEntr
     throw invalidCatalogResponse();
   }
   return payload.entry;
+}
+
+function compactCatalogEntry(entry: CatalogEntry): CatalogCompactEntry {
+  const { contentMarkdown: _contentMarkdown, ...compact } = entry;
+  return {
+    ...compact,
+    installCount: 0,
+    installCountDisplay: "<10",
+    rankScore: 0,
+  };
+}
+
+function normalizedCatalogQuery(query: string | undefined): string | undefined {
+  const normalized = query?.trim().toLowerCase();
+  return normalized ? normalized : undefined;
+}
+
+function catalogEntryMatches(
+  entry: Pick<CatalogEntry, "id" | "name" | "description" | "tags">,
+  query: string | undefined,
+): boolean {
+  return (
+    query === undefined ||
+    [entry.id, entry.name, entry.description, ...entry.tags]
+      .join("\n")
+      .toLowerCase()
+      .includes(query)
+  );
+}
+
+function isValidCatalogPage(
+  entries: readonly CatalogCompactEntry[],
+  input: {
+    limit: number;
+    sort: KeysetSortDirection;
+    query?: string | undefined;
+    after?: string | undefined;
+  },
+): boolean {
+  const direction = input.sort === "asc" ? 1 : -1;
+  let previous = input.after;
+  for (const entry of entries) {
+    if (!catalogEntryMatches(entry, input.query)) return false;
+    if (previous !== undefined && direction * compareCodeUnits(entry.entryKey, previous) <= 0) {
+      return false;
+    }
+    previous = entry.entryKey;
+  }
+  return true;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
 }
 
 async function fetchOfficialJson(

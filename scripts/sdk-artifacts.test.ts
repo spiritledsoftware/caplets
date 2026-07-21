@@ -142,8 +142,8 @@ describe("checked SDK artifacts", () => {
     await adminV2GetHost({ client: second });
 
     expect(seen.map((request) => request.url)).toEqual([
-      "https://first.invalid/v2/admin/host",
-      "https://second.invalid/v2/admin/host",
+      "https://first.invalid/api/v2/admin/host",
+      "https://second.invalid/api/v2/admin/host",
     ]);
     expect(seen.map((request) => request.headers.get("authorization"))).toEqual([
       "Bearer first-token",

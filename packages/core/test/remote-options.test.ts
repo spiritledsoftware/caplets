@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CapletsError } from "../src/errors";
-import {
-  hostedCloudWorkspaceFromRemoteUrl,
-  resolveCapletsRemote,
-  resolveHostedCloudRemote,
-  resolveRemoteMode,
-} from "../src/remote/options";
+import { resolveCapletsRemote, resolveRemoteMode } from "../src/remote/options";
 
 describe("resolveRemoteMode", () => {
   it("uses local mode by default without remote client settings", () => {
@@ -13,14 +8,20 @@ describe("resolveRemoteMode", () => {
   });
 
   it("uses remote mode in auto when CAPLETS_REMOTE_URL is configured", () => {
-    expect(resolveRemoteMode({}, { CAPLETS_REMOTE_URL: "https://example.com/caplets" })).toEqual({
+    expect(resolveRemoteMode({}, { CAPLETS_REMOTE_URL: "https://example.com" })).toEqual({
+      mode: "remote",
+    });
+  });
+
+  it("treats a former Cloud hostname as an ordinary remote", () => {
+    expect(resolveRemoteMode({}, { CAPLETS_REMOTE_URL: "https://cloud.caplets.dev" })).toEqual({
       mode: "remote",
     });
   });
 
   it("does not treat CAPLETS_SERVER_URL as client remote configuration", () => {
     expect(
-      resolveRemoteMode({}, { CAPLETS_SERVER_URL: "https://example.com/caplets" } as Record<
+      resolveRemoteMode({}, { CAPLETS_SERVER_URL: "https://example.com" } as Record<
         string,
         string
       >),
@@ -33,133 +34,60 @@ describe("resolveRemoteMode", () => {
     );
   });
 
-  it("supports explicit cloud mode with a Caplets Cloud URL", () => {
-    expect(
-      resolveRemoteMode(
-        {},
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        },
-      ),
-    ).toEqual({ mode: "cloud" });
-  });
-
-  it("detects cloud mode in auto from CAPLETS_REMOTE_URL", () => {
-    expect(resolveRemoteMode({}, { CAPLETS_REMOTE_URL: "https://cloud.caplets.dev" })).toEqual({
-      mode: "cloud",
-    });
-  });
-
-  it("keeps non-Cloud CAPLETS_REMOTE_URL in self-hosted remote mode", () => {
-    expect(
-      resolveRemoteMode({}, { CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets" }),
-    ).toEqual({ mode: "remote" });
-  });
-
-  it("rejects explicit cloud mode with a non-Cloud URL", () => {
-    expect(() =>
-      resolveRemoteMode(
-        {},
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        },
-      ),
-    ).toThrow(/CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL to point at Caplets Cloud/u);
-  });
-
-  it("rejects explicit cloud mode without CAPLETS_REMOTE_URL", () => {
-    expect(() => resolveRemoteMode({}, { CAPLETS_MODE: "cloud" })).toThrow(
-      /CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL/u,
-    );
-  });
-
-  it("rejects invalid CAPLETS_MODE values", () => {
-    expect(() => resolveRemoteMode({}, { CAPLETS_MODE: "sidecar" })).toThrow(
-      /Expected CAPLETS_MODE to be auto, local, remote, or cloud/u,
-    );
+  it("rejects removed and unknown modes", () => {
+    for (const mode of ["cloud", "sidecar"]) {
+      expect(() => resolveRemoteMode({}, { CAPLETS_MODE: mode })).toThrow(
+        /Expected CAPLETS_MODE to be auto, local, or remote/u,
+      );
+    }
   });
 });
 
 describe("resolveCapletsRemote", () => {
-  it("derives remote service URLs without reading legacy credential env vars", () => {
+  it("derives fixed Current Host protocol URLs without reading legacy credential env vars", () => {
     const resolved = resolveCapletsRemote({}, {
-      CAPLETS_REMOTE_URL: "https://example.com/caplets/",
+      CAPLETS_REMOTE_URL: "https://EXAMPLE.com:443/",
       CAPLETS_REMOTE_USER: "env-user",
       CAPLETS_REMOTE_PASSWORD: "remote-password",
       CAPLETS_REMOTE_TOKEN: "remote-token",
+      CAPLETS_REMOTE_WORKSPACE: "legacy-tenant",
     } as Record<string, string>);
 
     expect(resolved).toMatchObject({
-      baseUrl: new URL("https://example.com/caplets"),
-      mcpUrl: new URL("https://example.com/caplets/v1/mcp"),
-      attachUrl: new URL("https://example.com/caplets/v1/attach"),
-      controlUrl: new URL("https://example.com/caplets/v1/admin"),
-      healthUrl: new URL("https://example.com/caplets/v1/healthz"),
+      baseUrl: new URL("https://example.com"),
+      mcpUrl: new URL("https://example.com/mcp"),
+      attachUrl: new URL("https://example.com/api/v1/attach"),
+      adminUrl: new URL("https://example.com/api/v2/admin"),
+      healthUrl: new URL("https://example.com/api/v1/healthz"),
       projectBindingWebSocketUrl: new URL(
-        "wss://example.com/caplets/v1/attach/project-bindings/connect",
+        "wss://example.com/api/v1/attach/project-bindings/connect",
       ),
       auth: { type: "none", user: "caplets" },
     });
-    expect(resolved.workspace).toBeUndefined();
+    expect(resolved).not.toHaveProperty("workspace");
     expect(new Headers(resolved.requestInit.headers).get("authorization")).toBeNull();
   });
 
-  it("derives attach URL from self-hosted remote base paths", () => {
-    expect(
-      resolveCapletsRemote({}, { CAPLETS_REMOTE_URL: "https://host.example/base" }).attachUrl,
-    ).toEqual(new URL("https://host.example/base/v1/attach"));
+  it.each([
+    "https://host.example/base",
+    "https://user:pass@host.example",
+    "https://host.example?tenant=team",
+    "http://host.example",
+  ])("rejects non-origin generic remotes before resolving endpoints: %s", (value) => {
+    expect(() => resolveCapletsRemote({}, { CAPLETS_REMOTE_URL: value })).toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
+    );
   });
 
-  it("supports issued bearer token and workspace settings from trusted callers", () => {
+  it("supports an issued bearer token from a trusted caller", () => {
     const resolved = resolveCapletsRemote(
-      { token: "input-token", workspace: "team" },
+      { token: "input-token" },
       { CAPLETS_REMOTE_URL: "https://example.com" },
     );
 
     expect(resolved.auth).toEqual({ type: "bearer", token: "input-token" });
-    expect(resolved.workspace).toBe("team");
     expect(new Headers(resolved.requestInit.headers).get("authorization")).toBe(
       "Bearer input-token",
     );
-  });
-});
-
-describe("hostedCloudWorkspaceFromRemoteUrl", () => {
-  it("extracts workspace slugs from copied Cloud MCP endpoints", () => {
-    expect(
-      hostedCloudWorkspaceFromRemoteUrl("https://cloud.caplets.dev/v1/ws/personal-c9b49d/mcp"),
-    ).toBe("personal-c9b49d");
-  });
-
-  it("returns undefined for unrecognized Cloud paths", () => {
-    expect(
-      hostedCloudWorkspaceFromRemoteUrl("https://cloud.caplets.dev/api/v1/foo"),
-    ).toBeUndefined();
-  });
-});
-
-describe("resolveHostedCloudRemote", () => {
-  it("derives attach URL under the selected Cloud workspace path", () => {
-    const resolved = resolveHostedCloudRemote(
-      { workspace: "team-one" },
-      { CAPLETS_REMOTE_URL: "https://cloud.caplets.dev" },
-    );
-
-    expect(resolved.attachUrl).toEqual(new URL("https://cloud.caplets.dev/v1/ws/team-one/attach"));
-  });
-
-  it("uses CAPLETS_REMOTE_WORKSPACE when a Cloud URL has no workspace path", () => {
-    const resolved = resolveHostedCloudRemote(
-      {},
-      {
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        CAPLETS_REMOTE_WORKSPACE: "team-env",
-      },
-    );
-
-    expect(resolved.workspace).toBe("team-env");
-    expect(resolved.attachUrl).toEqual(new URL("https://cloud.caplets.dev/v1/ws/team-env/attach"));
   });
 });

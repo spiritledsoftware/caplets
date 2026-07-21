@@ -57,8 +57,7 @@ type CommonServerToolRequest = Exclude<
 
 export type HandleServerToolOptions = {
   observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
-  observedOutputShapeScope?: "local" | "self_hosted" | "cloud" | undefined;
-  workspaceId?: string | undefined;
+  observedOutputShapeScope?: "local" | "remote" | undefined;
   projectFingerprint?: string | undefined;
 };
 
@@ -722,7 +721,6 @@ async function readObservedOutputShape(
     return await options.observedOutputShapeStore.read(
       observedOutputShapeKey({
         scope: options.observedOutputShapeScope ?? "local",
-        workspaceId: options.workspaceId,
         projectFingerprint: options.projectFingerprint,
         caplet: server,
         toolName,
@@ -744,7 +742,6 @@ async function writeObservedOutputShape(
   if (value === undefined) return;
   const key = observedOutputShapeKey({
     scope: options.observedOutputShapeScope ?? "local",
-    workspaceId: options.workspaceId,
     projectFingerprint: options.projectFingerprint,
     caplet: server,
     toolName,
@@ -965,12 +962,9 @@ export type CapletArtifact =
     };
 
 export type CapletExecutionMetadata = {
-  kind: "local" | "remote" | "cloud" | "local-fallback";
+  kind: "local" | "remote" | "local-fallback";
   runtimeId?: string | undefined;
-  sandboxId?: string | undefined;
-  presenceId?: string | undefined;
   fallback?: boolean | undefined;
-  fallbackReason?: "hosted_runtime_limit_reached" | "hosted_runtime_degraded" | undefined;
   project?:
     | {
         bound: boolean;

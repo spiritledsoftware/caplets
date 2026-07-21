@@ -22,11 +22,11 @@ export {
   type ProjectBindingWebSocket,
   type ProjectBindingWebSocketFactory,
 } from "./transport";
+export type { ProjectBinding } from "../generated/types.gen";
 export type {
   BindingTerminalReason,
-  ProjectBinding,
   ProjectBindingSocketClientMessage,
   ProjectBindingSocketServerMessage,
   ProjectBindingState,
   ProjectBindingSyncState,
-} from "../generated/types.gen";
+} from "./protocol";

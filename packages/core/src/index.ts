@@ -96,24 +96,6 @@ export { capletSetupContentHash } from "./setup/hash";
 export { stableJsonStringify as stableJson } from "./stable-json";
 export { LocalSetupStore } from "./setup/local-store";
 export { runCapletSetup } from "./setup/runner";
-export { CloudAuthClient } from "./cloud-auth/client";
-export { openBrowserUrl } from "./cloud-auth/open-url";
-export {
-  CloudAuthStore,
-  cloudAuthPath,
-  migrateCredentials,
-  redactedCloudAuthStatus,
-} from "./cloud-auth/store";
-export type { CloudAuthCredentials, CloudAuthStoreOptions } from "./cloud-auth/store";
-export type {
-  CloudAuthLoginPollResult,
-  CloudAuthLoginStart,
-  CloudAuthScope,
-  CloudAuthState,
-  CloudAuthTokenResponse,
-  CloudAuthWorkspace,
-  RedactedCloudAuthStatus,
-} from "./cloud-auth/types";
 export type {
   SetupActor,
   SetupApproval,
@@ -155,19 +137,7 @@ export type {
   ProjectSyncManifestFile,
 } from "./project-binding/sync-filter";
 export { DEFAULT_SYNC_LIMITS, enforceProjectSyncSizeLimits } from "./project-binding/sync-size";
-export type {
-  ProjectSyncLimits,
-  ProjectSyncSizeResult,
-  ProjectSyncTier,
-} from "./project-binding/sync-size";
-export {
-  PROJECT_BINDING_CONNECT_PATH,
-  PROJECT_BINDINGS_CONTROL_PATH,
-  projectBindingConnectPath,
-  projectBindingConnectUrl,
-  projectBindingStatusPath,
-  projectBindingStatusUrl,
-} from "./project-binding/routes";
+export type { ProjectSyncLimits, ProjectSyncSizeResult } from "./project-binding/sync-size";
 export {
   attachProjectOnce,
   attachProjectSession,

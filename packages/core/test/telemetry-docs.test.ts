@@ -37,7 +37,7 @@ describe("telemetry product docs", () => {
     for (const expected of [
       "Where does setup fail?",
       "Which surfaces are active?",
-      "Is local, remote, or cloud runtime worth more investment?",
+      "Is local or generic remote runtime worth more investment?",
       "Are native integrations used?",
       "Which exposure modes are used?",
       "Which backend families deserve investment?",

@@ -10,12 +10,9 @@ import {
   projectBindingSessionCreateResponseSchema,
   projectBindingSessionDeleteResponseSchema,
   projectBindingSessionGetResponseSchema,
-  projectBindingSocketClientMessageSchema,
-  projectBindingSocketServerMessageSchema,
   projectBindingStatusResponseSchema,
   projectBindingTextAuthErrorSchema,
 } from "../project-binding/protocol";
-import { MAX_BUNDLE_FILES } from "../storage/caplet-records";
 import {
   OPERATOR_ACTIVITY_ACTION_MAX_LENGTH,
   OPERATOR_ACTIVITY_ACTION_PATTERN,
@@ -31,6 +28,10 @@ const EVENT_STREAM_MEDIA = "text/event-stream";
 const TEXT_MEDIA = "text/plain";
 
 const bearerSecurity: NonNullable<RouteConfig["security"]> = [{ bearerAuth: [] }];
+const adminSecurity: NonNullable<RouteConfig["security"]> = [
+  { bearerAuth: [] },
+  { dashboardSession: [] },
+];
 const publicSecurity: NonNullable<RouteConfig["security"]> = [];
 
 const problemSchema = z
@@ -812,6 +813,12 @@ export const adminV2IdempotencyHeadersSchema = z.object({
         "Principal-scoped retry key. Reuse with the same validated request replays the finalized response.",
     }),
 });
+const dashboardSessionHeadersSchema = z.object({
+  "X-Caplets-CSRF": z.string().min(1).optional().openapi({
+    description:
+      "Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.",
+  }),
+});
 
 const idempotentMutationHeadersSchema = adminV2IdempotencyHeadersSchema.extend({
   "If-Match": adminV2IfMatchHeadersSchema.shape["If-Match"],
@@ -862,30 +869,36 @@ const bundleDownloadSchema = z.string().openapi("CapletBundleDownload", { format
 const serviceDiscoverySchema = z
   .object({
     name: z.literal("caplets"),
-    transport: z.literal("http"),
-    base: z.string(),
-    versions: z.array(z.record(z.string(), z.unknown())),
-    auth: z.object({ type: z.string() }),
-    remote: z.object({ hostIdentity: z.string(), audience: z.string() }).optional(),
+    protocol: z.literal("caplets-http"),
+    schemaVersion: z.literal(1),
+    links: z
+      .object({
+        self: z.literal("/api"),
+        openapi: z.literal("/api/openapi.json"),
+        v1: z.literal("/api/v1"),
+        admin: z.literal("/api/v2/admin/host"),
+      })
+      .strict(),
   })
+  .strict()
   .openapi("ServiceDiscovery");
 
 const versionDiscoverySchema = z
   .object({
     version: z.literal(1),
-    path: z.string(),
-    links: z.record(z.string(), z.string()),
-  })
-  .openapi("VersionDiscovery");
-
-const adminV2DiscoverySchema = z
-  .object({
-    version: z.literal(2),
-    path: z.string(),
-    links: z.object({ admin: z.string() }).strict(),
+    path: z.literal("/api/v1"),
+    links: z
+      .object({
+        health: z.literal("/api/v1/healthz"),
+        attachSessions: z.literal("/api/v1/attach/sessions").optional(),
+        attachManifest: z.literal("/api/v1/attach/manifest").optional(),
+        attachEvents: z.literal("/api/v1/attach/events").optional(),
+        attachInvoke: z.literal("/api/v1/attach/invoke").optional(),
+      })
+      .strict(),
   })
   .strict()
-  .openapi("AdminV2Discovery");
+  .openapi("VersionDiscovery");
 
 const healthSchema = z
   .object({
@@ -1061,468 +1074,6 @@ const attachErrorResponseSchema = z
   .openapi("AttachErrorResponse");
 const publicV1TextErrorSchema = z.string().openapi("PublicV1TextError");
 
-const LEGACY_COMMANDS = [
-  "list",
-  "inspect",
-  "check",
-  "tools",
-  "search_tools",
-  "describe_tool",
-  "call_tool",
-  "resources",
-  "search_resources",
-  "resource_templates",
-  "read_resource",
-  "prompts",
-  "search_prompts",
-  "get_prompt",
-  "complete",
-  "init",
-  "add",
-  "install",
-  "update",
-  "complete_cli",
-  "auth_login_start",
-  "auth_login_complete",
-  "auth_logout",
-  "auth_refresh",
-  "auth_list",
-  "vault_set",
-  "vault_list",
-  "vault_get",
-  "vault_delete",
-  "vault_access_grant",
-  "vault_access_revoke",
-  "vault_access_list",
-  "storage_records_list",
-  "storage_records_get",
-  "storage_records_import",
-  "storage_records_update",
-  "storage_records_export",
-  "storage_records_revisions",
-  "storage_records_restore",
-  "storage_records_delete_revision",
-  "storage_records_retention",
-  "storage_records_rename",
-  "storage_records_delete",
-  "storage_records_installation_status",
-  "storage_records_installation_detach",
-  "storage_records_installation_observe",
-  "storage_records_installation_replace",
-] as const;
-
-const legacyRequiredStringSchema = z.string().min(1);
-const legacyPositiveIntegerSchema = z.number().int().positive();
-const legacyNonNegativeIntegerSchema = z.number().int().nonnegative();
-const legacyPageRequestFields = {
-  limit: legacyPositiveIntegerSchema.optional(),
-  cursor: z.string().min(1).optional(),
-};
-const legacyBundleFileSchema = z
-  .object({
-    path: legacyRequiredStringSchema,
-    contentBase64: z.string(),
-    executable: z.boolean(),
-  })
-  .strict();
-const legacyBundleFilesSchema = z
-  .array(legacyBundleFileSchema)
-  .min(1)
-  .max(MAX_BUNDLE_FILES + 1);
-const legacyEngineArguments = (request: z.ZodType) =>
-  z.object({ caplet: legacyRequiredStringSchema, request }).strict();
-const legacyOperationRequest = (
-  operation: (typeof LEGACY_COMMANDS)[number],
-  fields: z.ZodRawShape = {},
-) =>
-  z
-    .object({
-      operation: z.literal(operation),
-      ...fields,
-    })
-    .strict();
-
-const legacyRequestArgumentSchemas = {
-  list: z.object({ includeDisabled: z.boolean().optional() }).strict(),
-  inspect: legacyEngineArguments(legacyOperationRequest("inspect")),
-  check: legacyEngineArguments(legacyOperationRequest("check")),
-  tools: legacyEngineArguments(legacyOperationRequest("tools", legacyPageRequestFields)),
-  search_tools: legacyEngineArguments(
-    legacyOperationRequest("search_tools", {
-      query: legacyRequiredStringSchema,
-      ...legacyPageRequestFields,
-    }),
-  ),
-  describe_tool: legacyEngineArguments(
-    legacyOperationRequest("describe_tool", { name: legacyRequiredStringSchema }),
-  ),
-  call_tool: legacyEngineArguments(
-    legacyOperationRequest("call_tool", {
-      name: legacyRequiredStringSchema,
-      args: domainObjectSchema,
-      fields: z.array(legacyRequiredStringSchema).optional(),
-    }),
-  ),
-  resources: legacyEngineArguments(legacyOperationRequest("resources", legacyPageRequestFields)),
-  search_resources: legacyEngineArguments(
-    legacyOperationRequest("search_resources", {
-      query: legacyRequiredStringSchema,
-      ...legacyPageRequestFields,
-    }),
-  ),
-  resource_templates: legacyEngineArguments(
-    legacyOperationRequest("resource_templates", legacyPageRequestFields),
-  ),
-  read_resource: legacyEngineArguments(
-    legacyOperationRequest("read_resource", { uri: legacyRequiredStringSchema }),
-  ),
-  prompts: legacyEngineArguments(legacyOperationRequest("prompts", legacyPageRequestFields)),
-  search_prompts: legacyEngineArguments(
-    legacyOperationRequest("search_prompts", {
-      query: legacyRequiredStringSchema,
-      ...legacyPageRequestFields,
-    }),
-  ),
-  get_prompt: legacyEngineArguments(
-    legacyOperationRequest("get_prompt", {
-      name: legacyRequiredStringSchema,
-      args: domainObjectSchema.optional(),
-    }),
-  ),
-  complete: legacyEngineArguments(
-    legacyOperationRequest("complete", {
-      ref: z.union([
-        z.object({ type: z.literal("prompt"), name: legacyRequiredStringSchema }).strict(),
-        z
-          .object({
-            type: z.literal("resourceTemplate"),
-            uri: legacyRequiredStringSchema,
-          })
-          .strict(),
-      ]),
-      argument: z.object({ name: legacyRequiredStringSchema, value: z.string() }).strict(),
-      context: z
-        .object({ arguments: z.record(z.string(), z.string()).optional() })
-        .strict()
-        .optional(),
-    }),
-  ),
-  init: z.object({}).strict(),
-  add: z.object({}).strict(),
-  install: z
-    .object({
-      repo: legacyRequiredStringSchema.optional(),
-      capletIds: z.array(legacyRequiredStringSchema).optional(),
-      force: z.boolean().optional(),
-      disableCatalogIndexing: z.boolean().optional(),
-    })
-    .strict(),
-  update: z
-    .object({
-      capletIds: z.array(legacyRequiredStringSchema).optional(),
-      force: z.boolean().optional(),
-      allowRiskIncrease: z.boolean().optional(),
-      disableCatalogIndexing: z.boolean().optional(),
-    })
-    .strict(),
-  complete_cli: z
-    .object({
-      shell: z.enum(["bash", "zsh", "fish", "powershell", "cmd"]).optional(),
-      words: z.array(z.string()).optional(),
-    })
-    .strict(),
-  auth_login_start: z.object({ server: legacyRequiredStringSchema }).strict(),
-  auth_login_complete: z
-    .object({
-      flowId: legacyRequiredStringSchema,
-      callbackUrl: legacyRequiredStringSchema,
-    })
-    .strict(),
-  auth_logout: z.object({ server: legacyRequiredStringSchema }).strict(),
-  auth_refresh: z.object({ server: legacyRequiredStringSchema }).strict(),
-  auth_list: z.object({}).strict(),
-  vault_set: z
-    .object({
-      name: legacyRequiredStringSchema,
-      value: legacyRequiredStringSchema,
-      grant: legacyRequiredStringSchema.optional(),
-      referenceName: legacyRequiredStringSchema.optional(),
-      force: z.boolean().optional(),
-    })
-    .strict(),
-  vault_list: z.object({}).strict(),
-  vault_get: z
-    .object({
-      name: legacyRequiredStringSchema,
-      reveal: z.boolean().optional(),
-    })
-    .strict(),
-  vault_delete: z.object({ name: legacyRequiredStringSchema }).strict(),
-  vault_access_grant: z
-    .object({
-      name: legacyRequiredStringSchema,
-      capletId: legacyRequiredStringSchema,
-      referenceName: legacyRequiredStringSchema.optional(),
-    })
-    .strict(),
-  vault_access_revoke: z
-    .object({
-      name: legacyRequiredStringSchema,
-      capletId: legacyRequiredStringSchema,
-      referenceName: legacyRequiredStringSchema.optional(),
-    })
-    .strict(),
-  vault_access_list: z
-    .object({
-      name: legacyRequiredStringSchema.optional(),
-      capletId: legacyRequiredStringSchema.optional(),
-    })
-    .strict(),
-  storage_records_list: z.object({}).strict(),
-  storage_records_get: z.object({ id: capletRecordIdSchema }).strict(),
-  storage_records_import: z
-    .object({
-      id: capletRecordIdSchema,
-      files: legacyBundleFilesSchema,
-      historyLimit: legacyNonNegativeIntegerSchema.optional(),
-      sourceKind: legacyRequiredStringSchema.optional(),
-      sourceIdentity: legacyRequiredStringSchema.optional(),
-      channel: legacyRequiredStringSchema.optional(),
-    })
-    .strict(),
-  storage_records_update: z
-    .object({
-      id: capletRecordIdSchema,
-      files: legacyBundleFilesSchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-      detachInstallation: z.boolean().optional(),
-    })
-    .strict(),
-  storage_records_export: z
-    .object({
-      id: capletRecordIdSchema,
-      revisionKey: capletRevisionKeySchema.optional(),
-    })
-    .strict(),
-  storage_records_revisions: z.object({ id: capletRecordIdSchema }).strict(),
-  storage_records_restore: z
-    .object({
-      id: capletRecordIdSchema,
-      revisionKey: capletRevisionKeySchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-    })
-    .strict(),
-  storage_records_delete_revision: z
-    .object({
-      id: capletRecordIdSchema,
-      revisionKey: capletRevisionKeySchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-    })
-    .strict(),
-  storage_records_retention: z
-    .object({
-      id: capletRecordIdSchema,
-      historyLimit: legacyNonNegativeIntegerSchema.nullable(),
-      expectedGeneration: legacyPositiveIntegerSchema,
-    })
-    .strict(),
-  storage_records_rename: z
-    .object({
-      id: capletRecordIdSchema,
-      newId: capletRecordIdSchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-    })
-    .strict(),
-  storage_records_delete: z
-    .object({
-      id: capletRecordIdSchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-    })
-    .strict(),
-  storage_records_installation_status: z.object({ id: capletRecordIdSchema }).strict(),
-  storage_records_installation_detach: z
-    .object({
-      id: capletRecordIdSchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-    })
-    .strict(),
-  storage_records_installation_observe: z
-    .object({
-      id: capletRecordIdSchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-      status: z.enum(["current", "metadata-only", "source-unavailable"]),
-      resolvedRevision: legacyRequiredStringSchema.optional(),
-      contentHash: legacyRequiredStringSchema.optional(),
-      risk: domainObjectSchema.optional(),
-    })
-    .strict(),
-  storage_records_installation_replace: z
-    .object({
-      id: capletRecordIdSchema,
-      expectedGeneration: legacyPositiveIntegerSchema,
-      sourceKind: legacyRequiredStringSchema,
-      sourceIdentity: legacyRequiredStringSchema,
-      channel: legacyRequiredStringSchema.optional(),
-      detachedInstallationKey: legacyRequiredStringSchema.optional(),
-    })
-    .strict(),
-} as const satisfies Record<(typeof LEGACY_COMMANDS)[number], z.ZodType>;
-
-const legacyCommandVariants = LEGACY_COMMANDS.map((command) =>
-  z
-    .object({
-      command: z.literal(command),
-      arguments: legacyRequestArgumentSchemas[command],
-    })
-    .strict(),
-);
-type LegacyCommandVariant = (typeof legacyCommandVariants)[number];
-const legacyRequestSchema = z
-  .discriminatedUnion(
-    "command",
-    legacyCommandVariants as [
-      LegacyCommandVariant,
-      LegacyCommandVariant,
-      ...LegacyCommandVariant[],
-    ],
-  )
-  .openapi("LegacyAdminRequest");
-
-const legacyCapletRowSchema = z
-  .object({
-    server: legacyRequiredStringSchema,
-    backend: z.literal("attach"),
-    name: legacyRequiredStringSchema,
-    description: z.string().optional(),
-    disabled: z.literal(false),
-    status: z.literal("not_started"),
-    source: z.literal("remote-attach"),
-    path: z.null(),
-    shadows: z.array(z.string()),
-  })
-  .strict();
-const legacyAttachCallResultSchema = z
-  .object({
-    content: z.array(domainObjectSchema),
-    structuredContent: domainObjectSchema.optional(),
-    isError: z.boolean().optional(),
-    _meta: domainObjectSchema.optional(),
-  })
-  .strict();
-const legacyCatalogMutationSchema = z
-  .object({
-    remote: z.literal(true),
-    installed: z.array(domainObjectSchema),
-  })
-  .strict();
-const legacyAuthStatusSchema = z
-  .object({
-    server: legacyRequiredStringSchema,
-    status: z.enum(["missing", "expired", "authenticated"]),
-    expiresAt: timestampSchema.optional(),
-    scope: backendAuthConnectionSchema.shape.scope,
-  })
-  .strict()
-  .openapi("LegacyAuthStatus");
-const legacyAuthFlowResultSchema = z.union([
-  z
-    .object({
-      server: legacyRequiredStringSchema,
-      authenticated: z.literal(true),
-    })
-    .strict(),
-  z
-    .object({
-      server: legacyRequiredStringSchema,
-      flowId: legacyRequiredStringSchema,
-      authorizationUrl: z.string().url(),
-    })
-    .strict(),
-]);
-const legacyVaultValueStatusSchema = z
-  .object({
-    key: z.string().min(1).max(128),
-    present: z.boolean(),
-    valueBytes: z.number().int().nonnegative().optional(),
-    createdAt: timestampSchema.optional(),
-    updatedAt: timestampSchema.optional(),
-  })
-  .strict();
-const legacyVaultSetResultSchema = legacyVaultValueStatusSchema
-  .extend({ remote: z.literal(true) })
-  .strict();
-const legacyVaultGrantSchema = vaultGrantSchema.extend({
-  resourceVersion: vaultGrantSchema.shape.resourceVersion.optional(),
-});
-const legacyBundleResultSchema = z
-  .object({
-    record: capletRecordSchema,
-    files: legacyBundleFilesSchema,
-  })
-  .strict();
-const legacyInstallationStatusSchema = z
-  .object({
-    installations: z.array(installationSchema),
-    observations: z.array(installationObservationSchema),
-  })
-  .strict();
-const legacySuccessEnvelope = (result: z.ZodType) =>
-  z.object({ ok: z.literal(true), result }).strict();
-const legacyErrorEnvelopeSchema = z
-  .object({
-    ok: z.literal(false),
-    error: z
-      .object({
-        code: z.string().min(1),
-        message: z.string(),
-        nextAction: z.string().optional(),
-      })
-      .strict(),
-  })
-  .strict();
-const legacyResponseSchema = z
-  .union([
-    legacySuccessEnvelope(z.array(legacyCapletRowSchema)),
-    legacySuccessEnvelope(legacyAttachCallResultSchema),
-    legacySuccessEnvelope(legacyCatalogMutationSchema),
-    legacySuccessEnvelope(z.array(z.string())),
-    legacySuccessEnvelope(z.array(legacyAuthStatusSchema)),
-    legacySuccessEnvelope(legacyAuthFlowResultSchema),
-    legacySuccessEnvelope(
-      z
-        .object({
-          server: legacyRequiredStringSchema,
-          deleted: z.boolean(),
-        })
-        .strict(),
-    ),
-    legacySuccessEnvelope(z.object({ server: legacyRequiredStringSchema }).strict()),
-    legacySuccessEnvelope(legacyVaultSetResultSchema),
-    legacySuccessEnvelope(legacyVaultValueStatusSchema),
-    legacySuccessEnvelope(z.array(legacyVaultValueStatusSchema)),
-    legacySuccessEnvelope(vaultDeleteResultSchema),
-    legacySuccessEnvelope(legacyVaultGrantSchema),
-    legacySuccessEnvelope(z.array(legacyVaultGrantSchema)),
-    legacySuccessEnvelope(z.array(capletRecordSchema)),
-    legacySuccessEnvelope(capletRecordSchema),
-    legacySuccessEnvelope(legacyBundleResultSchema),
-    legacySuccessEnvelope(z.array(capletRevisionSummarySchema)),
-    legacySuccessEnvelope(
-      z
-        .object({
-          deleted: z.literal(true),
-          record: capletRecordSchema.optional(),
-        })
-        .strict(),
-    ),
-    legacySuccessEnvelope(capletRecordDeleteResultSchema),
-    legacySuccessEnvelope(legacyInstallationStatusSchema),
-    legacySuccessEnvelope(installationSchema),
-    legacySuccessEnvelope(installationObservationSchema),
-    legacyErrorEnvelopeSchema,
-  ])
-  .openapi("LegacyAdminResponse");
-
 function media(schema: z.ZodType) {
   return { schema };
 }
@@ -1578,14 +1129,6 @@ function projectBindingSuccessResponse(schema: z.ZodType, description: string) {
 const noStoreHeaders = z.object({
   "Cache-Control": z.literal("no-store"),
 });
-const deprecatedV1AdminResponseHeaders = noStoreHeaders.extend({
-  Deprecation: z.literal("true").openapi({
-    description: "Signals that the legacy Admin endpoint is deprecated.",
-  }),
-  Link: z.literal('</v2/admin/host>; rel="successor-version"').openapi({
-    description: "Points clients to the successor Admin API.",
-  }),
-});
 const replayHeaderShape = {
   "Idempotency-Replayed": z.literal("true").optional(),
 };
@@ -1607,10 +1150,6 @@ const bundleDownloadHeaders = noStoreResourceHeaders.extend({
 const remoteLoginErrorResponse = {
   description: "Legacy Remote Login error envelope.",
   content: { [JSON_MEDIA]: media(remoteLoginErrorResponseSchema) },
-};
-const publicV1UnauthorizedResponse = {
-  description: "Missing or invalid bearer credential.",
-  content: { [TEXT_MEDIA]: media(publicV1TextErrorSchema) },
 };
 const publicV1ForbiddenResponse = {
   description: "Request rejected by host protection.",
@@ -1722,7 +1261,7 @@ function registerRoute(app: OpenAPIHono, route: RouteConfig): void {
 function registerPublicRoutes(app: OpenAPIHono): void {
   registerRoute(app, {
     method: "get",
-    path: "/",
+    path: "/api",
     operationId: "getServiceDiscovery",
     tags: ["Discovery"],
     security: publicSecurity,
@@ -1732,7 +1271,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
   });
   registerRoute(app, {
     method: "get",
-    path: "/v1",
+    path: "/api/v1",
     operationId: "getVersionDiscovery",
     tags: ["Discovery"],
     security: publicSecurity,
@@ -1742,17 +1281,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
   });
   registerRoute(app, {
     method: "get",
-    path: "/v2",
-    operationId: "getAdminV2Discovery",
-    tags: ["Discovery"],
-    security: publicSecurity,
-    responses: routeResponses({
-      200: successResponse(adminV2DiscoverySchema, { headers: z.object({}) }),
-    }),
-  });
-  registerRoute(app, {
-    method: "get",
-    path: "/v1/healthz",
+    path: "/api/v1/healthz",
     operationId: "getHealth",
     tags: ["Discovery"],
     security: publicSecurity,
@@ -1768,7 +1297,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
   const remoteRoutes: RouteConfig[] = [
     {
       method: "post",
-      path: "/v1/remote/login/start",
+      path: "/api/v1/remote/login/start",
       operationId: "startRemoteLogin",
       request: { body: jsonBody(remoteLoginStartSchema) },
       responses: remoteLoginResponses({
@@ -1780,7 +1309,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/remote/login/poll",
+      path: "/api/v1/remote/login/poll",
       operationId: "pollRemoteLogin",
       request: { body: jsonBody(pendingLoginSecretSchema) },
       responses: remoteLoginResponses({
@@ -1792,7 +1321,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/remote/login/refresh",
+      path: "/api/v1/remote/login/refresh",
       operationId: "refreshPendingRemoteLogin",
       request: { body: jsonBody(pendingLoginRefreshSchema) },
       responses: remoteLoginResponses({
@@ -1804,7 +1333,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/remote/login/complete",
+      path: "/api/v1/remote/login/complete",
       operationId: "completeRemoteLogin",
       request: { body: jsonBody(pendingLoginSecretSchema) },
       responses: remoteLoginResponses({
@@ -1816,7 +1345,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/remote/login/cancel",
+      path: "/api/v1/remote/login/cancel",
       operationId: "cancelRemoteLogin",
       request: { body: jsonBody(pendingLoginSecretSchema) },
       responses: remoteLoginResponses({
@@ -1828,7 +1357,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/remote/refresh",
+      path: "/api/v1/remote/refresh",
       operationId: "refreshRemoteCredentials",
       request: { body: jsonBody(z.object({ refreshToken: z.string().min(1) })) },
       responses: remoteCredentialResponses({ 200: successResponse(remoteCredentialsSchema) }),
@@ -1839,7 +1368,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
   }
   registerRoute(app, {
     method: "delete",
-    path: "/v1/remote/client",
+    path: "/api/v1/remote/client",
     operationId: "revokeCurrentRemoteClient",
     tags: ["Remote access"],
     security: bearerSecurity,
@@ -1849,7 +1378,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
   const attachRoutes: RouteConfig[] = [
     {
       method: "post",
-      path: "/v1/attach/sessions",
+      path: "/api/v1/attach/sessions",
       operationId: "createAttachSession",
       request: { body: jsonBody(attachSessionSchema) },
       responses: attachResponses({
@@ -1861,7 +1390,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "delete",
-      path: "/v1/attach/sessions/{sessionId}",
+      path: "/api/v1/attach/sessions/{sessionId}",
       operationId: "deleteAttachSession",
       request: { params: attachSessionPathSchema },
       responses: attachDeleteResponses({
@@ -1873,7 +1402,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "get",
-      path: "/v1/attach/manifest",
+      path: "/api/v1/attach/manifest",
       operationId: "getAttachManifest",
       request: { headers: attachSessionHeaderSchema },
       responses: attachResponses({
@@ -1885,7 +1414,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/attach/invoke",
+      path: "/api/v1/attach/invoke",
       operationId: "invokeAttachExport",
       request: { headers: attachSessionHeaderSchema, body: jsonBody(attachInvokeSchema) },
       responses: attachResponses({
@@ -1897,7 +1426,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "get",
-      path: "/v1/attach/events",
+      path: "/api/v1/attach/events",
       operationId: "streamAttachEvents",
       request: { headers: attachSessionHeaderSchema },
       responses: attachResponses({
@@ -1920,12 +1449,12 @@ function registerPublicRoutes(app: OpenAPIHono): void {
   const projectBindingRoutes: RouteConfig[] = [
     {
       method: "get",
-      path: "/v1/attach/project-bindings/connect",
+      path: "/api/v1/attach/project-bindings/connect",
       operationId: "upgradeProjectBindingConnection",
       request: { query: projectBindingConnectQuerySchema },
       responses: {
         101: {
-          description: `Switching Protocols response. The server always negotiates \`${PROJECT_BINDING_SOCKET_PROTOCOL}\`. OpenAPI does not model WebSocket sequencing; \`ProjectBindingSocketClientMessage\` and \`ProjectBindingSocketServerMessage\` are the authoritative payload components.`,
+          description: `Switching Protocols response. The server always negotiates \`${PROJECT_BINDING_SOCKET_PROTOCOL}\`. OpenAPI models only the HTTP upgrade response, not WebSocket message sequencing or payload transport.`,
           headers: z.object({
             Connection: z.literal("Upgrade"),
             Upgrade: z.literal("websocket"),
@@ -1945,7 +1474,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/attach/project-bindings/sessions",
+      path: "/api/v1/attach/project-bindings/sessions",
       operationId: "createProjectBindingSession",
       request: { body: jsonBody(projectBindingSessionCreateRequestSchema) },
       responses: {
@@ -1962,7 +1491,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "get",
-      path: "/v1/attach/project-bindings/{bindingId}/status",
+      path: "/api/v1/attach/project-bindings/{bindingId}/status",
       operationId: "getProjectBindingStatus",
       request: { params: bindingPathSchema },
       responses: {
@@ -1976,7 +1505,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "get",
-      path: "/v1/attach/project-bindings/{bindingId}/session",
+      path: "/api/v1/attach/project-bindings/{bindingId}/session",
       operationId: "getProjectBindingSession",
       request: { params: bindingPathSchema },
       responses: {
@@ -1991,7 +1520,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "post",
-      path: "/v1/attach/project-bindings/{bindingId}/heartbeat",
+      path: "/api/v1/attach/project-bindings/{bindingId}/heartbeat",
       operationId: "heartbeatProjectBindingSession",
       request: {
         params: bindingPathSchema,
@@ -2011,7 +1540,7 @@ function registerPublicRoutes(app: OpenAPIHono): void {
     },
     {
       method: "delete",
-      path: "/v1/attach/project-bindings/{bindingId}/session",
+      path: "/api/v1/attach/project-bindings/{bindingId}/session",
       operationId: "deleteProjectBindingSession",
       request: { params: bindingPathSchema },
       responses: {
@@ -2030,28 +1559,6 @@ function registerPublicRoutes(app: OpenAPIHono): void {
   for (const route of projectBindingRoutes) {
     registerRoute(app, { ...route, tags: ["Project Binding"], security: bearerSecurity });
   }
-
-  registerRoute(app, {
-    method: "post",
-    path: "/v1/admin",
-    operationId: "adminV1DispatchCommand",
-    summary: "Frozen legacy Admin command adapter",
-    description:
-      "Deprecated compatibility adapter. The accepted command set is frozen; local init/add commands are rejected by policy.",
-    tags: ["Legacy Admin"],
-    deprecated: true,
-    security: bearerSecurity,
-    request: { body: jsonBody(legacyRequestSchema) },
-    responses: {
-      200: {
-        description: "Legacy success or safe error envelope.",
-        headers: deprecatedV1AdminResponseHeaders,
-        content: { [JSON_MEDIA]: media(legacyResponseSchema) },
-      },
-      401: publicV1UnauthorizedResponse,
-      403: publicV1ForbiddenResponse,
-    },
-  });
 }
 
 type AdminRequestBody = NonNullable<NonNullable<RouteConfig["request"]>["body"]>;
@@ -2227,7 +1734,7 @@ const capletRevisionDeleteResultSchema = z
 
 const backendAuthCallbackRoute = {
   method: "get",
-  path: "/v2/admin/backend-auth-flows/{flowId}/callback",
+  path: "/api/v2/admin/backend-auth-flows/{flowId}/callback",
   operationId: "adminV2CompleteBackendAuthFlowCallback",
   tags: ["Admin Backend auth"],
   security: publicSecurity,
@@ -2920,12 +2427,16 @@ export const ADMIN_V2_ROUTE_DEFINITIONS: readonly AdminV2RouteDefinition[] = [
 export function adminV2RequestHeadersForDefinition(
   definition: AdminV2RouteDefinition,
 ): z.ZodObject | undefined {
-  if (definition.headers) return definition.headers;
-  if (definition.conditional) return idempotentMutationHeadersSchema;
-  if (definition.upsert) return idempotentUpsertHeadersSchema;
-  if (definition.created) return idempotentCreationHeadersSchema;
-  if (definition.method !== "get") return adminV2IdempotencyHeadersSchema;
-  return undefined;
+  let headers: z.ZodObject | undefined;
+  if (definition.headers) headers = definition.headers;
+  else if (definition.conditional) headers = idempotentMutationHeadersSchema;
+  else if (definition.upsert) headers = idempotentUpsertHeadersSchema;
+  else if (definition.created) headers = idempotentCreationHeadersSchema;
+  else if (definition.method !== "get") headers = adminV2IdempotencyHeadersSchema;
+  if (definition.method === "get") return headers;
+  return headers
+    ? headers.extend(dashboardSessionHeadersSchema.shape)
+    : dashboardSessionHeadersSchema;
 }
 
 function registerAdminRoute(app: OpenAPIHono, definition: AdminV2RouteDefinition): void {
@@ -2953,10 +2464,10 @@ function registerAdminRoute(app: OpenAPIHono, definition: AdminV2RouteDefinition
     definition.streaming === "bundle-upload" ? { 429: problemResponse } : {};
   registerRoute(app, {
     method: definition.method,
-    path: `/v2/admin${definition.relativePath}`,
+    path: `/api/v2/admin${definition.relativePath}`,
     operationId: definition.operationId,
     tags: definition.tags,
-    security: definition.security ?? bearerSecurity,
+    security: definition.security ?? adminSecurity,
     ...(definition.params || definition.query || requestHeaders || definition.body
       ? {
           request: {
@@ -2994,14 +2505,13 @@ export function createRootOpenApiDocument(): ReturnType<OpenAPIHono["getOpenAPI3
     bearerFormat: "Caplets remote credential",
     description: "Operator or Access Client bearer credential, according to route policy.",
   });
-  app.openAPIRegistry.register(
-    "ProjectBindingSocketClientMessage",
-    projectBindingSocketClientMessageSchema,
-  );
-  app.openAPIRegistry.register(
-    "ProjectBindingSocketServerMessage",
-    projectBindingSocketServerMessageSchema,
-  );
+  app.openAPIRegistry.registerComponent("securitySchemes", "dashboardSession", {
+    type: "apiKey",
+    in: "cookie",
+    name: "caplets_dashboard_session",
+    description:
+      "Host-only HttpOnly dashboard session cookie. Browser requests remain subject to same-origin checks and unsafe methods require X-Caplets-CSRF.",
+  });
   registerPublicRoutes(app);
   registerAdminRoutes(app);
   return app.getOpenAPI31Document({
@@ -3011,6 +2521,6 @@ export function createRootOpenApiDocument(): ReturnType<OpenAPIHono["getOpenAPI3
       version: "2.0.0",
       description: "Canonical public non-MCP HTTP contract for Caplets.",
     },
-    servers: [{ url: "/", description: "Current Caplets service root" }],
+    servers: [{ url: "/" }],
   });
 }

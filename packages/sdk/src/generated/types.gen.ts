@@ -5,102 +5,15 @@ export type ClientOptions = {
   baseUrl: `${string}://${string}` | (string & {});
 };
 
-export type ProjectBindingSocketClientMessage =
-  | {
-      type: "heartbeat";
-      bindingId: string;
-      sessionId: string;
-      state: ProjectBindingState;
-      syncState: ProjectBindingSyncState;
-    }
-  | {
-      type: "end";
-      bindingId: string;
-      sessionId: string;
-      reason: BindingTerminalReason;
-    };
-
-export type ProjectBindingState =
-  | "not_attached"
-  | "attaching"
-  | "syncing"
-  | "ready"
-  | "degraded"
-  | "blocked"
-  | "offline"
-  | "cleaning_up"
-  | "ended"
-  | "expired";
-
-export type ProjectBindingSyncState = "not_started" | "pending" | "syncing" | "idle" | "failed";
-
-export type BindingTerminalReason = {
-  code:
-    | "cloud_auth_required"
-    | "cloud_auth_expired"
-    | "cloud_auth_revoked"
-    | "workspace_selection_required"
-    | "workspace_switch_required"
-    | "workspace_forbidden"
-    | "project_binding_forbidden"
-    | "endpoint_unavailable"
-    | "websocket_upgrade_required"
-    | "sync_required"
-    | "sync_failed"
-    | "sync_size_limit_exceeded"
-    | "lease_conflict"
-    | "lease_expired"
-    | "policy_denied"
-    | "usage_limit_reached"
-    | "billing_required"
-    | "subscription_past_due"
-    | "email_verification_required"
-    | "remote_credentials_required"
-    | "remote_credentials_revoked"
-    | "remote_auth_failed"
-    | "interrupted"
-    | "completed";
-  message: string;
-  recoveryCommand?: string;
-  requestId?: string;
-};
-
-export type ProjectBindingSocketServerMessage =
-  | {
-      type: "state";
-      state: ProjectBindingState;
-      syncState: ProjectBindingSyncState;
-      requestId?: string;
-    }
-  | {
-      type: "ready";
-      bindingId: string;
-      sessionId: string;
-      syncState: ProjectBindingSyncState;
-      requestId?: string;
-    }
-  | {
-      type: "blocked";
-      reason: BindingTerminalReason;
-    }
-  | {
-      type: "ended";
-      reason: BindingTerminalReason;
-    };
-
 export type ServiceDiscovery = {
   name: "caplets";
-  transport: "http";
-  base: string;
-  versions: Array<{
-    [key: string]: unknown;
-  }>;
-  auth: {
-    type: string;
-  };
-  remote?: {
-    hostIdentity: string;
-    audience: string;
+  protocol: "caplets-http";
+  schemaVersion: 1;
+  links: {
+    self: "/api";
+    openapi: "/api/openapi.json";
+    v1: "/api/v1";
+    admin: "/api/v2/admin/host";
   };
 };
 
@@ -118,17 +31,13 @@ export type Problem = {
 
 export type VersionDiscovery = {
   version: 1;
-  path: string;
+  path: "/api/v1";
   links: {
-    [key: string]: string;
-  };
-};
-
-export type AdminV2Discovery = {
-  version: 2;
-  path: string;
-  links: {
-    admin: string;
+    health: "/api/v1/healthz";
+    attachSessions?: "/api/v1/attach/sessions";
+    attachManifest?: "/api/v1/attach/manifest";
+    attachEvents?: "/api/v1/attach/events";
+    attachInvoke?: "/api/v1/attach/invoke";
   };
 };
 
@@ -346,6 +255,20 @@ export type ProjectBinding = {
   expiresAt: string;
 };
 
+export type ProjectBindingState =
+  | "not_attached"
+  | "attaching"
+  | "syncing"
+  | "ready"
+  | "degraded"
+  | "blocked"
+  | "offline"
+  | "cleaning_up"
+  | "ended"
+  | "expired";
+
+export type ProjectBindingSyncState = "not_started" | "pending" | "syncing" | "idle" | "failed";
+
 export type ProjectBindingSessionCreateRequest = {
   projectRoot: string;
   projectFingerprint: string;
@@ -403,729 +326,6 @@ export type ProjectBindingSessionDeleteResponse = {
   ok: true;
   binding: ProjectBinding;
 };
-
-export type LegacyAdminResponse =
-  | {
-      ok: true;
-      result: Array<{
-        server: string;
-        backend: "attach";
-        name: string;
-        description?: string;
-        disabled: false;
-        status: "not_started";
-        source: "remote-attach";
-        path: null;
-        shadows: Array<string>;
-      }>;
-    }
-  | {
-      ok: true;
-      result: {
-        content: Array<{
-          [key: string]: unknown;
-        }>;
-        structuredContent?: {
-          [key: string]: unknown;
-        };
-        isError?: boolean;
-        _meta?: {
-          [key: string]: unknown;
-        };
-      };
-    }
-  | {
-      ok: true;
-      result: {
-        remote: true;
-        installed: Array<{
-          [key: string]: unknown;
-        }>;
-      };
-    }
-  | {
-      ok: true;
-      result: Array<string>;
-    }
-  | {
-      ok: true;
-      result: Array<LegacyAuthStatus>;
-    }
-  | {
-      ok: true;
-      result:
-        | {
-            server: string;
-            authenticated: true;
-          }
-        | {
-            server: string;
-            flowId: string;
-            authorizationUrl: string;
-          };
-    }
-  | {
-      ok: true;
-      result: {
-        server: string;
-        deleted: boolean;
-      };
-    }
-  | {
-      ok: true;
-      result: {
-        server: string;
-      };
-    }
-  | {
-      ok: true;
-      result: {
-        key: string;
-        present: boolean;
-        valueBytes?: number;
-        createdAt?: string;
-        updatedAt?: string;
-        remote: true;
-      };
-    }
-  | {
-      ok: true;
-      result: {
-        key: string;
-        present: boolean;
-        valueBytes?: number;
-        createdAt?: string;
-        updatedAt?: string;
-      };
-    }
-  | {
-      ok: true;
-      result: Array<{
-        key: string;
-        present: boolean;
-        valueBytes?: number;
-        createdAt?: string;
-        updatedAt?: string;
-      }>;
-    }
-  | {
-      ok: true;
-      result: AdminVaultValueDeleteResult;
-    }
-  | {
-      ok: true;
-      result: AdminVaultGrant & {};
-    }
-  | {
-      ok: true;
-      result: Array<AdminVaultGrant & {}>;
-    }
-  | {
-      ok: true;
-      result: Array<AdminCapletRecord>;
-    }
-  | {
-      ok: true;
-      result: AdminCapletRecord;
-    }
-  | {
-      ok: true;
-      result: {
-        record: AdminCapletRecord;
-        files: Array<{
-          path: string;
-          contentBase64: string;
-          executable: boolean;
-        }>;
-      };
-    }
-  | {
-      ok: true;
-      result: Array<AdminCapletRevisionSummary>;
-    }
-  | {
-      ok: true;
-      result: {
-        deleted: true;
-        record?: AdminCapletRecord;
-      };
-    }
-  | {
-      ok: true;
-      result: AdminCapletRecordDeleteResult;
-    }
-  | {
-      ok: true;
-      result: {
-        installations: Array<AdminCapletInstallation>;
-        observations: Array<AdminCapletInstallationObservation>;
-      };
-    }
-  | {
-      ok: true;
-      result: AdminCapletInstallation;
-    }
-  | {
-      ok: true;
-      result: AdminCapletInstallationObservation;
-    }
-  | {
-      ok: false;
-      error: {
-        code: string;
-        message: string;
-        nextAction?: string;
-      };
-    };
-
-export type LegacyAuthStatus = {
-  server: string;
-  status: "missing" | "expired" | "authenticated";
-  expiresAt?: string;
-  scope?: string;
-};
-
-export type AdminVaultValueDeleteResult = {
-  key: string;
-  deleted: boolean;
-  grantsRetained: number;
-};
-
-export type AdminVaultGrant = {
-  storedKey: string;
-  referenceName: string;
-  capletId: string;
-  origin: {
-    kind: string;
-  };
-  resourceVersion: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type AdminCapletRecord = {
-  recordKey: string;
-  id: string;
-  headGeneration: number;
-  historyLimit: number | null;
-  createdAt: string;
-  updatedAt: string;
-  currentRevision: AdminCapletRevision;
-};
-
-export type AdminCapletRevision = {
-  revisionKey: string;
-  sequence: number;
-  name: string;
-  description: string;
-  body: string;
-  schemaUrl: string | null;
-  content: {
-    [key: string]: unknown;
-  };
-  contentHash: string;
-  sourceRevision: string | null;
-  sourceContentHash: string | null;
-  createdAt: string;
-  actor: string;
-  tags: Array<string>;
-  backends: Array<AdminCapletBackend>;
-  bundle: Array<AdminCapletBundleEntry>;
-};
-
-export type AdminCapletBackend = {
-  family: string;
-  childId: string | null;
-  config: {
-    [key: string]: unknown;
-  };
-};
-
-export type AdminCapletBundleEntry = {
-  path: string;
-  hash: string;
-  mediaType: string;
-  size: number;
-  executable: boolean;
-};
-
-export type AdminCapletRevisionSummary = {
-  revisionKey: string;
-  sequence: number;
-  name: string;
-  createdAt: string;
-};
-
-export type AdminCapletRecordDeleteResult = {
-  deleted: true;
-  id: string;
-};
-
-export type AdminCapletInstallation = {
-  installationKey: string;
-  capletId: string;
-  recordKey: string;
-  generation: number;
-  status: "active" | "detached";
-  sourceKind: string;
-  sourceIdentity: string;
-  channel: string | null;
-  createdAt: string;
-  updatedAt: string;
-  detachedAt: string | null;
-  detachedBy: string | null;
-};
-
-export type AdminCapletInstallationObservation = {
-  observationKey: string;
-  installationKey: string;
-  resolvedRevision: string | null;
-  contentHash: string | null;
-  risk: AdminCapletInstallationRisk;
-  status: "current" | "metadata-only" | "source-unavailable";
-  observedAt: string;
-};
-
-export type AdminCapletInstallationRisk = {
-  backendFamilies: Array<string>;
-  safety: "standard" | "mutating_saas" | "local_control" | "unknown";
-  projectBindingRequired: boolean;
-  authScopes?: Array<string>;
-  runtimeFeatures?: Array<string>;
-  mutating: boolean;
-  destructive: boolean;
-  bodyHash?: string;
-  referenceHash?: string;
-} | null;
-
-export type LegacyAdminRequest =
-  | {
-      command: "list";
-      arguments: {
-        includeDisabled?: boolean;
-      };
-    }
-  | {
-      command: "inspect";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "inspect";
-        };
-      };
-    }
-  | {
-      command: "check";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "check";
-        };
-      };
-    }
-  | {
-      command: "tools";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "tools";
-          limit?: number;
-          cursor?: string;
-        };
-      };
-    }
-  | {
-      command: "search_tools";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "search_tools";
-          query: string;
-          limit?: number;
-          cursor?: string;
-        };
-      };
-    }
-  | {
-      command: "describe_tool";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "describe_tool";
-          name: string;
-        };
-      };
-    }
-  | {
-      command: "call_tool";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "call_tool";
-          name: string;
-          args: {
-            [key: string]: unknown;
-          };
-          fields?: Array<string>;
-        };
-      };
-    }
-  | {
-      command: "resources";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "resources";
-          limit?: number;
-          cursor?: string;
-        };
-      };
-    }
-  | {
-      command: "search_resources";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "search_resources";
-          query: string;
-          limit?: number;
-          cursor?: string;
-        };
-      };
-    }
-  | {
-      command: "resource_templates";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "resource_templates";
-          limit?: number;
-          cursor?: string;
-        };
-      };
-    }
-  | {
-      command: "read_resource";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "read_resource";
-          uri: string;
-        };
-      };
-    }
-  | {
-      command: "prompts";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "prompts";
-          limit?: number;
-          cursor?: string;
-        };
-      };
-    }
-  | {
-      command: "search_prompts";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "search_prompts";
-          query: string;
-          limit?: number;
-          cursor?: string;
-        };
-      };
-    }
-  | {
-      command: "get_prompt";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "get_prompt";
-          name: string;
-          args?: {
-            [key: string]: unknown;
-          };
-        };
-      };
-    }
-  | {
-      command: "complete";
-      arguments: {
-        caplet: string;
-        request: {
-          operation: "complete";
-          ref:
-            | {
-                type: "prompt";
-                name: string;
-              }
-            | {
-                type: "resourceTemplate";
-                uri: string;
-              };
-          argument: {
-            name: string;
-            value: string;
-          };
-          context?: {
-            arguments?: {
-              [key: string]: string;
-            };
-          };
-        };
-      };
-    }
-  | {
-      command: "init";
-      arguments: {
-        [key: string]: never;
-      };
-    }
-  | {
-      command: "add";
-      arguments: {
-        [key: string]: never;
-      };
-    }
-  | {
-      command: "install";
-      arguments: {
-        repo?: string;
-        capletIds?: Array<string>;
-        force?: boolean;
-        disableCatalogIndexing?: boolean;
-      };
-    }
-  | {
-      command: "update";
-      arguments: {
-        capletIds?: Array<string>;
-        force?: boolean;
-        allowRiskIncrease?: boolean;
-        disableCatalogIndexing?: boolean;
-      };
-    }
-  | {
-      command: "complete_cli";
-      arguments: {
-        shell?: "bash" | "zsh" | "fish" | "powershell" | "cmd";
-        words?: Array<string>;
-      };
-    }
-  | {
-      command: "auth_login_start";
-      arguments: {
-        server: string;
-      };
-    }
-  | {
-      command: "auth_login_complete";
-      arguments: {
-        flowId: string;
-        callbackUrl: string;
-      };
-    }
-  | {
-      command: "auth_logout";
-      arguments: {
-        server: string;
-      };
-    }
-  | {
-      command: "auth_refresh";
-      arguments: {
-        server: string;
-      };
-    }
-  | {
-      command: "auth_list";
-      arguments: {
-        [key: string]: never;
-      };
-    }
-  | {
-      command: "vault_set";
-      arguments: {
-        name: string;
-        value: string;
-        grant?: string;
-        referenceName?: string;
-        force?: boolean;
-      };
-    }
-  | {
-      command: "vault_list";
-      arguments: {
-        [key: string]: never;
-      };
-    }
-  | {
-      command: "vault_get";
-      arguments: {
-        name: string;
-        reveal?: boolean;
-      };
-    }
-  | {
-      command: "vault_delete";
-      arguments: {
-        name: string;
-      };
-    }
-  | {
-      command: "vault_access_grant";
-      arguments: {
-        name: string;
-        capletId: string;
-        referenceName?: string;
-      };
-    }
-  | {
-      command: "vault_access_revoke";
-      arguments: {
-        name: string;
-        capletId: string;
-        referenceName?: string;
-      };
-    }
-  | {
-      command: "vault_access_list";
-      arguments: {
-        name?: string;
-        capletId?: string;
-      };
-    }
-  | {
-      command: "storage_records_list";
-      arguments: {
-        [key: string]: never;
-      };
-    }
-  | {
-      command: "storage_records_get";
-      arguments: {
-        id: string;
-      };
-    }
-  | {
-      command: "storage_records_import";
-      arguments: {
-        id: string;
-        files: Array<{
-          path: string;
-          contentBase64: string;
-          executable: boolean;
-        }>;
-        historyLimit?: number;
-        sourceKind?: string;
-        sourceIdentity?: string;
-        channel?: string;
-      };
-    }
-  | {
-      command: "storage_records_update";
-      arguments: {
-        id: string;
-        files: Array<{
-          path: string;
-          contentBase64: string;
-          executable: boolean;
-        }>;
-        expectedGeneration: number;
-        detachInstallation?: boolean;
-      };
-    }
-  | {
-      command: "storage_records_export";
-      arguments: {
-        id: string;
-        revisionKey?: string;
-      };
-    }
-  | {
-      command: "storage_records_revisions";
-      arguments: {
-        id: string;
-      };
-    }
-  | {
-      command: "storage_records_restore";
-      arguments: {
-        id: string;
-        revisionKey: string;
-        expectedGeneration: number;
-      };
-    }
-  | {
-      command: "storage_records_delete_revision";
-      arguments: {
-        id: string;
-        revisionKey: string;
-        expectedGeneration: number;
-      };
-    }
-  | {
-      command: "storage_records_retention";
-      arguments: {
-        id: string;
-        historyLimit: number | null;
-        expectedGeneration: number;
-      };
-    }
-  | {
-      command: "storage_records_rename";
-      arguments: {
-        id: string;
-        newId: string;
-        expectedGeneration: number;
-      };
-    }
-  | {
-      command: "storage_records_delete";
-      arguments: {
-        id: string;
-        expectedGeneration: number;
-      };
-    }
-  | {
-      command: "storage_records_installation_status";
-      arguments: {
-        id: string;
-      };
-    }
-  | {
-      command: "storage_records_installation_detach";
-      arguments: {
-        id: string;
-        expectedGeneration: number;
-      };
-    }
-  | {
-      command: "storage_records_installation_observe";
-      arguments: {
-        id: string;
-        expectedGeneration: number;
-        status: "current" | "metadata-only" | "source-unavailable";
-        resolvedRevision?: string;
-        contentHash?: string;
-        risk?: {
-          [key: string]: unknown;
-        };
-      };
-    }
-  | {
-      command: "storage_records_installation_replace";
-      arguments: {
-        id: string;
-        expectedGeneration: number;
-        sourceKind: string;
-        sourceIdentity: string;
-        channel?: string;
-        detachedInstallationKey?: string;
-      };
-    };
 
 export type AdminHostSummary = {
   host: {
@@ -1605,9 +805,27 @@ export type AdminVaultValuePutRequest = {
   referenceName?: string;
 };
 
+export type AdminVaultValueDeleteResult = {
+  key: string;
+  deleted: boolean;
+  grantsRetained: number;
+};
+
 export type AdminVaultGrantPage = {
   items: Array<AdminVaultGrant>;
   nextCursor?: string;
+};
+
+export type AdminVaultGrant = {
+  storedKey: string;
+  referenceName: string;
+  capletId: string;
+  origin: {
+    kind: string;
+  };
+  resourceVersion: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type AdminVaultGrantRevokeResult = {
@@ -1629,15 +847,73 @@ export type AdminCapletRecordSummary = {
   currentRevision: AdminCapletRevisionSummary;
 };
 
+export type AdminCapletRevisionSummary = {
+  revisionKey: string;
+  sequence: number;
+  name: string;
+  createdAt: string;
+};
+
 export type AdminCapletRecordDetail = {
   record: AdminCapletRecord;
   document: string;
+};
+
+export type AdminCapletRecord = {
+  recordKey: string;
+  id: string;
+  headGeneration: number;
+  historyLimit: number | null;
+  createdAt: string;
+  updatedAt: string;
+  currentRevision: AdminCapletRevision;
+};
+
+export type AdminCapletRevision = {
+  revisionKey: string;
+  sequence: number;
+  name: string;
+  description: string;
+  body: string;
+  schemaUrl: string | null;
+  content: {
+    [key: string]: unknown;
+  };
+  contentHash: string;
+  sourceRevision: string | null;
+  sourceContentHash: string | null;
+  createdAt: string;
+  actor: string;
+  tags: Array<string>;
+  backends: Array<AdminCapletBackend>;
+  bundle: Array<AdminCapletBundleEntry>;
+};
+
+export type AdminCapletBackend = {
+  family: string;
+  childId: string | null;
+  config: {
+    [key: string]: unknown;
+  };
+};
+
+export type AdminCapletBundleEntry = {
+  path: string;
+  hash: string;
+  mediaType: string;
+  size: number;
+  executable: boolean;
 };
 
 export type AdminCapletRecordPatch = {
   id?: string;
   document?: string;
   historyLimit?: number | null;
+};
+
+export type AdminCapletRecordDeleteResult = {
+  deleted: true;
+  id: string;
 };
 
 export type CapletBundleDownload = Blob | File;
@@ -1671,6 +947,21 @@ export type AdminCapletInstallationPage = {
   nextCursor?: string;
 };
 
+export type AdminCapletInstallation = {
+  installationKey: string;
+  capletId: string;
+  recordKey: string;
+  generation: number;
+  status: "active" | "detached";
+  sourceKind: string;
+  sourceIdentity: string;
+  channel: string | null;
+  createdAt: string;
+  updatedAt: string;
+  detachedAt: string | null;
+  detachedBy: string | null;
+};
+
 export type AdminCapletInstallationMutationResult = {
   installationKey: string;
   capletId: string;
@@ -1699,6 +990,28 @@ export type AdminCapletInstallationObservationPage = {
   nextCursor?: string;
 };
 
+export type AdminCapletInstallationObservation = {
+  observationKey: string;
+  installationKey: string;
+  resolvedRevision: string | null;
+  contentHash: string | null;
+  risk: AdminCapletInstallationRisk;
+  status: "current" | "metadata-only" | "source-unavailable";
+  observedAt: string;
+};
+
+export type AdminCapletInstallationRisk = {
+  backendFamilies: Array<string>;
+  safety: "standard" | "mutating_saas" | "local_control" | "unknown";
+  projectBindingRequired: boolean;
+  authScopes?: Array<string>;
+  runtimeFeatures?: Array<string>;
+  mutating: boolean;
+  destructive: boolean;
+  bodyHash?: string;
+  referenceHash?: string;
+} | null;
+
 export type AdminCapletInstallationObservationMutationResult = {
   observationKey: string;
   installationKey: string;
@@ -1724,7 +1037,7 @@ export type GetServiceDiscoveryData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/";
+  url: "/api";
 };
 
 export type GetServiceDiscoveryErrors = {
@@ -1750,7 +1063,7 @@ export type GetVersionDiscoveryData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v1";
+  url: "/api/v1";
 };
 
 export type GetVersionDiscoveryErrors = {
@@ -1772,37 +1085,11 @@ export type GetVersionDiscoveryResponses = {
 export type GetVersionDiscoveryResponse =
   GetVersionDiscoveryResponses[keyof GetVersionDiscoveryResponses];
 
-export type GetAdminV2DiscoveryData = {
-  body?: never;
-  path?: never;
-  query?: never;
-  url: "/v2";
-};
-
-export type GetAdminV2DiscoveryErrors = {
-  /**
-   * RFC 9457 Problem Details. Sensitive implementation details are redacted.
-   */
-  default: Problem;
-};
-
-export type GetAdminV2DiscoveryError = GetAdminV2DiscoveryErrors[keyof GetAdminV2DiscoveryErrors];
-
-export type GetAdminV2DiscoveryResponses = {
-  /**
-   * Successful direct resource representation.
-   */
-  200: AdminV2Discovery;
-};
-
-export type GetAdminV2DiscoveryResponse =
-  GetAdminV2DiscoveryResponses[keyof GetAdminV2DiscoveryResponses];
-
 export type GetHealthData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v1/healthz";
+  url: "/api/v1/healthz";
 };
 
 export type GetHealthErrors = {
@@ -1834,7 +1121,7 @@ export type StartRemoteLoginData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/remote/login/start";
+  url: "/api/v1/remote/login/start";
 };
 
 export type StartRemoteLoginErrors = {
@@ -1890,7 +1177,7 @@ export type PollRemoteLoginData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/remote/login/poll";
+  url: "/api/v1/remote/login/poll";
 };
 
 export type PollRemoteLoginErrors = {
@@ -1947,7 +1234,7 @@ export type RefreshPendingRemoteLoginData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/remote/login/refresh";
+  url: "/api/v1/remote/login/refresh";
 };
 
 export type RefreshPendingRemoteLoginErrors = {
@@ -2005,7 +1292,7 @@ export type CompleteRemoteLoginData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/remote/login/complete";
+  url: "/api/v1/remote/login/complete";
 };
 
 export type CompleteRemoteLoginErrors = {
@@ -2062,7 +1349,7 @@ export type CancelRemoteLoginData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/remote/login/cancel";
+  url: "/api/v1/remote/login/cancel";
 };
 
 export type CancelRemoteLoginErrors = {
@@ -2118,7 +1405,7 @@ export type RefreshRemoteCredentialsData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/remote/refresh";
+  url: "/api/v1/remote/refresh";
 };
 
 export type RefreshRemoteCredentialsErrors = {
@@ -2169,7 +1456,7 @@ export type RevokeCurrentRemoteClientData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v1/remote/client";
+  url: "/api/v1/remote/client";
 };
 
 export type RevokeCurrentRemoteClientErrors = {
@@ -2224,7 +1511,7 @@ export type CreateAttachSessionData = {
   body: AttachSessionRequest;
   path?: never;
   query?: never;
-  url: "/v1/attach/sessions";
+  url: "/api/v1/attach/sessions";
 };
 
 export type CreateAttachSessionErrors = {
@@ -2272,7 +1559,7 @@ export type DeleteAttachSessionData = {
     sessionId: string;
   };
   query?: never;
-  url: "/v1/attach/sessions/{sessionId}";
+  url: "/api/v1/attach/sessions/{sessionId}";
 };
 
 export type DeleteAttachSessionErrors = {
@@ -2305,7 +1592,7 @@ export type GetAttachManifestData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/attach/manifest";
+  url: "/api/v1/attach/manifest";
 };
 
 export type GetAttachManifestErrors = {
@@ -2354,7 +1641,7 @@ export type InvokeAttachExportData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/attach/invoke";
+  url: "/api/v1/attach/invoke";
 };
 
 export type InvokeAttachExportErrors = {
@@ -2403,7 +1690,7 @@ export type StreamAttachEventsData = {
   };
   path?: never;
   query?: never;
-  url: "/v1/attach/events";
+  url: "/api/v1/attach/events";
 };
 
 export type StreamAttachEventsErrors = {
@@ -2453,7 +1740,7 @@ export type UpgradeProjectBindingConnectionData = {
     sessionId: string;
     projectFingerprint: string;
   };
-  url: "/v1/attach/project-bindings/connect";
+  url: "/api/v1/attach/project-bindings/connect";
 };
 
 export type UpgradeProjectBindingConnectionErrors = {
@@ -2490,7 +1777,7 @@ export type CreateProjectBindingSessionData = {
   body: ProjectBindingSessionCreateRequest;
   path?: never;
   query?: never;
-  url: "/v1/attach/project-bindings/sessions";
+  url: "/api/v1/attach/project-bindings/sessions";
 };
 
 export type CreateProjectBindingSessionErrors = {
@@ -2535,7 +1822,7 @@ export type GetProjectBindingStatusData = {
     bindingId: string;
   };
   query?: never;
-  url: "/v1/attach/project-bindings/{bindingId}/status";
+  url: "/api/v1/attach/project-bindings/{bindingId}/status";
 };
 
 export type GetProjectBindingStatusErrors = {
@@ -2568,7 +1855,7 @@ export type DeleteProjectBindingSessionData = {
     bindingId: string;
   };
   query?: never;
-  url: "/v1/attach/project-bindings/{bindingId}/session";
+  url: "/api/v1/attach/project-bindings/{bindingId}/session";
 };
 
 export type DeleteProjectBindingSessionErrors = {
@@ -2613,7 +1900,7 @@ export type GetProjectBindingSessionData = {
     bindingId: string;
   };
   query?: never;
-  url: "/v1/attach/project-bindings/{bindingId}/session";
+  url: "/api/v1/attach/project-bindings/{bindingId}/session";
 };
 
 export type GetProjectBindingSessionErrors = {
@@ -2650,7 +1937,7 @@ export type HeartbeatProjectBindingSessionData = {
     bindingId: string;
   };
   query?: never;
-  url: "/v1/attach/project-bindings/{bindingId}/heartbeat";
+  url: "/api/v1/attach/project-bindings/{bindingId}/heartbeat";
 };
 
 export type HeartbeatProjectBindingSessionErrors = {
@@ -2689,42 +1976,11 @@ export type HeartbeatProjectBindingSessionResponses = {
 export type HeartbeatProjectBindingSessionResponse =
   HeartbeatProjectBindingSessionResponses[keyof HeartbeatProjectBindingSessionResponses];
 
-export type AdminV1DispatchCommandData = {
-  body: LegacyAdminRequest;
-  path?: never;
-  query?: never;
-  url: "/v1/admin";
-};
-
-export type AdminV1DispatchCommandErrors = {
-  /**
-   * Missing or invalid bearer credential.
-   */
-  401: PublicV1TextError;
-  /**
-   * Request rejected by host protection.
-   */
-  403: PublicV1TextError;
-};
-
-export type AdminV1DispatchCommandError =
-  AdminV1DispatchCommandErrors[keyof AdminV1DispatchCommandErrors];
-
-export type AdminV1DispatchCommandResponses = {
-  /**
-   * Legacy success or safe error envelope.
-   */
-  200: LegacyAdminResponse;
-};
-
-export type AdminV1DispatchCommandResponse =
-  AdminV1DispatchCommandResponses[keyof AdminV1DispatchCommandResponses];
-
 export type AdminV2GetHostData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v2/admin/host";
+  url: "/api/v2/admin/host";
 };
 
 export type AdminV2GetHostErrors = {
@@ -2757,7 +2013,7 @@ export type AdminV2GetRuntimeData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v2/admin/runtime";
+  url: "/api/v2/admin/runtime";
 };
 
 export type AdminV2GetRuntimeErrors = {
@@ -2800,10 +2056,14 @@ export type AdminV2CreateRuntimeRestartData = {
      * Creation precondition. The target operation resource must not already exist.
      */
     "If-None-Match": "*";
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path?: never;
   query?: never;
-  url: "/v2/admin/runtime-restarts";
+  url: "/api/v2/admin/runtime-restarts";
 };
 
 export type AdminV2CreateRuntimeRestartErrors = {
@@ -2849,7 +2109,7 @@ export type AdminV2ListLogsData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/logs";
+  url: "/api/v2/admin/logs";
 };
 
 export type AdminV2ListLogsErrors = {
@@ -2882,7 +2142,7 @@ export type AdminV2GetDiagnosticsData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v2/admin/diagnostics";
+  url: "/api/v2/admin/diagnostics";
 };
 
 export type AdminV2GetDiagnosticsErrors = {
@@ -2917,7 +2177,7 @@ export type AdminV2GetProjectBindingData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v2/admin/project-binding";
+  url: "/api/v2/admin/project-binding";
 };
 
 export type AdminV2GetProjectBindingErrors = {
@@ -2952,7 +2212,7 @@ export type AdminV2ListEventsData = {
   body?: never;
   path?: never;
   query?: never;
-  url: "/v2/admin/events";
+  url: "/api/v2/admin/events";
 };
 
 export type AdminV2ListEventsErrors = {
@@ -2994,7 +2254,7 @@ export type AdminV2ListActivityData = {
     sort?: "desc";
     action?: string;
   };
-  url: "/v2/admin/activity";
+  url: "/api/v2/admin/activity";
 };
 
 export type AdminV2ListActivityErrors = {
@@ -3035,7 +2295,7 @@ export type AdminV2ListEffectiveCapletsData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/caplets";
+  url: "/api/v2/admin/caplets";
 };
 
 export type AdminV2ListEffectiveCapletsErrors = {
@@ -3079,7 +2339,7 @@ export type AdminV2ListCatalogEntriesData = {
     source: string;
     query?: string;
   };
-  url: "/v2/admin/catalog/entries";
+  url: "/api/v2/admin/catalog/entries";
 };
 
 export type AdminV2ListCatalogEntriesErrors = {
@@ -3118,7 +2378,7 @@ export type AdminV2GetCatalogEntryData = {
   query: {
     source: string;
   };
-  url: "/v2/admin/catalog/entries/{entryKey}";
+  url: "/api/v2/admin/catalog/entries/{entryKey}";
 };
 
 export type AdminV2GetCatalogEntryErrors = {
@@ -3160,7 +2420,7 @@ export type AdminV2ListCatalogUpdateCandidatesData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/catalog/update-candidates";
+  url: "/api/v2/admin/catalog/update-candidates";
 };
 
 export type AdminV2ListCatalogUpdateCandidatesErrors = {
@@ -3202,10 +2462,14 @@ export type AdminV2InstallCatalogCapletsData = {
      * Creation precondition. The target operation resource must not already exist.
      */
     "If-None-Match": "*";
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path?: never;
   query?: never;
-  url: "/v2/admin/catalog/installations";
+  url: "/api/v2/admin/catalog/installations";
 };
 
 export type AdminV2InstallCatalogCapletsErrors = {
@@ -3247,10 +2511,14 @@ export type AdminV2UpdateCatalogCapletsData = {
      * Creation precondition. The target operation resource must not already exist.
      */
     "If-None-Match": "*";
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path?: never;
   query?: never;
-  url: "/v2/admin/catalog/update-runs";
+  url: "/api/v2/admin/catalog/update-runs";
 };
 
 export type AdminV2UpdateCatalogCapletsErrors = {
@@ -3294,7 +2562,7 @@ export type AdminV2ListRemoteClientsData = {
     role?: "access" | "operator";
     revoked?: "true" | "false";
   };
-  url: "/v2/admin/remote-clients";
+  url: "/api/v2/admin/remote-clients";
 };
 
 export type AdminV2ListRemoteClientsErrors = {
@@ -3336,12 +2604,16 @@ export type AdminV2DeleteRemoteClientData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     clientId: string;
   };
   query?: never;
-  url: "/v2/admin/remote-clients/{clientId}";
+  url: "/api/v2/admin/remote-clients/{clientId}";
 };
 
 export type AdminV2DeleteRemoteClientErrors = {
@@ -3378,7 +2650,7 @@ export type AdminV2GetRemoteClientData = {
     clientId: string;
   };
   query?: never;
-  url: "/v2/admin/remote-clients/{clientId}";
+  url: "/api/v2/admin/remote-clients/{clientId}";
 };
 
 export type AdminV2GetRemoteClientErrors = {
@@ -3420,12 +2692,16 @@ export type AdminV2UpdateRemoteClientData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     clientId: string;
   };
   query?: never;
-  url: "/v2/admin/remote-clients/{clientId}";
+  url: "/api/v2/admin/remote-clients/{clientId}";
 };
 
 export type AdminV2UpdateRemoteClientErrors = {
@@ -3468,7 +2744,7 @@ export type AdminV2ListRemoteLoginRequestsData = {
     sort?: "desc";
     status?: "pending" | "approved" | "denied" | "cancelled" | "expired" | "exchanged";
   };
-  url: "/v2/admin/remote-login-requests";
+  url: "/api/v2/admin/remote-login-requests";
 };
 
 export type AdminV2ListRemoteLoginRequestsErrors = {
@@ -3505,7 +2781,7 @@ export type AdminV2GetRemoteLoginRequestData = {
     flowId: string;
   };
   query?: never;
-  url: "/v2/admin/remote-login-requests/{flowId}";
+  url: "/api/v2/admin/remote-login-requests/{flowId}";
 };
 
 export type AdminV2GetRemoteLoginRequestErrors = {
@@ -3547,12 +2823,16 @@ export type AdminV2UpdateRemoteLoginRequestData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     flowId: string;
   };
   query?: never;
-  url: "/v2/admin/remote-login-requests/{flowId}";
+  url: "/api/v2/admin/remote-login-requests/{flowId}";
 };
 
 export type AdminV2UpdateRemoteLoginRequestErrors = {
@@ -3594,7 +2874,7 @@ export type AdminV2ListBackendAuthData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/backend-auth-connections";
+  url: "/api/v2/admin/backend-auth-connections";
 };
 
 export type AdminV2ListBackendAuthErrors = {
@@ -3636,12 +2916,16 @@ export type AdminV2DeleteBackendAuthData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     serverId: string;
   };
   query?: never;
-  url: "/v2/admin/backend-auth-connections/{serverId}";
+  url: "/api/v2/admin/backend-auth-connections/{serverId}";
 };
 
 export type AdminV2DeleteBackendAuthErrors = {
@@ -3678,7 +2962,7 @@ export type AdminV2GetBackendAuthData = {
     serverId: string;
   };
   query?: never;
-  url: "/v2/admin/backend-auth-connections/{serverId}";
+  url: "/api/v2/admin/backend-auth-connections/{serverId}";
 };
 
 export type AdminV2GetBackendAuthErrors = {
@@ -3720,10 +3004,14 @@ export type AdminV2StartBackendAuthFlowData = {
      * Creation precondition. The target operation resource must not already exist.
      */
     "If-None-Match": "*";
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path?: never;
   query?: never;
-  url: "/v2/admin/backend-auth-flows";
+  url: "/api/v2/admin/backend-auth-flows";
 };
 
 export type AdminV2StartBackendAuthFlowErrors = {
@@ -3760,7 +3048,7 @@ export type AdminV2GetBackendAuthFlowData = {
     flowId: string;
   };
   query?: never;
-  url: "/v2/admin/backend-auth-flows/{flowId}";
+  url: "/api/v2/admin/backend-auth-flows/{flowId}";
 };
 
 export type AdminV2GetBackendAuthFlowErrors = {
@@ -3802,10 +3090,14 @@ export type AdminV2RefreshBackendAuthData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path?: never;
   query?: never;
-  url: "/v2/admin/backend-auth-refreshes";
+  url: "/api/v2/admin/backend-auth-refreshes";
 };
 
 export type AdminV2RefreshBackendAuthErrors = {
@@ -3847,7 +3139,7 @@ export type AdminV2ListVaultValuesData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/vault-values";
+  url: "/api/v2/admin/vault-values";
 };
 
 export type AdminV2ListVaultValuesErrors = {
@@ -3889,12 +3181,16 @@ export type AdminV2DeleteVaultValueData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     storedKey: string;
   };
   query?: never;
-  url: "/v2/admin/vault-values/{storedKey}";
+  url: "/api/v2/admin/vault-values/{storedKey}";
 };
 
 export type AdminV2DeleteVaultValueErrors = {
@@ -3931,7 +3227,7 @@ export type AdminV2GetVaultValueData = {
     storedKey: string;
   };
   query?: never;
-  url: "/v2/admin/vault-values/{storedKey}";
+  url: "/api/v2/admin/vault-values/{storedKey}";
 };
 
 export type AdminV2GetVaultValueErrors = {
@@ -3981,12 +3277,16 @@ export type AdminV2PutVaultValueData = {
      * Opaque strong ETag of the current grant named by the request body. Required when that grant exists.
      */
     "X-Caplets-Grant-If-Match"?: string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     storedKey: string;
   };
   query?: never;
-  url: "/v2/admin/vault-values/{storedKey}";
+  url: "/api/v2/admin/vault-values/{storedKey}";
 };
 
 export type AdminV2PutVaultValueErrors = {
@@ -4042,7 +3342,7 @@ export type AdminV2ListVaultGrantsData = {
     storedKey?: string;
     capletId?: string;
   };
-  url: "/v2/admin/vault-grants";
+  url: "/api/v2/admin/vault-grants";
 };
 
 export type AdminV2ListVaultGrantsErrors = {
@@ -4086,7 +3386,7 @@ export type AdminV2ListVaultValueGrantsData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/vault-values/{storedKey}/grants";
+  url: "/api/v2/admin/vault-values/{storedKey}/grants";
 };
 
 export type AdminV2ListVaultValueGrantsErrors = {
@@ -4128,6 +3428,10 @@ export type AdminV2RevokeVaultAccessData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     storedKey: string;
@@ -4135,7 +3439,7 @@ export type AdminV2RevokeVaultAccessData = {
     referenceName: string;
   };
   query?: never;
-  url: "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}";
+  url: "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}";
 };
 
 export type AdminV2RevokeVaultAccessErrors = {
@@ -4174,7 +3478,7 @@ export type AdminV2GetVaultGrantData = {
     referenceName: string;
   };
   query?: never;
-  url: "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}";
+  url: "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}";
 };
 
 export type AdminV2GetVaultGrantErrors = {
@@ -4222,6 +3526,10 @@ export type AdminV2PutVaultGrantData = {
      * Use * when creating a resource that must not already exist.
      */
     "If-None-Match"?: "*";
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     storedKey: string;
@@ -4229,7 +3537,7 @@ export type AdminV2PutVaultGrantData = {
     referenceName: string;
   };
   query?: never;
-  url: "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}";
+  url: "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}";
 };
 
 export type AdminV2PutVaultGrantErrors = {
@@ -4279,7 +3587,7 @@ export type AdminV2ListCapletRecordsData = {
     tag?: string;
     search?: string;
   };
-  url: "/v2/admin/caplet-records";
+  url: "/api/v2/admin/caplet-records";
 };
 
 export type AdminV2ListCapletRecordsErrors = {
@@ -4321,12 +3629,16 @@ export type AdminV2DeleteCapletRecordData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}";
+  url: "/api/v2/admin/caplet-records/{id}";
 };
 
 export type AdminV2DeleteCapletRecordErrors = {
@@ -4363,7 +3675,7 @@ export type AdminV2GetCapletRecordData = {
     id: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}";
+  url: "/api/v2/admin/caplet-records/{id}";
 };
 
 export type AdminV2GetCapletRecordErrors = {
@@ -4405,12 +3717,16 @@ export type AdminV2UpdateCapletRecordData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}";
+  url: "/api/v2/admin/caplet-records/{id}";
 };
 
 export type AdminV2UpdateCapletRecordErrors = {
@@ -4447,7 +3763,7 @@ export type AdminV2GetCapletRecordBundleData = {
     id: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/bundle";
+  url: "/api/v2/admin/caplet-records/{id}/bundle";
 };
 
 export type AdminV2GetCapletRecordBundleErrors = {
@@ -4493,12 +3809,16 @@ export type AdminV2PutCapletRecordBundleData = {
      * Use * when creating a resource that must not already exist.
      */
     "If-None-Match"?: "*";
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/bundle";
+  url: "/api/v2/admin/caplet-records/{id}/bundle";
 };
 
 export type AdminV2PutCapletRecordBundleErrors = {
@@ -4550,7 +3870,7 @@ export type AdminV2ListCapletRecordRevisionsData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/caplet-records/{id}/revisions";
+  url: "/api/v2/admin/caplet-records/{id}/revisions";
 };
 
 export type AdminV2ListCapletRecordRevisionsErrors = {
@@ -4596,13 +3916,17 @@ export type AdminV2DeleteCapletRecordRevisionData = {
      * Opaque strong ETag of the current parent Caplet Record. Required in addition to the target revision If-Match.
      */
     "X-Caplets-Parent-If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
     revisionKey: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/revisions/{revisionKey}";
+  url: "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}";
 };
 
 export type AdminV2DeleteCapletRecordRevisionErrors = {
@@ -4648,7 +3972,7 @@ export type AdminV2GetCapletRecordRevisionData = {
     revisionKey: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/revisions/{revisionKey}";
+  url: "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}";
 };
 
 export type AdminV2GetCapletRecordRevisionErrors = {
@@ -4686,7 +4010,7 @@ export type AdminV2GetCapletRecordRevisionBundleData = {
     revisionKey: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle";
+  url: "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle";
 };
 
 export type AdminV2GetCapletRecordRevisionBundleErrors = {
@@ -4728,12 +4052,16 @@ export type AdminV2PutCapletRecordCurrentRevisionData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/current-revision";
+  url: "/api/v2/admin/caplet-records/{id}/current-revision";
 };
 
 export type AdminV2PutCapletRecordCurrentRevisionErrors = {
@@ -4777,7 +4105,7 @@ export type AdminV2ListCapletRecordInstallationsData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/caplet-records/{id}/installations";
+  url: "/api/v2/admin/caplet-records/{id}/installations";
 };
 
 export type AdminV2ListCapletRecordInstallationsErrors = {
@@ -4819,13 +4147,17 @@ export type AdminV2DeleteCapletRecordInstallationData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
     installationKey: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/installations/{installationKey}";
+  url: "/api/v2/admin/caplet-records/{id}/installations/{installationKey}";
 };
 
 export type AdminV2DeleteCapletRecordInstallationErrors = {
@@ -4863,7 +4195,7 @@ export type AdminV2GetCapletRecordInstallationData = {
     installationKey: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/installations/{installationKey}";
+  url: "/api/v2/admin/caplet-records/{id}/installations/{installationKey}";
 };
 
 export type AdminV2GetCapletRecordInstallationErrors = {
@@ -4909,13 +4241,17 @@ export type AdminV2PutCapletRecordInstallationData = {
      * Use * when creating a resource that must not already exist.
      */
     "If-None-Match"?: "*";
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
     installationKey: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/installations/{installationKey}";
+  url: "/api/v2/admin/caplet-records/{id}/installations/{installationKey}";
 };
 
 export type AdminV2PutCapletRecordInstallationErrors = {
@@ -4963,7 +4299,7 @@ export type AdminV2ListCapletRecordInstallationObservationsData = {
      */
     sort?: "desc";
   };
-  url: "/v2/admin/caplet-records/{id}/installation-observations";
+  url: "/api/v2/admin/caplet-records/{id}/installation-observations";
 };
 
 export type AdminV2ListCapletRecordInstallationObservationsErrors = {
@@ -5005,12 +4341,16 @@ export type AdminV2CreateCapletRecordInstallationObservationData = {
      * Strong ETag of the current resource. Required for an existing resource mutation.
      */
     "If-Match": string;
+    /**
+     * Required for unsafe requests authenticated by a dashboard session cookie; optional and ignored for bearer authentication.
+     */
+    "X-Caplets-CSRF"?: string;
   };
   path: {
     id: string;
   };
   query?: never;
-  url: "/v2/admin/caplet-records/{id}/installation-observations";
+  url: "/api/v2/admin/caplet-records/{id}/installation-observations";
 };
 
 export type AdminV2CreateCapletRecordInstallationObservationErrors = {
@@ -5052,7 +4392,7 @@ export type AdminV2CompleteBackendAuthFlowCallbackData = {
     error?: string;
     error_description?: string;
   };
-  url: "/v2/admin/backend-auth-flows/{flowId}/callback";
+  url: "/api/v2/admin/backend-auth-flows/{flowId}/callback";
 };
 
 export type AdminV2CompleteBackendAuthFlowCallbackErrors = {

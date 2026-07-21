@@ -19,7 +19,7 @@ import {
   checkMutationPrecondition,
   createStrongEtag,
 } from "./conditional";
-import { createBundleMultipartStream } from "./bundle-export";
+import { createBundleMultipartMetadata, createBundleMultipartStream } from "./bundle-export";
 import type { AdminBundleUploadAdmissionController } from "./bundle-upload-admission";
 import { parseAdminBundleUpload, type ParsedAdminBundleUpload } from "./bundle-upload-parser";
 import {
@@ -88,10 +88,18 @@ const vaultGrantPageKeySchema = z.object({
   referenceName: z.string().min(1),
 });
 
-export type AdminV2PrincipalProvider = (
+export type AdminV2RequestAuthority = {
+  principal: CurrentHostOperatorPrincipal;
+  finalizeMutation?: (input: {
+    operationId: string;
+    outcome: Readonly<SemanticOutcome>;
+  }) => Headers | undefined | Promise<Headers | undefined>;
+};
+
+export type AdminV2AuthorityProvider = (
   request: Request,
   context: { readonly mutates: boolean },
-) => CurrentHostOperatorPrincipal | Promise<CurrentHostOperatorPrincipal>;
+) => AdminV2RequestAuthority | Promise<AdminV2RequestAuthority>;
 
 export class AdminV2PrincipalError extends CapletsError {
   readonly status: 401 | 403;
@@ -113,17 +121,11 @@ export type AdminV2HostContext = {
 
 export type CreateAdminV2RouterOptions = {
   operations: CurrentHostOperations;
-  principalProvider: AdminV2PrincipalProvider;
+  authorityProvider: AdminV2AuthorityProvider;
   host: AdminV2HostContext;
   idempotencyStore?: IdempotencyExecutionStore | undefined;
   bundleUploadAdmission?: AdminBundleUploadAdmissionController | undefined;
   reportBundleUploadCleanupError?: (error: SafeErrorSummary) => void;
-  mutationResponseHeaders?: (input: {
-    request: Request;
-    principal: CurrentHostOperatorPrincipal;
-    operationId: string;
-    outcome: Readonly<SemanticOutcome>;
-  }) => Record<string, string> | undefined | Promise<Record<string, string> | undefined>;
 };
 
 type ValidatedRouteRequest = {
@@ -138,7 +140,7 @@ type ValidatedRouteRequest = {
   creatingGrant?: boolean | undefined;
 };
 
-type SemanticOutcome = { kind: string } & Record<string, unknown>;
+export type SemanticOutcome = { kind: string } & Record<string, unknown>;
 type CatalogMutationIndexingStatus =
   | "accepted"
   | "already_current"
@@ -195,9 +197,14 @@ export function createAdminV2Router(options: CreateAdminV2RouterOptions): Hono {
         if (definition.method !== "get") {
           return await handleMutation(context, definition, options);
         }
-        const principal = await options.principalProvider(context.req.raw, { mutates: false });
+        const { principal } = await options.authorityProvider(context.req.raw, {
+          mutates: false,
+        });
         const validated = validateSafeRequest(context, definition);
         if (definition.streaming) {
+          if (context.req.method === "HEAD") {
+            return await handleStreamingHead(definition, validated, principal, options.operations);
+          }
           return await handleStreamingGet(
             context,
             definition,
@@ -223,6 +230,27 @@ export function createAdminV2Router(options: CreateAdminV2RouterOptions): Hono {
   return app;
 }
 
+async function handleStreamingHead(
+  definition: AdminV2RouteDefinition,
+  request: ValidatedRouteRequest,
+  principal: CurrentHostPrincipal,
+  operations: CurrentHostOperations,
+): Promise<Response> {
+  if (definition.streaming === "sse") {
+    return new Response(null, { status: 200, headers: adminSseHeaders() });
+  }
+  if (definition.streaming === "bundle-download") {
+    const outcome = await executeOperation(operations, principal, bundleGetOperation(request));
+    const sources = requiredBundleSources(outcome);
+    const multipart = createBundleMultipartMetadata(sources);
+    return new Response(null, {
+      status: 200,
+      headers: bundleDownloadResponseHeaders(definition, request, outcome, multipart.contentType),
+    });
+  }
+  throw streamingUnavailableError(definition);
+}
+
 async function handleStreamingGet(
   _context: Context,
   definition: AdminV2RouteDefinition,
@@ -231,33 +259,12 @@ async function handleStreamingGet(
   operations: CurrentHostOperations,
 ): Promise<Response> {
   if (definition.streaming === "bundle-download") {
-    const operation: CurrentHostOperation = {
-      kind: "stored_caplet_bundle_get",
-      id: request.params.id!,
-      ...(request.params.revisionKey ? { revisionKey: request.params.revisionKey } : {}),
-    };
-    const outcome = await executeOperation(operations, principal, operation);
-    const sources = outcome.sources as ReopenableBundleFileSource[] | undefined;
-    if (!sources) {
-      throw new CapletsError(
-        "INTERNAL_ERROR",
-        "The Caplet Bundle operation did not return streaming sources.",
-      );
-    }
+    const outcome = await executeOperation(operations, principal, bundleGetOperation(request));
+    const sources = requiredBundleSources(outcome);
     const multipart = createBundleMultipartStream(sources);
-    const id = request.params.id ?? "caplet";
-    const revisionSuffix = request.params.revisionKey ? `-${request.params.revisionKey}` : "";
-    const filename = `${sanitizeAttachmentToken(id)}${
-      revisionSuffix ? sanitizeAttachmentToken(revisionSuffix) : ""
-    }.bundle`;
     return new Response(multipart.body, {
       status: 200,
-      headers: {
-        "Cache-Control": NO_STORE,
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Content-Type": multipart.contentType,
-        ETag: etagForRepresentation(definition, outcome.record ?? { id }, request),
-      },
+      headers: bundleDownloadResponseHeaders(definition, request, outcome, multipart.contentType),
     });
   }
 
@@ -290,16 +297,54 @@ async function handleStreamingGet(
         await reader.cancel(reason);
       },
     });
-    return new Response(body, {
-      status: 200,
-      headers: {
-        "Cache-Control": NO_STORE,
-        "Content-Type": "text/event-stream",
-      },
-    });
+    return new Response(body, { status: 200, headers: adminSseHeaders() });
   }
 
+  throw streamingUnavailableError(definition);
+}
+
+function bundleGetOperation(request: ValidatedRouteRequest): CurrentHostOperation {
+  return {
+    kind: "stored_caplet_bundle_get",
+    id: request.params.id!,
+    ...(request.params.revisionKey ? { revisionKey: request.params.revisionKey } : {}),
+  };
+}
+
+function requiredBundleSources(outcome: SemanticOutcome): ReopenableBundleFileSource[] {
+  const sources = outcome.sources as ReopenableBundleFileSource[] | undefined;
+  if (sources) return sources;
   throw new CapletsError(
+    "INTERNAL_ERROR",
+    "The Caplet Bundle operation did not return streaming sources.",
+  );
+}
+
+function bundleDownloadResponseHeaders(
+  definition: AdminV2RouteDefinition,
+  request: ValidatedRouteRequest,
+  outcome: SemanticOutcome,
+  contentType: string,
+): Record<string, string> {
+  const id = request.params.id ?? "caplet";
+  const revisionSuffix = request.params.revisionKey ? `-${request.params.revisionKey}` : "";
+  const filename = `${sanitizeAttachmentToken(id)}${
+    revisionSuffix ? sanitizeAttachmentToken(revisionSuffix) : ""
+  }.bundle`;
+  return {
+    "Cache-Control": NO_STORE,
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Content-Type": contentType,
+    ETag: etagForRepresentation(definition, outcome.record ?? { id }, request),
+  };
+}
+
+function adminSseHeaders(): Record<string, string> {
+  return { "Cache-Control": NO_STORE, "Content-Type": "text/event-stream" };
+}
+
+function streamingUnavailableError(definition: AdminV2RouteDefinition): CapletsError {
+  return new CapletsError(
     "SERVER_UNAVAILABLE",
     `The ${definition.operationKinds.join("/")} streaming operation is unavailable.`,
   );
@@ -315,7 +360,8 @@ async function handleMutation(
   definition: AdminV2RouteDefinition,
   options: CreateAdminV2RouterOptions,
 ): Promise<Response> {
-  const principal = await options.principalProvider(context.req.raw, { mutates: true });
+  const authority = await options.authorityProvider(context.req.raw, { mutates: true });
+  const { principal } = authority;
   const idempotencyKey = context.req.header("Idempotency-Key");
   if (!idempotencyKey || !/^[\x21-\x7e]{1,128}$/u.test(idempotencyKey)) {
     throw new CapletsError(
@@ -474,26 +520,31 @@ async function handleMutation(
   if (bundleUploadCleanupError !== undefined) throw bundleUploadCleanupError;
 
   const mutationResponseHeaders =
-    committedOutcome === undefined || options.mutationResponseHeaders === undefined
+    committedOutcome === undefined || authority.finalizeMutation === undefined
       ? undefined
-      : await options.mutationResponseHeaders({
-          request: context.req.raw,
-          principal,
+      : await authority.finalizeMutation({
           operationId: definition.operationId,
           outcome: committedOutcome,
         });
 
   switch (execution.outcome) {
     case "response": {
-      const headers: Record<string, string> = {
+      const headers = new Headers({
         "Cache-Control": NO_STORE,
         "Content-Type": execution.response.contentType,
-        ...mutationResponseHeaders,
-      };
+      });
+      if (mutationResponseHeaders !== undefined) {
+        for (const [name, value] of mutationResponseHeaders.entries()) {
+          if (name.toLowerCase() !== "set-cookie") headers.append(name, value);
+        }
+        for (const value of mutationResponseHeaders.getSetCookie()) {
+          headers.append("Set-Cookie", value);
+        }
+      }
       if (execution.response.status >= 200 && execution.response.status < 300) {
         const body = JSON.parse(execution.response.body) as unknown;
         if (definition.etag || definition.conditional || definition.upsert || definition.created) {
-          headers.ETag = etagForRepresentation(definition, body, validated);
+          headers.set("ETag", etagForRepresentation(definition, body, validated));
         }
         const location = mutationLocation(
           definition,
@@ -504,9 +555,9 @@ async function handleMutation(
           currentResourcePath,
           renamedResourcePath,
         );
-        if (location !== undefined) headers.Location = location;
+        if (location !== undefined) headers.set("Location", location);
       }
-      if (execution.replayed) headers["Idempotency-Replayed"] = "true";
+      if (execution.replayed) headers.set("Idempotency-Replayed", "true");
       return new Response(execution.response.body, {
         status: execution.response.status,
         headers,

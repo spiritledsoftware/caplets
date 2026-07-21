@@ -487,71 +487,17 @@ describe("cli init", () => {
     }
   });
 
-  it("rejects empty self-hosted remote login code from stdin", async () => {
+  it("does not register removed Pairing Code options", async () => {
     const fetchStub = vi.fn();
 
     await expect(
-      runCli(["remote", "login", "https://caplets.example.com/caplets", "--code-stdin"], {
+      runCli(["remote", "login", "https://caplets.example.com", "--code-stdin"], {
         readStdin: async () => " \n\t",
         fetch: fetchStub as unknown as typeof fetch,
         writeErr: () => {},
       }),
-    ).rejects.toMatchObject({
-      code: "REQUEST_INVALID",
-      message: expect.stringContaining("Self-hosted Remote Login no longer accepts Pairing Codes"),
-    } satisfies Partial<CapletsError>);
+    ).rejects.toThrow(/unknown option '--code-stdin'/u);
     expect(fetchStub).not.toHaveBeenCalled();
-  });
-
-  it("uses the workspace from a copied Cloud MCP URL when logging in", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-cloud-login-url-workspace-"));
-    const authDir = join(dir, "auth");
-    const startRequests: unknown[] = [];
-    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
-      const url = new URL(String(input));
-      if (url.pathname === "/api/cloud-client/login/start") {
-        startRequests.push(JSON.parse(String(init?.body ?? "{}")));
-        return Response.json({
-          loginId: "login_123",
-          loginUrl: "https://cloud.caplets.dev/login/login_123",
-          userCode: "ABCD-EFGH",
-          expiresAt: "2999-06-19T12:00:00.000Z",
-        });
-      }
-      if (url.pathname === "/api/cloud-client/login/login_123") {
-        return Response.json({ status: "completed", oneTimeCode: "one_time_code" });
-      }
-      if (url.pathname === "/api/cloud-client/token") {
-        return Response.json({
-          cloudUrl: "https://cloud.caplets.dev",
-          workspaceId: "workspace_team",
-          workspaceSlug: "team",
-          accessToken: "access-token",
-          refreshToken: "refresh-token",
-          expiresAt: "2999-06-19T12:00:00.000Z",
-        });
-      }
-      return Response.json({ error: "not_found" }, { status: 404 });
-    });
-    try {
-      await runCli(
-        ["remote", "login", "https://cloud.caplets.dev/ws/team/mcp", "--no-open", "--json"],
-        {
-          authDir,
-          fetch: fetchStub,
-          writeOut: () => {},
-        },
-      );
-
-      expect(startRequests).toEqual([
-        expect.objectContaining({
-          requestedWorkspace: "team",
-          deviceName: "Caplets CLI",
-        }),
-      ]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   it("prints parent command help without throwing", async () => {
@@ -587,7 +533,7 @@ describe("cli init", () => {
     expect(out.join("")).toContain("serve");
   });
 
-  it("describes the HTTP serve path as a service base path", async () => {
+  it("omits the removed HTTP path option and rejects it as unknown", async () => {
     const out: string[] = [];
 
     await runCli(["serve", "--help"], {
@@ -595,8 +541,11 @@ describe("cli init", () => {
       writeErr: (value) => out.push(value),
     });
 
-    expect(out.join("")).toContain("HTTP service base path");
-    expect(out.join("")).not.toContain("HTTP MCP endpoint path");
+    expect(out.join("")).not.toContain("--path");
+    expect(out.join("")).not.toContain("service base path");
+    await expect(
+      runCli(["serve", "--transport", "http", "--path", "/prefix"], { writeErr: () => {} }),
+    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
   });
 
   it("resolves serve defaults to stdio", async () => {
@@ -634,7 +583,6 @@ describe("cli init", () => {
         transport: "http",
         host: "127.0.0.1",
         port: 5387,
-        path: "/",
         auth: { type: "remote_credentials" },
         remoteCredentialStateDir: expect.stringContaining("remote-server"),
       }),
@@ -652,7 +600,6 @@ describe("cli init", () => {
           serve: {
             host: "0.0.0.0",
             port: 5480,
-            path: "/configured",
             allowUnauthenticatedHttp: true,
           },
         }),
@@ -672,7 +619,6 @@ describe("cli init", () => {
           transport: "http",
           host: "0.0.0.0",
           port: 5480,
-          path: "/configured",
           auth: { type: "development_unauthenticated" },
         }),
       ]);
@@ -687,7 +633,7 @@ describe("cli init", () => {
     const served: unknown[] = [];
     try {
       mkdirSync(dirname(configPath), { recursive: true });
-      writeFileSync(configPath, JSON.stringify({ serve: { port: 5481, path: "/default-path" } }));
+      writeFileSync(configPath, JSON.stringify({ serve: { port: 5481 } }));
       delete process.env.CAPLETS_CONFIG;
       delete process.env.CAPLETS_SERVER_URL;
 
@@ -703,7 +649,6 @@ describe("cli init", () => {
         expect.objectContaining({
           transport: "http",
           port: 5481,
-          path: "/default-path",
         }),
       ]);
     } finally {
@@ -719,13 +664,13 @@ describe("cli init", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
-          serve: { host: "0.0.0.0", port: 5480, path: "/configured" },
+          serve: { host: "0.0.0.0", port: 5480 },
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
       delete process.env.CAPLETS_SERVER_URL;
 
-      await runCli(["serve", "--transport", "http", "--port", "6000", "--path", "/cli"], {
+      await runCli(["serve", "--transport", "http", "--port", "6000"], {
         writeOut: () => {},
         serve: async (options) => {
           served.push(options);
@@ -737,46 +682,11 @@ describe("cli init", () => {
           transport: "http",
           host: "0.0.0.0",
           port: 6000,
-          path: "/cli",
         }),
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  it("parses and propagates HTTP admin upload flags", async () => {
-    const served: unknown[] = [];
-    await runCli(
-      [
-        "serve",
-        "--transport",
-        "http",
-        "--admin-upload-staging-dir",
-        "/srv/caplets/uploads",
-        "--admin-upload-max-concurrent",
-        "4",
-        "--admin-upload-max-staged-bytes",
-        "400000000",
-      ],
-      {
-        env: {},
-        writeOut: () => {},
-        serve: async (options) => {
-          served.push(options);
-        },
-      },
-    );
-
-    expect(served).toEqual([
-      expect.objectContaining({
-        adminUploads: {
-          stagingDir: "/srv/caplets/uploads",
-          maxConcurrent: 4,
-          maxStagedBytes: 400_000_000,
-        },
-      }),
-    ]);
   });
 
   it.each([
@@ -801,7 +711,7 @@ describe("cli init", () => {
     delete process.env.CAPLETS_SERVER_PASSWORD;
 
     await runCli(
-      ["serve", "--transport", "http", "--upstream-url", "https://caplets.example.com/caplets"],
+      ["serve", "--transport", "http", "--upstream-url", "https://caplets.example.com"],
       {
         writeOut: () => {},
         serve: async (options) => {
@@ -813,7 +723,7 @@ describe("cli init", () => {
     expect(served).toEqual([
       expect.objectContaining({
         transport: "http",
-        upstreamUrl: "https://caplets.example.com/caplets",
+        upstreamUrl: "https://caplets.example.com",
       }),
     ]);
   });
@@ -1304,26 +1214,7 @@ describe("cli init", () => {
       async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const request = input instanceof Request ? input : new Request(input, init);
         const path = new URL(request.url).pathname;
-        if (path === "/caplets/") {
-          return Response.json({
-            name: "caplets",
-            transport: "http",
-            base: "/caplets/",
-            versions: [
-              { version: 1, path: "/caplets/v1", links: { admin: "/caplets/v1/admin" } },
-              { version: 2, path: "/caplets/v2", links: { admin: "/caplets/v2/admin" } },
-            ],
-            auth: { type: "remote" },
-          });
-        }
-        if (path === "/caplets/v2") {
-          return Response.json({
-            version: 2,
-            path: "/caplets/v2",
-            links: { admin: "/caplets/v2/admin" },
-          });
-        }
-        if (path === "/caplets/v1/attach/manifest") {
+        if (path === "/api/v1/attach/manifest") {
           return Response.json({
             version: 1,
             revision: "prompt-revision",
@@ -1351,10 +1242,10 @@ describe("cli init", () => {
             diagnostics: [],
           });
         }
-        if (path === "/caplets/v1/attach/sessions") {
+        if (path === "/api/v1/attach/sessions") {
           return Response.json({ sessionId: "prompt-session" }, { status: 201 });
         }
-        if (path === "/caplets/v1/attach/invoke") {
+        if (path === "/api/v1/attach/invoke") {
           requests.push(await request.json());
           return Response.json({
             ok: true,
@@ -1371,8 +1262,8 @@ describe("cli init", () => {
     try {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
-      }).saveSelfHostedProfile({
-        hostUrl: "https://remote.caplets.test/caplets",
+      }).saveRemoteProfile({
+        origin: "https://remote.caplets.test",
         clientId: "rcli_test",
         clientLabel: "Remote Prompt Test",
         credentials: {
@@ -1395,7 +1286,7 @@ describe("cli init", () => {
         {
           env: {
             CAPLETS_MODE: "remote",
-            CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
+            CAPLETS_REMOTE_URL: "https://remote.caplets.test",
             CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
             CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
           },
@@ -2960,26 +2851,6 @@ describe("cli init", () => {
     const fetchMock = vi.fn(
       async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const request = input instanceof Request ? input : new Request(input, init);
-        const path = new URL(request.url).pathname;
-        if (path === "/caplets/") {
-          return Response.json({
-            name: "caplets",
-            transport: "http",
-            base: "/caplets/",
-            versions: [
-              { version: 1, path: "/caplets/v1", links: { admin: "/caplets/v1/admin" } },
-              { version: 2, path: "/caplets/v2", links: { admin: "/caplets/v2/admin" } },
-            ],
-            auth: { type: "remote" },
-          });
-        }
-        if (path === "/caplets/v2") {
-          return Response.json({
-            version: 2,
-            path: "/caplets/v2",
-            links: { admin: "/caplets/v2/admin" },
-          });
-        }
         requests.push(await request.json());
         return Response.json(
           {
@@ -2999,8 +2870,8 @@ describe("cli init", () => {
     try {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
-      }).saveSelfHostedProfile({
-        hostUrl: "https://remote.caplets.test/caplets",
+      }).saveRemoteProfile({
+        origin: "https://remote.caplets.test",
         clientId: "rcli_install_test",
         clientLabel: "Remote Install Test",
         credentials: {
@@ -3014,7 +2885,7 @@ describe("cli init", () => {
       await runCli(["install", "--global", "--remote", "--json"], {
         env: {
           CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
+          CAPLETS_REMOTE_URL: "https://remote.caplets.test",
           CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
           CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
         },
@@ -3051,26 +2922,6 @@ describe("cli init", () => {
     const fetchMock = vi.fn(
       async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const request = input instanceof Request ? input : new Request(input, init);
-        const path = new URL(request.url).pathname;
-        if (path === "/caplets/") {
-          return Response.json({
-            name: "caplets",
-            transport: "http",
-            base: "/caplets/",
-            versions: [
-              { version: 1, path: "/caplets/v1", links: { admin: "/caplets/v1/admin" } },
-              { version: 2, path: "/caplets/v2", links: { admin: "/caplets/v2/admin" } },
-            ],
-            auth: { type: "remote" },
-          });
-        }
-        if (path === "/caplets/v2") {
-          return Response.json({
-            version: 2,
-            path: "/caplets/v2",
-            links: { admin: "/caplets/v2/admin" },
-          });
-        }
         requests.push(await request.json());
         return Response.json(
           {
@@ -3090,8 +2941,8 @@ describe("cli init", () => {
     try {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
-      }).saveSelfHostedProfile({
-        hostUrl: "https://remote.caplets.test/caplets",
+      }).saveRemoteProfile({
+        origin: "https://remote.caplets.test",
         clientId: "rcli_update_test",
         clientLabel: "Remote Update Test",
         credentials: {
@@ -3105,7 +2956,7 @@ describe("cli init", () => {
       await runCli(["update", "github", "--remote"], {
         env: {
           CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
+          CAPLETS_REMOTE_URL: "https://remote.caplets.test",
           CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
           CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
         },
@@ -5193,7 +5044,7 @@ describe("cli init", () => {
 function fakeDaemonFirstCliSetup(baseDir?: string) {
   const ownsDir = baseDir === undefined;
   const dir = baseDir ?? mkdtempSync(join(tmpdir(), "caplets-cli-daemon-first-"));
-  const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+  const daemonBaseUrl = "http://127.0.0.1:5387";
   const mcpUpserts: unknown[] = [];
   return {
     daemonBaseUrl,
@@ -5504,14 +5355,7 @@ describe("cli setup", () => {
 
     try {
       await runCli(
-        [
-          "setup",
-          "mcp-client",
-          "--remote-url",
-          "https://caplets.example.test/caplets",
-          "--output",
-          output,
-        ],
+        ["setup", "mcp-client", "--remote-url", "https://caplets.example.test", "--output", output],
         { writeOut: () => {} },
       );
 
@@ -5519,7 +5363,7 @@ describe("cli setup", () => {
         mcpServers: {
           caplets: {
             command: "caplets",
-            args: ["attach", "https://caplets.example.test/caplets"],
+            args: ["attach", "https://caplets.example.test"],
           },
         },
       });
@@ -5538,7 +5382,7 @@ describe("cli setup", () => {
         "opencode",
         "--remote",
         "--server-url",
-        "https://caplets.example.test/caplets",
+        "https://caplets.example.test",
         "--format",
         "json",
       ],
@@ -5566,15 +5410,15 @@ describe("cli setup", () => {
         },
       ],
       nextSteps: [
-        "Run caplets remote login https://caplets.example.test/caplets before starting OpenCode.",
-        "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://caplets.example.test/caplets.",
+        "Run caplets remote login https://caplets.example.test before starting OpenCode.",
+        "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://caplets.example.test.",
       ],
     });
     expect(out.join("")).not.toContain("CAPLETS_REMOTE_TOKEN");
     expect(out.join("")).not.toContain("CAPLETS_REMOTE_PASSWORD");
   });
 
-  it("uses cloud mode for Cloud OpenCode and Pi setup", async () => {
+  it("uses generic remote mode for a former product hostname in OpenCode and Pi setup", async () => {
     const openCodeOut: string[] = [];
     const piOut: string[] = [];
 
@@ -5593,13 +5437,13 @@ describe("cli setup", () => {
     expect(JSON.parse(openCodeOut.join(""))).toMatchObject({
       nextSteps: [
         "Run caplets remote login https://cloud.caplets.dev before starting OpenCode.",
-        "Run OpenCode with CAPLETS_MODE=cloud and CAPLETS_REMOTE_URL=https://cloud.caplets.dev.",
+        "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://cloud.caplets.dev.",
       ],
     });
     expect(JSON.parse(piOut.join(""))).toMatchObject({
       nextSteps: [
         "Run caplets remote login https://cloud.caplets.dev before starting Pi.",
-        "Start Pi with CAPLETS_MODE=cloud and CAPLETS_REMOTE_URL=https://cloud.caplets.dev.",
+        "Start Pi with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://cloud.caplets.dev.",
       ],
     });
   });
@@ -5609,14 +5453,7 @@ describe("cli setup", () => {
     const commands: Array<{ command: string; args: string[] }> = [];
 
     await runCli(
-      [
-        "setup",
-        "codex",
-        "--remote-url",
-        "https://caplets.example.test/caplets",
-        "--format",
-        "json",
-      ],
+      ["setup", "codex", "--remote-url", "https://caplets.example.test", "--format", "json"],
       {
         writeOut: (value) => out.push(value),
         runSetupCommand: async (command, args) => {
@@ -5629,15 +5466,7 @@ describe("cli setup", () => {
     expect(commands).toEqual([
       {
         command: "codex",
-        args: [
-          "mcp",
-          "add",
-          "caplets",
-          "--",
-          "caplets",
-          "attach",
-          "https://caplets.example.test/caplets",
-        ],
+        args: ["mcp", "add", "caplets", "--", "caplets", "attach", "https://caplets.example.test"],
       },
     ]);
     expect(JSON.parse(out.join(""))).toMatchObject({
@@ -5647,12 +5476,12 @@ describe("cli setup", () => {
       dryRun: false,
       actions: [
         {
-          command: "codex mcp add caplets -- caplets attach https://caplets.example.test/caplets",
+          command: "codex mcp add caplets -- caplets attach https://caplets.example.test",
           status: "completed",
         },
       ],
       nextSteps: [
-        "Run caplets remote login https://caplets.example.test/caplets before using this MCP config.",
+        "Run caplets remote login https://caplets.example.test before using this MCP config.",
         "In Codex, run /mcp to confirm the caplets server is connected.",
       ],
     });
@@ -5664,7 +5493,7 @@ describe("cli setup", () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
 
-    await runCli(["setup", "claude-code", "--remote-url", "https://caplets.example.test/caplets"], {
+    await runCli(["setup", "claude-code", "--remote-url", "https://caplets.example.test"], {
       writeOut: (value) => out.push(value),
       runSetupCommand: async (command, args) => {
         commands.push({ command, args });
@@ -5686,12 +5515,12 @@ describe("cli setup", () => {
           "--",
           "caplets",
           "attach",
-          "https://caplets.example.test/caplets",
+          "https://caplets.example.test",
         ],
       },
     ]);
     expect(out.join("")).toContain(
-      "claude mcp add --transport stdio --scope user caplets -- caplets attach https://caplets.example.test/caplets",
+      "claude mcp add --transport stdio --scope user caplets -- caplets attach https://caplets.example.test",
     );
   });
 
@@ -5728,7 +5557,7 @@ describe("cli setup", () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
 
-    await runCli(["setup", "codex", "--server-url", "https://legacy.example.test/caplets"], {
+    await runCli(["setup", "codex", "--server-url", "https://legacy.example.test"], {
       writeOut: (value) => out.push(value),
       runSetupCommand: async (command, args) => {
         commands.push({ command, args });
@@ -5739,15 +5568,7 @@ describe("cli setup", () => {
     expect(commands).toEqual([
       {
         command: "codex",
-        args: [
-          "mcp",
-          "add",
-          "caplets",
-          "--",
-          "caplets",
-          "attach",
-          "https://legacy.example.test/caplets",
-        ],
+        args: ["mcp", "add", "caplets", "--", "caplets", "attach", "https://legacy.example.test"],
       },
     ]);
     expect(out.join("")).toContain("Completed Codex setup (remote, remote_host)");

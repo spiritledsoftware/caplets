@@ -8,6 +8,7 @@ import {
   loadCapletFilesWithPathsBestEffort,
 } from "./caplet-files";
 import { DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES } from "./admin-api/bundle-contract";
+import { canonicalizeCurrentHostOrigin } from "./current-host/origin";
 import { FilesystemCapletSource } from "./caplet-source/filesystem";
 import {
   createRuntimeFingerprintSnapshot,
@@ -386,7 +387,6 @@ export type HostStorageConfig =
 export type ServeConfig = {
   host?: string | undefined;
   port?: number | undefined;
-  path?: string | undefined;
   remoteStatePath?: string | undefined;
   upstreamUrl?: string | undefined;
   allowUnauthenticatedHttp?: boolean | undefined;
@@ -655,14 +655,14 @@ const runtimeRequirementsSchema = z
         class: z
           .enum(["standard", "large", "heavy"])
           .optional()
-          .describe("Requested hosted sandbox resource class."),
+          .describe("Requested runtime resource class."),
       })
       .strict()
       .optional()
-      .describe("Hosted sandbox resource requirements."),
+      .describe("Runtime resource requirements."),
   })
   .strict()
-  .describe("Runtime feature and resource requirements for hosted execution.");
+  .describe("Runtime feature and resource requirements.");
 
 const exposureSchema = z
   .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
@@ -1263,13 +1263,6 @@ const serveConfigSchema = z
   .object({
     host: z.string().trim().min(1).optional().describe("Default HTTP bind host for caplets serve."),
     port: z.number().int().min(1).max(65_535).optional().describe("Default HTTP port."),
-    path: z
-      .string()
-      .refine((value) => value.startsWith("/") && !value.includes("?") && !value.includes("#"), {
-        message: "serve path must start with / and must not include query or fragment",
-      })
-      .optional()
-      .describe("Default HTTP base path."),
     remoteStatePath: z
       .string()
       .trim()
@@ -1278,9 +1271,12 @@ const serveConfigSchema = z
       .describe("Default remote credential state directory for HTTP serve."),
     upstreamUrl: z
       .string()
-      .refine(isAllowedHttpBaseUrl)
+      .refine(isAllowedCurrentHostOrigin, {
+        message: "serve upstreamUrl must be a Current Host origin",
+      })
+      .transform(canonicalizeCurrentHostOrigin)
       .optional()
-      .describe("Default upstream Caplets URL for stacked HTTP serve."),
+      .describe("Default upstream Caplets origin for stacked HTTP serve."),
     allowUnauthenticatedHttp: z
       .boolean()
       .optional()
@@ -3447,7 +3443,6 @@ function normalizeServeConfig(raw: z.infer<typeof serveConfigSchema>): ServeConf
   return stripUndefined({
     host: raw.host,
     port: raw.port,
-    path: raw.path,
     remoteStatePath: raw.remoteStatePath,
     upstreamUrl: raw.upstreamUrl,
     allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp,
@@ -3460,12 +3455,20 @@ function normalizeServeConfig(raw: z.infer<typeof serveConfigSchema>): ServeConf
 }
 
 function isAllowedServePublicOrigin(value: string): boolean {
-  if (!isAllowedHttpBaseUrl(value)) return false;
-  return new URL(value).pathname === "/";
+  return isAllowedCurrentHostOrigin(value);
 }
 
 function normalizePublicOrigin(value: string): string {
-  return new URL(value).origin;
+  return canonicalizeCurrentHostOrigin(value);
+}
+
+function isAllowedCurrentHostOrigin(value: string): boolean {
+  try {
+    canonicalizeCurrentHostOrigin(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function validateEndpointAuthHeaders(

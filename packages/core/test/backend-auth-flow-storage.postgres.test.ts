@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { GenericBackendAuthFlowState } from "../src/auth";
@@ -17,6 +17,7 @@ import * as postgres from "../src/storage/schema/postgres";
 const NOW = new Date("2026-07-20T12:00:00.000Z");
 const KEY = Buffer.alloc(32, 29).toString("base64url");
 const SERVER = "github";
+const BACKEND_AUTH_FLOW_INVALIDATION_MIGRATION_CREATED_AT = 1_784_666_628_398;
 const postgresUrl = process.env.CAPLETS_TEST_POSTGRES_URL;
 if (process.env.CAPLETS_REQUIRE_TEST_POSTGRES === "1" && !postgresUrl) {
   throw new Error("CAPLETS_TEST_POSTGRES_URL is required when CAPLETS_REQUIRE_TEST_POSTGRES=1.");
@@ -555,6 +556,221 @@ postgresIt("matches SQLite filtered backend auth flow keyset traversal", async (
     }),
   ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
 });
+
+postgresIt("atomically terminalizes only pre-migration in-flight flows", async () => {
+  const { schema, first, second } = await openPair("flow_cutover");
+  await rewindBackendAuthFlowInvalidationMigration(first);
+  await first.backendAuthFlows.create({
+    flowId: "postgres_migration_pending",
+    server: SERVER,
+    state: flowState("postgres_migration_pending", {
+      pkceVerifier: "postgres-pending-migration-secret",
+    }),
+    completionCorrelation: "postgres_correlation_migration_pending",
+    startingBackendAuthGeneration: 3,
+    expiresAt: after(100_000),
+    now: NOW,
+  });
+  await first.backendAuthFlows.create({
+    flowId: "postgres_migration_completing",
+    server: SERVER,
+    state: flowState("postgres_migration_completing", {
+      pkceVerifier: "postgres-completing-migration-secret",
+    }),
+    completionCorrelation: "postgres_correlation_migration_completing",
+    startingBackendAuthGeneration: 4,
+    expiresAt: after(100_000),
+    now: NOW,
+  });
+  await expect(
+    second.backendAuthFlows.claim({
+      flowId: "postgres_migration_completing",
+      claimToken: "postgres_claim_migration_completing",
+      now: after(1_000),
+    }),
+  ).resolves.toMatchObject({ acquired: true });
+  for (const status of ["completed", "expired", "failed", "unknown"] as const) {
+    await createPostgresTerminalFlow(first, `postgres_migration_${status}`, status);
+  }
+
+  const pendingPayload = (await rawRow(first, "postgres_migration_pending")).encryptedPayload;
+  const completingPayload = (await rawRow(first, "postgres_migration_completing")).encryptedPayload;
+  const terminalRows = Object.fromEntries(
+    await Promise.all(
+      ["completed", "expired", "failed", "unknown"].map(async (status) => {
+        const flowId = `postgres_migration_${status}`;
+        return [flowId, await rawRow(first, flowId)] as const;
+      }),
+    ),
+  );
+  const config: PostgresHostStorageConfig = {
+    type: "postgres",
+    connectionString: postgresUrl!,
+    schema,
+  };
+
+  await migrateHostStorage(config);
+
+  const pending = await rawRow(first, "postgres_migration_pending");
+  expect(pending).toMatchObject({
+    status: "failed",
+    encryptedPayload: pendingPayload,
+    startingBackendAuthGeneration: null,
+    completionCorrelation: null,
+    completedBackendAuthGeneration: null,
+    claimToken: null,
+    claimedAt: null,
+    terminalAt: expect.any(String),
+  });
+  expect(pending.updatedAt).toBe(pending.terminalAt);
+  expect(Number.isNaN(Date.parse(pending.terminalAt!))).toBe(false);
+
+  const completing = await rawRow(first, "postgres_migration_completing");
+  expect(completing).toMatchObject({
+    status: "unknown",
+    encryptedPayload: completingPayload,
+    startingBackendAuthGeneration: null,
+    completionCorrelation: null,
+    completedBackendAuthGeneration: null,
+    claimToken: null,
+    claimedAt: null,
+    terminalAt: expect.any(String),
+  });
+  expect(completing.updatedAt).toBe(completing.terminalAt);
+  for (const [flowId, row] of Object.entries(terminalRows)) {
+    expect(await rawRow(first, flowId)).toEqual(row);
+  }
+
+  await first.backendAuthFlows.create({
+    flowId: "postgres_created_after_migration",
+    server: SERVER,
+    state: flowState("postgres_created_after_migration"),
+    expiresAt: after(100_000),
+    now: after(2_000),
+  });
+  const postMigrationRow = await rawRow(first, "postgres_created_after_migration");
+  await migrateHostStorage(config);
+  expect(await rawRow(first, "postgres_created_after_migration")).toEqual(postMigrationRow);
+  const postMigrationClaim = await second.backendAuthFlows.claim({
+    flowId: "postgres_created_after_migration",
+    claimToken: "postgres_claim_created_after_migration",
+    now: after(3_000),
+  });
+  expect(postMigrationClaim).toMatchObject({ acquired: true });
+  await expect(
+    first.backendAuthFlows.release({
+      flowId: "postgres_created_after_migration",
+      claimToken: "postgres_claim_created_after_migration",
+      now: after(4_000),
+    }),
+  ).resolves.toBe(true);
+});
+
+postgresIt("serializes a claim racing the in-flight invalidation migration", async () => {
+  const { schema, first, second } = await openPair("flow_race");
+  await rewindBackendAuthFlowInvalidationMigration(first);
+  await first.backendAuthFlows.create({
+    flowId: "postgres_migration_claim_race",
+    server: SERVER,
+    state: flowState("postgres_migration_claim_race"),
+    completionCorrelation: "postgres_correlation_migration_claim_race",
+    expiresAt: after(100_000),
+    now: NOW,
+  });
+  const config: PostgresHostStorageConfig = {
+    type: "postgres",
+    connectionString: postgresUrl!,
+    schema,
+  };
+
+  const [claim] = await Promise.all([
+    second.backendAuthFlows.claim({
+      flowId: "postgres_migration_claim_race",
+      claimToken: "postgres_claim_migration_race",
+      now: after(1_000),
+    }),
+    migrateHostStorage(config),
+  ]);
+
+  const row = await rawRow(first, "postgres_migration_claim_race");
+  expect(row.status === "failed" || row.status === "unknown").toBe(true);
+  expect(row).toMatchObject({
+    claimToken: null,
+    claimedAt: null,
+    completionCorrelation: null,
+    terminalAt: expect.any(String),
+  });
+  expect(row.updatedAt).toBe(row.terminalAt);
+  if (claim.acquired) {
+    expect(row.status).toBe("unknown");
+    await expect(
+      first.backendAuthFlows.release({
+        flowId: "postgres_migration_claim_race",
+        claimToken: claim.claimToken,
+        now: after(2_000),
+      }),
+    ).resolves.toBe(false);
+  } else {
+    expect(claim.reason).toBe("terminal");
+    expect(row.status).toBe("failed");
+  }
+});
+
+async function rewindBackendAuthFlowInvalidationMigration(storage: HostStorage): Promise<void> {
+  if (storage.database.dialect !== "postgres") {
+    throw new Error("Expected PostgreSQL storage.");
+  }
+  await storage.database.db.execute(
+    sql`DELETE FROM caplets_migrations
+        WHERE created_at >= ${BACKEND_AUTH_FLOW_INVALIDATION_MIGRATION_CREATED_AT}`,
+  );
+  await storage.database.db
+    .update(postgres.capletsSchema)
+    .set({ version: 17 })
+    .where(eq(postgres.capletsSchema.singleton, 1));
+}
+
+async function createPostgresTerminalFlow(
+  storage: HostStorage,
+  flowId: string,
+  status: "completed" | "expired" | "failed" | "unknown",
+): Promise<void> {
+  await storage.backendAuthFlows.create({
+    flowId,
+    server: SERVER,
+    state: flowState(flowId),
+    completionCorrelation: `correlation_${flowId}`,
+    startingBackendAuthGeneration: 0,
+    expiresAt: after(100_000),
+    now: NOW,
+  });
+  if (status === "expired") {
+    await storage.backendAuthFlows.expire(flowId, after(100_001));
+    return;
+  }
+  const claim = await storage.backendAuthFlows.claim({
+    flowId,
+    claimToken: `claim_${flowId}`,
+    now: after(1_000),
+  });
+  if (!claim.acquired) throw new Error(`Could not claim ${flowId}.`);
+  if (status === "completed") {
+    await storage.backendAuthFlows.finalize({
+      flowId,
+      claimToken: claim.claimToken,
+      completionCorrelation: claim.completionCorrelation,
+      backendAuthGeneration: 1,
+      now: after(2_000),
+    });
+    return;
+  }
+  await storage.backendAuthFlows.terminalizeClaim({
+    flowId,
+    claimToken: claim.claimToken,
+    status,
+    now: after(2_000),
+  });
+}
 
 async function openPair(domain: string): Promise<{
   schema: string;

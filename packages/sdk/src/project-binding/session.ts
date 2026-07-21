@@ -1,12 +1,13 @@
+import { canonicalizeCurrentHostOrigin } from "../current-host-origin";
 import type { Auth, Client, Config } from "../generated/client";
+import type { ProjectBinding } from "../generated/types.gen";
 import type {
   BindingTerminalReason,
-  ProjectBinding,
   ProjectBindingSocketClientMessage,
   ProjectBindingSocketServerMessage,
   ProjectBindingState,
   ProjectBindingSyncState,
-} from "../generated/types.gen";
+} from "./protocol";
 import {
   closeProjectBindingSocket,
   defaultProjectBindingWebSocketFactory,
@@ -44,12 +45,6 @@ const PROJECT_BINDING_SYNC_STATES = new Set<ProjectBindingSyncState>([
   "failed",
 ]);
 const PROJECT_BINDING_TERMINAL_REASON_CODES = new Set<BindingTerminalReason["code"]>([
-  "cloud_auth_required",
-  "cloud_auth_expired",
-  "cloud_auth_revoked",
-  "workspace_selection_required",
-  "workspace_switch_required",
-  "workspace_forbidden",
   "project_binding_forbidden",
   "endpoint_unavailable",
   "websocket_upgrade_required",
@@ -59,10 +54,6 @@ const PROJECT_BINDING_TERMINAL_REASON_CODES = new Set<BindingTerminalReason["cod
   "lease_conflict",
   "lease_expired",
   "policy_denied",
-  "usage_limit_reached",
-  "billing_required",
-  "subscription_past_due",
-  "email_verification_required",
   "remote_credentials_required",
   "remote_credentials_revoked",
   "remote_auth_failed",
@@ -166,7 +157,7 @@ export type ProjectBindingSessionResult =
 
 export type RunProjectBindingSessionInput<ThrowOnError extends boolean = false> = {
   client: Client;
-  webSocketUrl: string | URL;
+  webSocketUrl: string;
   projectRoot: string;
   projectFingerprint: string;
   signal?: AbortSignal;
@@ -727,52 +718,59 @@ function validateInput(input: RunProjectBindingSessionInput<boolean>):
     return protocolError("Project Binding input was invalid.");
   }
 
-  const transportUrls = projectBindingTransportUrls(input.webSocketUrl);
-  if (!transportUrls) return protocolError("Project Binding WebSocket URL was invalid.");
+  const transportUrls = projectBindingTransportUrls(
+    input.webSocketUrl,
+    input.client.getConfig().baseUrl,
+  );
+  if (!transportUrls) return protocolError("Project Binding WebSocket endpoint was invalid.");
   return { projectRoot, projectFingerprint, transportUrls };
 }
 
-function projectBindingTransportUrls(input: string | URL): ProjectBindingTransportUrls | undefined {
+function projectBindingTransportUrls(
+  input: unknown,
+  clientBaseUrl: unknown,
+): ProjectBindingTransportUrls | undefined {
+  if (typeof input !== "string" || typeof clientBaseUrl !== "string") return;
+  if (
+    /\s/u.test(input) ||
+    !/^wss?:\/\/[^/?#\\]+\/api\/v1\/attach\/project-bindings\/connect$/iu.test(input)
+  ) {
+    return;
+  }
   let socketUrl: URL;
+  let currentHostOrigin: string;
   try {
-    socketUrl = new URL(input.toString());
+    socketUrl = new URL(input);
+    currentHostOrigin = canonicalizeCurrentHostOrigin(clientBaseUrl);
   } catch {
     return;
   }
   if (
     (socketUrl.protocol !== "ws:" && socketUrl.protocol !== "wss:") ||
+    !socketUrl.hostname ||
     socketUrl.username ||
     socketUrl.password ||
+    socketUrl.pathname !== "/api/v1/attach/project-bindings/connect" ||
     socketUrl.search ||
     socketUrl.hash ||
-    socketUrl.href.endsWith("?") ||
-    socketUrl.href.endsWith("#") ||
-    !socketUrl.hostname
+    input.includes("?") ||
+    input.includes("#")
   ) {
     return;
   }
 
-  const segments = socketUrl.pathname.split("/");
-  if (segments.at(-1) !== "connect") return;
-  const basePath = `${segments.slice(0, -1).join("/")}/`;
-  socketUrl.search = "";
-  socketUrl.hash = "";
+  const httpOrigin = new URL(socketUrl.origin);
+  httpOrigin.protocol = socketUrl.protocol === "wss:" ? "https:" : "http:";
+  if (httpOrigin.origin !== currentHostOrigin) return;
 
-  const sibling = (suffix: string): URL => {
-    const url = new URL(socketUrl);
-    url.protocol = socketUrl.protocol === "wss:" ? "https:" : "http:";
-    url.pathname = `${basePath}${suffix}`;
-    url.search = "";
-    url.hash = "";
-    return url;
-  };
-
+  const root = "/api/v1/attach/project-bindings";
+  const httpUrl = (path: string): URL => new URL(`${root}/${path}`, currentHostOrigin);
   return {
     publicWebSocketUrl: socketUrl.toString(),
     socketUrl,
-    sessionsUrl: sibling("sessions"),
-    heartbeatUrl: (bindingId) => sibling(`${encodeURIComponent(bindingId)}/heartbeat`),
-    sessionUrl: (bindingId) => sibling(`${encodeURIComponent(bindingId)}/session`),
+    sessionsUrl: httpUrl("sessions"),
+    heartbeatUrl: (bindingId) => httpUrl(`${encodeURIComponent(bindingId)}/heartbeat`),
+    sessionUrl: (bindingId) => httpUrl(`${encodeURIComponent(bindingId)}/session`),
   };
 }
 

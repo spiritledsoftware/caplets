@@ -1,17 +1,16 @@
+import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
+import {
+  currentHostAdminUrl,
+  currentHostAttachUrl,
+  currentHostUrl,
+  currentHostV1Url,
+} from "../current-host/topology";
 import { CapletsError } from "../errors";
 
 export type CapletsMode = "auto" | "local" | "remote";
 
 export type CapletsServerEnv = Partial<
-  Record<
-    | "CAPLETS_MODE"
-    | "CAPLETS_SERVER_URL"
-    | "CAPLETS_CLOUD_URL"
-    | "CAPLETS_CLOUD_TOKEN"
-    | "CAPLETS_CLOUD_WORKSPACE_ID"
-    | "CAPLETS_PROJECT_ROOT",
-    string
-  >
+  Record<"CAPLETS_MODE" | "CAPLETS_SERVER_URL" | "CAPLETS_PROJECT_ROOT", string>
 >;
 
 export type CapletsModeInput = {
@@ -30,7 +29,7 @@ export type ResolvedCapletsServer = {
   baseUrl: URL;
   mcpUrl: URL;
   attachUrl: URL;
-  controlUrl: URL;
+  adminUrl: URL;
   healthUrl: URL;
   auth: CapletsServerAuth;
   requestInit: RequestInit;
@@ -72,77 +71,19 @@ export function resolveCapletsServer(
     throw new CapletsError("REQUEST_INVALID", "CAPLETS_SERVER_URL or url is required.");
   }
 
-  const baseUrl = parseServerBaseUrl(rawUrl);
+  const baseUrl = new URL(canonicalizeCurrentHostOrigin(rawUrl));
   const auth: CapletsServerAuth = { type: "none" };
 
   return {
     baseUrl,
-    mcpUrl: mcpUrlForBase(baseUrl),
-    attachUrl: attachUrlForBase(baseUrl),
-    controlUrl: controlUrlForBase(baseUrl),
-    healthUrl: healthUrlForBase(baseUrl),
+    mcpUrl: currentHostUrl(baseUrl, "mcp"),
+    attachUrl: currentHostAttachUrl(baseUrl),
+    adminUrl: currentHostAdminUrl(baseUrl),
+    healthUrl: currentHostV1Url(baseUrl, "health"),
     auth,
     requestInit: {},
     ...(input.fetch ? { fetch: input.fetch } : {}),
   };
-}
-
-export function mcpUrlForBase(baseUrl: URL): URL {
-  return appendBasePath(baseUrl, "v1/mcp");
-}
-
-export function attachUrlForBase(baseUrl: URL): URL {
-  return appendBasePath(baseUrl, "v1/attach");
-}
-
-export function controlUrlForBase(baseUrl: URL): URL {
-  return appendBasePath(baseUrl, "v1/admin");
-}
-
-export function healthUrlForBase(baseUrl: URL): URL {
-  return appendBasePath(baseUrl, "v1/healthz");
-}
-
-export function appendBasePath(baseUrl: URL, path: string): URL {
-  const url = new URL(baseUrl.href);
-  const basePath = url.pathname === "/" ? "" : url.pathname;
-  url.pathname = `${basePath}/${path}`;
-  return url;
-}
-
-export function parseServerBaseUrl(value: string): URL {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new CapletsError("REQUEST_INVALID", "Invalid Caplets server URL.");
-  }
-
-  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Caplets server URL must not include username, password, query string, or fragment.",
-    );
-  }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHost(url.hostname))) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Caplets server URL must use https except loopback development URLs.",
-    );
-  }
-
-  url.pathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/+$/u, "");
-  return url;
-}
-
-export function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLocaleLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized === "[::1]"
-  );
 }
 
 function parseCapletsMode(value: string): CapletsMode {

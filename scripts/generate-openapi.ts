@@ -725,7 +725,7 @@ async function generate(check: boolean): Promise<void> {
     runHeyApi(schemaPath, generatedSdkPath);
     await normalizeGeneratedSdk(generatedSdkPath);
     await rm(join(generatedSdkPath, "client.gen.ts"), { force: true });
-    formatArtifacts([schemaPath, generatedSdkPath]);
+    formatArtifacts([generatedSdkPath]);
     process.stdout.write("Generated canonical OpenAPI and SDK artifacts.\n");
     return;
   }
@@ -738,7 +738,7 @@ async function generate(check: boolean): Promise<void> {
     runHeyApi(temporarySchema, temporarySdk);
     await normalizeGeneratedSdk(temporarySdk);
     await rm(join(temporarySdk, "client.gen.ts"), { force: true });
-    formatArtifacts([temporarySchema, temporarySdk]);
+    formatArtifacts([temporarySdk]);
 
     const drift = [
       ...(await compareFile(temporarySchema, schemaPath, relative(repoRoot, schemaPath))),

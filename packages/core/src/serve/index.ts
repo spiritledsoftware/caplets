@@ -1,4 +1,5 @@
 import type { CapletsEngineOptions } from "../engine";
+import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
 import {
   buildNativeAttachProjection,
   invokeNativeAttachExport,
@@ -7,7 +8,6 @@ import {
 } from "../attach/api";
 import { createNativeCapletsService } from "../native/service";
 import type { NativeCapletsService } from "../native/service";
-import { isCapletsCloudUrl } from "../remote/options";
 import {
   CAPLETS_STACK_CHAIN_HEADER,
   sanitizeRemoteEngineOptions,
@@ -136,7 +136,7 @@ function createUpstreamNativeService(
     ...engineOptions,
     ...(metadata.projectRoot ? { projectRoot: metadata.projectRoot } : {}),
     ...(metadata.projectConfigPath ? { projectConfigPath: metadata.projectConfigPath } : {}),
-    mode: isCapletsCloudUrl(upstreamUrl) ? "cloud" : "remote",
+    mode: "remote",
     remote: {
       url: upstreamUrl,
       ...(stackChain.length > 0
@@ -148,12 +148,9 @@ function createUpstreamNativeService(
 }
 
 function serveStackIdentity(options: Extract<ServeOptions, { transport: "http" }>): string {
-  const origin = options.publicOrigin ?? `http://${formatHost(options.host)}:${options.port}`;
-  const url = new URL(origin);
-  url.pathname = options.path;
-  url.search = "";
-  url.hash = "";
-  return url.toString();
+  return canonicalizeCurrentHostOrigin(
+    options.publicOrigin ?? `http://${formatHost(options.host)}:${options.port}`,
+  );
 }
 
 function formatHost(host: string): string {

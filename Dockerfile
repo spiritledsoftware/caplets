@@ -55,6 +55,6 @@ EXPOSE 5387
 USER node
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 --start-period=10s \
-  CMD node -e "fetch('http://127.0.0.1:5387/v1/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:5387/api/v1/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["sh", "-c", "test -f /data/config/caplets/config.json || CAPLETS_MODE=local node dist/index.js init --global && exec env CAPLETS_MODE=local node dist/index.js serve --transport http --host 0.0.0.0"]

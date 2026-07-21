@@ -1,5 +1,3 @@
-import type { CapletsErrorCode } from "../errors";
-
 export const REMOTE_CLI_COMMANDS = [
   "list",
   "inspect",
@@ -51,12 +49,11 @@ export const REMOTE_CLI_COMMANDS = [
 ] as const;
 
 export type RemoteCliCommand = (typeof REMOTE_CLI_COMMANDS)[number];
-
+export type RemoteCliArguments = Record<string, unknown>;
 export type RemoteCliCommandDestination =
-  | "v2_resource"
+  | "admin"
   | "attach"
   | "local_only_rejection"
-  | "frozen_v1_compatibility"
   | "public_auth_self_service";
 
 export const REMOTE_CLI_COMMAND_DESTINATIONS = {
@@ -77,56 +74,34 @@ export const REMOTE_CLI_COMMAND_DESTINATIONS = {
   complete: "attach",
   init: "local_only_rejection",
   add: "local_only_rejection",
-  install: "v2_resource",
-  update: "v2_resource",
+  install: "admin",
+  update: "admin",
   complete_cli: "attach",
-  auth_login_start: "v2_resource",
+  auth_login_start: "admin",
   auth_login_complete: "public_auth_self_service",
-  auth_logout: "v2_resource",
-  auth_refresh: "v2_resource",
-  auth_list: "v2_resource",
-  vault_set: "v2_resource",
-  vault_list: "v2_resource",
-  vault_get: "v2_resource",
-  vault_delete: "v2_resource",
-  vault_access_grant: "v2_resource",
-  vault_access_revoke: "v2_resource",
-  vault_access_list: "v2_resource",
-  storage_records_list: "v2_resource",
-  storage_records_get: "v2_resource",
-  storage_records_import: "v2_resource",
-  storage_records_update: "v2_resource",
-  storage_records_export: "v2_resource",
-  storage_records_revisions: "v2_resource",
-  storage_records_restore: "v2_resource",
-  storage_records_delete_revision: "v2_resource",
-  storage_records_retention: "v2_resource",
-  storage_records_rename: "v2_resource",
-  storage_records_delete: "v2_resource",
-  storage_records_installation_status: "v2_resource",
-  storage_records_installation_detach: "v2_resource",
-  storage_records_installation_observe: "v2_resource",
-  storage_records_installation_replace: "v2_resource",
+  auth_logout: "admin",
+  auth_refresh: "admin",
+  auth_list: "admin",
+  vault_set: "admin",
+  vault_list: "admin",
+  vault_get: "admin",
+  vault_delete: "admin",
+  vault_access_grant: "admin",
+  vault_access_revoke: "admin",
+  vault_access_list: "admin",
+  storage_records_list: "admin",
+  storage_records_get: "admin",
+  storage_records_import: "admin",
+  storage_records_update: "admin",
+  storage_records_export: "admin",
+  storage_records_revisions: "admin",
+  storage_records_restore: "admin",
+  storage_records_delete_revision: "admin",
+  storage_records_retention: "admin",
+  storage_records_rename: "admin",
+  storage_records_delete: "admin",
+  storage_records_installation_status: "admin",
+  storage_records_installation_detach: "admin",
+  storage_records_installation_observe: "admin",
+  storage_records_installation_replace: "admin",
 } as const satisfies Record<RemoteCliCommand, RemoteCliCommandDestination>;
-
-export type RemoteCapletBundleFile = {
-  path: string;
-  contentBase64: string;
-  executable: boolean;
-};
-
-/**
- * Parsed wire input. `command` stays open so the adapter can safely envelope
- * unknown protocol commands instead of forcing callers to bypass the type system.
- */
-export type RemoteCliRequest = {
-  command: string;
-  arguments: Record<string, unknown>;
-};
-
-export type RemoteCliResponse =
-  | { ok: true; result: unknown }
-  | {
-      ok: false;
-      error: { code: CapletsErrorCode; message: string; nextAction?: string };
-    };

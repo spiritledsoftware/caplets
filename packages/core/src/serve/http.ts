@@ -5,18 +5,15 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import {
   serve,
   upgradeWebSocket,
+  type Http2Bindings,
+  type HttpBindings,
   type ServerType,
   type WebSocketServerLike,
 } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
 import { WebSocketServer } from "ws";
-import {
-  defaultCapletsLockfilePath,
-  resolveCapletsRoot,
-  resolveProjectCapletsRoot,
-  vaultStoreForAuthDir,
-} from "../config";
+import { defaultCapletsLockfilePath, resolveCapletsRoot, vaultStoreForAuthDir } from "../config";
 import { version as packageJsonVersion } from "../../package.json";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError, type CapletsErrorCode } from "../errors";
@@ -24,18 +21,32 @@ import {
   createCurrentHostOperations,
   toCurrentHostSafeError,
   trustedDevelopmentOperatorPrincipal,
+  type CurrentHostControlContext,
   type CurrentHostLogStateOwner,
-  type CurrentHostOperatorPrincipal,
   type CurrentHostProjectBindingStateOwner,
   type CurrentHostRuntimeStateOwner,
 } from "../current-host/operations";
+import {
+  CURRENT_HOST_DASHBOARD_PATHS,
+  CURRENT_HOST_NAMESPACES,
+  CURRENT_HOST_PATHS,
+  CURRENT_HOST_ROUTE_PATTERNS,
+  currentHostAdminPath,
+  currentHostV1Path,
+} from "../current-host/topology";
 import { AdminBundleUploadAdmissionController } from "../admin-api/bundle-upload-admission";
+import {
+  adminV2CredentialMode,
+  hasDashboardSessionCookie,
+  isSameOriginDashboardRequest,
+} from "../admin-api/auth";
+import { createStrongEtag } from "../admin-api/conditional";
 import { problemResponse } from "../admin-api/problem";
 import {
   AdminV2PrincipalError,
   createAdminV2Router,
+  type AdminV2AuthorityProvider,
   type AdminV2HostContext,
-  type AdminV2PrincipalProvider,
 } from "../admin-api/router";
 import {
   ifNoneMatchIncludes,
@@ -43,8 +54,12 @@ import {
 } from "../admin-api/openapi-representation";
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
 import { DashboardActivityLog } from "../dashboard/activity-log";
-import { dashboardShell, dashboardStaticResponse } from "../dashboard/routes";
-import { DashboardSessionStore } from "../dashboard/session-store";
+import {
+  dashboardShell,
+  dashboardStaticResponse,
+  dashboardStaticRouteExists,
+} from "../dashboard/routes";
+import { DashboardSessionStore, parseDashboardCookie } from "../dashboard/session-store";
 import type { DashboardSessionView } from "../dashboard/types";
 import {
   attachErrorResponse,
@@ -71,18 +86,10 @@ import {
 } from "../project-binding/protocol";
 import { ProjectBindingWorkspaceStore } from "../project-binding/workspaces";
 import {
-  dispatchRemoteCliRequest,
-  LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES,
-  maximumBase64EncodedBytes,
-  type RemoteControlDispatchContext,
-} from "../remote-control/dispatch";
-import type { RemoteCliRequest } from "../remote-control/types";
+  canonicalizeCurrentHostOrigin,
+  isLoopbackCurrentHostHostname,
+} from "../current-host/origin";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
-import {
-  MAX_BUNDLE_FILES,
-  MAX_BUNDLE_FILE_BYTES,
-  MAX_BUNDLE_TOTAL_BYTES,
-} from "../storage/caplet-records";
 import { remoteClientById, type RemoteSecurityStore } from "../storage/remote-security";
 import type { BackendAuthStateStore } from "../storage/backend-auth";
 import type { BackendAuthFlowRepository } from "../storage/backend-auth-flows";
@@ -92,16 +99,15 @@ import {
   type RemoteClientRole,
   type ValidatedRemoteClient,
 } from "../remote/server-credentials";
-import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
-import { readCommandLimitedJsonObject, readLimitedJsonObject } from "./request-body";
+import { readLimitedJsonObject } from "./request-body";
 
 type RemoteCredentialStore = RemoteServerCredentialStore | RemoteSecurityStore;
 
 type HttpServeIo = {
   writeErr?: (value: string) => void;
-  control?: Omit<RemoteControlDispatchContext, "writeErr" | "backendAuthFlows">;
+  control?: CurrentHostControlContext;
   backendAuthFlows?: BackendAuthFlowRepository;
   sessionFactory?: HttpMcpSessionFactory;
   attachSessionFactory?: HttpAttachSessionFactory;
@@ -209,24 +215,10 @@ const MAX_HTTP_ACTIVE_REQUEST_GRACE_MS = 5 * 60_000;
 export const AUTH_REQUEST_MAX_BYTES = 64 * 1024;
 export const CONTROL_REQUEST_MAX_BYTES = 1024 * 1024;
 export const ATTACH_INVOKE_REQUEST_MAX_BYTES = 16 * 1024 * 1024;
-// The ceiling is the exact worst-case padded payload plus the metadata bound enforced by
-// semantic import/update decoding for the canonical RemoteHttpClient envelope.
-const LEGACY_CAPLET_BUNDLE_BASE64_MAX_BYTES = maximumBase64EncodedBytes(
-  MAX_BUNDLE_TOTAL_BYTES + MAX_BUNDLE_FILE_BYTES,
-  MAX_BUNDLE_FILES + 1,
-);
-export const LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES =
-  LEGACY_CAPLET_BUNDLE_BASE64_MAX_BYTES + LEGACY_BUNDLE_SERIALIZED_METADATA_MAX_BYTES;
-const LEGACY_BUNDLE_COMMANDS: Readonly<Record<string, true>> = {
-  storage_records_import: true,
-  storage_records_update: true,
-};
-
-const deprecatedV1Admin: MiddlewareHandler = async (context, next) => {
-  context.header("Deprecation", "true");
-  context.header("Link", '</v2/admin/host>; rel="successor-version"');
-  await next();
-};
+const WELL_KNOWN_CAPLETS_JSON =
+  '{"schemaVersion":1,"links":{"api":"/api","openapi":"/api/openapi.json","mcp":"/mcp","dashboard":"/dashboard"}}\n';
+const WELL_KNOWN_CAPLETS_BYTES = new TextEncoder().encode(WELL_KNOWN_CAPLETS_JSON);
+const WELL_KNOWN_CAPLETS_ETAG = createStrongEtag("well-known-caplets", WELL_KNOWN_CAPLETS_BYTES);
 
 export function createHttpServeApp(
   options: HttpServeOptions,
@@ -252,13 +244,12 @@ export function createHttpServeApp(
   }, ATTACH_SESSION_PRUNE_INTERVAL_MS);
   attachSessionPruneTimer.unref?.();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
-  const paths = servicePaths(options.path);
-  const canonicalBaseUrl = canonicalServePathUrl(options, paths.base);
-  const canonicalAdminV2Url = canonicalServePathUrl(options, paths.adminV2);
+  const canonicalBaseUrl = canonicalServePathUrl(options, "/");
+  const canonicalAdminV2Url = canonicalServePathUrl(options, CURRENT_HOST_PATHS.admin);
   const adminV2Host: AdminV2HostContext = {
     baseUrl: canonicalBaseUrl,
-    dashboardUrl: canonicalServePathUrl(options, paths.dashboard),
-    dashboardPath: paths.dashboard,
+    dashboardUrl: canonicalServePathUrl(options, CURRENT_HOST_NAMESPACES.dashboard),
+    dashboardPath: CURRENT_HOST_NAMESPACES.dashboard,
     bind: `${options.host}:${options.port}`,
     publicOrigin: new URL(canonicalBaseUrl).origin,
   };
@@ -508,31 +499,14 @@ export function createHttpServeApp(
   const authenticatedClientRouteAuth = routeAuth(
     options,
     remoteCredentialStore,
-    paths.base,
     undefined,
     retainAuthenticatedRemoteClient,
   );
   const accessRouteAuth = routeAuth(
     options,
     remoteCredentialStore,
-    paths.base,
     "access",
     retainAuthenticatedRemoteClient,
-  );
-  const operatorRouteAuth = routeAuth(
-    options,
-    remoteCredentialStore,
-    paths.base,
-    "operator",
-    retainAuthenticatedRemoteClient,
-  );
-  const operatorAdminV2RouteAuth = routeAuth(
-    options,
-    remoteCredentialStore,
-    paths.base,
-    "operator",
-    retainAuthenticatedRemoteClient,
-    adminV2BearerAuthProblemResponse,
   );
   const attachHostProtection = dnsRebindingProtection(options);
   app.use(
@@ -559,91 +533,154 @@ export function createHttpServeApp(
       }
     }
   });
-  const bearerAdminPrincipal: AdminV2PrincipalProvider = (request) => {
-    const client = authenticatedRemoteClients.get(request);
-    if (client) {
+  app.use("*", async (context, next) => {
+    const pathname = new URL(context.req.url).pathname;
+    const allow = registeredAllowHeader(app, pathname, io.dashboardDistDir);
+    if (allow && !allow.split(", ").includes(context.req.method)) {
+      return context.json({ error: "method_not_allowed" }, 405, {
+        Allow: allow,
+        "Cache-Control": "no-store",
+      });
+    }
+    await next();
+  });
+  const adminV2AuthorityProvider: AdminV2AuthorityProvider = async (request, context) => {
+    const requestHeader = (name: string) => request.headers.get(name) ?? undefined;
+    const mode = adminV2CredentialMode(request);
+    const hostUrl = remoteCredentialHostUrl(request.url, options, requestHeader);
+
+    if (mode === "bearer") {
+      const token = bearerToken(request.headers.get("authorization") ?? "");
+      if (!remoteCredentialStore || !token) {
+        throw new AdminV2PrincipalError(401, "A valid Operator Client credential is required.");
+      }
+      let client: ValidatedRemoteClient;
+      try {
+        client = await remoteCredentialStore.validateAccessToken({
+          hostUrl,
+          accessToken: token,
+        });
+      } catch {
+        throw new AdminV2PrincipalError(401, "A valid Operator Client credential is required.");
+      }
       if (client.role !== "operator") {
         throw new AdminV2PrincipalError(403, "An Operator Client is required.");
       }
       return {
-        clientId: client.clientId,
-        clientLabel: client.clientLabel,
-        hostUrl: client.hostUrl,
-        role: "operator",
+        principal: {
+          clientId: client.clientId,
+          clientLabel: client.clientLabel,
+          hostUrl: client.hostUrl,
+          role: "operator",
+        },
       };
     }
-    if (
-      options.auth.type === "development_unauthenticated" &&
-      isVerifiedLoopbackDevelopmentRequest(
-        options,
-        request.url,
-        (name) => request.headers.get(name) ?? undefined,
-      )
-    ) {
-      return trustedDevelopmentOperatorPrincipal(
-        remoteCredentialHostUrl(
-          request.url,
-          paths.base,
-          options,
-          (name) => request.headers.get(name) ?? undefined,
-        ),
+
+    if (mode === "dashboard_session") {
+      const validated = await validateDashboardSession(
+        request.headers.get("cookie") ?? undefined,
+        {
+          requireCsrf: context.mutates,
+          csrfToken: request.headers.get("x-caplets-csrf") ?? undefined,
+        },
+        request,
       );
+      if (!validated.ok) {
+        if (validated.response.status === 503) {
+          throw new CapletsError(
+            "SERVER_UNAVAILABLE",
+            "Dashboard session validation is unavailable.",
+          );
+        }
+        const status = validated.response.status === 403 ? 403 : 401;
+        throw new AdminV2PrincipalError(
+          status,
+          status === 403
+            ? "A current dashboard CSRF token is required."
+            : "A current Operator dashboard session is required.",
+        );
+      }
+      const principal =
+        validated.session.operatorClientId === "development_unauthenticated"
+          ? trustedDevelopmentOperatorPrincipal(hostUrl)
+          : {
+              clientId: validated.session.operatorClientId,
+              hostUrl,
+              role: "operator" as const,
+            };
+      return {
+        principal,
+        finalizeMutation: async ({ outcome }) => {
+          if (outcome.sessionEnded !== true) return undefined;
+          try {
+            await dashboardSessionStore?.delete(request.headers.get("cookie") ?? undefined);
+          } catch {
+            try {
+              writeErr("Could not remove an ended dashboard session.\n");
+            } catch {
+              // Cleanup reporting must not replace a committed Admin mutation response.
+            }
+          }
+          const headers = new Headers();
+          headers.append("Set-Cookie", expiredDashboardSessionCookie("/"));
+          headers.append(
+            "Set-Cookie",
+            expiredDashboardSessionCookie(CURRENT_HOST_NAMESPACES.dashboard),
+          );
+          return headers;
+        },
+      };
     }
+
+    if (options.auth.type === "development_unauthenticated") {
+      if (!isVerifiedLoopbackDevelopmentRequest(options, request.url, requestHeader)) {
+        throw new AdminV2PrincipalError(
+          403,
+          "Current Host development administration requires verified loopback access.",
+        );
+      }
+      return { principal: trustedDevelopmentOperatorPrincipal(hostUrl) };
+    }
+
     throw new AdminV2PrincipalError(401, "A valid Operator Client credential is required.");
   };
-  const dashboardAdminPrincipal: AdminV2PrincipalProvider = async (request, context) => {
-    const validated = await validateDashboardSession(
-      request.headers.get("cookie") ?? undefined,
-      {
-        requireCsrf: context.mutates,
-        csrfToken: request.headers.get("x-caplets-csrf") ?? undefined,
-      },
-      request.url,
-      (name) => request.headers.get(name) ?? undefined,
-    );
-    if (!validated.ok) {
-      const status = validated.response.status === 403 ? 403 : 401;
-      throw new AdminV2PrincipalError(
-        status,
-        status === 403
-          ? "A current dashboard CSRF token is required."
-          : "A current Operator dashboard session is required.",
-      );
-    }
-    const hostUrl = remoteCredentialHostUrl(
-      request.url,
-      paths.base,
-      options,
-      (name) => request.headers.get(name) ?? undefined,
-    );
-    if (validated.session.operatorClientId === "development_unauthenticated") {
-      return trustedDevelopmentOperatorPrincipal(hostUrl);
-    }
-    return {
-      clientId: validated.session.operatorClientId,
-      hostUrl,
-      role: "operator",
-    };
-  };
 
-  app.get(paths.base, (c) => {
-    const remote = remoteCredentialStore
-      ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
-      : undefined;
-    return c.json({
-      name: "caplets",
-      transport: "http",
-      base: paths.base,
-      versions: [
-        versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote),
-        adminV2VersionDiscovery(paths),
-      ],
-      auth: { type: options.auth.type },
-      ...(remote ? { remote } : {}),
-    });
+  app.get("/", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.redirect(CURRENT_HOST_NAMESPACES.dashboard, 302);
   });
 
-  app.get(routePath(paths.base, "openapi.json"), (c) => {
+  app.get(CURRENT_HOST_NAMESPACES.wellKnown, (c) => {
+    const headers = {
+      "cache-control": "public, max-age=0, must-revalidate",
+      "content-type": "application/json; charset=utf-8",
+      etag: WELL_KNOWN_CAPLETS_ETAG,
+    };
+    if (ifNoneMatchIncludes(c.req.header("if-none-match"), WELL_KNOWN_CAPLETS_ETAG)) {
+      return new Response(null, { status: 304, headers });
+    }
+    return new Response(WELL_KNOWN_CAPLETS_BYTES, { status: 200, headers });
+  });
+
+  app.get(CURRENT_HOST_NAMESPACES.api, (c) =>
+    c.json(
+      {
+        name: "caplets",
+        protocol: "caplets-http",
+        schemaVersion: 1,
+        links: {
+          self: CURRENT_HOST_NAMESPACES.api,
+          openapi: CURRENT_HOST_PATHS.openApi,
+          v1: CURRENT_HOST_PATHS.apiV1,
+          admin: currentHostAdminPath("/host"),
+        },
+      },
+      200,
+      { "cache-control": "no-store" },
+    ),
+  );
+
+  app.get(CURRENT_HOST_PATHS.openApi, (c) => {
     const representation = rootOpenApiRepresentation();
     const headers = {
       "cache-control": "public, max-age=0, must-revalidate",
@@ -656,16 +693,13 @@ export function createHttpServeApp(
     return new Response(representation.bytes, { status: 200, headers });
   });
 
-  app.get(paths.version, (c) => {
-    const remote = remoteCredentialStore
-      ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
-      : undefined;
-    return c.json(versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote));
-  });
+  app.get(CURRENT_HOST_PATHS.apiV1, (c) =>
+    c.json(versionDiscovery({ exposeAttach, exposeAttachSessions }), 200, {
+      "cache-control": "no-store",
+    }),
+  );
 
-  app.get(paths.version2, (c) => c.json(adminV2VersionDiscovery(paths)));
-
-  app.get(paths.health, async (c) => {
+  app.get(CURRENT_HOST_PATHS.health, async (c) => {
     const readiness = await engine.readiness();
     return c.json(
       {
@@ -677,24 +711,18 @@ export function createHttpServeApp(
   });
 
   app.get(
-    routePath(paths.base, "_astro/*"),
+    CURRENT_HOST_ROUTE_PATTERNS.dashboardAssets,
     (c) =>
-      dashboardStaticResponse(
-        dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
-        io.dashboardDistDir,
-      ) ?? c.notFound(),
+      dashboardStaticResponse(new URL(c.req.url).pathname, io.dashboardDistDir) ?? c.notFound(),
   );
 
-  app.get(paths.dashboard, (c) => {
-    const response = dashboardStaticResponse(
-      dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
-      io.dashboardDistDir,
-    );
+  app.get(CURRENT_HOST_NAMESPACES.dashboard, (c) => {
+    const response = dashboardStaticResponse(new URL(c.req.url).pathname, io.dashboardDistDir);
     if (response) return response;
     return c.html(dashboardShell(), 200, { "cache-control": "no-store" });
   });
 
-  app.post(paths.dashboardLoginStart, attachHostProtection, async (c) => {
+  app.post(CURRENT_HOST_DASHBOARD_PATHS.loginStart, attachHostProtection, async (c) => {
     if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
       const parsed = await readLimitedJsonObject(
@@ -704,9 +732,7 @@ export function createHttpServeApp(
       );
       const clientLabel = optionalStringField(parsed, "clientLabel") ?? "Caplets Dashboard";
       const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
-      const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-        c.req.header(name),
-      );
+      const hostUrl = remoteCredentialHostUrl(c.req.url, options, (name) => c.req.header(name));
       const pending = await remoteCredentialStore.createPendingLogin({
         hostUrl,
         hostIdentity: hostUrl,
@@ -728,7 +754,7 @@ export function createHttpServeApp(
     }
   });
 
-  app.post(paths.dashboardLoginPoll, attachHostProtection, async (c) => {
+  app.post(CURRENT_HOST_DASHBOARD_PATHS.loginPoll, attachHostProtection, async (c) => {
     if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
       const parsed = await readLimitedJsonObject(
@@ -747,7 +773,7 @@ export function createHttpServeApp(
     }
   });
 
-  app.post(paths.dashboardLoginComplete, attachHostProtection, async (c) => {
+  app.post(CURRENT_HOST_DASHBOARD_PATHS.loginComplete, attachHostProtection, async (c) => {
     if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
     try {
       const parsed = await readLimitedJsonObject(
@@ -756,9 +782,7 @@ export function createHttpServeApp(
         AUTH_REQUEST_MAX_BYTES,
       );
       const credentials = await remoteCredentialStore.completePendingLogin({
-        hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-          c.req.header(name),
-        ),
+        hostUrl: remoteCredentialHostUrl(c.req.url, options, (name) => c.req.header(name)),
         requiredRole: "operator",
         flowId: stringField(parsed, "flowId"),
         pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
@@ -774,26 +798,56 @@ export function createHttpServeApp(
         action: "dashboard_login_completed",
         target: { type: "dashboard_session", id: created.session.sessionId },
       });
-      c.header(
-        "set-cookie",
+      const headers = new Headers({
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json",
+      });
+      headers.append(
+        "Set-Cookie",
         dashboardSessionCookie(created.cookieValue, {
-          path: paths.dashboard,
           secure: requestIsSecure(c.req.url, options, (name) => c.req.header(name)),
         }),
       );
-      return c.json({ authenticated: true, session: created.session });
+      headers.append(
+        "Set-Cookie",
+        expiredDashboardSessionCookie(CURRENT_HOST_NAMESPACES.dashboard),
+      );
+      return new Response(JSON.stringify({ authenticated: true, session: created.session }), {
+        status: 200,
+        headers,
+      });
     } catch (error) {
       return remoteCredentialErrorResponse(error);
     }
   });
 
-  app.get(paths.dashboardSession, async (c) => {
+  app.get(CURRENT_HOST_DASHBOARD_PATHS.session, async (c) => {
     const session = await dashboardSessionForRequest(c);
     if (!session.ok) return session.response;
-    return c.json({ authenticated: true, session: session.session });
+    const headers = new Headers({
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json",
+    });
+    const parsed = parseDashboardCookie(c.req.header("cookie"));
+    if (parsed) {
+      headers.append(
+        "Set-Cookie",
+        dashboardSessionCookie(`${parsed.sessionId}.${parsed.secret}`, {
+          secure: requestIsSecure(c.req.url, options, (name) => c.req.header(name)),
+        }),
+      );
+      headers.append(
+        "Set-Cookie",
+        expiredDashboardSessionCookie(CURRENT_HOST_NAMESPACES.dashboard),
+      );
+    }
+    return new Response(JSON.stringify({ authenticated: true, session: session.session }), {
+      status: 200,
+      headers,
+    });
   });
 
-  app.get(paths.adminV2Callback, async (c) => {
+  app.get(CURRENT_HOST_ROUTE_PATTERNS.adminBackendAuthCallback, async (c) => {
     const flowId = requiredRouteParam(c.req.param("flowId"));
     try {
       const outcome = await currentHostOperations.execute(
@@ -819,52 +873,30 @@ export function createHttpServeApp(
       );
     } catch (error) {
       const response = problemResponse(error);
-      response.headers.set("Cache-Control", "no-store");
-      return response;
+      const problem = (await response.json()) as Record<string, unknown>;
+      problem.detail = "Backend authentication callback failed.";
+      return new Response(JSON.stringify(problem), {
+        status: response.status,
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "application/problem+json",
+        },
+      });
     }
   });
 
-  const bearerAdminAdapter = new Hono();
-  bearerAdminAdapter.use("*", async (c, next) => {
-    c.header("Cache-Control", "no-store");
-    return await operatorAdminV2RouteAuth(c, next);
-  });
-  bearerAdminAdapter.route(
-    "/",
-    createAdminV2Router({
-      operations: currentHostOperations,
-      principalProvider: bearerAdminPrincipal,
-      host: adminV2Host,
-      idempotencyStore: idempotency,
-      bundleUploadAdmission,
-    }),
-  );
-  app.route(paths.adminV2, bearerAdminAdapter);
   app.route(
-    paths.dashboardV2,
+    CURRENT_HOST_PATHS.admin,
     createAdminV2Router({
       operations: currentHostOperations,
-      principalProvider: dashboardAdminPrincipal,
+      authorityProvider: adminV2AuthorityProvider,
       host: adminV2Host,
       idempotencyStore: idempotency,
       bundleUploadAdmission,
-      mutationResponseHeaders: async ({ request, outcome }) => {
-        if (outcome.sessionEnded !== true) return undefined;
-        try {
-          await dashboardSessionStore?.delete(request.headers.get("cookie") ?? undefined);
-        } catch {
-          try {
-            writeErr("Could not remove an ended dashboard session.\n");
-          } catch {
-            // Cleanup reporting must not replace a committed Admin mutation response.
-          }
-        }
-        return { "Set-Cookie": expiredDashboardSessionCookie(paths.dashboard) };
-      },
     }),
   );
 
-  app.post(routePath(paths.dashboardPrivate, "vault-reveals"), async (c) => {
+  app.post(CURRENT_HOST_DASHBOARD_PATHS.vaultReveals, async (c) => {
     c.header("Cache-Control", "no-store");
     const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
@@ -898,7 +930,7 @@ export function createHttpServeApp(
     }
   });
 
-  app.post(paths.dashboardLogout, async (c) => {
+  app.post(CURRENT_HOST_DASHBOARD_PATHS.logout, async (c) => {
     const session = await dashboardSessionForRequest(c, {
       requireCsrf: true,
       csrfToken: c.req.header("x-caplets-csrf"),
@@ -910,21 +942,22 @@ export function createHttpServeApp(
       target: { type: "dashboard_session", id: session.session.sessionId },
     });
     await dashboardSessionStore?.delete(c.req.header("cookie"));
-    c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
-    return c.json({ ok: true });
+    const headers = new Headers({
+      "Content-Type": "application/json",
+    });
+    headers.append("Set-Cookie", expiredDashboardSessionCookie("/"));
+    headers.append("Set-Cookie", expiredDashboardSessionCookie(CURRENT_HOST_NAMESPACES.dashboard));
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
   });
 
   app.get(
-    routePath(paths.dashboard, "*"),
+    CURRENT_HOST_ROUTE_PATTERNS.dashboardPages,
     (c) =>
-      dashboardStaticResponse(
-        dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
-        io.dashboardDistDir,
-      ) ?? c.notFound(),
+      dashboardStaticResponse(new URL(c.req.url).pathname, io.dashboardDistDir) ?? c.notFound(),
   );
 
   if (remoteCredentialStore) {
-    app.post(paths.remoteLoginStart, attachHostProtection, async (c) => {
+    app.post(currentHostV1Path("remoteLoginStart"), attachHostProtection, async (c) => {
       try {
         const parsed = await readLimitedJsonObject(
           c.req.raw,
@@ -933,9 +966,7 @@ export function createHttpServeApp(
         );
         const clientLabel = optionalStringField(parsed, "clientLabel");
         const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
-        const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-          c.req.header(name),
-        );
+        const hostUrl = remoteCredentialHostUrl(c.req.url, options, (name) => c.req.header(name));
         const pending = await remoteCredentialStore.createPendingLogin({
           hostUrl,
           hostIdentity: hostUrl,
@@ -955,7 +986,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginPoll, attachHostProtection, async (c) => {
+    app.post(currentHostV1Path("remoteLoginPoll"), attachHostProtection, async (c) => {
       try {
         const parsed = await readLimitedJsonObject(
           c.req.raw,
@@ -973,7 +1004,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginRefresh, attachHostProtection, async (c) => {
+    app.post(currentHostV1Path("remoteLoginRefresh"), attachHostProtection, async (c) => {
       try {
         const parsed = await readLimitedJsonObject(
           c.req.raw,
@@ -992,7 +1023,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginComplete, attachHostProtection, async (c) => {
+    app.post(currentHostV1Path("remoteLoginComplete"), attachHostProtection, async (c) => {
       try {
         const parsed = await readLimitedJsonObject(
           c.req.raw,
@@ -1000,9 +1031,7 @@ export function createHttpServeApp(
           AUTH_REQUEST_MAX_BYTES,
         );
         const credentials = await remoteCredentialStore.completePendingLogin({
-          hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-            c.req.header(name),
-          ),
+          hostUrl: remoteCredentialHostUrl(c.req.url, options, (name) => c.req.header(name)),
           flowId: stringField(parsed, "flowId"),
           pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
         });
@@ -1012,7 +1041,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginCancel, attachHostProtection, async (c) => {
+    app.post(currentHostV1Path("remoteLoginCancel"), attachHostProtection, async (c) => {
       try {
         const parsed = await readLimitedJsonObject(
           c.req.raw,
@@ -1030,11 +1059,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.pairingExchange, async (_c) => {
-      return remoteCredentialErrorResponse(legacyPairingCodeUnsupportedError());
-    });
-
-    app.post(paths.remoteRefresh, async (c) => {
+    app.post(currentHostV1Path("remoteRefresh"), async (c) => {
       try {
         const parsed = await readLimitedJsonObject(
           c.req.raw,
@@ -1043,9 +1068,7 @@ export function createHttpServeApp(
         );
         const refreshToken = stringField(parsed, "refreshToken");
         const credentials = await remoteCredentialStore.refreshClientCredentials({
-          hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
-            c.req.header(name),
-          ),
+          hostUrl: remoteCredentialHostUrl(c.req.url, options, (name) => c.req.header(name)),
           refreshToken,
         });
         return c.json({
@@ -1062,7 +1085,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.delete(paths.remoteClient, authenticatedClientRouteAuth, async (c) => {
+    app.delete(currentHostV1Path("remoteClient"), authenticatedClientRouteAuth, async (c) => {
       const client = authenticatedRemoteClients.get(c.req.raw);
       if (!client) return c.text("Unauthorized", 401);
       try {
@@ -1082,7 +1105,7 @@ export function createHttpServeApp(
     });
   }
 
-  app.all(paths.mcp, accessRouteAuth, async (c) => {
+  app.on(["POST", "GET", "DELETE"], CURRENT_HOST_NAMESPACES.mcp, accessRouteAuth, async (c) => {
     const sessionId = c.req.header("mcp-session-id");
     if (sessionId) {
       const existing = sessions.get(sessionId);
@@ -1123,38 +1146,54 @@ export function createHttpServeApp(
         }
       },
     );
-    sessions.set(nextSessionId, session);
-    return session.transport.handleRequest(c);
+    let retained = false;
+    try {
+      const response = await session.transport.handleRequest(c);
+      if (session.transport.sessionId === nextSessionId) {
+        sessions.set(nextSessionId, session);
+        retained = true;
+      }
+      return response;
+    } finally {
+      if (!retained) {
+        await session.server.close();
+      }
+    }
   });
 
   if (exposeAttach) {
     if (io.attachSessionFactory) {
-      app.post(paths.attachSessions, attachHostProtection, accessRouteAuth, async (c) => {
-        try {
-          const parsed = await readLimitedJsonObject(
-            c.req.raw,
-            "Attach session request",
-            CONTROL_REQUEST_MAX_BYTES,
-          );
-          const metadata = parseAttachSessionMetadata(parsed, {
-            allowProjectContext: allowAttachSessionProjectContext(options, c.req.url, (name) =>
-              c.req.header(name),
-            ),
-          });
-          const context = attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER));
-          const sessionId = randomUUID();
-          const session = await io.attachSessionFactory!(metadata, context);
-          attachSessions.set(sessionId, { session, lastUsedAt: Date.now() });
-          pruneIdleAttachSessions();
-          return c.json({ sessionId }, 201);
-        } catch (error) {
-          const response = attachErrorResponse(error);
-          return c.json(response.body, response.status);
-        }
-      });
+      app.post(
+        currentHostV1Path("attachSessions"),
+        attachHostProtection,
+        accessRouteAuth,
+        async (c) => {
+          try {
+            const parsed = await readLimitedJsonObject(
+              c.req.raw,
+              "Attach session request",
+              CONTROL_REQUEST_MAX_BYTES,
+            );
+            const metadata = parseAttachSessionMetadata(parsed, {
+              allowProjectContext: allowAttachSessionProjectContext(options, c.req.url, (name) =>
+                c.req.header(name),
+              ),
+            });
+            const context = attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER));
+            const sessionId = randomUUID();
+            const session = await io.attachSessionFactory!(metadata, context);
+            attachSessions.set(sessionId, { session, lastUsedAt: Date.now() });
+            pruneIdleAttachSessions();
+            return c.json({ sessionId }, 201);
+          } catch (error) {
+            const response = attachErrorResponse(error);
+            return c.json(response.body, response.status);
+          }
+        },
+      );
 
       app.delete(
-        routePath(paths.attachSessions, ":sessionId"),
+        CURRENT_HOST_ROUTE_PATTERNS.attachSession,
         attachHostProtection,
         accessRouteAuth,
         async (c) => {
@@ -1170,24 +1209,29 @@ export function createHttpServeApp(
       );
     }
 
-    app.get(paths.attachManifest, attachHostProtection, accessRouteAuth, async (c) => {
-      try {
-        const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
-        const attachSession = attachSessionId
-          ? attachSessionForRequest(attachSessionId)
-          : await fallbackAttachSession(
-              attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
-            );
-        if (attachSession) return c.json(await attachSession.manifest());
-        const attachProjection = await buildAttachProjection(engine);
-        return c.json(attachProjection.manifest);
-      } catch (error) {
-        const response = attachErrorResponse(error);
-        return c.json(response.body, response.status);
-      }
-    });
+    app.get(
+      currentHostV1Path("attachManifest"),
+      attachHostProtection,
+      accessRouteAuth,
+      async (c) => {
+        try {
+          const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
+          const attachSession = attachSessionId
+            ? attachSessionForRequest(attachSessionId)
+            : await fallbackAttachSession(
+                attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
+              );
+          if (attachSession) return c.json(await attachSession.manifest());
+          const attachProjection = await buildAttachProjection(engine);
+          return c.json(attachProjection.manifest);
+        } catch (error) {
+          const response = attachErrorResponse(error);
+          return c.json(response.body, response.status);
+        }
+      },
+    );
 
-    app.get(paths.attachEvents, attachHostProtection, accessRouteAuth, async (c) => {
+    app.get(currentHostV1Path("attachEvents"), attachHostProtection, accessRouteAuth, async (c) => {
       try {
         const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
         const attachSession = attachSessionId
@@ -1195,6 +1239,9 @@ export function createHttpServeApp(
           : await fallbackAttachSession(
               attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
             );
+        if (c.req.method === "HEAD") {
+          return new Response(null, { status: 200, headers: attachEventsHeaders() });
+        }
         return attachEventsResponse(attachEventSource(engine, attachSession), attachEventStreams, {
           onActivity: () => {
             if (attachSessionId) touchAttachSession(attachSessionId);
@@ -1206,32 +1253,37 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.attachInvoke, attachHostProtection, accessRouteAuth, async (c) => {
-      try {
-        const request = parseAttachInvokeRequest(
-          await readLimitedJsonObject(
-            c.req.raw,
-            "Attach invoke request",
-            ATTACH_INVOKE_REQUEST_MAX_BYTES,
-          ),
-        );
-        const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
-        const attachSession = attachSessionId
-          ? attachSessionForRequest(attachSessionId)
-          : await fallbackAttachSession(
-              attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
-            );
-        if (attachSession) {
-          return c.json({ ok: true, data: await attachSession.invoke(request) });
+    app.post(
+      currentHostV1Path("attachInvoke"),
+      attachHostProtection,
+      accessRouteAuth,
+      async (c) => {
+        try {
+          const request = parseAttachInvokeRequest(
+            await readLimitedJsonObject(
+              c.req.raw,
+              "Attach invoke request",
+              ATTACH_INVOKE_REQUEST_MAX_BYTES,
+            ),
+          );
+          const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
+          const attachSession = attachSessionId
+            ? attachSessionForRequest(attachSessionId)
+            : await fallbackAttachSession(
+                attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
+              );
+          if (attachSession) {
+            return c.json({ ok: true, data: await attachSession.invoke(request) });
+          }
+          const attachProjection = await buildAttachProjection(engine);
+          const result = await invokeAttachExport(engine, attachProjection, request);
+          return c.json({ ok: true, data: result });
+        } catch (error) {
+          const response = attachErrorResponse(error);
+          return c.json(response.body, response.status);
         }
-        const attachProjection = await buildAttachProjection(engine);
-        const result = await invokeAttachExport(engine, attachProjection, request);
-        return c.json({ ok: true, data: result });
-      } catch (error) {
-        const response = attachErrorResponse(error);
-        return c.json(response.body, response.status);
-      }
-    });
+      },
+    );
   }
 
   function attachSessionForRequest(sessionId: string | undefined): HttpAttachSession | undefined {
@@ -1364,58 +1416,8 @@ export function createHttpServeApp(
     }
   }
 
-  app.post(
-    paths.control,
-    deprecatedV1Admin,
-    currentHostDevelopmentGuard(options),
-    operatorRouteAuth,
-    async (c) => {
-      let request: RemoteCliRequest;
-      try {
-        request = parseRemoteCliRequest(
-          await readCommandLimitedJsonObject(
-            c.req.raw,
-            "Control request",
-            CONTROL_REQUEST_MAX_BYTES,
-            LEGACY_CAPLET_BUNDLE_REQUEST_MAX_BYTES,
-            LEGACY_BUNDLE_COMMANDS,
-          ),
-        );
-      } catch (error) {
-        const requestError =
-          error instanceof CapletsError
-            ? error
-            : new CapletsError("REQUEST_INVALID", "Control request body must be valid JSON", error);
-        const safe = toSafeError(requestError, "REQUEST_INVALID");
-        return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
-      }
-      const context = controlContext(
-        io,
-        writeErr,
-        backendAuthFlows,
-        backendAuthStore,
-        authoritativeStorage,
-        c.req.url,
-        paths.control,
-        options.publicOrigin,
-        options.trustProxy,
-        (name) => c.req.header(name),
-      );
-      return c.json(
-        await dispatchRemoteCliRequest(
-          request,
-          { ...context, attachEngine: engine },
-          {
-            operations: currentHostOperations,
-            principal: controlOperatorPrincipal(c),
-          },
-        ),
-      );
-    },
-  );
-
   app.get(
-    routePath(paths.projectBindings, "connect"),
+    currentHostV1Path("projectBindingConnect"),
     accessRouteAuth,
     async (c, next) => {
       if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
@@ -1502,7 +1504,7 @@ export function createHttpServeApp(
   );
 
   app.get(
-    routePath(paths.projectBindings, ":bindingId/status"),
+    CURRENT_HOST_ROUTE_PATTERNS.projectBindingStatus,
     accessRouteAuth,
     async (c) =>
       await projectBindingStatusResponse(
@@ -1511,7 +1513,7 @@ export function createHttpServeApp(
       ),
   );
 
-  app.post(routePath(paths.projectBindings, "sessions"), accessRouteAuth, async (c) => {
+  app.post(currentHostV1Path("projectBindingSessions"), accessRouteAuth, async (c) => {
     try {
       if (projectBindingSessionsClosing) {
         return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
@@ -1622,7 +1624,7 @@ export function createHttpServeApp(
     }
   });
 
-  app.get(routePath(paths.projectBindings, ":bindingId/session"), accessRouteAuth, (c) => {
+  app.get(CURRENT_HOST_ROUTE_PATTERNS.projectBindingSession, accessRouteAuth, (c) => {
     const record = projectBindingRecordFor(
       requiredRouteParam(c.req.param("bindingId")),
       projectBindingOwnerKey(c),
@@ -1635,7 +1637,7 @@ export function createHttpServeApp(
     });
   });
 
-  app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), accessRouteAuth, async (c) => {
+  app.post(CURRENT_HOST_ROUTE_PATTERNS.projectBindingHeartbeat, accessRouteAuth, async (c) => {
     try {
       const bindingId = requiredRouteParam(c.req.param("bindingId"));
       const ownerKey = projectBindingOwnerKey(c);
@@ -1677,7 +1679,7 @@ export function createHttpServeApp(
     }
   });
 
-  app.delete(routePath(paths.projectBindings, ":bindingId/session"), accessRouteAuth, async (c) => {
+  app.delete(CURRENT_HOST_ROUTE_PATTERNS.projectBindingSession, accessRouteAuth, async (c) => {
     try {
       const bindingId = requiredRouteParam(c.req.param("bindingId"));
       const ownerKey = projectBindingOwnerKey(c);
@@ -2165,51 +2167,23 @@ export function createHttpServeApp(
     c: Parameters<MiddlewareHandler>[0],
     csrf: { requireCsrf?: boolean; csrfToken?: string | undefined } = {},
   ): Promise<{ ok: true; session: DashboardSessionView } | { ok: false; response: Response }> {
-    return await validateDashboardSession(c.req.header("cookie"), csrf, c.req.url, (name) =>
-      c.req.header(name),
-    );
-  }
-
-  function controlOperatorPrincipal(
-    c: Parameters<MiddlewareHandler>[0],
-  ): CurrentHostOperatorPrincipal {
-    const client = authenticatedRemoteClients.get(c.req.raw);
-    if (client) {
-      if (client.role !== "operator") {
-        throw new CapletsError(
-          "AUTH_FAILED",
-          "Current Host administration requires an Operator principal.",
-        );
-      }
-      return {
-        clientId: client.clientId,
-        clientLabel: client.clientLabel,
-        hostUrl: client.hostUrl,
-        role: "operator",
-      };
-    }
-    if (
-      options.auth.type === "development_unauthenticated" &&
-      isVerifiedLoopbackDevelopmentRequest(options, c.req.url, (name) => c.req.header(name))
-    ) {
-      return trustedDevelopmentOperatorPrincipal(
-        remoteCredentialHostUrl(c.req.url, paths.base, options, (name) => c.req.header(name)),
-      );
-    }
-    throw new CapletsError(
-      "AUTH_FAILED",
-      "Current Host administration requires an Operator principal.",
-    );
+    return await validateDashboardSession(c.req.header("cookie"), csrf, c.req.raw);
   }
 
   async function validateDashboardSession(
     cookieHeader: string | undefined,
     csrf: { requireCsrf?: boolean; csrfToken?: string | undefined },
-    requestUrl: string,
-    header: (name: string) => string | undefined,
+    request: Request,
   ): Promise<{ ok: true; session: DashboardSessionView } | { ok: false; response: Response }> {
+    const header = (name: string) => request.headers.get(name) ?? undefined;
+    if (
+      hasDashboardSessionCookie(cookieHeader) &&
+      options.auth.type === "development_unauthenticated"
+    ) {
+      return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
+    }
     if (!remoteCredentialStore && options.auth.type === "development_unauthenticated") {
-      if (!isVerifiedLoopbackDevelopmentRequest(options, requestUrl, header)) {
+      if (!isVerifiedLoopbackDevelopmentRequest(options, request.url, header)) {
         return { ok: false, response: new Response("Forbidden", { status: 403 }) };
       }
       if (csrf.requireCsrf && csrf.csrfToken !== "development_unauthenticated") {
@@ -2236,13 +2210,19 @@ export function createHttpServeApp(
       };
     }
     try {
-      return {
-        ok: true,
-        session: await dashboardSessionStore.validate({
-          cookieHeader,
-          ...csrf,
-        }),
-      };
+      const session = await dashboardSessionStore.validate({
+        cookieHeader,
+        ...csrf,
+      });
+      if (
+        !isSameOriginDashboardRequest(
+          request,
+          new URL(remoteCredentialHostUrl(request.url, options, header)).origin,
+        )
+      ) {
+        return { ok: false, response: new Response("Forbidden", { status: 403 }) };
+      }
+      return { ok: true, session };
     } catch (error) {
       if (error instanceof CapletsError && error.code === "REQUEST_INVALID") {
         return { ok: false, response: new Response("Forbidden", { status: 403 }) };
@@ -2257,33 +2237,7 @@ export function createHttpServeApp(
     }
   }
 
-  app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
-    const flowId = c.req.param("flowId");
-    const result = await dispatchRemoteCliRequest(
-      { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
-      controlContext(
-        io,
-        writeErr,
-        backendAuthFlows,
-        backendAuthStore,
-        authoritativeStorage,
-        c.req.url,
-        paths.control,
-        options.publicOrigin,
-        options.trustProxy,
-        (name) => c.req.header(name),
-      ),
-      { operations: currentHostOperations },
-    );
-    if (!result.ok) {
-      writeErr(`Caplets authentication failed for flow ${flowId}: ${result.error.message}\n`);
-    }
-    return result.ok
-      ? c.text("Caplets authentication complete. You can return to your terminal.")
-      : c.text("Caplets authentication failed. Check server logs for details.", 400);
-  });
-
-  app.notFound((c) => c.json({ error: "not_found" }, 404));
+  app.notFound(() => strictRouteNotFoundResponse());
 
   async function waitForActiveRequestsToDrain(graceMs: number): Promise<void> {
     if (activeRequestCount === 0 || graceMs === 0) return;
@@ -2349,33 +2303,95 @@ export function createHttpServeApp(
 
   return app;
 }
-
-function controlContext(
-  io: HttpServeIo,
-  writeErr: (value: string) => void,
-  backendAuthFlows: BackendAuthFlowRepository | undefined,
-  backendAuthStore: BackendAuthStateStore | undefined,
-  authoritativeStorage: HostStorage | undefined,
-  requestUrl: string,
-  controlPath: string,
-  publicOrigin: string | undefined,
-  trustProxy: boolean,
-  header: (name: string) => string | undefined,
-): RemoteControlDispatchContext {
-  return {
-    ...io.control,
-    projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
-    globalCapletsRoot: io.control?.globalCapletsRoot ?? resolveCapletsRoot(io.control?.configPath),
-    globalLockfilePath: io.control?.globalLockfilePath ?? defaultCapletsLockfilePath(),
-    ...(backendAuthFlows ? { backendAuthFlows } : {}),
-    ...(backendAuthStore ? { backendAuthStore } : {}),
-    ...(authoritativeStorage ? { hostStorage: authoritativeStorage } : {}),
-    controlCallbackBaseUrl: new URL(
-      controlPath,
-      publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
-    ).toString(),
-    writeErr,
+export function createNodeServerFetch(app: CapletsHttpApp) {
+  return (request: Request, environment: HttpBindings | Http2Bindings): Promise<Response> => {
+    const rawRequestTarget = environment.incoming.url;
+    if (
+      rawRequestTarget !== undefined &&
+      !rawRequestPathMatches(rawRequestTarget, new URL(request.url).pathname)
+    ) {
+      return Promise.resolve(strictRouteNotFoundResponse());
+    }
+    return Promise.resolve(app.fetch(request, environment));
   };
+}
+
+function rawRequestPathMatches(rawRequestTarget: string, normalizedPathname: string): boolean {
+  if (rawRequestTarget.includes("#")) return false;
+  let pathAndQuery = rawRequestTarget;
+  const schemeSeparator = rawRequestTarget.indexOf("://");
+  if (schemeSeparator > 0) {
+    const authorityStart = schemeSeparator + 3;
+    const targetStart = firstRequestTargetDelimiter(rawRequestTarget, authorityStart);
+    if (targetStart === -1 || rawRequestTarget[targetStart] === "?") {
+      pathAndQuery = "/";
+    } else {
+      pathAndQuery = rawRequestTarget.slice(targetStart);
+    }
+  }
+  const queryStart = pathAndQuery.indexOf("?");
+  const rawPathname = queryStart === -1 ? pathAndQuery : pathAndQuery.slice(0, queryStart);
+  return rawPathname === normalizedPathname;
+}
+
+function firstRequestTargetDelimiter(value: string, start: number): number {
+  let result = -1;
+  for (const delimiter of ["/", "\\", "?", "#"]) {
+    const index = value.indexOf(delimiter, start);
+    if (index !== -1 && (result === -1 || index < result)) result = index;
+  }
+  return result;
+}
+
+function strictRouteNotFoundResponse(): Response {
+  return new Response('{"error":"not_found"}', {
+    status: 404,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+const ALLOW_METHOD_ORDER = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const;
+
+function registeredAllowHeader(
+  app: CapletsHttpApp,
+  pathname: string,
+  dashboardDistDir: string | undefined,
+): string | undefined {
+  const methods = new Set<string>();
+  for (const route of app.routes) {
+    if (route.method === "ALL" || route.path.includes("*")) continue;
+    if (!registeredRoutePatternMatches(route.path, pathname)) continue;
+    methods.add(route.method);
+  }
+  if (dashboardStaticRouteExists(pathname, dashboardDistDir)) methods.add("GET");
+  if (methods.size === 0) return undefined;
+  if (pathname === CURRENT_HOST_NAMESPACES.mcp) {
+    return ["POST", "GET", "DELETE"].filter((method) => methods.has(method)).join(", ");
+  }
+  if (methods.has("GET")) methods.add("HEAD");
+  return ALLOW_METHOD_ORDER.filter((method) => methods.has(method)).join(", ");
+}
+
+function registeredRoutePatternMatches(pattern: string, pathname: string): boolean {
+  if (pattern === pathname) return true;
+  const patternSegments = pattern.split("/");
+  const pathSegments = pathname.split("/");
+  return (
+    patternSegments.length === pathSegments.length &&
+    patternSegments.every((segment, index) => {
+      const pathSegment = pathSegments[index];
+      if (segment === pathSegment) return true;
+      if (!segment.startsWith(":") || !pathSegment) return false;
+      try {
+        return decodeURIComponent(pathSegment).length > 0;
+      } catch {
+        return false;
+      }
+    })
+  );
 }
 
 function publicRequestOrigin(
@@ -2408,12 +2424,6 @@ function requestIsSecure(
   );
 }
 
-function dashboardStaticRequestPath(pathname: string, basePath: string): string {
-  if (basePath === "/") return pathname;
-  if (pathname === basePath) return "/";
-  return pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
-}
-
 function pendingLoginApprovalCommand(operatorCode: string, stateDir: string | undefined): string {
   const statePath = stateDir ? ` --state-path ${shellQuoteArg(stateDir)}` : "";
   return `caplets remote host approve ${shellQuoteArg(operatorCode)}${statePath} --yes`;
@@ -2437,20 +2447,20 @@ function canonicalServePathUrl(options: HttpServeOptions, path: string): string 
 
 function publicHostUrl(
   requestUrl: string,
-  basePath: string,
+  namespacePath: string,
   publicOrigin: string | undefined,
   trustProxy: boolean,
   header: (name: string) => string | undefined,
 ): string {
-  return new URL(
-    basePath,
+  const url = new URL(
+    namespacePath,
     publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
-  ).toString();
+  );
+  return namespacePath === "/" ? url.origin : url.toString();
 }
 
 function remoteCredentialHostUrl(
   requestUrl: string,
-  basePath: string,
   options: Pick<HttpServeOptions, "publicOrigin" | "publicOrigins" | "trustProxy">,
   header: (name: string) => string | undefined,
 ): string {
@@ -2461,7 +2471,7 @@ function remoteCredentialHostUrl(
       "Remote credential auth with --trust-proxy requires a configured public origin.",
     );
   }
-  return publicHostUrl(requestUrl, basePath, publicOrigin, options.trustProxy, header);
+  return publicHostUrl(requestUrl, "/", publicOrigin, options.trustProxy, header);
 }
 
 function remoteCredentialPublicOrigin(
@@ -2514,69 +2524,39 @@ function errorMessage(error: unknown): string {
 }
 
 function httpStackIdentity(options: HttpServeOptions): string {
-  const origin = options.publicOrigin ?? `http://${formatHost(options.host)}:${options.port}`;
-  const url = new URL(origin);
-  url.pathname = options.path;
-  url.search = "";
-  url.hash = "";
-  return url.toString();
+  return new URL(options.publicOrigin ?? `http://${formatHost(options.host)}:${options.port}`)
+    .origin;
 }
 
 function stackChainFromHeader(header: string | undefined): string[] {
   return (header ?? "")
     .split(",")
     .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-type RemoteHostMetadata = {
-  hostIdentity: string;
-  audience: string;
-};
-
-function remoteHostMetadata(
-  requestUrl: string,
-  basePath: string,
-  options: HttpServeOptions,
-  header: (name: string) => string | undefined,
-): RemoteHostMetadata {
-  const audience = remoteCredentialHostUrl(requestUrl, basePath, options, header);
-  return { hostIdentity: audience, audience };
+    .filter((value) => value.length > 0)
+    .map((value) => canonicalizeCurrentHostOrigin(value));
 }
 
 function versionDiscovery(
-  paths: ServicePaths,
   options: { exposeAttach?: boolean; exposeAttachSessions?: boolean } = {},
-  remote?: RemoteHostMetadata | undefined,
 ) {
   const exposeAttach = options.exposeAttach ?? true;
   const exposeAttachSessions = options.exposeAttachSessions ?? false;
   return {
     version: 1,
-    path: paths.version,
-    ...(remote ? { remote } : {}),
+    path: CURRENT_HOST_PATHS.apiV1,
     links: {
-      mcp: paths.mcp,
-      admin: paths.control,
-      dashboard: paths.dashboard,
+      health: CURRENT_HOST_PATHS.health,
       ...(exposeAttach
         ? {
-            ...(exposeAttachSessions ? { attachSessions: paths.attachSessions } : {}),
-            attachManifest: paths.attachManifest,
-            attachEvents: paths.attachEvents,
-            attachInvoke: paths.attachInvoke,
+            ...(exposeAttachSessions
+              ? { attachSessions: currentHostV1Path("attachSessions") }
+              : {}),
+            attachManifest: currentHostV1Path("attachManifest"),
+            attachEvents: currentHostV1Path("attachEvents"),
+            attachInvoke: currentHostV1Path("attachInvoke"),
           }
         : {}),
-      health: paths.health,
     },
-  };
-}
-
-function adminV2VersionDiscovery(paths: ServicePaths) {
-  return {
-    version: 2,
-    path: paths.version2,
-    links: { admin: paths.adminV2 },
   };
 }
 
@@ -2701,7 +2681,7 @@ function allowAttachSessionProjectContext(
 ): boolean {
   if (!options.loopback) return false;
   const host = attachRequestHost(options, requestUrl, header);
-  return isLoopbackHost(host);
+  return isLoopbackCurrentHostHostname(host);
 }
 
 function attachRequestHost(
@@ -2796,14 +2776,16 @@ function attachEventsResponse(
       activeStream?.close();
     },
   });
-  return new Response(readable, {
-    headers: {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-      "x-accel-buffering": "no",
-    },
-  });
+  return new Response(readable, { headers: attachEventsHeaders() });
+}
+
+function attachEventsHeaders(): Record<string, string> {
+  return {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  };
 }
 
 export async function serveHttp(
@@ -2817,27 +2799,25 @@ export async function serveHttp(
     writeErr,
     control: {
       ...remoteEngineOptions,
-      projectCapletsRoot: projectCapletsRootForEngineOptions(remoteEngineOptions),
       globalCapletsRoot: resolveCapletsRoot(remoteEngineOptions.configPath),
       globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
-  const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
-  const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
+  const baseUrl = origin;
   const server = serve(
     {
-      fetch: app.fetch,
+      fetch: createNodeServerFetch(app),
       hostname: options.host,
       port: options.port,
       websocket: { server: createProjectBindingWebSocketServer() },
     },
     () => {
       writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
-      writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
-      writeErr(`Attach manifest: ${origin}${paths.attachManifest}\n`);
-      writeErr(`Control endpoint: ${origin}${paths.control}\n`);
-      writeErr(`Health check: ${origin}${paths.health}\n`);
+      writeErr(`MCP endpoint: ${origin}${CURRENT_HOST_NAMESPACES.mcp}\n`);
+      writeErr(`Attach manifest: ${origin}${currentHostV1Path("attachManifest")}\n`);
+      writeErr(`Admin endpoint: ${origin}${CURRENT_HOST_PATHS.admin}\n`);
+      writeErr(`Health check: ${origin}${CURRENT_HOST_PATHS.health}\n`);
       writeErr(`Auth: ${authDescription(options)}\n`);
     },
   );
@@ -2867,26 +2847,24 @@ export async function serveHttpWithSessionFactory(
       : {}),
     control: {
       ...remoteEngineOptions,
-      projectCapletsRoot: projectCapletsRootForEngineOptions(remoteEngineOptions),
       globalCapletsRoot: resolveCapletsRoot(remoteEngineOptions.configPath),
       globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
-  const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
-  const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
+  const baseUrl = origin;
   const server = serve(
     {
-      fetch: app.fetch,
+      fetch: createNodeServerFetch(app),
       hostname: options.host,
       port: options.port,
       websocket: { server: createProjectBindingWebSocketServer() },
     },
     () => {
       writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
-      writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
-      writeErr(`Control endpoint: ${origin}${paths.control}\n`);
-      writeErr(`Health check: ${origin}${paths.health}\n`);
+      writeErr(`MCP endpoint: ${origin}${CURRENT_HOST_NAMESPACES.mcp}\n`);
+      writeErr(`Admin endpoint: ${origin}${CURRENT_HOST_PATHS.admin}\n`);
+      writeErr(`Health check: ${origin}${CURRENT_HOST_PATHS.health}\n`);
       writeErr(`Auth: ${authDescription(options)}\n`);
     },
   );
@@ -2903,100 +2881,9 @@ export function sanitizeRemoteEngineOptions(
     vaultRecoveryTarget: "remote" as const,
   };
 }
-function projectCapletsRootForEngineOptions(engineOptions: CapletsEngineOptions): string {
-  return engineOptions.projectConfigPath
-    ? resolveProjectCapletsRootForConfigPath(engineOptions.projectConfigPath)
-    : resolveProjectCapletsRoot();
-}
-
-function resolveProjectCapletsRootForConfigPath(projectConfigPath: string): string {
-  return dirname(projectConfigPath);
-}
 
 function createProjectBindingWebSocketServer(): WebSocketServerLike {
   return new WebSocketServer({ noServer: true }) as unknown as WebSocketServerLike;
-}
-
-export function routePath(base: string, path: string): string {
-  return base === "/" ? `/${path}` : `${base}/${path}`;
-}
-
-export type ServicePaths = {
-  base: string;
-  version: string;
-  version2: string;
-  adminV2: string;
-  adminV2Callback: string;
-  mcp: string;
-  control: string;
-  attachManifest: string;
-  attachSessions: string;
-  attachEvents: string;
-  attachInvoke: string;
-  projectBindings: string;
-  pairingExchange: string;
-  remoteLoginStart: string;
-  remoteLoginPoll: string;
-  remoteLoginRefresh: string;
-  remoteLoginComplete: string;
-  remoteLoginCancel: string;
-  remoteRefresh: string;
-  remoteClient: string;
-  dashboard: string;
-  dashboardApi: string;
-  dashboardV2: string;
-  dashboardPrivate: string;
-  dashboardLoginStart: string;
-  dashboardLoginPoll: string;
-  dashboardLoginComplete: string;
-  dashboardSession: string;
-  dashboardLogout: string;
-  health: string;
-};
-
-export function servicePaths(base: string): ServicePaths {
-  const version = routePath(base, "v1");
-  const version2 = routePath(base, "v2");
-  const adminV2 = routePath(version2, "admin");
-  const attach = routePath(version, "attach");
-  const remote = routePath(version, "remote");
-  const dashboard = routePath(base, "dashboard");
-  const dashboardApi = routePath(dashboard, "api");
-  const dashboardV2 = routePath(dashboardApi, "v2");
-  const dashboardPrivate = routePath(dashboardApi, "private");
-  const dashboardLogin = routePath(dashboardApi, "login");
-  return {
-    base,
-    version,
-    version2,
-    adminV2,
-    adminV2Callback: routePath(adminV2, "backend-auth-flows/:flowId/callback"),
-    mcp: routePath(version, "mcp"),
-    control: routePath(version, "admin"),
-    attachSessions: routePath(attach, "sessions"),
-    attachManifest: routePath(attach, "manifest"),
-    attachEvents: routePath(attach, "events"),
-    attachInvoke: routePath(attach, "invoke"),
-    projectBindings: routePath(attach, "project-bindings"),
-    pairingExchange: routePath(remote, "pairing/exchange"),
-    remoteLoginStart: routePath(remote, "login/start"),
-    remoteLoginPoll: routePath(remote, "login/poll"),
-    remoteLoginRefresh: routePath(remote, "login/refresh"),
-    remoteLoginComplete: routePath(remote, "login/complete"),
-    remoteLoginCancel: routePath(remote, "login/cancel"),
-    remoteRefresh: routePath(remote, "refresh"),
-    remoteClient: routePath(remote, "client"),
-    dashboard,
-    dashboardApi,
-    dashboardV2,
-    dashboardPrivate,
-    dashboardLoginStart: routePath(dashboardLogin, "start"),
-    dashboardLoginPoll: routePath(dashboardLogin, "poll"),
-    dashboardLoginComplete: routePath(dashboardLogin, "complete"),
-    dashboardSession: routePath(dashboardApi, "session"),
-    dashboardLogout: routePath(dashboardApi, "logout"),
-    health: routePath(version, "healthz"),
-  };
 }
 
 async function createHttpSession(
@@ -3018,7 +2905,6 @@ async function createHttpSession(
 function routeAuth(
   options: HttpServeOptions,
   remoteCredentialStore: RemoteCredentialStore | undefined,
-  basePath: string,
   requiredRole: RemoteClientRole | undefined,
   retainAuthenticatedClient:
     | ((request: Request, client: ValidatedRemoteClient) => void)
@@ -3041,9 +2927,7 @@ function routeAuth(
     }
     try {
       const client = await remoteCredentialStore.validateAccessToken({
-        hostUrl: remoteCredentialHostUrl(c.req.url, basePath, options, (name) =>
-          c.req.header(name),
-        ),
+        hostUrl: remoteCredentialHostUrl(c.req.url, options, (name) => c.req.header(name)),
         accessToken: token,
       });
       if (requiredRole !== undefined && !remoteClientRoleSatisfies(client.role, requiredRole)) {
@@ -3059,51 +2943,23 @@ function routeAuth(
   };
 }
 
-function adminV2BearerAuthProblemResponse(status: 401 | 403): Response {
-  const response = problemResponse(
-    new AdminV2PrincipalError(
-      status,
-      status === 401
-        ? "A valid Operator Client credential is required."
-        : "An Operator Client is required.",
-    ),
-    { status },
-  );
-  response.headers.set("Cache-Control", "no-store");
-  return response;
-}
-
-function currentHostDevelopmentGuard(options: HttpServeOptions): MiddlewareHandler {
-  if (options.auth.type !== "development_unauthenticated") {
-    return async (_c, next) => {
-      await next();
-    };
-  }
-  return async (c, next) => {
-    if (!isVerifiedLoopbackDevelopmentRequest(options, c.req.url, (name) => c.req.header(name))) {
-      return c.text("Forbidden", 403);
-    }
-    await next();
-  };
-}
-
 function isVerifiedLoopbackDevelopmentRequest(
   options: HttpServeOptions,
   requestUrl: string,
   header: (name: string) => string | undefined,
 ): boolean {
-  if (!options.loopback || !isLoopbackHost(options.host)) return false;
+  if (!options.loopback || !isLoopbackCurrentHostHostname(options.host)) return false;
   let requestHost: string;
   try {
     requestHost = new URL(requestUrl).hostname;
   } catch {
     return false;
   }
-  if (!isLoopbackHost(requestHost)) return false;
+  if (!isLoopbackCurrentHostHostname(requestHost)) return false;
   const host = header("host");
   if (!host) return true;
   try {
-    return isLoopbackHost(new URL(`http://${host}`).hostname);
+    return isLoopbackCurrentHostHostname(new URL(`http://${host}`).hostname);
   } catch {
     return false;
   }
@@ -3137,17 +2993,6 @@ function bearerTokenFromWebSocketProtocol(header: string | undefined): string | 
   } catch {
     return undefined;
   }
-}
-
-function parseRemoteCliRequest(value: unknown): RemoteCliRequest {
-  if (!isRecord(value) || typeof value.command !== "string" || !isRecord(value.arguments)) {
-    throw new CapletsError("REQUEST_INVALID", "Control request JSON must be an object.");
-  }
-  return { command: value.command, arguments: value.arguments };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringField(input: Record<string, unknown>, key: string): string {
@@ -3252,13 +3097,6 @@ function httpStatusForSafeError(code: CapletsErrorCode): number {
     return 401;
   }
   return 500;
-}
-
-function legacyPairingCodeUnsupportedError(): CapletsError {
-  return new CapletsError(
-    "REQUEST_INVALID",
-    "Self-hosted Pairing Code exchange is no longer supported. Run caplets remote login <url> and approve the pending login from the host.",
-  );
 }
 
 function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {

@@ -8,7 +8,7 @@ import { CapletsError } from "../errors";
 import { capletSetupContentHash } from "../setup/hash";
 import { runCapletSetup, type SetupSpawn } from "../setup/runner";
 import { createHostStorage, createHostStorageVaultResolver, type HostStorage } from "../storage";
-import type { SetupActor, SetupTargetKind } from "../setup/types";
+import { isSetupTargetKind, type SetupActor, type SetupTargetKind } from "../setup/types";
 
 export type CapletSetupCliOptions = {
   yes?: boolean;
@@ -25,13 +25,6 @@ export async function runCapletSetupCli(
   options: CapletSetupCliOptions = {},
 ): Promise<string> {
   const targetKind = resolveSetupTarget(options);
-  if (targetKind === "hosted_sandbox") {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Cloud setup runs through the Caplets Cloud API, not the local CLI runner",
-    );
-  }
-
   const configPath = options.configPath ?? resolveConfigPath();
   const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
   const storage =
@@ -122,6 +115,12 @@ export async function runCapletSetupCli(
 }
 
 function resolveSetupTarget(options: CapletSetupCliOptions): SetupTargetKind {
+  if (options.target !== undefined && !isSetupTargetKind(options.target)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "setup target must be one of: local_host, remote_host",
+    );
+  }
   if (options.target) return options.target;
   return options.remote ? "remote_host" : "local_host";
 }

@@ -15,6 +15,7 @@ import {
 } from "../storage/keyset-page";
 import {
   currentHostCatalogDetail,
+  currentHostCatalogEntriesPage,
   currentHostCatalogIndex,
   currentHostCatalogInstallSource,
   currentHostCatalogSearch,
@@ -93,29 +94,16 @@ export function createCurrentHostCatalogOperations(
     }),
     entriesPage: async (
       operation: CatalogEntriesPageOperation,
-    ): Promise<CatalogEntriesPageOutcome> => {
-      const { entries } = await currentHostCatalogIndex({ source: operation.source });
-      const query = operation.query?.trim().toLowerCase();
-      const filtered = query
-        ? entries.filter((entry) =>
-            [entry.id, entry.name, entry.description, ...entry.tags]
-              .join("\n")
-              .toLowerCase()
-              .includes(query),
-          )
-        : entries;
-      return {
-        kind: "catalog_entries_page",
-        page: keysetPage(
-          filtered,
-          operation.limit,
-          operation.sort,
-          operation.after?.entryKey,
-          (item) => item.entryKey,
-          (entryKey) => ({ entryKey }),
-        ),
-      };
-    },
+    ): Promise<CatalogEntriesPageOutcome> => ({
+      kind: "catalog_entries_page",
+      page: await currentHostCatalogEntriesPage({
+        source: operation.source,
+        limit: operation.limit,
+        sort: operation.sort,
+        ...(operation.query === undefined ? {} : { query: operation.query }),
+        ...(operation.after === undefined ? {} : { after: operation.after }),
+      }),
+    }),
     index: async (operation: CatalogIndexOperation): Promise<CatalogIndexOutcome> => ({
       kind: "catalog_index",
       ...(await currentHostCatalogIndex(operation)),
@@ -204,7 +192,7 @@ async function catalogInstallOutcome(
       : await installCatalogFiles(dependencies, repo, capletIds, operation);
     await dependencies.activateConfig?.();
     for (const entry of installed) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "catalog_installed",
         target: { type: "catalog", id: entry.id },
@@ -213,7 +201,7 @@ async function catalogInstallOutcome(
     }
     return { kind: "catalog_install", installed, setupActions };
   } catch (error) {
-    appendCatalogFailureActivities(dependencies, principal, "catalog_installed", capletIds);
+    await appendCatalogFailureActivities(dependencies, principal, "catalog_installed", capletIds);
     throw error;
   }
 }
@@ -243,7 +231,7 @@ async function catalogUpdateOutcome(
       : await updateCatalogFiles(dependencies, capletIds, operation);
     await dependencies.activateConfig?.();
     for (const entry of installed) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "catalog_updated",
         target: { type: "catalog", id: entry.id },
@@ -255,7 +243,7 @@ async function catalogUpdateOutcome(
     }
     return { kind: "catalog_update", installed, setupActions: [] };
   } catch (error) {
-    appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
+    await appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
     throw error;
   }
 }
@@ -328,14 +316,14 @@ function operator(principal: CurrentHostOperatorPrincipal) {
   return { role: "operator" as const, clientId: principal.clientId };
 }
 
-function appendCatalogFailureActivities(
+async function appendCatalogFailureActivities(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   action: "catalog_installed" | "catalog_updated",
   capletIds: string[] | undefined,
-): void {
+): Promise<void> {
   for (const id of capletIds && capletIds.length > 0 ? capletIds : ["current-host"]) {
-    appendFailureActivity(dependencies, principal, action, { type: "catalog", id });
+    await appendFailureActivity(dependencies, principal, action, { type: "catalog", id });
   }
 }
 
@@ -386,13 +374,13 @@ function requiredCapletId(value: unknown): string {
   throw new CapletsError("REQUEST_INVALID", "Caplet ID is invalid.");
 }
 
-function appendFailureActivity(
+async function appendFailureActivity(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   action: "catalog_installed" | "catalog_updated",
   target: { type: "catalog"; id: string },
-): void {
-  dependencies.activityLog.append({
+): Promise<void> {
+  await dependencies.activityLog.append({
     actorClientId: principal.clientId,
     action,
     outcome: "failure",

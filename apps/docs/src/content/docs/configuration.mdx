@@ -29,7 +29,6 @@ User config can define optional HTTP `serve` defaults for foreground `caplets se
   "serve": {
     "host": "127.0.0.1",
     "port": 5387,
-    "path": "/",
     "publicOrigins": ["https://caplets.example.com"]
   },
   "mcpServers": {}
@@ -51,12 +50,17 @@ public origins.
 
 `caplets setup` remains safer than a hand-written MCP server. Local setup always prepares a
 credential-free loopback daemon before writing agent config, even if user `serve` defaults
-describe a broader foreground or self-hosted HTTP runtime.
+describe a broader foreground Current Host.
 
-These same `serve` defaults also shape the browser dashboard for self-hosted HTTP runtimes. In
-particular, `serve.path` changes the dashboard URL prefix, and `serve.publicOrigins` affects the
-public dashboard origin used for browser-facing request identity and session/cookie behavior. See
-[Dashboard](/dashboard/) if you are exposing host administration through the browser.
+Current Host URL inputs such as `CAPLETS_SERVER_URL`, upstream URLs, Remote Profile URLs, and native
+remote selectors are origins: scheme, host, and optional port only. A trailing root slash is
+normalized away; non-root paths, queries, fragments, and embedded credentials are rejected rather
+than trimmed. Protocol paths are fixed at the origin root and are not `serve` configuration.
+
+The dashboard always lives under `/dashboard`, with its private ceremonies under
+`/dashboard/api/*`. A reverse proxy must expose `/.well-known/caplets`, `/api`, exact `/mcp`, and
+`/dashboard` at the origin root; prefix-only hosting is unsupported. `serve.publicOrigins` affects
+trusted browser request identity, not route placement.
 
 ### Authoritative Host State
 

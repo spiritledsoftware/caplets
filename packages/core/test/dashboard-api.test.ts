@@ -23,13 +23,13 @@ describe("dashboard API read model", () => {
       clientLabel: "Waiting Browser",
     });
 
-    const response = await dashboardGet(setup, "/dashboard/api/v2/host");
+    const response = await dashboardGet(setup, "/api/v2/admin/host");
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       host: {
         current: true,
-        baseUrl: "http://127.0.0.1:5387/",
+        baseUrl: "http://127.0.0.1:5387",
         dashboardUrl: "http://127.0.0.1:5387/dashboard",
         version: expect.any(String),
       },
@@ -42,7 +42,7 @@ describe("dashboard API read model", () => {
       }),
     });
     expect(
-      JSON.stringify(await (await dashboardGet(setup, "/dashboard/api/v2/host")).json()),
+      JSON.stringify(await (await dashboardGet(setup, "/api/v2/admin/host")).json()),
     ).not.toContain(setup.context.configPath);
 
     await setup.engine.close();
@@ -58,22 +58,22 @@ describe("dashboard API read model", () => {
       clientFingerprint: "fp_waiting",
     });
 
-    const clients = await dashboardGet(setup, "/dashboard/api/v2/remote-clients");
+    const clients = await dashboardGet(setup, "/api/v2/admin/remote-clients");
     expect(clients.status).toBe(200);
     const clientsText = await clients.text();
     expect(clientsText).toContain('"role":"operator"');
     expect(clientsText).not.toContain("cap_remote_access_");
     expect(clientsText).not.toContain("cap_remote_refresh_");
 
-    const pending = await dashboardGet(setup, "/dashboard/api/v2/remote-login-requests");
+    const pending = await dashboardGet(setup, "/api/v2/admin/remote-login-requests");
     expect(pending.status).toBe(200);
     const pendingBody = (await pending.json()) as { items: Array<Record<string, unknown>> };
     expect(pendingBody.items).toContainEqual(
       expect.objectContaining({ requestedRole: "operator", clientFingerprint: "fp_waiting" }),
     );
 
-    const vaultValues = await dashboardGet(setup, "/dashboard/api/v2/vault-values");
-    const vaultGrants = await dashboardGet(setup, "/dashboard/api/v2/vault-grants");
+    const vaultValues = await dashboardGet(setup, "/api/v2/admin/vault-values");
+    const vaultGrants = await dashboardGet(setup, "/api/v2/admin/vault-grants");
     expect(vaultValues.status).toBe(200);
     expect(vaultGrants.status).toBe(200);
     const vaultText = `${await vaultValues.text()}${await vaultGrants.text()}`;
@@ -88,18 +88,18 @@ describe("dashboard API read model", () => {
   it("returns Project Binding and runtime placeholders as mobile-friendly objects", async () => {
     const setup = await authenticatedDashboard();
 
-    const runtime = await dashboardGet(setup, "/dashboard/api/v2/runtime");
+    const runtime = await dashboardGet(setup, "/api/v2/admin/runtime");
     expect(runtime.status).toBe(200);
     await expect(runtime.json()).resolves.toMatchObject({
       runtime: {
         status: "ok",
         bind: "127.0.0.1:5387",
-        baseUrl: "http://127.0.0.1:5387/",
+        baseUrl: "http://127.0.0.1:5387",
       },
       daemon: { restartAvailable: false, stopAvailable: false },
     });
 
-    const binding = await dashboardGet(setup, "/dashboard/api/v2/project-binding");
+    const binding = await dashboardGet(setup, "/api/v2/admin/project-binding");
     expect(binding.status).toBe(200);
     await expect(binding.json()).resolves.toMatchObject({
       state: "disconnected",
@@ -118,11 +118,11 @@ describe("dashboard API read model", () => {
     const importedBody = (await imported.json()) as { headGeneration: number };
     expect(importedBody.headGeneration).toBe(1);
 
-    const listed = await dashboardGet(setup, "/dashboard/api/v2/caplet-records");
+    const listed = await dashboardGet(setup, "/api/v2/admin/caplet-records");
     await expect(listed.json()).resolves.toMatchObject({
       items: [{ id: "stored", headGeneration: 1 }],
     });
-    const detailPath = "/dashboard/api/v2/caplet-records/stored";
+    const detailPath = "/api/v2/admin/caplet-records/stored";
     const initialDetail = await dashboardGet(setup, detailPath);
     const initialEtag = initialDetail.headers.get("etag");
     if (!initialEtag) throw new Error("Missing initial Caplet Record ETag");
@@ -138,10 +138,7 @@ describe("dashboard API read model", () => {
       id: "stored",
       headGeneration: 2,
     });
-    const revisions = await dashboardGet(
-      setup,
-      "/dashboard/api/v2/caplet-records/stored/revisions",
-    );
+    const revisions = await dashboardGet(setup, "/api/v2/admin/caplet-records/stored/revisions");
     await expect(revisions.json()).resolves.toMatchObject({
       items: [{ sequence: 1 }, { sequence: 2 }],
     });
@@ -181,7 +178,7 @@ describe("dashboard API read model", () => {
       throw new Error("collaborator failed with cap_remote_access_sensitive_value");
     });
 
-    const response = await dashboardGet(setup, "/dashboard/api/v2/caplets");
+    const response = await dashboardGet(setup, "/api/v2/admin/caplets");
 
     expect(response.status).toBe(500);
     const body = await response.text();
@@ -307,19 +304,17 @@ async function dashboardCreateCapletRecord(
   const body = new FormData();
   body.append("manifest", manifest);
   body.append("file", new Blob([bytes], { type: "text/markdown" }), "CAPLET.md");
-  return await setup.app.request(
-    `http://127.0.0.1:5387/dashboard/api/v2/caplet-records/${id}/bundle`,
-    {
-      method: "PUT",
-      headers: {
-        cookie: setup.cookie,
-        "x-caplets-csrf": setup.csrfToken,
-        "idempotency-key": crypto.randomUUID(),
-        "if-none-match": "*",
-      },
-      body,
+  return await setup.app.request(`http://127.0.0.1:5387/api/v2/admin/caplet-records/${id}/bundle`, {
+    method: "PUT",
+    headers: {
+      cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
+      "x-caplets-csrf": setup.csrfToken,
+      "idempotency-key": crypto.randomUUID(),
+      "if-none-match": "*",
     },
-  );
+    body,
+  });
 }
 
 async function dashboardConditionalMutation(
@@ -337,6 +332,7 @@ async function dashboardConditionalMutation(
     method,
     headers: {
       cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
       "x-caplets-csrf": setup.csrfToken,
       "content-type": method === "PATCH" ? "application/merge-patch+json" : "application/json",
       "idempotency-key": crypto.randomUUID(),
@@ -351,7 +347,7 @@ async function dashboardGet(
   path: string,
 ) {
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
-    headers: { cookie: setup.cookie },
+    headers: { cookie: setup.cookie, "sec-fetch-site": "same-origin" },
   });
 }
 
@@ -402,7 +398,6 @@ function httpOptions(stateDir: string): HttpServeOptions {
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     auth: { type: "remote_credentials" },
     remoteCredentialStateDir: stateDir,
     allowUnauthenticatedHttp: false,

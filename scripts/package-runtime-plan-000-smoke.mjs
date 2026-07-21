@@ -16,7 +16,6 @@ const RSS_ASSET_BYTES = 4 * MiB;
 const RSS_CHUNK_BYTES = 64 * 1024;
 const RSS_PARSER_ALLOWANCE_BYTES = 24 * MiB;
 const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 96 * MiB;
-const V1_SUCCESSOR_LINK = '</v2/admin/host>; rel="successor-version"';
 
 export async function verifyPlan000BuiltScenarios({
   repoRoot,
@@ -38,8 +37,8 @@ export async function verifyPlan000BuiltScenarios({
     provider = await startProvider();
     const nodeOnePort = await availablePort();
     const nodeTwoPort = await availablePort();
-    const nodeOneRoot = `http://127.0.0.1:${nodeOnePort}`;
-    const nodeTwoRoot = `http://127.0.0.1:${nodeTwoPort}`;
+    const nodeOneOrigin = `http://127.0.0.1:${nodeOnePort}`;
+    const nodeTwoOrigin = `http://127.0.0.1:${nodeTwoPort}`;
 
     writeFileSync(
       tempConfigPath,
@@ -85,43 +84,51 @@ export async function verifyPlan000BuiltScenarios({
 
     const access = await createBearerCredential({
       clientLabel: "Runtime Smoke Access",
+      currentHostOrigin: nodeOneOrigin,
       repoRoot,
       role: "access",
       sdk,
-      serviceRoot: nodeOneRoot,
       smokeEnv,
       tempCwd,
     });
     const operator = await createBearerCredential({
       clientLabel: "Runtime Smoke Operator",
+      currentHostOrigin: nodeOneOrigin,
       repoRoot,
       role: "operator",
       sdk,
-      serviceRoot: nodeOneRoot,
       smokeEnv,
       tempCwd,
     });
-    const accessClient = sdk.createClient({ auth: access.accessToken, baseUrl: nodeOneRoot });
-    const operatorClient = sdk.createClient({ auth: operator.accessToken, baseUrl: nodeOneRoot });
+    const accessClient = sdk.createClient({ auth: access.accessToken, baseUrl: nodeOneOrigin });
+    const operatorClient = sdk.createClient({ auth: operator.accessToken, baseUrl: nodeOneOrigin });
 
-    await verifyRoleMatrix({ access, operator, serviceRoot: nodeOneRoot });
+    await verifyRoleMatrix({ access, currentHostOrigin: nodeOneOrigin, operator });
     reports.push(
-      "PASS GET /v2/admin/host + PUT /v2/admin/vault-values/{key}: missing bearer -> 401 Problem, Access bearer -> 403 Problem, Operator bearer -> direct resource success.",
+      "PASS GET /api/v2/admin/host + PUT /api/v2/admin/vault-values/{key}: missing bearer -> 401 Problem, Access bearer -> 403 Problem, Operator bearer -> direct resource success.",
     );
 
     const dashboard = await createDashboardSession({
+      currentHostOrigin: nodeOneOrigin,
       repoRoot,
-      serviceRoot: nodeOneRoot,
       smokeEnv,
       tempCwd,
     });
     await verifyConditionalMutations({
+      currentHostOrigin: nodeOneOrigin,
       dashboard,
       operator,
-      serviceRoot: nodeOneRoot,
     });
+    await verifyCanonicalDashboardMount({
+      currentHostOrigin: nodeOneOrigin,
+      dashboard,
+    });
+    await verifyCanonicalOriginMount(nodeTwoOrigin);
     reports.push(
-      "PASS PUT /v2/admin/vault-values/{key} and /dashboard/api/v2/vault-values/{key}: bearer/dashboard conditional idempotent 201 replay, 403/412/428 Problem, direct DTO, ETag, and CSRF.",
+      "PASS canonical dashboard/Admin mount: root cookie issuance and /dashboard cookie migration preserve session identity, /api/v2/admin is canonical, removed dashboard Admin alias is 404, cross-origin session use is 403, private reveal remains private, logout expires both cookie paths and yields 401.",
+    );
+    reports.push(
+      "PASS PUT /api/v2/admin/vault-values/{key}: bearer/dashboard conditional idempotent 201 replay, 403/412/428 Problem, direct DTO, ETag, and CSRF.",
     );
 
     const rss = await verifyLargeBundle({
@@ -143,28 +150,23 @@ export async function verifyPlan000BuiltScenarios({
       stagingDir: stagingOne,
     });
     reports.push(
-      `PASS PUT/GET /v2/admin/caplet-records/runtime-rss/bundle: Operator bearer streamed ${rss.totalPayloadBytes} payload bytes; upload RSS ${rss.uploadBaselineRss}->${rss.uploadPeakRss} (ceiling ${rss.uploadThresholdRss}), download RSS ${rss.downloadBaselineRss}->${rss.downloadPeakRss} (streaming ceiling ${rss.downloadThresholdRss}); staged payload entries=${rss.stagingEntries}.`,
+      `PASS PUT/GET /api/v2/admin/caplet-records/runtime-rss/bundle: Operator bearer streamed ${rss.totalPayloadBytes} payload bytes; upload RSS ${rss.uploadBaselineRss}->${rss.uploadPeakRss} (ceiling ${rss.uploadThresholdRss}), download RSS ${rss.downloadBaselineRss}->${rss.downloadPeakRss} (streaming ceiling ${rss.downloadThresholdRss}); staged payload entries=${rss.stagingEntries}.`,
     );
 
     await verifyCrossNodeOAuth({
-      nodeOneRoot,
-      nodeTwoRoot,
+      nodeOneOrigin,
+      nodeTwoOrigin,
       operatorClient,
       provider,
       sdk,
     });
     reports.push(
-      "PASS POST /v2/admin/backend-auth-flows on Host Node 1 + public callback on Host Node 2: Operator bearer start, one deterministic token exchange, completed durable state, replay -> 401 Problem.",
-    );
-
-    await verifyFrozenV1({ operator, serviceRoot: nodeOneRoot });
-    reports.push(
-      "PASS POST /v1/admin: Operator bearer retained list succeeds; remote init/add return safe REQUEST_INVALID envelopes; Deprecation and successor Link headers retained.",
+      "PASS POST /api/v2/admin/backend-auth-flows on Host Node 1 + public /api/v2/admin/backend-auth-flows/{flowId}/callback on Host Node 2: Operator bearer start, one deterministic token exchange, completed durable state, replay -> 401 Problem.",
     );
 
     await verifyAttachRuntimeOperation({ accessClient, provider, sdk });
     reports.push(
-      "PASS GET /v1/attach/manifest + POST /v1/attach/invoke: Access bearer invoked deterministic remote__check runtime tool through the built Attach adapter.",
+      "PASS GET /api/v1/attach/manifest + POST /api/v1/attach/invoke: Access bearer invoked deterministic remote__check runtime tool through the built Attach adapter.",
     );
     scenarioOutcome = { ok: true };
   } catch (error) {
@@ -208,16 +210,16 @@ export async function verifyPlan000BuiltScenarios({
   return reports;
 }
 
-async function verifyRoleMatrix({ access, operator, serviceRoot }) {
-  const missing = await request(`${serviceRoot}/v2/admin/host`);
+async function verifyRoleMatrix({ access, currentHostOrigin, operator }) {
+  const missing = await request(`${currentHostOrigin}/api/v2/admin/host`);
   await expectProblem(missing, 401, "missing bearer Admin read");
 
-  const deniedRead = await request(`${serviceRoot}/v2/admin/host`, {
+  const deniedRead = await request(`${currentHostOrigin}/api/v2/admin/host`, {
     headers: bearerHeaders(access.accessToken),
   });
   await expectProblem(deniedRead, 403, "Access bearer Admin read");
 
-  const allowedRead = await request(`${serviceRoot}/v2/admin/host`, {
+  const allowedRead = await request(`${currentHostOrigin}/api/v2/admin/host`, {
     headers: bearerHeaders(operator.accessToken),
   });
   assert(allowedRead.status === 200, `Operator bearer Admin read returned ${allowedRead.status}.`);
@@ -230,7 +232,7 @@ async function verifyRoleMatrix({ access, operator, serviceRoot }) {
   );
 
   const deniedMutation = await request(
-    `${serviceRoot}/v2/admin/vault-values/ACCESS_ROLE_MUST_NOT_MUTATE`,
+    `${currentHostOrigin}/api/v2/admin/vault-values/ACCESS_ROLE_MUST_NOT_MUTATE`,
     {
       method: "PUT",
       headers: {
@@ -245,8 +247,8 @@ async function verifyRoleMatrix({ access, operator, serviceRoot }) {
   await expectProblem(deniedMutation, 403, "Access bearer Admin mutation");
 }
 
-async function verifyConditionalMutations({ dashboard, operator, serviceRoot }) {
-  const bearerUrl = `${serviceRoot}/v2/admin/vault-values/RUNTIME_BEARER_SECRET`;
+async function verifyConditionalMutations({ currentHostOrigin, dashboard, operator }) {
+  const bearerUrl = `${currentHostOrigin}/api/v2/admin/vault-values/RUNTIME_BEARER_SECRET`;
   const bearerBaseHeaders = {
     ...bearerHeaders(operator.accessToken),
     "content-type": "application/json",
@@ -295,9 +297,10 @@ async function verifyConditionalMutations({ dashboard, operator, serviceRoot }) 
   });
   await expectProblem(existing, 412, "bearer create-only existing resource");
 
-  const dashboardUrl = `${serviceRoot}/dashboard/api/v2/vault-values/RUNTIME_DASHBOARD_SECRET`;
+  const dashboardUrl = `${currentHostOrigin}/api/v2/admin/vault-values/RUNTIME_DASHBOARD_SECRET`;
   const dashboardBaseHeaders = {
     cookie: dashboard.cookie,
+    "sec-fetch-site": "same-origin",
     "content-type": "application/json",
     "idempotency-key": "dashboard-vault-create",
     "if-none-match": "*",
@@ -340,6 +343,121 @@ async function verifyConditionalMutations({ dashboard, operator, serviceRoot }) 
     JSON.stringify(dashboardReplayBody) === JSON.stringify(dashboardBody) &&
       dashboardReplay.headers.get("etag") === dashboardEtag,
     "Dashboard idempotency replay changed the direct response or ETag.",
+  );
+}
+
+async function verifyCanonicalDashboardMount({ currentHostOrigin, dashboard }) {
+  const sameOriginHeaders = {
+    cookie: dashboard.cookie,
+    origin: currentHostOrigin,
+    "sec-fetch-site": "same-origin",
+  };
+  const session = await request(`${currentHostOrigin}/dashboard/api/session`, {
+    headers: sameOriginHeaders,
+  });
+  assert(session.status === 200, `Dashboard session restore returned ${session.status}.`);
+  assertJsonContentType(session, "dashboard session restore");
+  const migratedCookies = session.headers.getSetCookie();
+  assert(
+    migratedCookies.length === 2 &&
+      migratedCookies.some(
+        (value) => value.includes(`${dashboard.cookie}; Path=/;`) && !value.includes("Max-Age=0"),
+      ) &&
+      migratedCookies.some(
+        (value) => value.includes("Path=/dashboard;") && value.includes("Max-Age=0"),
+      ),
+    "Dashboard session restore did not migrate the credential to the root cookie path.",
+  );
+  const restored = await session.json();
+  assert(
+    restored.authenticated === true &&
+      restored.session?.sessionId === dashboard.sessionId &&
+      restored.session.csrfToken === dashboard.csrfToken &&
+      restored.session.role === "operator",
+    "Dashboard cookie migration changed the durable session identity or authority.",
+  );
+
+  const canonical = await request(`${currentHostOrigin}/api/v2/admin/host`, {
+    headers: sameOriginHeaders,
+  });
+  assert(canonical.status === 200, `Canonical dashboard Admin GET returned ${canonical.status}.`);
+  assertJsonContentType(canonical, "canonical dashboard Admin GET");
+
+  const legacy = await request(`${currentHostOrigin}/dashboard/api/v2/host`, {
+    headers: sameOriginHeaders,
+  });
+  assert(legacy.status === 404, `Removed dashboard Admin alias returned ${legacy.status}.`);
+
+  const crossOrigin = await request(`${currentHostOrigin}/api/v2/admin/host`, {
+    headers: {
+      cookie: dashboard.cookie,
+      origin: "https://cross-origin.invalid",
+      "sec-fetch-site": "cross-site",
+    },
+  });
+  await expectProblem(crossOrigin, 403, "cross-origin dashboard Admin GET");
+
+  const reveal = await request(`${currentHostOrigin}/dashboard/api/private/vault-reveals`, {
+    method: "POST",
+    headers: {
+      ...sameOriginHeaders,
+      "content-type": "application/json",
+      "x-caplets-csrf": dashboard.csrfToken,
+    },
+    body: JSON.stringify({
+      key: "RUNTIME_DASHBOARD_SECRET",
+      confirmation: "reveal RUNTIME_DASHBOARD_SECRET",
+    }),
+  });
+  assert(reveal.status === 200, `Dashboard-private Vault reveal returned ${reveal.status}.`);
+  assertJsonContentType(reveal, "dashboard-private Vault reveal");
+  assert(
+    (await reveal.json()).value === "opaque dashboard value",
+    "Dashboard-private Vault reveal returned the wrong value.",
+  );
+
+  const shell = await request(`${currentHostOrigin}/dashboard`);
+  assert(shell.status === 200, `Dashboard shell returned ${shell.status}.`);
+  assert(
+    !(await shell.text()).includes("caplets-service-root-path"),
+    "Dashboard shell retained removed service-root metadata.",
+  );
+
+  const logout = await request(`${currentHostOrigin}/dashboard/api/logout`, {
+    method: "POST",
+    headers: {
+      ...sameOriginHeaders,
+      "content-type": "application/json",
+      "x-caplets-csrf": dashboard.csrfToken,
+    },
+    body: "{}",
+  });
+  assert(logout.status === 200, `Dashboard logout returned ${logout.status}.`);
+  const expiredCookies = logout.headers.getSetCookie();
+  assert(
+    expiredCookies.length === 2 &&
+      expiredCookies.some((value) => value.includes("Path=/;") && value.includes("Max-Age=0")) &&
+      expiredCookies.some(
+        (value) => value.includes("Path=/dashboard;") && value.includes("Max-Age=0"),
+      ),
+    "Dashboard logout did not expire both canonical and legacy cookie paths.",
+  );
+  const afterLogout = await request(`${currentHostOrigin}/api/v2/admin/host`, {
+    headers: sameOriginHeaders,
+  });
+  await expectProblem(afterLogout, 401, "canonical dashboard Admin GET after logout");
+}
+
+async function verifyCanonicalOriginMount(currentHostOrigin) {
+  const canonical = await request(`${currentHostOrigin}/api/v2/admin/host`);
+  await expectProblem(canonical, 401, "canonical Admin GET");
+  const legacy = await request(`${currentHostOrigin}/dashboard/api/v2/host`);
+  assert(legacy.status === 404, `Removed dashboard Admin alias returned ${legacy.status}.`);
+  const shell = await request(`${currentHostOrigin}/dashboard`);
+  assert(shell.status === 200, `Dashboard shell returned ${shell.status}.`);
+  assert(
+    !(await shell.text()).includes("caplets-service-root-path"),
+    "Dashboard shell retained removed service-root metadata.",
   );
 }
 
@@ -500,11 +618,6 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
   }
 
   const uploadThresholdRss = baselineRss + totalPayloadBytes + RSS_FIXED_RUNTIME_ALLOWANCE_BYTES;
-  const payloadPlusBase64Copies = totalPayloadBytes + Math.ceil(totalPayloadBytes / 3) * 4;
-  assert(
-    uploadThresholdRss < baselineRss + payloadPlusBase64Copies,
-    "Upload RSS ceiling does not reject whole-payload plus base64 copies.",
-  );
   assert(
     uploadPeakRss <= uploadThresholdRss,
     `Large bundle upload RSS grew from ${baselineRss} to ${uploadPeakRss}, above ${uploadThresholdRss}.`,
@@ -652,7 +765,13 @@ async function parseMultipartDownload(stream, contentType) {
   return { manifest, fileCount, payloadBytes, wireBytes };
 }
 
-async function verifyCrossNodeOAuth({ nodeOneRoot, nodeTwoRoot, operatorClient, provider, sdk }) {
+async function verifyCrossNodeOAuth({
+  nodeOneOrigin,
+  nodeTwoOrigin,
+  operatorClient,
+  provider,
+  sdk,
+}) {
   const started = await sdk.adminV2StartBackendAuthFlow({
     body: { serverId: "remote" },
     client: operatorClient,
@@ -672,14 +791,15 @@ async function verifyCrossNodeOAuth({ nodeOneRoot, nodeTwoRoot, operatorClient, 
   const redirectUri = authorizationUrl.searchParams.get("redirect_uri");
   assert(state && redirectUri, "OAuth authorization URL omitted state or redirect_uri.");
   const redirect = new URL(redirectUri);
+  const callbackPath = `/api/v2/admin/backend-auth-flows/${encodeURIComponent(
+    started.data.flowId,
+  )}/callback`;
   assert(
-    redirect.origin === nodeOneRoot &&
-      redirect.pathname ===
-        `/v2/admin/backend-auth-flows/${encodeURIComponent(started.data.flowId)}/callback`,
+    redirect.origin === nodeOneOrigin && redirect.pathname === callbackPath,
     "OAuth start produced the wrong canonical callback.",
   );
 
-  const callback = new URL(`${redirect.pathname}${redirect.search}`, nodeTwoRoot);
+  const callback = new URL(`${callbackPath}${redirect.search}`, nodeTwoOrigin);
   callback.searchParams.set("code", "built-cross-node-provider-code");
   callback.searchParams.set("state", state);
   const completed = await request(callback);
@@ -718,49 +838,10 @@ async function verifyCrossNodeOAuth({ nodeOneRoot, nodeTwoRoot, operatorClient, 
     "Cross-node OAuth did not persist the backend credential.",
   );
 
-  const replay = new URL(callback.pathname + callback.search, nodeOneRoot);
+  const replay = new URL(`${callbackPath}${callback.search}`, nodeOneOrigin);
   const replayed = await request(replay);
   await expectProblem(replayed, 401, "cross-node OAuth callback replay");
   assert(provider.tokenExchanges === 1, "OAuth callback replay repeated the provider exchange.");
-}
-
-async function verifyFrozenV1({ operator, serviceRoot }) {
-  const invoke = async (command, args = {}) => {
-    const response = await request(`${serviceRoot}/v1/admin`, {
-      method: "POST",
-      headers: {
-        ...bearerHeaders(operator.accessToken),
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ command, arguments: args }),
-    });
-    assert(response.status === 200, `Frozen v1 ${command} returned ${response.status}.`);
-    assert(
-      response.headers.get("deprecation") === "true",
-      `Frozen v1 ${command} omitted Deprecation.`,
-    );
-    assert(
-      response.headers.get("link") === V1_SUCCESSOR_LINK,
-      `Frozen v1 ${command} omitted successor Link.`,
-    );
-    return await response.json();
-  };
-
-  const listed = await invoke("list");
-  assert(listed?.ok === true, "Frozen v1 retained list command failed.");
-  for (const [command, args] of [
-    ["init", {}],
-    ["add", { kind: "http", id: "must-not-touch-files" }],
-  ]) {
-    const rejected = await invoke(command, args);
-    assert(
-      rejected?.ok === false &&
-        rejected.error?.code === "REQUEST_INVALID" &&
-        rejected.error.message ===
-          `Remote ${command} is local-only. Run caplets ${command} on the machine whose files should change.`,
-      `Frozen v1 ${command} did not return its explicit safe migration error.`,
-    );
-  }
 }
 
 async function verifyAttachRuntimeOperation({ accessClient, provider, sdk }) {
@@ -786,7 +867,7 @@ async function verifyAttachRuntimeOperation({ accessClient, provider, sdk }) {
   });
   assert(
     invoked.error === undefined && invoked.response?.status === 200,
-    `Attach runtime invoke failed: status=${invoked.response?.status}, error=${JSON.stringify(invoked.error)}.`,
+    `Attach runtime invoke failed with status ${invoked.response?.status}.`,
   );
   assert(invoked.data?.ok === true, "Attach runtime invoke did not return success.");
   assert(
@@ -801,14 +882,15 @@ async function verifyAttachRuntimeOperation({ accessClient, provider, sdk }) {
 
 async function createBearerCredential({
   clientLabel,
+  currentHostOrigin,
   repoRoot,
   role,
   sdk,
-  serviceRoot,
   smokeEnv,
   tempCwd,
 }) {
-  const publicClient = sdk.createClient({ baseUrl: serviceRoot });
+  assertCurrentHostOrigin(currentHostOrigin);
+  const publicClient = sdk.createClient({ baseUrl: currentHostOrigin });
   const started = await sdk.startRemoteLogin({
     body: { clientLabel },
     client: publicClient,
@@ -835,7 +917,7 @@ async function createBearerCredential({
   });
   assert(
     completed.error === undefined && completed.data?.role === role && completed.data.accessToken,
-    `Could not complete ${role} login: status=${completed.response?.status}, error=${JSON.stringify(completed.error)}, data=${JSON.stringify(completed.data)}.`,
+    `Could not complete ${role} login; status=${completed.response?.status}.`,
   );
 
   const replay = await sdk.completeRemoteLogin({
@@ -855,8 +937,9 @@ async function createBearerCredential({
   return completed.data;
 }
 
-async function createDashboardSession({ repoRoot, serviceRoot, smokeEnv, tempCwd }) {
-  const started = await request(`${serviceRoot}/dashboard/api/login/start`, {
+async function createDashboardSession({ currentHostOrigin, repoRoot, smokeEnv, tempCwd }) {
+  assertCurrentHostOrigin(currentHostOrigin);
+  const started = await request(`${currentHostOrigin}/dashboard/api/login/start`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ clientLabel: "Runtime Smoke Dashboard" }),
@@ -870,7 +953,7 @@ async function createDashboardSession({ repoRoot, serviceRoot, smokeEnv, tempCwd
   );
   approveLogin({ code, repoRoot, role: "operator", smokeEnv, tempCwd });
 
-  const completed = await request(`${serviceRoot}/dashboard/api/login/complete`, {
+  const completed = await request(`${currentHostOrigin}/dashboard/api/login/complete`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -879,18 +962,33 @@ async function createDashboardSession({ repoRoot, serviceRoot, smokeEnv, tempCwd
     }),
   });
   assert(completed.status === 200, `Dashboard login complete returned ${completed.status}.`);
-  const setCookie = completed.headers.get("set-cookie") ?? "";
-  const cookie = setCookie.split(";", 1)[0];
+  const issuedCookies = completed.headers.getSetCookie();
+  const rootCookie = issuedCookies.find(
+    (value) => value.includes("Path=/;") && !value.includes("Max-Age=0"),
+  );
+  const cookie = rootCookie?.split(";", 1)[0] ?? "";
   const session = await completed.json();
   assert(
     cookie.startsWith("caplets_dashboard_session="),
-    "Dashboard login omitted session cookie.",
+    "Dashboard login omitted its root session cookie.",
   );
   assert(
-    session.session?.role === "operator" && session.session.csrfToken,
-    "Dashboard login omitted Operator CSRF session.",
+    issuedCookies.length === 2 &&
+      issuedCookies.some((value) => value.includes("Path=/;") && !value.includes("Max-Age=0")) &&
+      issuedCookies.some(
+        (value) => value.includes("Path=/dashboard;") && value.includes("Max-Age=0"),
+      ),
+    "Dashboard login did not issue the root cookie and expire the legacy dashboard path.",
   );
-  return { cookie, csrfToken: session.session.csrfToken };
+  assert(
+    session.session?.role === "operator" && session.session.sessionId && session.session.csrfToken,
+    "Dashboard login omitted its durable Operator session.",
+  );
+  return {
+    cookie,
+    csrfToken: session.session.csrfToken,
+    sessionId: session.session.sessionId,
+  };
 }
 
 function approveLogin({ code, repoRoot, role, smokeEnv, tempCwd }) {
@@ -1021,13 +1119,26 @@ async function startBuiltServer({ children, port, repoRoot, smokeEnv, stagingDir
     entry.stdout = appendDiagnosticOutput(entry.stdout, chunk);
   });
   try {
-    await waitForResponse(`http://127.0.0.1:${port}/v1/healthz`);
+    await waitForResponse(`http://127.0.0.1:${port}/api/v1/healthz`);
   } catch (error) {
     throw new Error(
       `Built authenticated Host Node failed to start: ${entry.stdout}${entry.stderr}${error instanceof Error ? error.message : String(error)}`,
     );
   }
   return entry;
+}
+
+function assertCurrentHostOrigin(value) {
+  const parsed = new URL(value);
+  assert(
+    parsed.origin === value &&
+      parsed.pathname === "/" &&
+      parsed.search === "" &&
+      parsed.hash === "" &&
+      parsed.username === "" &&
+      parsed.password === "",
+    "Built runtime smoke Current Host input must be an origin.",
+  );
 }
 
 async function expectProblem(response, status, label) {

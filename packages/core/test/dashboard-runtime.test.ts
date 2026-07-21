@@ -17,22 +17,22 @@ describe("dashboard runtime, diagnostics, logs, and events APIs", () => {
   it("returns safe runtime, logs, diagnostics, and disabled restart state", async () => {
     const setup = await authenticatedDashboard();
 
-    const runtime = await dashboardGet(setup, "/dashboard/api/v2/runtime");
+    const runtime = await dashboardGet(setup, "/api/v2/admin/runtime");
     expect(runtime.status).toBe(200);
     await expect(runtime.json()).resolves.toMatchObject({
       runtime: { status: "ok", bind: "127.0.0.1:5387" },
       daemon: { restartAvailable: false, stopAvailable: false, uninstallAvailable: false },
     });
 
-    const logs = await dashboardGet(setup, "/dashboard/api/v2/logs?limit=5");
+    const logs = await dashboardGet(setup, "/api/v2/admin/logs?limit=5");
     expect(logs.status).toBe(200);
     await expect(logs.json()).resolves.toEqual({ items: [] });
 
-    const diagnostics = await dashboardGet(setup, "/dashboard/api/v2/diagnostics");
+    const diagnostics = await dashboardGet(setup, "/api/v2/admin/diagnostics");
     expect(diagnostics.status).toBe(200);
     await expect(diagnostics.json()).resolves.toMatchObject({ status: "ok", diagnostics: [] });
 
-    const restart = await dashboardPost(setup, "/dashboard/api/v2/runtime-restarts", {});
+    const restart = await dashboardPost(setup, "/api/v2/admin/runtime-restarts", {});
     expect(restart.status).toBe(503);
     expect(restart.headers.get("content-type")).toBe("application/problem+json");
     await expect(restart.json()).resolves.toMatchObject({
@@ -47,7 +47,7 @@ describe("dashboard runtime, diagnostics, logs, and events APIs", () => {
 
   it("suppresses unchanged reload snapshots and closes the event stream during Host shutdown", async () => {
     const setup = await authenticatedDashboard();
-    const response = await dashboardGet(setup, "/dashboard/api/v2/events?after=0");
+    const response = await dashboardGet(setup, "/api/v2/admin/events?after=0");
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     const reader = response.body?.getReader();
@@ -113,7 +113,7 @@ async function authenticatedDashboard() {
 
 async function dashboardGet(setup: Setup, path: string) {
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
-    headers: { cookie: setup.cookie },
+    headers: { cookie: setup.cookie, "sec-fetch-site": "same-origin" },
   });
 }
 
@@ -122,6 +122,7 @@ async function dashboardPost(setup: Setup, path: string, body: unknown) {
     method: "POST",
     headers: {
       cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
       "x-caplets-csrf": setup.csrfToken,
       "content-type": "application/json",
       "idempotency-key": crypto.randomUUID(),
@@ -178,7 +179,6 @@ function httpOptions(stateDir: string): HttpServeOptions {
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     auth: { type: "remote_credentials" },
     remoteCredentialStateDir: stateDir,
     allowUnauthenticatedHttp: false,

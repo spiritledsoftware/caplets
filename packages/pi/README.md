@@ -37,16 +37,20 @@ Pi reloads extensions or restarts, but calls to removed Caplets return Caplets' 
 
 ## Runtime Selection
 
-`caplets setup pi` installs the extension and writes non-secret daemon defaults so the extension connects to the local Caplets daemon by default. Use `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and `CAPLETS_REMOTE_*` to select local in-process, daemon, self-hosted remote, or Caplets Cloud behavior:
+`caplets setup pi` installs the extension and writes non-secret daemon defaults so the extension
+connects to the local Caplets daemon by default. Use `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and
+`CAPLETS_REMOTE_URL` to select local in-process, daemon, or generic remote behavior:
 
 ```sh
 CAPLETS_MODE=local pi
-CAPLETS_MODE=daemon CAPLETS_DAEMON_URL=http://127.0.0.1:5387/ pi
-CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets pi
-CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev pi
+CAPLETS_MODE=daemon CAPLETS_DAEMON_URL=http://127.0.0.1:5387 pi
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com pi
 ```
 
-Run `caplets remote login <url>` before remote or Cloud mode. Native integrations use the saved Remote Profile, so remote credentials do not belong in environment variables or Pi settings.
+Run `caplets remote login <origin>` before remote mode. Native integrations use the saved Remote
+Profile, so remote credentials do not belong in environment variables or Pi settings. URL
+selectors are Current Host Origins; non-root paths, queries, fragments, and embedded credentials
+are rejected.
 
 Pi currently calls extension factories with the Pi API only, so this extension reads its remote
 settings from the top-level `caplets` key in `~/.pi/agent/settings.json` when no programmatic
@@ -58,7 +62,7 @@ options are supplied:
   "caplets": {
     "mode": "remote",
     "remote": {
-      "url": "https://caplets.example.com/caplets",
+      "url": "https://caplets.example.com",
       "pollIntervalMs": 5000
     },
     "statusWidget": true,
@@ -83,14 +87,17 @@ export default createCapletsPiExtension({
   args: {
     mode: "remote",
     remote: {
-      url: "https://caplets.example.com/caplets",
+      url: "https://caplets.example.com",
       pollIntervalMs: 5_000,
     },
   },
 });
 ```
 
-Explicit args override Pi settings, and Pi settings override setup-written daemon defaults. The explicit config shape is `{ mode, daemon: { url, pollIntervalMs }, remote: { url, pollIntervalMs } }`. Daemon mode is credential-free loopback. Remote credentials come from `caplets remote login <url>`, not settings files or source code.
+Explicit args override Pi settings, and Pi settings override setup-written daemon defaults. The
+explicit config shape is `{ mode, daemon: { url, pollIntervalMs }, remote: { url, pollIntervalMs } }`.
+Daemon mode is credential-free loopback. Remote URL values are Current Host Origins, and remote
+credentials come from `caplets remote login <origin>`, not settings files or source code.
 
 ## Anonymous Telemetry
 

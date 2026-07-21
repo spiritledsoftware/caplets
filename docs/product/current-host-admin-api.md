@@ -1,23 +1,47 @@
 # Current Host Admin API
 
-The Admin API is the versioned resource interface for administering the Current Host. The dashboard
-and remote Operator clients use the same resource semantics; their authentication ceremonies remain
-separate.
+The Admin API is the canonical `/api/v2/admin/*` resource interface for administering the Current
+Host. Remote Operator Clients and the same-origin dashboard use identical resource URLs and
+semantics while retaining separate bearer and Dashboard Session Credential ceremonies.
 
-## Surfaces And Authority
+## Protocol Namespaces And Authority
 
-- `/v2/admin` accepts the selected Remote Profile's paired Operator bearer credential.
-- `/dashboard/api/v2` mounts the same relative resources behind dashboard cookie, session, origin,
-  and CSRF checks.
-- `/openapi.json` is the public, cacheable OpenAPI 3.1 description of canonical public v1 and v2 HTTP
-  resources. MCP, duplicate dashboard mounts, dashboard cookie/session/CSRF ceremonies, and other
-  browser-private routes are excluded.
-- `/dashboard/api/private/vault-reveals` is the dashboard-only Raw Vault Reveal ceremony. It is
-  excluded from the shared router, OpenAPI, and generated client.
+A Current Host URL is an origin: scheme, host, and optional port only. Its fixed namespaces are:
 
-Access Clients cannot invoke Admin resources. Both roles retain their existing MCP, Attach, Project
-Binding, and credential-owner self-revocation authority. Development-unauthenticated serving is a
-loopback-only trusted mode, not a bearer credential model.
+- `GET /` redirects to `/dashboard`.
+- `/.well-known/caplets` publishes cross-protocol discovery with origin-relative links.
+- `/api`, `/api/openapi.json`, `/api/v1/*`, and `/api/v2/admin/*` contain the public HTTP API.
+- Exact `/mcp` contains Streamable HTTP MCP.
+- `/dashboard` contains browser pages and assets, while `/dashboard/api/*` contains private browser
+  ceremonies.
+
+`/api/v2/admin/*` accepts either the selected Remote Profile's Operator bearer credential or a
+same-origin Dashboard Session Credential. Any `Authorization` header selects bearer mode
+exclusively and never falls back to a cookie. Without that header, the dashboard cookie selects
+session mode; unsafe requests then require the current `X-Caplets-CSRF`. Access Clients cannot
+invoke Admin resources. Both Access and Operator Clients retain their route-specific MCP, Attach,
+Project Binding, and credential-owner self-revocation authority. Development-unauthenticated
+serving is a loopback-only trusted mode, not a bearer credential model.
+
+`/api/openapi.json` is the public, cacheable OpenAPI 3.1 description of canonical
+`/api/v1/*` and `/api/v2/admin/*` HTTP resources. Well-known discovery, MCP, dashboard
+login/session/logout, and other browser-private routes are excluded.
+
+The public backend OAuth callback is
+`GET /api/v2/admin/backend-auth-flows/{flowId}/callback`. It authenticates with the one-time flow ID,
+provider state, and expiry rather than bearer or dashboard-session credentials, and returns
+`Cache-Control: no-store`.
+
+`/dashboard/api/private/vault-reveals` is the dashboard-only Raw Vault Reveal ceremony. It requires
+the Dashboard Session Credential, current CSRF value, and exact confirmation, and returns
+`Cache-Control: no-store`. It is excluded from the Admin router, OpenAPI, and generated client.
+
+Dashboard login issues a host-only, HttpOnly, SameSite=Lax session cookie at `Path=/`. Session
+restore migrates an existing `Path=/dashboard` cookie by validating the same durable session,
+reissuing the same credential at the root path, and expiring the dashboard-path cookie without
+changing session identity, CSRF value, or absolute expiry. Logout and acting-client demotion or
+revocation expire both paths. A cookie scoped to an arbitrary removed custom prefix cannot reach
+the canonical restore route and requires a fresh dashboard login.
 
 ## Resource Contract
 
@@ -31,7 +55,7 @@ backend OAuth flows live in Authoritative Host State so nodes sharing that state
 coherent result. An ambiguous abandoned side effect fails closed as an unknown outcome rather than
 being executed again.
 
-## Clients And Compatibility
+## Clients
 
 `@caplets/sdk` is the independent public SDK generated from the canonical OpenAPI document. Its root
 entrypoint is the browser/Node Fetch client plus ordered and streaming Caplet Bundle helpers;
@@ -39,15 +63,19 @@ entrypoint is the browser/Node Fetch client plus ordered and streaming Caplet Bu
 `@caplets/sdk/project-binding/node` computes marker-aware filesystem fingerprints. The coordinator
 requires a caller-supplied fingerprint in browser-safe code.
 
-Callers create isolated clients with an explicit absolute service root and optional caller-owned
-static or async authentication; there is no shared mutable client or inferred endpoint. Project
-Binding separately takes the exact `ws:` or `wss:` connect URL. Requests return fields without
-throwing by default, with throwing available as an opt-in. Dashboard cookie/session/CSRF routes,
-Raw Vault Reveal, MCP, and other browser-private routes are not SDK operations. Runtime tool,
-resource, prompt, and completion operations continue through Attach instead of Admin.
+Callers create isolated clients with an explicit Current Host Origin and optional caller-owned
+static or async authentication; there is no shared mutable client or inferred endpoint. Current
+Host inputs reject non-root paths, queries, fragments, and embedded credentials before network
+access. Project Binding separately takes the exact
+`wss://host.example/api/v1/attach/project-bindings/connect` URL. Requests return fields without throwing
+by default, with throwing available as an opt-in.
 
-`POST /v1/admin` remains as a frozen, deprecated compatibility Adapter for retained commands. It has
-no scheduled sunset and receives no new operations. Remote `init` and `add` are local filesystem
+The OpenAPI and generated client expose the dashboard-session security alternative and optional
+CSRF header, but the SDK does not provide a login/session convenience facade.
+Dashboard login/session/logout, Raw Vault Reveal, MCP, and other browser-private routes are not SDK
+operations. Runtime tool, resource, prompt, and completion operations continue through
+`/api/v1/attach/*` instead of Admin. There is no v1 Admin route or client facade, and clients do not
+retry at another path or infer a deployment prefix. Remote `init` and `add` are local filesystem
 operations and are rejected rather than forwarded.
 
 ## Bundle Transfer

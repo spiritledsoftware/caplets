@@ -6,11 +6,11 @@
 > Priority: P1
 > Effort: S
 > Fix risk: LOW
-> Depends on: Plans 000 and 009
+> Depends on: Plans 000, 009, and 021
 
 ## Why this matters
 
-Plan 000 replaces shared Current Host resources with the OpenAPI/HeyAPI Admin client. Dashboard login/session ceremony and Raw Vault Reveal intentionally remain browser-private and excluded from the public root OpenAPI document. Those residual routes still need one compiler-linked contract; otherwise removing the old generic `dashboardApi<T>` only moves unchecked casts to the private path.
+Plan 000 replaces shared Current Host resources with the OpenAPI/HeyAPI Caplets SDK client. Dashboard login/session ceremony and Raw Vault Reveal intentionally remain browser-private and excluded from the public root OpenAPI document. Those residual routes still need one compiler-linked contract; otherwise removing the old generic `dashboardApi<T>` only moves unchecked casts to the private path.
 
 This plan types the small private boundary without creating a second public API or pulling server runtime modules into the browser.
 
@@ -28,7 +28,7 @@ This plan types the small private boundary without creating a second public API 
 
 ### Out of scope
 
-- Shared `/dashboard/api/v2` resources; Plan 000's generated Admin client owns them
+- Canonical `/v2/admin` resources; Plan 021's generated Caplets SDK transport owns them
 - Adding private routes to `/openapi.json`
 - Changing login, cookie, CSRF, reveal confirmation, expiry, or redaction behavior
 - Dashboard loading/caching; Plan 011 owns it

@@ -11,9 +11,6 @@ import {
   type TDataShape,
 } from "./client";
 import type {
-  AdminV1DispatchCommandData,
-  AdminV1DispatchCommandErrors,
-  AdminV1DispatchCommandResponses,
   AdminV2CompleteBackendAuthFlowCallbackData,
   AdminV2CompleteBackendAuthFlowCallbackErrors,
   AdminV2CompleteBackendAuthFlowCallbackResponses,
@@ -195,9 +192,6 @@ import type {
   DeleteProjectBindingSessionData,
   DeleteProjectBindingSessionErrors,
   DeleteProjectBindingSessionResponses,
-  GetAdminV2DiscoveryData,
-  GetAdminV2DiscoveryErrors,
-  GetAdminV2DiscoveryResponses,
   GetAttachManifestData,
   GetAttachManifestErrors,
   GetAttachManifestResponses,
@@ -267,7 +261,7 @@ export const getServiceDiscovery = <ThrowOnError extends boolean = false>(
   options: Options<GetServiceDiscoveryData, ThrowOnError>,
 ): RequestResult<GetServiceDiscoveryResponses, GetServiceDiscoveryErrors, ThrowOnError> =>
   options.client.get<GetServiceDiscoveryResponses, GetServiceDiscoveryErrors, ThrowOnError>({
-    url: "/",
+    url: "/api",
     ...options,
   });
 
@@ -275,15 +269,7 @@ export const getVersionDiscovery = <ThrowOnError extends boolean = false>(
   options: Options<GetVersionDiscoveryData, ThrowOnError>,
 ): RequestResult<GetVersionDiscoveryResponses, GetVersionDiscoveryErrors, ThrowOnError> =>
   options.client.get<GetVersionDiscoveryResponses, GetVersionDiscoveryErrors, ThrowOnError>({
-    url: "/v1",
-    ...options,
-  });
-
-export const getAdminV2Discovery = <ThrowOnError extends boolean = false>(
-  options: Options<GetAdminV2DiscoveryData, ThrowOnError>,
-): RequestResult<GetAdminV2DiscoveryResponses, GetAdminV2DiscoveryErrors, ThrowOnError> =>
-  options.client.get<GetAdminV2DiscoveryResponses, GetAdminV2DiscoveryErrors, ThrowOnError>({
-    url: "/v2",
+    url: "/api/v1",
     ...options,
   });
 
@@ -291,7 +277,7 @@ export const getHealth = <ThrowOnError extends boolean = false>(
   options: Options<GetHealthData, ThrowOnError>,
 ): RequestResult<GetHealthResponses, GetHealthErrors, ThrowOnError> =>
   options.client.get<GetHealthResponses, GetHealthErrors, ThrowOnError>({
-    url: "/v1/healthz",
+    url: "/api/v1/healthz",
     ...options,
   });
 
@@ -299,7 +285,7 @@ export const startRemoteLogin = <ThrowOnError extends boolean = false>(
   options: Options<StartRemoteLoginData, ThrowOnError>,
 ): RequestResult<StartRemoteLoginResponses, StartRemoteLoginErrors, ThrowOnError> =>
   options.client.post<StartRemoteLoginResponses, StartRemoteLoginErrors, ThrowOnError>({
-    url: "/v1/remote/login/start",
+    url: "/api/v1/remote/login/start",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -311,7 +297,7 @@ export const pollRemoteLogin = <ThrowOnError extends boolean = false>(
   options: Options<PollRemoteLoginData, ThrowOnError>,
 ): RequestResult<PollRemoteLoginResponses, PollRemoteLoginErrors, ThrowOnError> =>
   options.client.post<PollRemoteLoginResponses, PollRemoteLoginErrors, ThrowOnError>({
-    url: "/v1/remote/login/poll",
+    url: "/api/v1/remote/login/poll",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -331,7 +317,7 @@ export const refreshPendingRemoteLogin = <ThrowOnError extends boolean = false>(
     RefreshPendingRemoteLoginErrors,
     ThrowOnError
   >({
-    url: "/v1/remote/login/refresh",
+    url: "/api/v1/remote/login/refresh",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -343,7 +329,7 @@ export const completeRemoteLogin = <ThrowOnError extends boolean = false>(
   options: Options<CompleteRemoteLoginData, ThrowOnError>,
 ): RequestResult<CompleteRemoteLoginResponses, CompleteRemoteLoginErrors, ThrowOnError> =>
   options.client.post<CompleteRemoteLoginResponses, CompleteRemoteLoginErrors, ThrowOnError>({
-    url: "/v1/remote/login/complete",
+    url: "/api/v1/remote/login/complete",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -355,7 +341,7 @@ export const cancelRemoteLogin = <ThrowOnError extends boolean = false>(
   options: Options<CancelRemoteLoginData, ThrowOnError>,
 ): RequestResult<CancelRemoteLoginResponses, CancelRemoteLoginErrors, ThrowOnError> =>
   options.client.post<CancelRemoteLoginResponses, CancelRemoteLoginErrors, ThrowOnError>({
-    url: "/v1/remote/login/cancel",
+    url: "/api/v1/remote/login/cancel",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -371,7 +357,7 @@ export const refreshRemoteCredentials = <ThrowOnError extends boolean = false>(
     RefreshRemoteCredentialsErrors,
     ThrowOnError
   >({
-    url: "/v1/remote/refresh",
+    url: "/api/v1/remote/refresh",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -392,7 +378,7 @@ export const revokeCurrentRemoteClient = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/remote/client",
+    url: "/api/v1/remote/client",
     ...options,
   });
 
@@ -401,7 +387,7 @@ export const createAttachSession = <ThrowOnError extends boolean = false>(
 ): RequestResult<CreateAttachSessionResponses, CreateAttachSessionErrors, ThrowOnError> =>
   options.client.post<CreateAttachSessionResponses, CreateAttachSessionErrors, ThrowOnError>({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/sessions",
+    url: "/api/v1/attach/sessions",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -414,7 +400,7 @@ export const deleteAttachSession = <ThrowOnError extends boolean = false>(
 ): RequestResult<DeleteAttachSessionResponses, DeleteAttachSessionErrors, ThrowOnError> =>
   options.client.delete<DeleteAttachSessionResponses, DeleteAttachSessionErrors, ThrowOnError>({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/sessions/{sessionId}",
+    url: "/api/v1/attach/sessions/{sessionId}",
     ...options,
   });
 
@@ -423,7 +409,7 @@ export const getAttachManifest = <ThrowOnError extends boolean = false>(
 ): RequestResult<GetAttachManifestResponses, GetAttachManifestErrors, ThrowOnError> =>
   options.client.get<GetAttachManifestResponses, GetAttachManifestErrors, ThrowOnError>({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/manifest",
+    url: "/api/v1/attach/manifest",
     ...options,
   });
 
@@ -432,7 +418,7 @@ export const invokeAttachExport = <ThrowOnError extends boolean = false>(
 ): RequestResult<InvokeAttachExportResponses, InvokeAttachExportErrors, ThrowOnError> =>
   options.client.post<InvokeAttachExportResponses, InvokeAttachExportErrors, ThrowOnError>({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/invoke",
+    url: "/api/v1/attach/invoke",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -445,7 +431,7 @@ export const streamAttachEvents = <ThrowOnError extends boolean = false>(
 ): Promise<ServerSentEventsResult<StreamAttachEventsResponses>> =>
   options.client.sse.get<StreamAttachEventsResponses, StreamAttachEventsErrors, ThrowOnError>({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/events",
+    url: "/api/v1/attach/events",
     ...options,
   });
 
@@ -454,7 +440,7 @@ export const upgradeProjectBindingConnection = <ThrowOnError extends boolean = f
 ): RequestResult<unknown, UpgradeProjectBindingConnectionErrors, ThrowOnError> =>
   options.client.get<unknown, UpgradeProjectBindingConnectionErrors, ThrowOnError>({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/project-bindings/connect",
+    url: "/api/v1/attach/project-bindings/connect",
     ...options,
   });
 
@@ -471,7 +457,7 @@ export const createProjectBindingSession = <ThrowOnError extends boolean = false
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/project-bindings/sessions",
+    url: "/api/v1/attach/project-bindings/sessions",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -485,7 +471,7 @@ export const getProjectBindingStatus = <ThrowOnError extends boolean = false>(
   options.client.get<GetProjectBindingStatusResponses, GetProjectBindingStatusErrors, ThrowOnError>(
     {
       security: [{ scheme: "bearer", type: "http" }],
-      url: "/v1/attach/project-bindings/{bindingId}/status",
+      url: "/api/v1/attach/project-bindings/{bindingId}/status",
       ...options,
     },
   );
@@ -503,7 +489,7 @@ export const deleteProjectBindingSession = <ThrowOnError extends boolean = false
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/project-bindings/{bindingId}/session",
+    url: "/api/v1/attach/project-bindings/{bindingId}/session",
     ...options,
   });
 
@@ -516,7 +502,7 @@ export const getProjectBindingSession = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/project-bindings/{bindingId}/session",
+    url: "/api/v1/attach/project-bindings/{bindingId}/session",
     ...options,
   });
 
@@ -533,27 +519,7 @@ export const heartbeatProjectBindingSession = <ThrowOnError extends boolean = fa
     ThrowOnError
   >({
     security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/attach/project-bindings/{bindingId}/heartbeat",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-/**
- * Frozen legacy Admin command adapter
- *
- * Deprecated compatibility adapter. The accepted command set is frozen; local init/add commands are rejected by policy.
- *
- * @deprecated
- */
-export const adminV1DispatchCommand = <ThrowOnError extends boolean = false>(
-  options: Options<AdminV1DispatchCommandData, ThrowOnError>,
-): RequestResult<AdminV1DispatchCommandResponses, AdminV1DispatchCommandErrors, ThrowOnError> =>
-  options.client.post<AdminV1DispatchCommandResponses, AdminV1DispatchCommandErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v1/admin",
+    url: "/api/v1/attach/project-bindings/{bindingId}/heartbeat",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -565,8 +531,15 @@ export const adminV2GetHost = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetHostData, ThrowOnError>,
 ): RequestResult<AdminV2GetHostResponses, AdminV2GetHostErrors, ThrowOnError> =>
   options.client.get<AdminV2GetHostResponses, AdminV2GetHostErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/host",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/host",
     ...options,
   });
 
@@ -574,8 +547,15 @@ export const adminV2GetRuntime = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetRuntimeData, ThrowOnError>,
 ): RequestResult<AdminV2GetRuntimeResponses, AdminV2GetRuntimeErrors, ThrowOnError> =>
   options.client.get<AdminV2GetRuntimeResponses, AdminV2GetRuntimeErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/runtime",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/runtime",
     ...options,
   });
 
@@ -591,8 +571,15 @@ export const adminV2CreateRuntimeRestart = <ThrowOnError extends boolean = false
     AdminV2CreateRuntimeRestartErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/runtime-restarts",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/runtime-restarts",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -604,8 +591,15 @@ export const adminV2ListLogs = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2ListLogsData, ThrowOnError>,
 ): RequestResult<AdminV2ListLogsResponses, AdminV2ListLogsErrors, ThrowOnError> =>
   options.client.get<AdminV2ListLogsResponses, AdminV2ListLogsErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/logs",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/logs",
     ...options,
   });
 
@@ -613,8 +607,15 @@ export const adminV2GetDiagnostics = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetDiagnosticsData, ThrowOnError>,
 ): RequestResult<AdminV2GetDiagnosticsResponses, AdminV2GetDiagnosticsErrors, ThrowOnError> =>
   options.client.get<AdminV2GetDiagnosticsResponses, AdminV2GetDiagnosticsErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/diagnostics",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/diagnostics",
     ...options,
   });
 
@@ -626,8 +627,15 @@ export const adminV2GetProjectBinding = <ThrowOnError extends boolean = false>(
     AdminV2GetProjectBindingErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/project-binding",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/project-binding",
     ...options,
   });
 
@@ -635,8 +643,15 @@ export const adminV2ListEvents = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2ListEventsData, ThrowOnError, AdminV2ListEventsResponse>,
 ): Promise<ServerSentEventsResult<AdminV2ListEventsResponses>> =>
   options.client.sse.get<AdminV2ListEventsResponses, AdminV2ListEventsErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/events",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/events",
     ...options,
   });
 
@@ -644,8 +659,15 @@ export const adminV2ListActivity = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2ListActivityData, ThrowOnError>,
 ): RequestResult<AdminV2ListActivityResponses, AdminV2ListActivityErrors, ThrowOnError> =>
   options.client.get<AdminV2ListActivityResponses, AdminV2ListActivityErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/activity",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/activity",
     ...options,
   });
 
@@ -661,8 +683,15 @@ export const adminV2ListEffectiveCaplets = <ThrowOnError extends boolean = false
     AdminV2ListEffectiveCapletsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplets",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplets",
     ...options,
   });
 
@@ -678,8 +707,15 @@ export const adminV2ListCatalogEntries = <ThrowOnError extends boolean = false>(
     AdminV2ListCatalogEntriesErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/catalog/entries",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/catalog/entries",
     ...options,
   });
 
@@ -687,8 +723,15 @@ export const adminV2GetCatalogEntry = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetCatalogEntryData, ThrowOnError>,
 ): RequestResult<AdminV2GetCatalogEntryResponses, AdminV2GetCatalogEntryErrors, ThrowOnError> =>
   options.client.get<AdminV2GetCatalogEntryResponses, AdminV2GetCatalogEntryErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/catalog/entries/{entryKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/catalog/entries/{entryKey}",
     ...options,
   });
 
@@ -704,8 +747,15 @@ export const adminV2ListCatalogUpdateCandidates = <ThrowOnError extends boolean 
     AdminV2ListCatalogUpdateCandidatesErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/catalog/update-candidates",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/catalog/update-candidates",
     ...options,
   });
 
@@ -721,8 +771,15 @@ export const adminV2InstallCatalogCaplets = <ThrowOnError extends boolean = fals
     AdminV2InstallCatalogCapletsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/catalog/installations",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/catalog/installations",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -742,8 +799,15 @@ export const adminV2UpdateCatalogCaplets = <ThrowOnError extends boolean = false
     AdminV2UpdateCatalogCapletsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/catalog/update-runs",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/catalog/update-runs",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -759,8 +823,15 @@ export const adminV2ListRemoteClients = <ThrowOnError extends boolean = false>(
     AdminV2ListRemoteClientsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/remote-clients",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/remote-clients",
     ...options,
   });
 
@@ -776,8 +847,15 @@ export const adminV2DeleteRemoteClient = <ThrowOnError extends boolean = false>(
     AdminV2DeleteRemoteClientErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/remote-clients/{clientId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/remote-clients/{clientId}",
     ...options,
   });
 
@@ -785,8 +863,15 @@ export const adminV2GetRemoteClient = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetRemoteClientData, ThrowOnError>,
 ): RequestResult<AdminV2GetRemoteClientResponses, AdminV2GetRemoteClientErrors, ThrowOnError> =>
   options.client.get<AdminV2GetRemoteClientResponses, AdminV2GetRemoteClientErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/remote-clients/{clientId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/remote-clients/{clientId}",
     ...options,
   });
 
@@ -802,8 +887,15 @@ export const adminV2UpdateRemoteClient = <ThrowOnError extends boolean = false>(
     AdminV2UpdateRemoteClientErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/remote-clients/{clientId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/remote-clients/{clientId}",
     ...options,
     headers: {
       "Content-Type": "application/merge-patch+json",
@@ -823,8 +915,15 @@ export const adminV2ListRemoteLoginRequests = <ThrowOnError extends boolean = fa
     AdminV2ListRemoteLoginRequestsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/remote-login-requests",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/remote-login-requests",
     ...options,
   });
 
@@ -840,8 +939,15 @@ export const adminV2GetRemoteLoginRequest = <ThrowOnError extends boolean = fals
     AdminV2GetRemoteLoginRequestErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/remote-login-requests/{flowId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/remote-login-requests/{flowId}",
     ...options,
   });
 
@@ -857,8 +963,15 @@ export const adminV2UpdateRemoteLoginRequest = <ThrowOnError extends boolean = f
     AdminV2UpdateRemoteLoginRequestErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/remote-login-requests/{flowId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/remote-login-requests/{flowId}",
     ...options,
     headers: {
       "Content-Type": "application/merge-patch+json",
@@ -870,8 +983,15 @@ export const adminV2ListBackendAuth = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2ListBackendAuthData, ThrowOnError>,
 ): RequestResult<AdminV2ListBackendAuthResponses, AdminV2ListBackendAuthErrors, ThrowOnError> =>
   options.client.get<AdminV2ListBackendAuthResponses, AdminV2ListBackendAuthErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/backend-auth-connections",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/backend-auth-connections",
     ...options,
   });
 
@@ -883,8 +1003,15 @@ export const adminV2DeleteBackendAuth = <ThrowOnError extends boolean = false>(
     AdminV2DeleteBackendAuthErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/backend-auth-connections/{serverId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/backend-auth-connections/{serverId}",
     ...options,
   });
 
@@ -892,8 +1019,15 @@ export const adminV2GetBackendAuth = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetBackendAuthData, ThrowOnError>,
 ): RequestResult<AdminV2GetBackendAuthResponses, AdminV2GetBackendAuthErrors, ThrowOnError> =>
   options.client.get<AdminV2GetBackendAuthResponses, AdminV2GetBackendAuthErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/backend-auth-connections/{serverId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/backend-auth-connections/{serverId}",
     ...options,
   });
 
@@ -909,8 +1043,15 @@ export const adminV2StartBackendAuthFlow = <ThrowOnError extends boolean = false
     AdminV2StartBackendAuthFlowErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/backend-auth-flows",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/backend-auth-flows",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -930,8 +1071,15 @@ export const adminV2GetBackendAuthFlow = <ThrowOnError extends boolean = false>(
     AdminV2GetBackendAuthFlowErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/backend-auth-flows/{flowId}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/backend-auth-flows/{flowId}",
     ...options,
   });
 
@@ -947,8 +1095,15 @@ export const adminV2RefreshBackendAuth = <ThrowOnError extends boolean = false>(
     AdminV2RefreshBackendAuthErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/backend-auth-refreshes",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/backend-auth-refreshes",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -960,8 +1115,15 @@ export const adminV2ListVaultValues = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2ListVaultValuesData, ThrowOnError>,
 ): RequestResult<AdminV2ListVaultValuesResponses, AdminV2ListVaultValuesErrors, ThrowOnError> =>
   options.client.get<AdminV2ListVaultValuesResponses, AdminV2ListVaultValuesErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values",
     ...options,
   });
 
@@ -973,8 +1135,15 @@ export const adminV2DeleteVaultValue = <ThrowOnError extends boolean = false>(
     AdminV2DeleteVaultValueErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values/{storedKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values/{storedKey}",
     ...options,
   });
 
@@ -982,8 +1151,15 @@ export const adminV2GetVaultValue = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetVaultValueData, ThrowOnError>,
 ): RequestResult<AdminV2GetVaultValueResponses, AdminV2GetVaultValueErrors, ThrowOnError> =>
   options.client.get<AdminV2GetVaultValueResponses, AdminV2GetVaultValueErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values/{storedKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values/{storedKey}",
     ...options,
   });
 
@@ -991,8 +1167,15 @@ export const adminV2PutVaultValue = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2PutVaultValueData, ThrowOnError>,
 ): RequestResult<AdminV2PutVaultValueResponses, AdminV2PutVaultValueErrors, ThrowOnError> =>
   options.client.put<AdminV2PutVaultValueResponses, AdminV2PutVaultValueErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values/{storedKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values/{storedKey}",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1004,8 +1187,15 @@ export const adminV2ListVaultGrants = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2ListVaultGrantsData, ThrowOnError>,
 ): RequestResult<AdminV2ListVaultGrantsResponses, AdminV2ListVaultGrantsErrors, ThrowOnError> =>
   options.client.get<AdminV2ListVaultGrantsResponses, AdminV2ListVaultGrantsErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-grants",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-grants",
     ...options,
   });
 
@@ -1021,8 +1211,15 @@ export const adminV2ListVaultValueGrants = <ThrowOnError extends boolean = false
     AdminV2ListVaultValueGrantsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values/{storedKey}/grants",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values/{storedKey}/grants",
     ...options,
   });
 
@@ -1034,8 +1231,15 @@ export const adminV2RevokeVaultAccess = <ThrowOnError extends boolean = false>(
     AdminV2RevokeVaultAccessErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
     ...options,
   });
 
@@ -1043,8 +1247,15 @@ export const adminV2GetVaultGrant = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetVaultGrantData, ThrowOnError>,
 ): RequestResult<AdminV2GetVaultGrantResponses, AdminV2GetVaultGrantErrors, ThrowOnError> =>
   options.client.get<AdminV2GetVaultGrantResponses, AdminV2GetVaultGrantErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
     ...options,
   });
 
@@ -1052,8 +1263,15 @@ export const adminV2PutVaultGrant = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2PutVaultGrantData, ThrowOnError>,
 ): RequestResult<AdminV2PutVaultGrantResponses, AdminV2PutVaultGrantErrors, ThrowOnError> =>
   options.client.put<AdminV2PutVaultGrantResponses, AdminV2PutVaultGrantErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/vault-values/{storedKey}/grants/{capletId}/{referenceName}",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1069,8 +1287,15 @@ export const adminV2ListCapletRecords = <ThrowOnError extends boolean = false>(
     AdminV2ListCapletRecordsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records",
     ...options,
   });
 
@@ -1086,8 +1311,15 @@ export const adminV2DeleteCapletRecord = <ThrowOnError extends boolean = false>(
     AdminV2DeleteCapletRecordErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}",
     ...options,
   });
 
@@ -1095,8 +1327,15 @@ export const adminV2GetCapletRecord = <ThrowOnError extends boolean = false>(
   options: Options<AdminV2GetCapletRecordData, ThrowOnError>,
 ): RequestResult<AdminV2GetCapletRecordResponses, AdminV2GetCapletRecordErrors, ThrowOnError> =>
   options.client.get<AdminV2GetCapletRecordResponses, AdminV2GetCapletRecordErrors, ThrowOnError>({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}",
     ...options,
   });
 
@@ -1112,8 +1351,15 @@ export const adminV2UpdateCapletRecord = <ThrowOnError extends boolean = false>(
     AdminV2UpdateCapletRecordErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}",
     ...options,
     headers: {
       "Content-Type": "application/merge-patch+json",
@@ -1133,8 +1379,15 @@ export const adminV2GetCapletRecordBundle = <ThrowOnError extends boolean = fals
     AdminV2GetCapletRecordBundleErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/bundle",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/bundle",
     ...options,
   });
 
@@ -1151,8 +1404,15 @@ export const adminV2PutCapletRecordBundle = <ThrowOnError extends boolean = fals
     ThrowOnError
   >({
     ...formDataBodySerializer,
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/bundle",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/bundle",
     ...options,
     headers: {
       "Content-Type": null,
@@ -1172,8 +1432,15 @@ export const adminV2ListCapletRecordRevisions = <ThrowOnError extends boolean = 
     AdminV2ListCapletRecordRevisionsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/revisions",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/revisions",
     ...options,
   });
 
@@ -1189,8 +1456,15 @@ export const adminV2DeleteCapletRecordRevision = <ThrowOnError extends boolean =
     AdminV2DeleteCapletRecordRevisionErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
     ...options,
   });
 
@@ -1206,8 +1480,15 @@ export const adminV2GetCapletRecordRevision = <ThrowOnError extends boolean = fa
     AdminV2GetCapletRecordRevisionErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}",
     ...options,
   });
 
@@ -1223,8 +1504,15 @@ export const adminV2GetCapletRecordRevisionBundle = <ThrowOnError extends boolea
     AdminV2GetCapletRecordRevisionBundleErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/revisions/{revisionKey}/bundle",
     ...options,
   });
 
@@ -1240,8 +1528,15 @@ export const adminV2PutCapletRecordCurrentRevision = <ThrowOnError extends boole
     AdminV2PutCapletRecordCurrentRevisionErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/current-revision",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/current-revision",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1261,8 +1556,15 @@ export const adminV2ListCapletRecordInstallations = <ThrowOnError extends boolea
     AdminV2ListCapletRecordInstallationsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/installations",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/installations",
     ...options,
   });
 
@@ -1278,8 +1580,15 @@ export const adminV2DeleteCapletRecordInstallation = <ThrowOnError extends boole
     AdminV2DeleteCapletRecordInstallationErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/installations/{installationKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/installations/{installationKey}",
     ...options,
   });
 
@@ -1295,8 +1604,15 @@ export const adminV2GetCapletRecordInstallation = <ThrowOnError extends boolean 
     AdminV2GetCapletRecordInstallationErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/installations/{installationKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/installations/{installationKey}",
     ...options,
   });
 
@@ -1312,8 +1628,15 @@ export const adminV2PutCapletRecordInstallation = <ThrowOnError extends boolean 
     AdminV2PutCapletRecordInstallationErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/installations/{installationKey}",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/installations/{installationKey}",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1335,8 +1658,15 @@ export const adminV2ListCapletRecordInstallationObservations = <
     AdminV2ListCapletRecordInstallationObservationsErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/installation-observations",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/installation-observations",
     ...options,
   });
 
@@ -1354,8 +1684,15 @@ export const adminV2CreateCapletRecordInstallationObservation = <
     AdminV2CreateCapletRecordInstallationObservationErrors,
     ThrowOnError
   >({
-    security: [{ scheme: "bearer", type: "http" }],
-    url: "/v2/admin/caplet-records/{id}/installation-observations",
+    security: [
+      { scheme: "bearer", type: "http" },
+      {
+        in: "cookie",
+        name: "caplets_dashboard_session",
+        type: "apiKey",
+      },
+    ],
+    url: "/api/v2/admin/caplet-records/{id}/installation-observations",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -1374,4 +1711,4 @@ export const adminV2CompleteBackendAuthFlowCallback = <ThrowOnError extends bool
     AdminV2CompleteBackendAuthFlowCallbackResponses,
     AdminV2CompleteBackendAuthFlowCallbackErrors,
     ThrowOnError
-  >({ url: "/v2/admin/backend-auth-flows/{flowId}/callback", ...options });
+  >({ url: "/api/v2/admin/backend-auth-flows/{flowId}/callback", ...options });

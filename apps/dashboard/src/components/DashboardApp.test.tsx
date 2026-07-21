@@ -328,8 +328,11 @@ describe("catalog update presentation", () => {
 });
 
 describe("dashboard routing", () => {
-  it("recognizes the Stored Caplets route", () => {
+  it("recognizes only fixed dashboard page paths", () => {
     expect(routeFromPath("/dashboard/stored-caplets")).toBe("stored-caplets");
+    expect(routeFromPath("/dashboard/catalog/safe-entry")).toBe("catalog");
+    expect(routeFromPath("/removed/dashboard/stored-caplets")).toBe("overview");
+    expect(routeFromPath("/stored-caplets")).toBe("overview");
   });
 });
 

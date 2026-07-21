@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -92,14 +92,14 @@ async function main() {
   });
 
   try {
-    const serviceRoot = `http://127.0.0.1:${port}`;
-    const dashboard = await waitForResponse(`${serviceRoot}/dashboard`);
+    const currentHostOrigin = `http://127.0.0.1:${port}`;
+    const dashboard = await waitForResponse(`${currentHostOrigin}/dashboard`);
     const dashboardHtml = await dashboard.text();
     if (dashboardHtml.includes("Dashboard assets have not been built yet")) {
       throw new Error("Packaged dashboard still falls back to the build-missing shell.");
     }
 
-    const icon = await fetch(`${serviceRoot}/dashboard/favicon.png`, {
+    const icon = await fetch(`${currentHostOrigin}/dashboard/favicon.png`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!icon.ok || icon.headers.get("content-type") !== "image/png") {
@@ -115,48 +115,24 @@ async function main() {
       throw new Error("Built Project Binding bundle has an invalid protocol contract.");
     }
 
-    const client = sdk.createClient({ baseUrl: serviceRoot });
-    const discovery = await sdk.getServiceDiscovery({
-      client,
-      signal: AbortSignal.timeout(5000),
-    });
-    const expectedDiscoveryUrl = `${serviceRoot}/`;
-    if (discovery.error !== undefined) {
-      throw new Error(
-        `Generated SDK discovery operation returned an error: ${JSON.stringify(discovery.error)}`,
-      );
-    }
-    if (
-      !(discovery.request instanceof Request) ||
-      discovery.request.url !== expectedDiscoveryUrl ||
-      !(discovery.response instanceof Response) ||
-      discovery.response.status !== 200 ||
-      discovery.response.url !== expectedDiscoveryUrl
-    ) {
-      throw new Error("Generated SDK discovery operation used the wrong route or response.");
-    }
-    if (
-      !discovery.data ||
-      discovery.data.name !== "caplets" ||
-      discovery.data.transport !== "http" ||
-      discovery.data.base !== "/" ||
-      !Array.isArray(discovery.data.versions) ||
-      discovery.data.versions.length === 0 ||
-      typeof discovery.data.auth?.type !== "string"
-    ) {
-      throw new Error("Generated SDK discovery operation returned an invalid service contract.");
-    }
-    await verifyOpenApiCaching(serviceRoot);
+    verifySdkOriginValidation(sdk, currentHostOrigin);
+    const client = sdk.createClient({ baseUrl: `${currentHostOrigin}/` });
+    await verifyRootRedirect(currentHostOrigin);
+    await verifyWellKnownCaching(currentHostOrigin);
+    await verifyApiDiscovery(sdk, client, currentHostOrigin);
+    await verifyOpenApiCaching(currentHostOrigin);
+    await verifyMcpLifecycle(currentHostOrigin);
+    await verifyStrictRouteFailures(currentHostOrigin);
 
     const projectFingerprint = verifyProjectRootFingerprint(
       projectBindingNode.fingerprintProjectRoot,
     );
     await verifyMigratedBuiltProtocols({
       client,
+      currentHostOrigin,
       projectBinding,
       projectFingerprint,
       sdk,
-      serviceRoot,
     });
     await terminateChild(child);
     const planReports = await verifyPlan000BuiltScenarios({
@@ -168,9 +144,13 @@ async function main() {
     });
     process.stdout.write(
       [
-        "PASS GET / and /openapi.json: unauthenticated discovery plus strong ETag conditional 304.",
-        "PASS GET /v1/attach/manifest and GET /v2/admin/host: built SDK direct responses on loopback development auth.",
-        "PASS WS /v1/attach/project-bindings/connect + GET session: ready, abort/finalize, and unreachable cleanup.",
+        "PASS SDK Current Host input: root slash normalizes to the origin; non-root paths fail before network I/O.",
+        "PASS GET /: exact no-store 302 to /dashboard.",
+        "PASS GET /.well-known/caplets + /api + /api/v1 + /api/openapi.json: exact canonical discovery, checked-artifact parity, strong ETags, and conditional 304.",
+        "PASS GET /api/v1/attach/manifest + GET /api/v2/admin/host: canonical built SDK responses on loopback development auth.",
+        "PASS WS /api/v1/attach/project-bindings/connect + GET canonical session: ready, abort/finalize, and unreachable cleanup.",
+        "PASS POST/GET/DELETE /mcp: initialize, initialized exchange, tools/list, SSE stream, session deletion, and deleted-session 404.",
+        "PASS strict route cutover: representative old, trailing-slash, and prefix paths return exact no-store JSON 404 without redirect or migration headers.",
         ...planReports,
         "Cleanup: all Host Nodes/provider stopped; isolated SQLite/config/staging root scheduled for recursive removal.",
         "Command: node scripts/check-package-runtime.mjs",
@@ -230,63 +210,350 @@ function verifyProjectRootFingerprint(fingerprintProjectRoot) {
   return changed;
 }
 
-async function verifyOpenApiCaching(serviceRoot) {
-  const url = `${serviceRoot}/openapi.json`;
+function verifySdkOriginValidation(sdk, currentHostOrigin) {
+  let rejected = false;
+  try {
+    sdk.createClient({ baseUrl: `${currentHostOrigin}/tenant/tools` });
+  } catch {
+    rejected = true;
+  }
+  if (!rejected) {
+    throw new Error("Built SDK accepted a path-bearing Current Host input.");
+  }
+}
+
+async function verifyRootRedirect(currentHostOrigin) {
+  const response = await fetch(`${currentHostOrigin}/`, {
+    redirect: "manual",
+    signal: AbortSignal.timeout(5000),
+  });
+  if (
+    response.status !== 302 ||
+    response.headers.get("location") !== "/dashboard" ||
+    response.headers.get("cache-control") !== "no-store"
+  ) {
+    throw new Error("Built server root did not return the exact canonical dashboard redirect.");
+  }
+}
+
+async function verifyWellKnownCaching(currentHostOrigin) {
+  const url = `${currentHostOrigin}/.well-known/caplets`;
   const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  const contentType = response.headers.get("content-type");
+  const cacheControl = response.headers.get("cache-control");
+  const etag = response.headers.get("etag");
+  const expectedBody = `${JSON.stringify({
+    schemaVersion: 1,
+    links: {
+      api: "/api",
+      openapi: "/api/openapi.json",
+      mcp: "/mcp",
+      dashboard: "/dashboard",
+    },
+  })}\n`;
   if (
     response.status !== 200 ||
     response.url !== url ||
-    !(response.headers.get("content-type") ?? "").includes("application/vnd.oai.openapi+json")
+    contentType !== "application/json; charset=utf-8" ||
+    cacheControl !== "public, max-age=0, must-revalidate" ||
+    !etag ||
+    !/^"[^"]+"$/u.test(etag) ||
+    (await response.text()) !== expectedBody
   ) {
-    throw new Error("Built server did not expose the unauthenticated root OpenAPI document.");
-  }
-  const etag = response.headers.get("etag");
-  if (!etag || !/^"[^"]+"$/u.test(etag)) {
-    throw new Error("Built root OpenAPI response omitted its strong ETag.");
-  }
-  const document = await response.json();
-  if (
-    document?.info?.title !== "Caplets HTTP API" ||
-    document?.openapi !== "3.1.0" ||
-    !document?.paths?.["/v2/admin/host"] ||
-    !document?.paths?.["/v1/attach/invoke"]
-  ) {
-    throw new Error("Built root OpenAPI response did not contain the canonical public contract.");
+    throw new Error("Built well-known response did not match its exact canonical representation.");
   }
 
   const conditional = await fetch(url, {
     headers: { "if-none-match": etag },
     signal: AbortSignal.timeout(5000),
   });
-  if (conditional.status !== 304 || (await conditional.text()) !== "") {
-    throw new Error("Built root OpenAPI conditional GET did not return an empty 304.");
+  if (
+    conditional.status !== 304 ||
+    conditional.headers.get("content-type") !== contentType ||
+    conditional.headers.get("cache-control") !== cacheControl ||
+    conditional.headers.get("etag") !== etag ||
+    (await conditional.text()) !== ""
+  ) {
+    throw new Error("Built well-known conditional GET did not retain headers on its empty 304.");
+  }
+}
+
+async function verifyApiDiscovery(sdk, client, currentHostOrigin) {
+  const discovery = await sdk.getServiceDiscovery({
+    client,
+    signal: AbortSignal.timeout(5000),
+  });
+  const expectedUrl = `${currentHostOrigin}/api`;
+  const expectedData = {
+    name: "caplets",
+    protocol: "caplets-http",
+    schemaVersion: 1,
+    links: {
+      self: "/api",
+      openapi: "/api/openapi.json",
+      v1: "/api/v1",
+      admin: "/api/v2/admin/host",
+    },
+  };
+  if (
+    discovery.error !== undefined ||
+    !(discovery.request instanceof Request) ||
+    discovery.request.url !== expectedUrl ||
+    !(discovery.response instanceof Response) ||
+    discovery.response.status !== 200 ||
+    discovery.response.url !== expectedUrl ||
+    discovery.response.headers.get("cache-control") !== "no-store" ||
+    JSON.stringify(discovery.data) !== JSON.stringify(expectedData)
+  ) {
+    throw new Error("Generated SDK discovery operation did not match canonical /api discovery.");
+  }
+
+  const version = await sdk.getVersionDiscovery({
+    client,
+    signal: AbortSignal.timeout(5000),
+  });
+  const expectedVersionUrl = `${currentHostOrigin}/api/v1`;
+  const expectedLinks = {
+    health: "/api/v1/healthz",
+    ...(version.data?.links?.attachSessions === undefined
+      ? {}
+      : { attachSessions: "/api/v1/attach/sessions" }),
+    attachManifest: "/api/v1/attach/manifest",
+    attachEvents: "/api/v1/attach/events",
+    attachInvoke: "/api/v1/attach/invoke",
+  };
+  if (
+    version.error !== undefined ||
+    !(version.request instanceof Request) ||
+    version.request.url !== expectedVersionUrl ||
+    !(version.response instanceof Response) ||
+    version.response.status !== 200 ||
+    version.response.url !== expectedVersionUrl ||
+    version.response.headers.get("cache-control") !== "no-store" ||
+    JSON.stringify(version.data) !==
+      JSON.stringify({ version: 1, path: "/api/v1", links: expectedLinks })
+  ) {
+    throw new Error("Generated SDK version discovery did not match canonical /api/v1 discovery.");
+  }
+}
+
+async function verifyOpenApiCaching(currentHostOrigin) {
+  const url = `${currentHostOrigin}/api/openapi.json`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  const contentType = response.headers.get("content-type");
+  const cacheControl = response.headers.get("cache-control");
+  const etag = response.headers.get("etag");
+  if (
+    response.status !== 200 ||
+    response.url !== url ||
+    !(contentType ?? "").includes("application/vnd.oai.openapi+json") ||
+    cacheControl !== "public, max-age=0, must-revalidate" ||
+    !etag ||
+    !/^"[^"]+"$/u.test(etag)
+  ) {
+    throw new Error("Built server did not expose canonical OpenAPI with its cache contract.");
+  }
+  const runtimeBytes = Buffer.from(await response.arrayBuffer());
+  const checkedBytes = readFileSync(join(repoRoot, "schemas/caplets-http.openapi.json"));
+  if (!runtimeBytes.equals(checkedBytes)) {
+    throw new Error("Built runtime OpenAPI bytes differ from the checked artifact.");
+  }
+  const document = JSON.parse(runtimeBytes.toString("utf8"));
+  if (
+    document?.info?.title !== "Caplets HTTP API" ||
+    document?.openapi !== "3.1.0" ||
+    JSON.stringify(document?.servers) !== JSON.stringify([{ url: "/" }]) ||
+    !document?.paths?.["/api"] ||
+    !document?.paths?.["/api/v1/attach/invoke"] ||
+    !document?.paths?.["/api/v2/admin/host"] ||
+    document?.paths?.["/api/openapi.json"] ||
+    document?.paths?.["/.well-known/caplets"] ||
+    document?.paths?.["/mcp"] ||
+    document?.paths?.["/dashboard"]
+  ) {
+    throw new Error("Built OpenAPI did not preserve the canonical public API boundary.");
+  }
+
+  const conditional = await fetch(url, {
+    headers: { "if-none-match": etag },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (
+    conditional.status !== 304 ||
+    conditional.headers.get("content-type") !== contentType ||
+    conditional.headers.get("cache-control") !== cacheControl ||
+    conditional.headers.get("etag") !== etag ||
+    (await conditional.text()) !== ""
+  ) {
+    throw new Error("Built OpenAPI conditional GET did not retain headers on its empty 304.");
+  }
+}
+
+async function verifyMcpLifecycle(currentHostOrigin) {
+  const url = `${currentHostOrigin}/mcp`;
+  const protocolVersion = "2025-03-26";
+  const commonHeaders = {
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+  };
+  const initialized = await fetch(url, {
+    method: "POST",
+    headers: commonHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion,
+        capabilities: {},
+        clientInfo: { name: "package-runtime-smoke", version: "1.0.0" },
+      },
+    }),
+    signal: AbortSignal.timeout(5000),
+  });
+  const sessionId = initialized.headers.get("mcp-session-id");
+  if (initialized.status !== 200 || !sessionId) {
+    throw new Error("Built MCP initialize did not create a canonical session.");
+  }
+  const sessionHeaders = {
+    ...commonHeaders,
+    "mcp-session-id": sessionId,
+    "mcp-protocol-version": protocolVersion,
+  };
+  const notification = await fetch(url, {
+    method: "POST",
+    headers: sessionHeaders,
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (notification.status !== 200 && notification.status !== 202) {
+    throw new Error("Built MCP session rejected the initialized notification.");
+  }
+  const listed = await fetch(url, {
+    method: "POST",
+    headers: sessionHeaders,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (listed.status !== 200 || !(await listed.text()).includes('"jsonrpc":"2.0"')) {
+    throw new Error("Built MCP session did not exchange a tools/list response.");
+  }
+
+  const stream = await fetch(url, {
+    headers: {
+      accept: "text/event-stream",
+      "mcp-session-id": sessionId,
+      "mcp-protocol-version": protocolVersion,
+    },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (
+    stream.status !== 200 ||
+    !(stream.headers.get("content-type") ?? "").includes("text/event-stream")
+  ) {
+    throw new Error("Built MCP session did not open its canonical GET stream.");
+  }
+  await stream.body?.cancel();
+
+  const deleted = await fetch(url, {
+    method: "DELETE",
+    headers: {
+      "mcp-session-id": sessionId,
+      "mcp-protocol-version": protocolVersion,
+    },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (deleted.status !== 200) {
+    throw new Error("Built MCP session DELETE did not complete cleanup.");
+  }
+  const afterDelete = await fetch(url, {
+    method: "POST",
+    headers: sessionHeaders,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (afterDelete.status !== 404) {
+    throw new Error("Built MCP session remained reachable after DELETE.");
+  }
+}
+
+async function verifyStrictRouteFailures(currentHostOrigin) {
+  const fixtures = [
+    ["GET", "/openapi.json"],
+    ["GET", "/v1"],
+    ["GET", "/v1/healthz"],
+    ["POST", "/v1/remote/login/start"],
+    ["GET", "/v1/attach/manifest"],
+    ["POST", "/v1/admin"],
+    ["GET", "/v1/admin/auth/callback/example"],
+    ["POST", "/v1/mcp"],
+    ["GET", "/v2"],
+    ["GET", "/v2/admin/host"],
+    ["GET", "/api/"],
+    ["GET", "/api/v1/"],
+    ["POST", "/api/v1/admin"],
+    ["GET", "/api/v2"],
+    ["GET", "/api/v2/admin/host/"],
+    ["POST", "/mcp/"],
+    ["GET", "/dashboard/"],
+    ["GET", "/dashboard/api/v2/host"],
+    ["GET", "/_astro/example.js"],
+    ["GET", "/tenant/tools/api"],
+    ["POST", "/tenant/tools/mcp"],
+    ["GET", "/tenant/tools/dashboard"],
+  ];
+  for (const [method, path] of fixtures) {
+    const response = await fetch(`${currentHostOrigin}${path}`, {
+      method,
+      redirect: "manual",
+      signal: AbortSignal.timeout(5000),
+    });
+    const text = await response.text();
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error(`Removed route ${method} ${path} did not return JSON.`);
+    }
+    if (
+      response.status !== 404 ||
+      response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !==
+        "application/json" ||
+      response.headers.get("cache-control") !== "no-store" ||
+      response.headers.has("location") ||
+      response.headers.has("deprecation") ||
+      response.headers.has("link") ||
+      JSON.stringify(body) !== JSON.stringify({ error: "not_found" })
+    ) {
+      throw new Error(`Removed route ${method} ${path} did not return the exact cutover 404.`);
+    }
   }
 }
 
 async function verifyMigratedBuiltProtocols({
   client,
+  currentHostOrigin,
   projectBinding,
   projectFingerprint,
   sdk,
-  serviceRoot,
 }) {
-  await verifyAttachManifest(sdk, client, serviceRoot);
-  await verifyDevelopmentAdminRead(sdk, client, serviceRoot);
+  await verifyAttachManifest(sdk, client, currentHostOrigin);
+  await verifyDevelopmentAdminRead(sdk, client, currentHostOrigin);
   await verifyProjectBindingAbortCleanup({
     client,
+    currentHostOrigin,
     projectBinding,
     projectFingerprint,
     sdk,
-    serviceRoot,
   });
 }
 
-async function verifyAttachManifest(sdk, client, serviceRoot) {
+async function verifyAttachManifest(sdk, client, currentHostOrigin) {
   const result = await sdk.getAttachManifest({
     client,
     signal: AbortSignal.timeout(5000),
   });
-  const expectedUrl = `${serviceRoot}/v1/attach/manifest`;
+  const expectedUrl = `${currentHostOrigin}/api/v1/attach/manifest`;
   if (
     result.error !== undefined ||
     !(result.request instanceof Request) ||
@@ -316,12 +583,12 @@ async function verifyAttachManifest(sdk, client, serviceRoot) {
   }
 }
 
-async function verifyDevelopmentAdminRead(sdk, client, serviceRoot) {
+async function verifyDevelopmentAdminRead(sdk, client, currentHostOrigin) {
   const result = await sdk.adminV2GetHost({
     client,
     signal: AbortSignal.timeout(5000),
   });
-  const expectedUrl = `${serviceRoot}/v2/admin/host`;
+  const expectedUrl = `${currentHostOrigin}/api/v2/admin/host`;
   if (
     result.error !== undefined ||
     !(result.request instanceof Request) ||
@@ -346,12 +613,12 @@ async function verifyDevelopmentAdminRead(sdk, client, serviceRoot) {
 
 async function verifyProjectBindingAbortCleanup({
   client,
+  currentHostOrigin,
   projectBinding,
   projectFingerprint,
   sdk,
-  serviceRoot,
 }) {
-  const webSocketUrl = `ws://${new URL(serviceRoot).host}/v1/attach/project-bindings/connect`;
+  const webSocketUrl = `ws://${new URL(currentHostOrigin).host}/api/v1/attach/project-bindings/connect`;
   const controller = new AbortController();
   let readyEvent;
   const deadline = setTimeout(() => controller.abort(), 5000);
@@ -394,7 +661,7 @@ async function verifyProjectBindingAbortCleanup({
     path: { bindingId: readyEvent.bindingId },
     signal: AbortSignal.timeout(5000),
   });
-  const expectedUrl = `${serviceRoot}/v1/attach/project-bindings/${encodeURIComponent(
+  const expectedUrl = `${currentHostOrigin}/api/v1/attach/project-bindings/${encodeURIComponent(
     readyEvent.bindingId,
   )}/session`;
   if (
