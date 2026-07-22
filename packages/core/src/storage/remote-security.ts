@@ -1143,16 +1143,19 @@ export class RemoteSecurityStore {
   ): Promise<R> {
     const result =
       this.database.dialect === "sqlite"
-        ? this.database.db.transaction((transaction) => {
-            const state = loadSqliteState(transaction);
-            const transitionResult = transition(state);
-            if ("error" in transitionResult) {
-              saveSqliteState(transaction, state);
-              return transitionResult.error;
-            }
-            if (transitionResult.save !== false) saveSqliteState(transaction, state);
-            return transitionResult.value;
-          })
+        ? this.database.db.transaction(
+            (transaction) => {
+              const state = loadSqliteState(transaction);
+              const transitionResult = transition(state);
+              if ("error" in transitionResult) {
+                saveSqliteState(transaction, state);
+                return transitionResult.error;
+              }
+              if (transitionResult.save !== false) saveSqliteState(transaction, state);
+              return transitionResult.value;
+            },
+            { behavior: "immediate" },
+          )
         : await this.database.db.transaction(async (transaction) => {
             await lockPostgresRemoteSecurity(transaction);
             const state = await loadPostgresState(transaction, true);
@@ -1175,25 +1178,28 @@ export class RemoteSecurityStore {
     transition: (state: RemoteSecurityState) => OperatorTransitionResult<R>,
   ): Promise<R> {
     if (this.database.dialect === "sqlite") {
-      return this.database.db.transaction((transaction) => {
-        const state = loadSqliteState(transaction);
-        const result = transition(state);
-        if (result.save === false) return result.value;
-        saveSqliteState(transaction, state);
-        transaction
-          .insert(sqlite.operatorActivity)
-          .values(
-            activityValues(
-              operatorClientId,
-              action,
-              targetKind,
-              result.targetKey!,
-              result.metadata,
-            ),
-          )
-          .run();
-        return result.value;
-      });
+      return this.database.db.transaction(
+        (transaction) => {
+          const state = loadSqliteState(transaction);
+          const result = transition(state);
+          if (result.save === false) return result.value;
+          saveSqliteState(transaction, state);
+          transaction
+            .insert(sqlite.operatorActivity)
+            .values(
+              activityValues(
+                operatorClientId,
+                action,
+                targetKind,
+                result.targetKey!,
+                result.metadata,
+              ),
+            )
+            .run();
+          return result.value;
+        },
+        { behavior: "immediate" },
+      );
     }
     return await this.database.db.transaction(async (transaction) => {
       await lockPostgresRemoteSecurity(transaction);
