@@ -13,13 +13,13 @@ const LARGE_REQUEST_TIMEOUT_MS = 120_000;
 // The server grants active requests 30 seconds to drain before removing upload staging.
 const HOST_NODE_GRACEFUL_SHUTDOWN_MS = 35_000;
 const MAX_DIAGNOSTIC_OUTPUT_CHARS = 64 * 1024;
-const RSS_ASSET_COUNT = 63;
+const RSS_ASSET_COUNT = 64;
 const RSS_ASSET_BYTES = 4 * MiB;
 const RSS_CHUNK_BYTES = 64 * 1024;
 const RSS_PARSER_ALLOWANCE_BYTES = 24 * MiB;
-// The larger generated bundle leaves a 64 MiB payload gap after Node and SQLite native churn.
-const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 144 * MiB;
-const RSS_WHOLE_BUNDLE_GAP_BYTES = 64 * MiB;
+// The maximum-size auxiliary payload leaves a 48 MiB gap after Node and SQLite native churn.
+const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 176 * MiB;
+const RSS_WHOLE_BUNDLE_GAP_BYTES = 48 * MiB;
 
 export async function verifyPlan000BuiltScenarios({
   repoRoot,

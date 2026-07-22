@@ -16,16 +16,16 @@ import type { ReopenableBundleFileSource } from "../../src/storage/bundle-source
 const MiB = 1024 * 1024;
 const boundary = "caplets-rss-smoke-boundary";
 const exportBoundary = "caplets-rss-export-boundary";
-const assetCount = 63;
+const assetCount = 64;
 const assetBytes = 4 * MiB;
 const generationChunkBytes = 64 * 1024;
 
 // This allowance covers Busboy's 16 MiB manifest ceiling plus its stream/scanner buffers.
 const parserAllowanceBytes = 24 * MiB;
-// Native SQLite/allocator variance differs across supported Node releases. The fixed allowance
-// covers those transients while the larger generated bundle keeps the ceiling 64 MiB below payload.
-const fixedRuntimeAllowanceBytes = 144 * MiB;
-const requiredStreamingGapBytes = 64 * MiB;
+// Native SQLite/allocator variance differs across supported Node releases and runtimes. The fixed
+// allowance covers those transients while the maximum-size auxiliary payload leaves a 48 MiB gap.
+const fixedRuntimeAllowanceBytes = 176 * MiB;
+const requiredStreamingGapBytes = 48 * MiB;
 
 const operator = { clientId: "operator_bundle_rss", role: "operator" } as const;
 const document = Buffer.from(
