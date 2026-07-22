@@ -1,6 +1,6 @@
 # Plan 023: Use Fixed-Origin Protocol Namespaces
 
-> Status: IN PROGRESS
+> Status: DONE
 > Planned against: `ac12a174`
 > Direction: make a Current Host an origin with fixed, disjoint protocol namespaces
 > Priority: P0
@@ -686,17 +686,17 @@ Run the repository code-review workflow against the implementation base with sta
 
 ## Completion notes
 
-> Filled by the implementation agent; do not mark `DONE` while any field is missing.
+> Completed and verified by the implementation agent.
 
-- Completed date: `TODO`
-- Implementation commit/range: `TODO`
-- Prerequisite completion evidence (000/020/021/022): `TODO`
-- Topology/OpenAPI/SDK route-manifest evidence: `TODO`
-- Focused core/CLI/native/storage command results: `TODO`
-- Dashboard/SDK/generated command results: `TODO`
-- Built-package and compose smoke evidence: `TODO`
-- Manual browser/MCP/OAuth/negative-path evidence: `TODO`
-- `pnpm verify` result: `TODO`
-- Review findings and resolutions: `TODO`
-- Changeset/release metadata: `TODO`
-- Deviations from this plan: `TODO (must be empty or linked to an approved decision)`
+- Completed date: 2026-07-20
+- Implementation commit/range: `c5058527^..4518a04`
+- Prerequisite completion evidence (000/020/021/022): Plan 000 and Plan 020 completion records are filled; Plan 021's canonical authorization/finalization contract is integrated with its route-location criteria intentionally superseded here; Plan 022's completion record and deletion/preservation evidence are filled.
+- Topology/OpenAPI/SDK route-manifest evidence: built-package checks proved exact origin-root discovery, strong ETags/304, checked OpenAPI byte parity, canonical SDK responses, `/api/v1` Attach, `/api/v2/admin`, `/mcp`, `/dashboard`, and exact 404 behavior for old, prefixed, and trailing-slash paths.
+- Focused core/CLI/native/storage command results: focused core Admin, HTTP, storage, Remote Profile, CLI, Opencode, and Pi checks passed; required PostgreSQL contracts passed 11 files and 63 tests.
+- Dashboard/SDK/generated command results: dashboard typecheck/build and browser smoke passed; SDK build/artifact tests, OpenAPI generation check, config schema check, Code Mode generated-API checks, and generated docs checks passed.
+- Built-package and compose smoke evidence: `node scripts/check-package-runtime.mjs` passed the full two-Host-Node scenario including bounded 197,132,428-byte bundle upload/download; `pnpm compose:smoke` passed SQLite, convenience PostgreSQL, hardened PostgreSQL, migration-gate, and compatibility deployments.
+- Manual browser/MCP/OAuth/negative-path evidence: an authorized browser session rendered the canonical dashboard and Stored Caplets route; built smoke covered Streamable HTTP MCP lifecycle, cross-node OAuth completion/replay, Project Binding, and exact no-store 404 responses for removed routes.
+- `pnpm verify` result: passed on 2026-07-20; 212 Vitest files passed, 8 skipped, with 2,996 tests passed and 46 skipped, followed by benchmark and full build/package smoke success.
+- Review findings and resolutions: final independent standards/security and Plan 000/022/023 spec reviews reported no findings after bounded-streaming, SQL persistence, Docker state-classification, and multi-node cache/startup fixes.
+- Changeset/release metadata: `.changeset/current-host-admin-api.md` covers the public origin-root, Admin API, SDK, Cloud-removal, and v1-removal cutover.
+- Deviations from this plan: none.

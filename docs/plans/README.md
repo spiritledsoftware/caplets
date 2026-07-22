@@ -20,32 +20,32 @@ Status vocabulary: `TODO`, `IN PROGRESS`, `BLOCKED`, `DONE`, `STALE`
 
 Plan 000 is the implemented Admin API semantic migration anchor, and Plan 020 completes its public SDK package seam. Plan 021 applies ADR 0008's exclusive dual-credential Admin authentication before release. Plan 022 then removes the legacy hosted Caplets Cloud product surface, and Plan 023 is the final pre-release integration gate: it moves every surviving protocol to the fixed origin-root topology, regenerates public artifacts, and deletes all old routes and frozen v1 Admin compatibility.
 
-| Plan                                                   | Finding / direction                        |      Impact |  Effort | Fix risk | Depends on              | Status      |
-| ------------------------------------------------------ | ------------------------------------------ | ----------: | ------: | -------: | ----------------------- | ----------- |
-| [000](000-migrate-admin-api.md)                        | Resource-oriented Admin API migration      |        HIGH |      XL |     HIGH | 001, 003, 004, 007, 009 | COMPLETE    |
-| [001](001-bound-http-request-bodies.md)                | Bound HTTP request bodies                  |        HIGH |       S |      LOW | —                       | COMPLETE    |
-| [002](002-enforce-code-mode-execution-budgets.md)      | Hard Code Mode timeout ceiling             |        HIGH |       M |   MEDIUM | —                       | TODO        |
-| [003](003-run-postgresql-contracts-in-ci.md)           | Run PostgreSQL contracts in CI             |        HIGH |       M |      LOW | —                       | COMPLETE    |
-| [004](004-make-vault-set-and-grant-atomic.md)          | Atomic SQL Vault set-and-grant             |        HIGH |       M |     HIGH | 003                     | COMPLETE    |
-| [005](005-bound-http-runtime-sessions.md)              | Bound/expire HTTP runtime sessions         |        HIGH |       M |   MEDIUM | —                       | TODO        |
-| [006](006-prune-expired-code-mode-logs.md)             | Physically prune expired Code Mode logs    |        HIGH |       S |      LOW | —                       | TODO        |
-| [007](007-guard-oauth-flow-completion.md)              | Durable guarded backend OAuth flows        |        HIGH |       L |     HIGH | 003                     | COMPLETE    |
-| [008](008-trigger-sites-for-shared-package-changes.md) | Deploy sites on shared-package changes     |        HIGH |       S |      LOW | —                       | TODO        |
-| [009](009-cover-dashboard-mutations-and-csrf.md)       | Characterize dashboard mutations/CSRF      |        HIGH |       S |      LOW | —                       | COMPLETE    |
-| [010](010-type-dashboard-private-contract.md)          | Type dashboard-private HTTP contracts      |        HIGH |       S |      LOW | 000, 009                | TODO        |
-| [011](011-load-dashboard-data-by-route.md)             | Route-aware Admin resource loading         |        HIGH |       M |   MEDIUM | 000, 009, 010           | TODO        |
-| [012](012-use-row-level-remote-security-operations.md) | Row-level remote-security operations       |        HIGH |       L |     HIGH | 000, 003                | TODO        |
-| [013](013-incrementally-materialize-stored-caplets.md) | Incremental stored-Caplet materialization  |        HIGH |       L |     HIGH | 000                     | TODO        |
-| [014](014-sync-contributor-instructions.md)            | Synchronize contributor instructions       |      MEDIUM |       S |      LOW | —                       | TODO        |
-| [015](015-separate-compact-catalog-reads.md)           | Compact catalog read model                 |        HIGH |       M |   MEDIUM | —                       | TODO        |
-| [016](016-add-caplet-authoring-preflight.md)           | Direction: authoring preflight             | Product bet |       M |   MEDIUM | —                       | TODO        |
-| [017](017-spike-self-hosted-https-project-binding.md)  | Direction: self-hosted HTTPS binding spike | Product bet | M spike |     HIGH | —                       | TODO        |
-| [018](018-add-per-caplet-benchmark-flights.md)         | Direction: per-Caplet benchmark flights    | Product bet |       M |   MEDIUM | —                       | TODO        |
-| [019](019-fix-dashboard-mutation-races.md)             | Fix dashboard mutation races               |        HIGH |       S |   MEDIUM | 000, 009                | COMPLETE    |
-| [020](020-publish-caplets-sdk.md)                      | Publish the full public Caplets SDK        |        HIGH |      XL |     HIGH | 000 contract            | COMPLETE    |
-| [021](021-use-one-canonical-admin-route.md)            | One canonical dual-credential Admin route  |        HIGH |       L |     HIGH | 000, 009, 020           | IN PROGRESS |
-| [022](022-remove-legacy-caplets-cloud.md)              | Remove Legacy Caplets Cloud                |        HIGH |      XL |     HIGH | 000, 020                | TODO        |
-| [023](023-use-fixed-origin-protocol-namespaces.md)     | Use Fixed-Origin Protocol Namespaces       |        HIGH |      XL |     HIGH | 000, 020, 021, 022      | TODO        |
+| Plan                                                   | Finding / direction                        |      Impact |  Effort | Fix risk | Depends on              | Status   |
+| ------------------------------------------------------ | ------------------------------------------ | ----------: | ------: | -------: | ----------------------- | -------- |
+| [000](000-migrate-admin-api.md)                        | Resource-oriented Admin API migration      |        HIGH |      XL |     HIGH | 001, 003, 004, 007, 009 | COMPLETE |
+| [001](001-bound-http-request-bodies.md)                | Bound HTTP request bodies                  |        HIGH |       S |      LOW | —                       | COMPLETE |
+| [002](002-enforce-code-mode-execution-budgets.md)      | Hard Code Mode timeout ceiling             |        HIGH |       M |   MEDIUM | —                       | TODO     |
+| [003](003-run-postgresql-contracts-in-ci.md)           | Run PostgreSQL contracts in CI             |        HIGH |       M |      LOW | —                       | COMPLETE |
+| [004](004-make-vault-set-and-grant-atomic.md)          | Atomic SQL Vault set-and-grant             |        HIGH |       M |     HIGH | 003                     | COMPLETE |
+| [005](005-bound-http-runtime-sessions.md)              | Bound/expire HTTP runtime sessions         |        HIGH |       M |   MEDIUM | —                       | TODO     |
+| [006](006-prune-expired-code-mode-logs.md)             | Physically prune expired Code Mode logs    |        HIGH |       S |      LOW | —                       | TODO     |
+| [007](007-guard-oauth-flow-completion.md)              | Durable guarded backend OAuth flows        |        HIGH |       L |     HIGH | 003                     | COMPLETE |
+| [008](008-trigger-sites-for-shared-package-changes.md) | Deploy sites on shared-package changes     |        HIGH |       S |      LOW | —                       | TODO     |
+| [009](009-cover-dashboard-mutations-and-csrf.md)       | Characterize dashboard mutations/CSRF      |        HIGH |       S |      LOW | —                       | COMPLETE |
+| [010](010-type-dashboard-private-contract.md)          | Type dashboard-private HTTP contracts      |        HIGH |       S |      LOW | 000, 009                | TODO     |
+| [011](011-load-dashboard-data-by-route.md)             | Route-aware Admin resource loading         |        HIGH |       M |   MEDIUM | 000, 009, 010           | TODO     |
+| [012](012-use-row-level-remote-security-operations.md) | Row-level remote-security operations       |        HIGH |       L |     HIGH | 000, 003                | TODO     |
+| [013](013-incrementally-materialize-stored-caplets.md) | Incremental stored-Caplet materialization  |        HIGH |       L |     HIGH | 000                     | TODO     |
+| [014](014-sync-contributor-instructions.md)            | Synchronize contributor instructions       |      MEDIUM |       S |      LOW | —                       | TODO     |
+| [015](015-separate-compact-catalog-reads.md)           | Compact catalog read model                 |        HIGH |       M |   MEDIUM | —                       | TODO     |
+| [016](016-add-caplet-authoring-preflight.md)           | Direction: authoring preflight             | Product bet |       M |   MEDIUM | —                       | TODO     |
+| [017](017-spike-self-hosted-https-project-binding.md)  | Direction: self-hosted HTTPS binding spike | Product bet | M spike |     HIGH | —                       | TODO     |
+| [018](018-add-per-caplet-benchmark-flights.md)         | Direction: per-Caplet benchmark flights    | Product bet |       M |   MEDIUM | —                       | TODO     |
+| [019](019-fix-dashboard-mutation-races.md)             | Fix dashboard mutation races               |        HIGH |       S |   MEDIUM | 000, 009                | COMPLETE |
+| [020](020-publish-caplets-sdk.md)                      | Publish the full public Caplets SDK        |        HIGH |      XL |     HIGH | 000 contract            | COMPLETE |
+| [021](021-use-one-canonical-admin-route.md)            | One canonical dual-credential Admin route  |        HIGH |       L |     HIGH | 000, 009, 020           | COMPLETE |
+| [022](022-remove-legacy-caplets-cloud.md)              | Remove Legacy Caplets Cloud                |        HIGH |      XL |     HIGH | 000, 020                | COMPLETE |
+| [023](023-use-fixed-origin-protocol-namespaces.md)     | Use Fixed-Origin Protocol Namespaces       |        HIGH |      XL |     HIGH | 000, 020, 021, 022      | COMPLETE |
 
 ## Dependency graph
 

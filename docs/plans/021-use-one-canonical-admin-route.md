@@ -1,13 +1,13 @@
 # Plan 021: Use One Canonical Admin Route
 
-> Status: IN PROGRESS
+> Status: COMPLETE
 > Decision: ADR 0008
 > Priority: P1
 > Effort: L
 > Fix risk: HIGH
 > Depends on: Plans 000, 009, and 020
 
-> **Pre-release integration:** This in-progress plan remains authoritative for exclusive credential-mode selection, dashboard-session same-origin and CSRF policy, one request authority, mutation finalization, and the one-time dashboard-cookie migration. After [Plan 022](022-remove-legacy-caplets-cloud.md) removes Legacy Caplets Cloud, [Plan 023](023-use-fixed-origin-protocol-namespaces.md) relocates the canonical Admin tree to `/api/v2/admin/*` and replaces this plan's service-root route locations, root OpenAPI location, deployment-prefix support, and frozen v1 Admin assumptions before the first release. Every old route is deleted without an alias, redirect, or fallback.
+> **Pre-release integration:** This completed plan remains authoritative for exclusive credential-mode selection, dashboard-session same-origin and CSRF policy, one request authority, mutation finalization, and the one-time dashboard-cookie migration. [Plan 022](022-remove-legacy-caplets-cloud.md) removes Legacy Caplets Cloud, and [Plan 023](023-use-fixed-origin-protocol-namespaces.md) relocates the canonical Admin tree to `/api/v2/admin/*` and replaces this plan's service-root route locations, root OpenAPI location, deployment-prefix support, and frozen v1 Admin assumptions before the first release. Every old route is deleted without an alias, redirect, or fallback.
 
 ## Why this matters
 
@@ -533,3 +533,7 @@ Run the repository code-review workflow against the implementation base. Review 
 The highest-risk failures are credential downgrade, cookie shadowing during Path migration, collapsed `Set-Cookie` headers, false same-origin decisions behind trusted proxies, session cleanup after committed mutations, generated-client cookie handling, and stale deployment-prefix metadata. Each has a focused pre-implementation regression above.
 
 There is no feature flag and no compatibility alias. Roll back the release as one unit if canonical cookie authentication fails in production. Service-root cookies remain readable by the prior nested dashboard routes, so the cookie format itself does not block rollback. Do not respond by restoring `/dashboard/api/v2` as an emergency permanent alias; diagnose the selector, cookie, origin, or injected-root defect at its owning seam.
+
+## Completion note
+
+Completed 2026-07-20 in `c5058527^..4518a04`. Plan 023 intentionally supersedes this plan's route-location, deployment-prefix, and frozen-v1 criteria; its fixed-origin tests replace those checks. The surviving authorization, same-origin, CSRF, request-authority, session-finalization, generated-client cookie, private-reveal, and cookie-migration contracts passed focused tests, built-package/browser smoke, `pnpm verify`, and independent standards/spec review with no remaining findings.

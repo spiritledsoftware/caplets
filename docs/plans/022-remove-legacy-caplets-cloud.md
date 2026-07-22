@@ -1,6 +1,6 @@
 # Plan 022: Remove Legacy Caplets Cloud
 
-> Status: IN PROGRESS
+> Status: COMPLETE
 > Planned against: `ac12a174`
 > Direction: delete the legacy hosted Caplets Cloud product without narrowing generic Current Host remote support
 > Priority: P0
@@ -780,22 +780,22 @@ No SQL schema rollback is expected solely for Cloud deletion. Historical hosted 
 
 ## Completion notes
 
-> Fill this section when implementation is complete. Do not mark the plan complete while any field is blank.
+> Completed 2026-07-20. All fields below describe the verified pre-release cutover.
 
-- Implementation base commit:
-- Completion commit:
-- Final status/date:
-- Implemented slices:
-- Deviations from fixed decisions (expected: none):
-- Self-hosted migration and crash-recovery evidence:
-- Legacy Cloud non-observation/byte-preservation evidence:
-- Generic Current Host CLI/native/Project Binding/Vault smoke evidence:
-- Hosted runtime/setup/export deletion evidence:
-- Generated config/OpenAPI/SDK artifact evidence:
-- Cloudflare/Alchemy preservation build evidence:
-- Documentation and changeset evidence:
-- Focused verification commands and results:
-- `pnpm verify` result:
-- Standards/security/data-safety review result:
-- Spec review result:
-- Rollback backup/restore notes:
+- Implementation base commit: `ac12a174`
+- Completion commit: `4518a04` (behavioral closure; this record is committed immediately after it)
+- Final status/date: `COMPLETE`, 2026-07-20
+- Implemented slices: generic origin-keyed Remote Profiles and guarded legacy self-hosted migration; Cloud mode, command, environment, workspace, hosted runtime/setup/export, API, and generated-surface deletion; generic Current Host CLI/native/Project Binding/Vault preservation.
+- Deviations from fixed decisions (expected: none): none.
+- Self-hosted migration and crash-recovery evidence: `packages/core/test/remote-profiles.test.ts` covers self-hosted key migration, interrupted migration recovery, collision refusal, mode preservation, and credential permission handling.
+- Legacy Cloud non-observation/byte-preservation evidence: the Remote Profile regression suite rejects Cloud credentials as generic input and verifies legacy Cloud files are neither read, rewritten, nor removed.
+- Generic Current Host CLI/native/Project Binding/Vault smoke evidence: focused core, CLI, Opencode, Pi, SDK, dashboard, and built-package checks passed; the built-package smoke exercised Remote Login, Admin, Attach, Project Binding, and Vault paths against a generic loopback Current Host.
+- Hosted runtime/setup/export deletion evidence: active-source and generated-artifact checks contain no hosted mode, workspace, setup, export, or Cloud-only command surface; the strict-route smoke returns exact 404 responses for removed paths.
+- Generated config/OpenAPI/SDK artifact evidence: `pnpm schema:check`, `pnpm openapi:check`, Code Mode generated-API checks, and SDK artifact tests passed within `pnpm verify`.
+- Cloudflare/Alchemy preservation build evidence: the full Turbo build completed for the catalog, docs, landing, dashboard, SDK, core, CLI, Opencode, and Pi packages; unrelated Cloudflare/Alchemy deployment sources remain in place.
+- Documentation and changeset evidence: current product, architecture, SDK, CLI, storage, deployment, and troubleshooting docs describe the generic Current Host model; `.changeset/current-host-admin-api.md` records the public cutover.
+- Focused verification commands and results: focused core storage/Admin/Remote Profile suites, SDK/dashboard checks, required PostgreSQL contracts (11 files, 63 tests), `node scripts/check-package-runtime.mjs`, and `pnpm compose:smoke` passed.
+- `pnpm verify` result: passed on 2026-07-20; 212 Vitest files passed, 8 skipped, with 2,996 tests passed and 46 skipped, followed by benchmark and full build/package smoke success.
+- Standards/security/data-safety review result: no findings; credential locality, legacy-byte preservation, strict route deletion, SQL durability, bounded bundle memory, and rollback behavior were accepted.
+- Spec review result: no findings against Plans 000, 022, and 023 after the final closure fixes.
+- Rollback backup/restore notes: follow the rollback procedure above as one release unit; preserve permissions when backing up generic auth roots, restore the verified self-hosted pair or repeat Remote Login, and leave legacy Cloud files untouched.
