@@ -445,6 +445,55 @@ describe("cli init", () => {
     }
   });
 
+  it("manages Vault access grants for a global config Caplet", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-access-config-"));
+    const configPath = join(dir, "config.json");
+    const storagePath = join(dir, "host.sqlite3");
+    const env = {
+      ...process.env,
+      CAPLETS_CONFIG: configPath,
+      XDG_STATE_HOME: join(dir, "state"),
+    };
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          storage: { type: "sqlite", path: storagePath },
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "Inspect and manage GitHub repositories.",
+              url: "https://api.githubcopilot.com/mcp",
+              auth: { type: "bearer", token: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+
+      await runCli(["vault", "access", "grant", "GH_TOKEN", "github"], {
+        env,
+        writeOut: () => undefined,
+      });
+
+      const storage = await createHostStorage({ type: "sqlite", path: storagePath });
+      try {
+        await expect(storage.vaultGrants.list("github")).resolves.toEqual([
+          expect.objectContaining({
+            capletId: "github",
+            vaultKey: "GH_TOKEN",
+            referenceName: "GH_TOKEN",
+            originKind: "global-config",
+            originPath: configPath,
+          }),
+        ]);
+      } finally {
+        await storage.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("grants SQL Vault access when unrelated missing env refs would quarantine the Caplet", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-access-env-"));
     const configPath = join(dir, "config.json");

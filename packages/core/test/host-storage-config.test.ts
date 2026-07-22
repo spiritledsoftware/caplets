@@ -153,6 +153,52 @@ describe("stored Caplet source", () => {
     }
   });
 
+  it("quarantines unresolved global config Caplets during Host startup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-host-vault-quarantine-"));
+    directories.push(root);
+    const databasePath = join(root, "caplets.sqlite3");
+    const configPath = join(root, "config.json");
+    const projectConfigPath = join(root, "project", ".caplets", "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        storage: { type: "sqlite", path: databasePath },
+        mcpServers: {
+          github: {
+            name: "GitHub",
+            description: "Inspect and manage GitHub repositories.",
+            url: "https://api.githubcopilot.com/mcp",
+            auth: { type: "bearer", token: "$vault:GH_TOKEN" },
+          },
+        },
+      }),
+    );
+    const storage = await createHostStorage({ type: "sqlite", path: databasePath });
+    await storage.vaultGrants.grant({
+      capletId: "github",
+      vaultKey: "GH_TOKEN",
+      referenceName: "GH_TOKEN",
+      originKind: "global-config",
+      originPath: configPath,
+      operator: { role: "operator", clientId: "test" },
+    });
+    await storage.close();
+    const errors: string[] = [];
+
+    const engine = await CapletsEngine.create({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: (value) => errors.push(value),
+    });
+    try {
+      expect(engine.enabledServers()).toEqual([]);
+      expect(errors.join("")).toContain("Caplet github references missing Vault key GH_TOKEN");
+    } finally {
+      await engine.close();
+    }
+  });
+
   it("persists keyed runtime parity while manifesting only global Caplet Files", async () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-cluster-parity-"));
     directories.push(root);

@@ -293,8 +293,8 @@ beforeEach(() => {
   toast.error.mockReset();
   toast.success.mockReset();
   toast.warning.mockReset();
-  localStorage.clear();
-  sessionStorage.clear();
+  window.localStorage.clear();
+  window.sessionStorage.clear();
   window.history.replaceState({}, "", "/dashboard/vault");
   window.matchMedia = vi.fn().mockReturnValue({
     addEventListener: vi.fn(),

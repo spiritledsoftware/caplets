@@ -1927,49 +1927,103 @@ export async function loadConfigWithHostStorage(
   storage: StoredCapletSource,
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
-  options: Pick<ConfigParseOptions, "vaultResolver"> & {
+  options: Pick<ConfigParseOptions, "vaultResolver" | "vaultRecoveryTarget"> & {
     recordCacheRoot?: string | undefined;
+    writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined;
   } = {},
 ): Promise<ConfigWithSources> {
   const recordCacheRoot = options.recordCacheRoot ?? join(defaultStateBaseDir(), "record-caplets");
   await materializeStoredCaplets(storage, recordCacheRoot);
+  const warnings: LocalOverlayConfigWarning[] = [];
+  const parseOptions = {
+    vaultResolver: options.vaultResolver ?? defaultVaultResolver(),
+    vaultRecoveryTarget: options.vaultRecoveryTarget,
+  };
   const storedCaplets = loadCapletFilesWithPaths(recordCacheRoot);
-  const userConfig = existsSync(path) ? readPublicConfigInput(path) : undefined;
+  const storedConfig = storedCaplets
+    ? quarantineUnresolvedReferenceCaplets(
+        storedCaplets.config,
+        "stored-record",
+        (id) => storedCaplets.paths[id] ?? recordCacheRoot,
+        warnings,
+        parseOptions,
+      )
+    : undefined;
+  const userConfig = existsSync(path)
+    ? quarantineUnresolvedReferenceCaplets(
+        readPublicConfigInput(path),
+        "global-config",
+        path,
+        warnings,
+        parseOptions,
+      )
+    : undefined;
   const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
+  const userCapletsConfig = userCaplets
+    ? quarantineUnresolvedReferenceCaplets(
+        userCaplets.config,
+        "global-file",
+        (id) => userCaplets.paths[id] ?? resolveCapletsRoot(path),
+        warnings,
+        parseOptions,
+      )
+    : undefined;
   const projectConfig = existsSync(projectPath)
-    ? rejectProjectConfigExecutableBackendMaps(
-        stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+    ? quarantineUnresolvedReferenceCaplets(
+        rejectProjectConfigExecutableBackendMaps(
+          stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+          projectPath,
+        ),
+        "project-config",
         projectPath,
+        warnings,
+        parseOptions,
       )
     : undefined;
   const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
   const projectCaplets = projectCapletsRoot
     ? loadCapletFilesWithPaths(projectCapletsRoot)
     : undefined;
-  return buildConfigWithSources(
+  const projectCapletsConfig = projectCaplets
+    ? quarantineUnresolvedReferenceCaplets(
+        projectCaplets.config,
+        "project-file",
+        (id) => projectCaplets.paths[id] ?? projectCapletsRoot!,
+        warnings,
+        parseOptions,
+      )
+    : undefined;
+  const result = buildConfigWithSources(
     [
       storedCaplets
         ? {
-            input: storedCaplets.config,
+            input: storedConfig,
             source: { kind: "stored-record", path: storedCaplets.paths },
           }
         : undefined,
       { input: userConfig, source: { kind: "global-config", path } },
       userCaplets
-        ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
+        ? {
+            input: userCapletsConfig,
+            source: { kind: "global-file", path: userCaplets.paths },
+          }
         : undefined,
       { input: projectConfig, source: { kind: "project-config", path: projectPath } },
       projectCaplets
         ? {
-            input: projectCaplets.config,
+            input: projectCapletsConfig,
             source: { kind: "project-file", path: projectCaplets.paths },
           }
         : undefined,
     ],
     `Caplets config not found at ${path} or ${projectPath}`,
-    "Caplets config must define at least one MCP server, OpenAPI endpoint, Google Discovery API, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
-    options,
+    warnings.some((warning) => warning.recoverable)
+      ? undefined
+      : "Caplets config must define at least one MCP server, OpenAPI endpoint, Google Discovery API, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
+    parseOptions,
   );
+  for (const warning of warnings) options.writeWarning?.(warning);
+  return result;
 }
 
 async function materializeStoredCaplets(

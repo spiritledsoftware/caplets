@@ -1,4 +1,11 @@
 import { beforeEach } from "vitest";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+// macOS reports subprocess working directories through the canonical /private/var alias.
+if (process.platform === "darwin") {
+  process.env.TMPDIR = realpathSync(tmpdir());
+}
 
 const REMOTE_ENV_KEYS = [
   "CAPLETS_REMOTE_URL",

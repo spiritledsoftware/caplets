@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -207,6 +208,23 @@ describe("caplets lockfile", () => {
       expect(() => validateLockfileDestination(root, "linked/github")).toThrow(
         expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts existing destinations beneath a canonically equivalent root", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-lockfile-root-alias-"));
+    const actualParent = join(dir, "actual");
+    const aliasParent = join(dir, "alias");
+    const actualRoot = join(actualParent, "caplets");
+    const aliasedRoot = join(aliasParent, "caplets");
+    try {
+      mkdirSync(join(actualRoot, "github"), { recursive: true });
+      symlinkSync(actualParent, aliasParent);
+
+      expect(validateLockfileDestination(aliasedRoot, "github")).toBe(join(aliasedRoot, "github"));
+      expect(realpathSync(aliasedRoot)).toBe(actualRoot);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

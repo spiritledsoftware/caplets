@@ -5468,6 +5468,19 @@ function projectBindingSocketUrl(
   return url;
 }
 
+type SocketJsonOutcome = { value: unknown } | { error: unknown };
+
+type SocketJsonQueue = {
+  outcomes: SocketJsonOutcome[];
+  waiters: Array<{
+    resolve(value: unknown): void;
+    reject(error: unknown): void;
+  }>;
+  error?: unknown;
+};
+
+const socketJsonQueues = new WeakMap<WebSocket, SocketJsonQueue>();
+
 function openProjectBindingSocket(
   origin: string,
   session: ProjectBindingSocketSession,
@@ -5488,7 +5501,29 @@ function openProjectBindingSocket(
     session,
     options.projectFingerprint ?? TEST_PROJECT_FINGERPRINT,
   );
-  return protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+  const socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+  const queue: SocketJsonQueue = { outcomes: [], waiters: [] };
+  socketJsonQueues.set(socket, queue);
+  socket.on("message", (data) => {
+    let outcome: SocketJsonOutcome;
+    try {
+      outcome = { value: JSON.parse(data.toString()) as unknown };
+    } catch (error) {
+      outcome = { error };
+    }
+    const waiter = queue.waiters.shift();
+    if (waiter) {
+      if ("value" in outcome) waiter.resolve(outcome.value);
+      else waiter.reject(outcome.error);
+    } else {
+      queue.outcomes.push(outcome);
+    }
+  });
+  socket.on("error", (error) => {
+    queue.error = error;
+    for (const waiter of queue.waiters.splice(0)) waiter.reject(error);
+  });
+  return socket;
 }
 
 async function rejectedSocketUpgradeStatus(socket: WebSocket): Promise<number> {
@@ -5519,16 +5554,17 @@ async function waitForSocketOpen(socket: WebSocket): Promise<void> {
 }
 
 async function nextSocketJson(socket: WebSocket): Promise<unknown> {
-  return await new Promise((resolve, reject) => {
-    socket.once("message", (data) => {
-      try {
-        resolve(JSON.parse(data.toString()) as unknown);
-      } catch (error) {
-        reject(error);
-      }
-    });
-    socket.once("error", reject);
-  });
+  const queue = socketJsonQueues.get(socket);
+  if (!queue) throw new Error("Project Binding socket JSON queue is unavailable.");
+  const outcome = queue.outcomes.shift();
+  if (outcome) {
+    if ("value" in outcome) return outcome.value;
+    throw outcome.error;
+  }
+  if (queue.error !== undefined) throw queue.error;
+  const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+  queue.waiters.push({ resolve, reject });
+  return await promise;
 }
 
 async function waitForSocketClose(socket: WebSocket): Promise<{ code: number; reason: string }> {
