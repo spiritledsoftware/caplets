@@ -1232,6 +1232,7 @@ type ConfigInput = {
   capletSets?: Record<string, unknown>;
   [key: string]: unknown;
 };
+const quarantinedCapletIdsByInput = new WeakMap<ConfigInput, ReadonlySet<string>>();
 
 const CAPLET_BACKEND_KEYS = [
   "mcpServers",
@@ -2612,6 +2613,7 @@ function quarantineUnresolvedReferenceCaplets(
   options: Pick<ConfigParseOptions, "vaultResolver" | "vaultRecoveryTarget"> = {},
 ): ConfigInput {
   let filtered = input;
+  const quarantinedCapletIds = new Set<string>();
 
   for (const backend of CAPLET_BACKEND_KEYS) {
     const caplets = filtered[backend];
@@ -2636,6 +2638,7 @@ function quarantineUnresolvedReferenceCaplets(
       }
 
       filtered = removeCapletBackendId(filtered, backend, id);
+      quarantinedCapletIds.add(id);
       for (const missing of groupMissingEnvReferences(envMissing)) {
         warnings.push({
           kind,
@@ -2652,6 +2655,7 @@ function quarantineUnresolvedReferenceCaplets(
     }
   }
 
+  quarantinedCapletIdsByInput.set(filtered, quarantinedCapletIds);
   return filtered;
 }
 
@@ -3296,6 +3300,11 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
   for (const entry of inputs) {
     if (entry?.input === undefined) {
       continue;
+    }
+    for (const id of quarantinedCapletIdsByInput.get(entry.input) ?? []) {
+      merged = removeCapletId(merged, id);
+      delete sources[id];
+      delete shadows[id];
     }
     const entryInput =
       entry.source.kind === "global-config" ? entry.input : stripUserOnlyConfig(entry.input);

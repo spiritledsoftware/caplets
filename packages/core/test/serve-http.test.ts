@@ -5519,9 +5519,15 @@ function openProjectBindingSocket(
       queue.outcomes.push(outcome);
     }
   });
-  socket.on("error", (error) => {
-    queue.error = error;
-    for (const waiter of queue.waiters.splice(0)) waiter.reject(error);
+  const failQueue = (error: Error) => {
+    const failure = queue.error ?? error;
+    queue.error = failure;
+    for (const waiter of queue.waiters.splice(0)) waiter.reject(failure);
+  };
+  socket.on("error", failQueue);
+  socket.on("close", (code, reason) => {
+    const detail = reason.length > 0 ? `: ${reason.toString()}` : "";
+    failQueue(new Error(`Project Binding socket closed with code ${code}${detail}.`));
   });
   return socket;
 }

@@ -4408,12 +4408,6 @@ function localVaultGrantOrigin(
   );
   const source = overlay.sources[capletId];
   if (!source) return { originKind: "stored-record" };
-  if (overlay.shadows[capletId]?.length) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      `Caplet ${capletId} is shadowed in multiple config sources; resolve the active config before granting Vault access.`,
-    );
-  }
   return { originKind: source.kind, originPath: source.path };
 }
 

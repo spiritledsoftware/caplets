@@ -194,6 +194,7 @@ export class CapletsEngine {
         await loadConfigWithHostStorage(storage, path, projectPath, {
           recordCacheRoot,
           vaultResolver: await createHostStorageVaultResolver(storage),
+          vaultRecoveryTarget: options.vaultRecoveryTarget,
           writeWarning: loaderOptions?.writeWarning,
         })
       ).config;
