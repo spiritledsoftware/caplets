@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.37.1
+
+### Patch Changes
+
+- 52cbc75: Resolve Vault grant targets from config and Caplet File sources, quarantine static Caplets with unresolved Vault references instead of blocking Host startup, and accept canonical-equivalent Caplets roots.
+
 ## 0.37.0
 
 ### Minor Changes
