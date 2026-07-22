@@ -1009,6 +1009,19 @@ describe("native Caplets service", () => {
         },
         diagnostics: [],
       });
+      await expect(
+        service.execute("code_mode", {
+          code: "return true;",
+          timeoutMs: 120_001,
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "REQUEST_INVALID",
+          message: "Code Mode run input is invalid.",
+        },
+        diagnostics: [],
+      });
       const result = (await service.execute("code_mode", { timeoutMs: 1_000 })) as {
         meta: Record<string, unknown>;
       };

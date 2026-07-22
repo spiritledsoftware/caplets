@@ -24,7 +24,7 @@ Plan 000 is the implemented Admin API semantic migration anchor, and Plan 020 co
 | ------------------------------------------------------ | ------------------------------------------ | ----------: | ------: | -------: | ----------------------- | -------- |
 | [000](000-migrate-admin-api.md)                        | Resource-oriented Admin API migration      |        HIGH |      XL |     HIGH | 001, 003, 004, 007, 009 | COMPLETE |
 | [001](001-bound-http-request-bodies.md)                | Bound HTTP request bodies                  |        HIGH |       S |      LOW | —                       | COMPLETE |
-| [002](002-enforce-code-mode-execution-budgets.md)      | Hard Code Mode timeout ceiling             |        HIGH |       M |   MEDIUM | —                       | TODO     |
+| [002](002-enforce-code-mode-execution-budgets.md)      | Hard Code Mode timeout ceiling             |        HIGH |       M |   MEDIUM | —                       | COMPLETE |
 | [003](003-run-postgresql-contracts-in-ci.md)           | Run PostgreSQL contracts in CI             |        HIGH |       M |      LOW | —                       | COMPLETE |
 | [004](004-make-vault-set-and-grant-atomic.md)          | Atomic SQL Vault set-and-grant             |        HIGH |       M |     HIGH | 003                     | COMPLETE |
 | [005](005-bound-http-runtime-sessions.md)              | Bound/expire HTTP runtime sessions         |        HIGH |       M |   MEDIUM | —                       | TODO     |

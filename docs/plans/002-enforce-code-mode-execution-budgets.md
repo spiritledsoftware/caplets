@@ -1,6 +1,6 @@
 # Plan 002: Enforce a Hard Code Mode Execution Budget
 
-> Status: TODO
+> Status: COMPLETE
 > Planned against: `ac12a174`
 > Finding: #2 — caller-selected timeouts can approach `Number.MAX_SAFE_INTEGER`
 > Priority: P0
