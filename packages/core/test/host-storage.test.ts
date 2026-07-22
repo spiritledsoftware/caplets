@@ -1,10 +1,12 @@
 import { Buffer } from "node:buffer";
+import { once } from "node:events";
 import BetterSqlite3 from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool } from "pg";
+import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 import { HOST_STORAGE_SCHEMA_VERSION, createHostStorage, migrateHostStorage } from "../src/storage";
 
@@ -67,6 +69,44 @@ describe("host storage", () => {
       await storage.close();
     }
   });
+
+  it("retries migration after a transient SQLite writer lock", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-storage-lock-"));
+    directories.push(directory);
+    const path = join(directory, "caplets.sqlite3");
+    const config = { type: "sqlite" as const, path };
+    const seed = await createHostStorage(config);
+    await seed.close();
+
+    // This integration test must outlive SQLite's native busy timeout; fake timers cannot drive it.
+    const worker = new Worker(
+      `
+        const BetterSqlite3 = require("better-sqlite3");
+        const { parentPort, workerData } = require("node:worker_threads");
+        const database = new BetterSqlite3(workerData.path);
+        database.exec("BEGIN IMMEDIATE");
+        parentPort.postMessage("locked");
+        setTimeout(() => {
+          database.exec("COMMIT");
+          database.close();
+        }, workerData.holdMs);
+      `,
+      { eval: true, workerData: { path, holdMs: 5_250 } },
+    );
+    const exited = once(worker, "exit");
+    const [message] = await once(worker, "message");
+    expect(message).toBe("locked");
+
+    let storage: Awaited<ReturnType<typeof createHostStorage>> | undefined;
+    try {
+      storage = await createHostStorage(config);
+      await expect(storage.health()).resolves.toMatchObject({ ready: true });
+      await expect(exited).resolves.toEqual([0]);
+    } finally {
+      await storage?.close();
+      await worker.terminate();
+    }
+  }, 10_000);
 
   it("tracks SQLite migrations with integer keys and immutable hashes", async () => {
     const directory = mkdtempSync(join(tmpdir(), "caplets-storage-"));

@@ -10,13 +10,16 @@ const MiB = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
 const START_TIMEOUT_MS = 20_000;
 const LARGE_REQUEST_TIMEOUT_MS = 120_000;
+// The server grants active requests 30 seconds to drain before removing upload staging.
+const HOST_NODE_GRACEFUL_SHUTDOWN_MS = 35_000;
 const MAX_DIAGNOSTIC_OUTPUT_CHARS = 64 * 1024;
-const RSS_ASSET_COUNT = 47;
+const RSS_ASSET_COUNT = 63;
 const RSS_ASSET_BYTES = 4 * MiB;
 const RSS_CHUNK_BYTES = 64 * 1024;
 const RSS_PARSER_ALLOWANCE_BYTES = 24 * MiB;
-// Leaves a 48 MiB gap below the payload while accommodating Node and SQLite native churn.
-const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 112 * MiB;
+// The larger generated bundle leaves a 64 MiB payload gap after Node and SQLite native churn.
+const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 144 * MiB;
+const RSS_WHOLE_BUNDLE_GAP_BYTES = 64 * MiB;
 
 export async function verifyPlan000BuiltScenarios({
   repoRoot,
@@ -202,14 +205,21 @@ export async function verifyPlan000BuiltScenarios({
   if (providerCloseError) throw providerCloseError;
   if (stagingInspectionError) throw stagingInspectionError;
   if (remainingStagingEntries !== 0) {
-    throw new Error(
-      `Host Node shutdown retained ${remainingStagingEntries} upload staging lease entries.`,
-    );
+    const cleanupMessage = `Host Node shutdown retained ${remainingStagingEntries} upload staging lease entries.`;
+    if (!scenarioOutcome.ok) {
+      throw new Error(`${scenarioOutcome.error.message}\n${cleanupMessage}`, {
+        cause: scenarioOutcome.error,
+      });
+    }
+    throw new Error(cleanupMessage);
   }
 
   if (!scenarioOutcome.ok) throw scenarioOutcome.error;
 
-  if (nodeOne?.child.exitCode === null || nodeTwo?.child.exitCode === null) {
+  if (
+    (nodeOne?.child.exitCode === null && nodeOne.child.signalCode === null) ||
+    (nodeTwo?.child.exitCode === null && nodeTwo.child.signalCode === null)
+  ) {
     throw new Error("Authenticated smoke Host Node process remained alive after cleanup.");
   }
   return reports;
@@ -673,7 +683,7 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     RSS_PARSER_ALLOWANCE_BYTES + RSS_ASSET_BYTES + RSS_FIXED_RUNTIME_ALLOWANCE_BYTES;
   const rejectedUploadThresholdRss = rejectedUploadBaselineRss + boundedDelta;
   assert(
-    rejectedUploadThresholdRss < rejectedUploadBaselineRss + totalPayloadBytes,
+    boundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
     "Rejected-upload RSS ceiling does not distinguish streaming from whole-bundle buffering.",
   );
   assert(
@@ -683,7 +693,7 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
 
   const uploadThresholdRss = uploadBaselineRss + boundedDelta;
   assert(
-    uploadThresholdRss < uploadBaselineRss + totalPayloadBytes,
+    boundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
     "Successful-upload RSS ceiling does not distinguish streaming from whole-bundle buffering.",
   );
   assert(
@@ -693,7 +703,7 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
 
   const downloadThresholdRss = downloadBaselineRss + boundedDelta;
   assert(
-    downloadThresholdRss < downloadBaselineRss + totalPayloadBytes,
+    boundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
     "Download RSS ceiling does not distinguish streaming from whole-bundle buffering.",
   );
   assert(
@@ -1340,7 +1350,7 @@ async function waitForResponse(url) {
 async function terminateChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill("SIGTERM");
-  if (await waitForChildExit(child, 5000)) return;
+  if (await waitForChildExit(child, HOST_NODE_GRACEFUL_SHUTDOWN_MS)) return;
   child.kill("SIGKILL");
   if (!(await waitForChildExit(child, 5000))) {
     throw new Error(`Host Node PID ${child.pid} did not exit after SIGKILL.`);

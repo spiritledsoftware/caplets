@@ -16,15 +16,16 @@ import type { ReopenableBundleFileSource } from "../../src/storage/bundle-source
 const MiB = 1024 * 1024;
 const boundary = "caplets-rss-smoke-boundary";
 const exportBoundary = "caplets-rss-export-boundary";
-const assetCount = 47;
+const assetCount = 63;
 const assetBytes = 4 * MiB;
 const generationChunkBytes = 64 * 1024;
 
 // This allowance covers Busboy's 16 MiB manifest ceiling plus its stream/scanner buffers.
 const parserAllowanceBytes = 24 * MiB;
-// Native SQLite/allocator variance differs across supported Node releases. This fixed allowance is
-// deliberately broad enough for those transients while remaining far below this bundle's payload.
-const fixedRuntimeAllowanceBytes = 72 * MiB;
+// Native SQLite/allocator variance differs across supported Node releases. The fixed allowance
+// covers those transients while the larger generated bundle keeps the ceiling 64 MiB below payload.
+const fixedRuntimeAllowanceBytes = 144 * MiB;
+const requiredStreamingGapBytes = 64 * MiB;
 
 const operator = { clientId: "operator_bundle_rss", role: "operator" } as const;
 const document = Buffer.from(
@@ -306,6 +307,10 @@ async function run(): Promise<void> {
       "Export appears to contain base64-expanded file payloads.",
     );
 
+    assert(
+      thresholdDelta + requiredStreamingGapBytes <= totalBytes,
+      "RSS ceiling does not distinguish streaming from whole-bundle buffering.",
+    );
     peakRss = Math.max(peakRss, sample("complete"));
     const thresholdRss = baselineRss + thresholdDelta;
     assert(
