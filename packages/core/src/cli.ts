@@ -2407,6 +2407,8 @@ export function createProgram(io: CliIO = {}): Command {
           }
           return;
         }
+        const grantOrigin = options.grant ? localVaultGrantOrigin(options.grant, env) : undefined;
+
         const value = await readVaultValue(io);
         await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
           const existed = (await storage.vaultValues.getStatus(name)).present;
@@ -2422,7 +2424,7 @@ export function createProgram(io: CliIO = {}): Command {
                 capletId: options.grant,
                 vaultKey: name,
                 referenceName: options.as ?? name,
-                originKind: "stored-record",
+                ...grantOrigin!,
                 operator: { role: "operator", clientId: "local_cli" },
               });
             }
@@ -2577,24 +2579,24 @@ export function createProgram(io: CliIO = {}): Command {
           );
           return;
         }
+        const grantOrigin = localVaultGrantOrigin(capletId, env);
         await useConfiguredHostStorage(currentConfigPath(), async (storage) => {
           await storage.vaultGrants.grant({
             capletId,
             vaultKey: name,
             referenceName: options.as ?? name,
-            originKind: "stored-record",
+            ...grantOrigin,
             operator: { role: "operator", clientId: "local_cli" },
           });
           const grant = (await storage.vaultGrants.list(capletId)).find(
             (candidate) =>
               candidate.vaultKey === validateVaultKeyName(name) &&
-              candidate.referenceName === validateVaultKeyName(options.as ?? name),
+              candidate.referenceName === validateVaultKeyName(options.as ?? name) &&
+              candidate.originKind === grantOrigin.originKind &&
+              (candidate.originPath ?? undefined) === grantOrigin.originPath,
           );
           if (!grant) {
-            throw new CapletsError(
-              "INTERNAL_ERROR",
-              "Stored Vault access grant could not be reloaded.",
-            );
+            throw new CapletsError("INTERNAL_ERROR", "Vault access grant could not be reloaded.");
           }
           await storage.invalidateConfig("local_cli");
           writeOut(formatVaultAccessGrant(storedVaultGrantForCli(grant), Boolean(options.json)));
@@ -4393,6 +4395,20 @@ function envConfigPath(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
 ): string | undefined {
   return env.CAPLETS_CONFIG?.trim() || undefined;
+}
+
+function localVaultGrantOrigin(
+  capletId: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): { originKind: ConfigSource["kind"]; originPath?: string } {
+  const overlay = loadLocalOverlayConfigWithSources(
+    resolveConfigPath(envConfigPath(env)),
+    envProjectConfigPath(env),
+    { vaultResolver: vaultBootstrapResolver },
+  );
+  const source = overlay.sources[capletId];
+  if (!source) return { originKind: "stored-record" };
+  return { originKind: source.kind, originPath: source.path };
 }
 
 function remoteClientForCli(

@@ -328,6 +328,7 @@ function requireSafeRelativePath(path: string, label: string): string {
 }
 
 function rejectSymlinkedExistingPath(root: string, destination: string): void {
+  let realRoot: string | undefined;
   let current = root;
   const relativePath = relative(root, destination);
   for (const segment of relativePath.split(sep).filter(Boolean)) {
@@ -341,7 +342,8 @@ function rejectSymlinkedExistingPath(root: string, destination: string): void {
       );
     }
     const real = realpathSync(current);
-    if (real !== root && !real.startsWith(`${root}${sep}`)) {
+    realRoot ??= realpathSync(root);
+    if (real !== realRoot && !real.startsWith(`${realRoot}${sep}`)) {
       throw new CapletsError(
         "CONFIG_INVALID",
         `Lockfile destination ${destination} resolves outside the selected Caplets root`,

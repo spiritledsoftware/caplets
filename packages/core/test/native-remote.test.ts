@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  PROJECT_BINDING_MUTATION_TIMEOUT_MS,
   NativeProjectBindingLifecycle,
   type ProjectBindingSessionAdapter,
 } from "../src/project-binding/lifecycle";
@@ -4771,9 +4772,10 @@ describe("createNativeCapletsService remote mode", () => {
         ).toBe(true),
       );
       const firstClose = service.close();
+      const firstCloseRejection = expect(firstClose).rejects.toThrow("timed out");
       await deleteStarted.promise;
-      vi.advanceTimersToNextTimer();
-      await expect(firstClose).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_MUTATION_TIMEOUT_MS);
+      await firstCloseRejection;
       expect(deleteSignal?.aborted).toBe(true);
 
       releaseDelete.resolve(Response.json({ ok: true }));

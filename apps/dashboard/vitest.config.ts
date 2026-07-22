@@ -12,4 +12,7 @@ export default defineConfig({
       },
     ],
   },
+  test: {
+    execArgv: ["--no-experimental-webstorage"],
+  },
 });

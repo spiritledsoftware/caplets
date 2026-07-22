@@ -186,7 +186,7 @@ export class CapletsEngine {
     const load = async (
       path: string,
       projectPath: string,
-      _loaderOptions?: {
+      loaderOptions?: {
         writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined;
       },
     ): Promise<CapletsConfig> =>
@@ -194,16 +194,18 @@ export class CapletsEngine {
         await loadConfigWithHostStorage(storage, path, projectPath, {
           recordCacheRoot,
           vaultResolver: await createHostStorageVaultResolver(storage),
+          vaultRecoveryTarget: options.vaultRecoveryTarget,
+          writeWarning: loaderOptions?.writeWarning,
         })
       ).config;
     const parityConfigLoader = async (): Promise<CapletsConfig> =>
       await load(configPath, join(recordCacheRoot, ".cluster-parity", "config.json"));
     try {
-      const loaded = await loadConfigWithHostStorage(storage, configPath, projectConfigPath, {
-        vaultResolver: await createHostStorageVaultResolver(storage),
-        recordCacheRoot,
+      const initialConfig = await load(configPath, projectConfigPath, {
+        writeWarning: (warning) => {
+          options.writeErr?.(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
+        },
       });
-      const initialConfig = loaded.config;
       const parityConfig = await parityConfigLoader();
       const hostRuntimeFingerprint = storage.vaultValues.hostRuntimeFingerprint(
         clusterHostConfigurationFingerprint(parityConfig),

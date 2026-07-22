@@ -46,5 +46,8 @@ brag-output/
 # wrangler
 .wrangler/
 
-# Test-generated Caplets Lockfiles
+# Test-generated and temp files
 .caplets.lock.json
+.tmp*/
+*.tmp
+*.temp

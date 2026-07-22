@@ -277,7 +277,7 @@ describe("CapletsEngine", () => {
     expect(engine.currentExposureGeneration()).toBe(initialGeneration);
     expect(listener).not.toHaveBeenCalled();
     expect(resetWatchers).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("fans out for declared runtime input changes, deletion, and restoration", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({});

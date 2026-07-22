@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -9,7 +9,10 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const tempCwd = mkdtempSync(join(repoRoot, ".tmp-package-runtime-"));
 const MAX_DIAGNOSTIC_OUTPUT_CHARS = 64 * 1024;
 
-const tempConfigPath = join(tempCwd, "runtime-smoke-config.json");
+const tempConfigRoot = join(tempCwd, "config");
+mkdirSync(tempConfigRoot);
+mkdirSync(join(tempCwd, ".caplets"));
+const tempConfigPath = join(tempConfigRoot, "config.json");
 writeFileSync(
   tempConfigPath,
   `${JSON.stringify(

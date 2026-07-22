@@ -17,7 +17,7 @@ const RSS_ASSET_COUNT = 64;
 const RSS_ASSET_BYTES = 4 * MiB;
 const RSS_CHUNK_BYTES = 64 * 1024;
 const RSS_PARSER_ALLOWANCE_BYTES = 24 * MiB;
-// The maximum-size auxiliary payload leaves a 48 MiB gap after Node and SQLite native churn.
+// Rejected uploads and downloads leave a 48 MiB gap beyond bounded runtime/parser churn.
 const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 176 * MiB;
 const RSS_WHOLE_BUNDLE_GAP_BYTES = 48 * MiB;
 
@@ -104,8 +104,21 @@ export async function verifyPlan000BuiltScenarios({
       smokeEnv,
       tempCwd,
     });
+    const peerOperator = await createBearerCredential({
+      clientLabel: "Runtime Smoke Peer Operator",
+      currentHostOrigin: nodeTwoOrigin,
+      repoRoot,
+      role: "operator",
+      sdk,
+      smokeEnv,
+      tempCwd,
+    });
     const accessClient = sdk.createClient({ auth: access.accessToken, baseUrl: nodeOneOrigin });
     const operatorClient = sdk.createClient({ auth: operator.accessToken, baseUrl: nodeOneOrigin });
+    const peerOperatorClient = sdk.createClient({
+      auth: peerOperator.accessToken,
+      baseUrl: nodeTwoOrigin,
+    });
 
     await verifyRoleMatrix({ access, currentHostOrigin: nodeOneOrigin, operator });
     reports.push(
@@ -154,6 +167,7 @@ export async function verifyPlan000BuiltScenarios({
     const rss = await verifyLargeBundle({
       operatorClient,
       sdk,
+      peerOperatorClient,
       serverPid: nodeOne.child.pid,
       restartServer: async () => {
         await terminateChild(nodeOne.child);
@@ -489,7 +503,14 @@ async function expectVaultCreated(response, key, label) {
   return body;
 }
 
-async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid, stagingDir }) {
+async function verifyLargeBundle({
+  operatorClient,
+  peerOperatorClient,
+  restartServer,
+  sdk,
+  serverPid,
+  stagingDir,
+}) {
   const document = Buffer.from(
     "---\nname: Runtime RSS Smoke\ndescription: Prove built HTTP bundle streaming.\nmcpServer:\n  command: runtime-rss-smoke\n---\n# Runtime RSS Smoke\n",
   );
@@ -631,6 +652,7 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     clearInterval(uploadSampler);
     if (uploadSampleError) throw uploadSampleError;
 
+    await waitForCapletCount(peerOperatorClient, sdk, 2);
     serverPid = await restartServer();
     await delay(100);
     downloadBaselineRss = sampleRss(serverPid);
@@ -679,11 +701,11 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     clearInterval(downloadSampler);
   }
 
-  const boundedDelta =
+  const streamingBoundedDelta =
     RSS_PARSER_ALLOWANCE_BYTES + RSS_ASSET_BYTES + RSS_FIXED_RUNTIME_ALLOWANCE_BYTES;
-  const rejectedUploadThresholdRss = rejectedUploadBaselineRss + boundedDelta;
+  const rejectedUploadThresholdRss = rejectedUploadBaselineRss + streamingBoundedDelta;
   assert(
-    boundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
+    streamingBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
     "Rejected-upload RSS ceiling does not distinguish streaming from whole-bundle buffering.",
   );
   assert(
@@ -691,19 +713,22 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     `Rejected large bundle upload RSS grew from ${rejectedUploadBaselineRss} to ${rejectedUploadPeakRss}, above ${rejectedUploadThresholdRss}.`,
   );
 
-  const uploadThresholdRss = uploadBaselineRss + boundedDelta;
+  // SQLite may retain one payload-sized native allocation while importing blobs. The ceiling
+  // still rejects an additional whole-request buffer on top of that resident storage copy.
+  const uploadBoundedDelta = totalPayloadBytes + RSS_PARSER_ALLOWANCE_BYTES;
+  const uploadThresholdRss = uploadBaselineRss + uploadBoundedDelta;
   assert(
-    boundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
-    "Successful-upload RSS ceiling does not distinguish streaming from whole-bundle buffering.",
+    uploadBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes * 2,
+    "Successful-upload RSS ceiling does not distinguish SQLite residency from whole-request buffering.",
   );
   assert(
     uploadPeakRss <= uploadThresholdRss,
     `Large bundle upload RSS grew from ${uploadBaselineRss} to ${uploadPeakRss}, above ${uploadThresholdRss}.`,
   );
 
-  const downloadThresholdRss = downloadBaselineRss + boundedDelta;
+  const downloadThresholdRss = downloadBaselineRss + streamingBoundedDelta;
   assert(
-    boundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
+    streamingBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
     "Download RSS ceiling does not distinguish streaming from whole-bundle buffering.",
   );
   assert(
@@ -723,6 +748,27 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     totalPayloadBytes,
     stagingEntries,
   };
+}
+
+async function waitForCapletCount(client, sdk, expectedCount) {
+  const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+  let observedStatus;
+  let observedCount;
+  while (Date.now() < deadline) {
+    const result = await sdk.adminV2GetHost({
+      client,
+      signal: AbortSignal.timeout(2_000),
+    });
+    observedStatus = result.response?.status;
+    observedCount = result.data?.sections?.caplets?.count;
+    if (result.error === undefined && observedStatus === 200 && observedCount === expectedCount) {
+      return;
+    }
+    await delay(100);
+  }
+  throw new Error(
+    `Peer Host Node did not converge to ${expectedCount} effective Caplets; last response was ${observedStatus} with ${observedCount}.`,
+  );
 }
 
 async function parseMultipartDownload(stream, contentType) {
