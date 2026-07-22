@@ -32,6 +32,22 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
+  it("interrupts synchronous loops at the configured timeout", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+
+    const result = await sandbox.run({
+      code: "while (true) {}",
+      capletIds: [],
+      timeoutMs: 100,
+      invoke,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "Code Mode execution timed out after 100ms",
+    });
+  });
+
   it("keeps one-shot runs draining pending timer work before returning", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const localInvoke = vi.fn(async () => ({ ok: true }));

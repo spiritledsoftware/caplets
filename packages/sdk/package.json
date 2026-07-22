@@ -1,0 +1,61 @@
+{
+  "name": "@caplets/sdk",
+  "version": "0.0.0",
+  "description": "Typed client SDK for Caplets public HTTP and Project Binding protocols.",
+  "keywords": [
+    "api-client",
+    "caplets",
+    "sdk"
+  ],
+  "homepage": "https://github.com/spiritledsoftware/caplets#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/caplets/issues"
+  },
+  "license": "MIT",
+  "author": "Spirit-Led Software LLC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spiritledsoftware/caplets.git",
+    "directory": "packages/sdk"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./project-binding": {
+      "types": "./dist/project-binding/index.d.ts",
+      "default": "./dist/project-binding.js"
+    },
+    "./project-binding/node": {
+      "types": "./dist/project-binding/node.d.ts",
+      "default": "./dist/project-binding/node.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "pnpm run clean && rolldown -c && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "rolldown": "^1.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

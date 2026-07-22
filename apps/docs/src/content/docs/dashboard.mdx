@@ -1,9 +1,9 @@
 ---
 title: Dashboard
-description: Administer a self-hosted Caplets host from the browser.
+description: Administer a Current Host from the browser.
 ---
 
-The Caplets Dashboard is the browser admin surface for a self-hosted Caplets host.
+The Caplets Dashboard is the browser administration surface for a Current Host.
 Use it when you need to approve remote clients, inspect installed Caplets, review catalog
 updates, manage Vault state, or check runtime and activity from the Current Host itself.
 
@@ -20,19 +20,21 @@ If you need to administer the host, use the dashboard.
 
 ## Open the dashboard
 
-For a local or self-hosted HTTP runtime, open the dashboard path on that host:
+Open `/dashboard` on the Current Host Origin:
 
 ```text
 http://127.0.0.1:5387/dashboard
-https://caplets.example.com/caplets/dashboard
+https://caplets.example.com/dashboard
 ```
 
-The exact URL depends on the host, port, and configured serve path.
+`GET /` redirects to `/dashboard`. Browser pages and hashed assets stay beneath `/dashboard` and
+`/dashboard/_astro/*`; browser-private login, session, logout, and reveal ceremonies stay beneath
+`/dashboard/api/*`. Ordinary administration requests use `/api/v2/admin/*`.
 
-The dashboard targets current evergreen browsers with JavaScript enabled. It is served by
-the Caplets HTTP runtime; the stdio-only `caplets attach` adapter has no dashboard.
-If the server is mounted below a base path such as `/caplets`, the dashboard lives under that
-same base path.
+The dashboard targets current evergreen browsers with JavaScript enabled. It is served by the
+Caplets HTTP runtime; the stdio-only `caplets attach` Adapter has no dashboard. Dashboard paths are
+fixed at the origin root. A reverse proxy must expose the canonical namespaces directly;
+prefix-only hosting is unsupported.
 
 ## Approval flow
 
@@ -50,6 +52,17 @@ pending logins, and dashboard sessions are stored in the host's configured SQL b
 
 After approval, the browser receives an operator dashboard session and can administer the Current Host.
 
+Dashboard login issues a host-only, HttpOnly, SameSite=Lax cookie at `Path=/`. A request with any
+`Authorization` header selects bearer authentication instead of the cookie; an invalid or
+underprivileged bearer never falls back to the dashboard session. Unsafe session-authenticated
+Admin and private ceremony requests require the current `X-Caplets-CSRF`.
+
+Session restore migrates an existing cookie scoped to `Path=/dashboard`: it validates the same
+durable session, reissues the same credential at `Path=/`, and expires the old path without changing
+session identity, CSRF value, or absolute expiry. Logout and acting-client revocation or demotion
+expire both paths. A cookie scoped to an arbitrary removed custom prefix cannot reach the canonical
+restore route and requires a fresh dashboard login.
+
 ## What the dashboard can do
 
 The first release focuses on the Current Host:
@@ -65,8 +78,9 @@ The first release focuses on the Current Host:
 ## Vault and dashboard administration
 
 The dashboard can administer Caplets Vault state on the host, but Vault safety rules still apply.
-Reveal actions are explicit operator-only actions and should be treated as host-admin operations,
-not as ordinary agent access.
+Raw Vault Reveal is available only at `/dashboard/api/private/vault-reveals`; it requires the
+Dashboard Session Credential, current CSRF value, and exact confirmation, and returns
+`Cache-Control: no-store`. It is not an Admin API or bearer/SDK operation.
 
 For CLI-based Vault workflows and setup guidance, see [Caplets Vault](/vault/).
 
@@ -80,11 +94,11 @@ This release is not a multi-host control plane.
 
 Development no-auth mode exists for local iteration, but it is not the normal production flow.
 In that mode the browser skips operator approval so you can iterate on the UI and host-admin
-flows locally. Do not treat it as the deployment model for self-hosted administration.
+flows locally. Do not treat it as the deployment model for Current Host administration.
 
 ## Related docs
 
-- [Install](/install/) -> install the CLI and open local or self-hosted runtimes
-- [Remote attach](/remote-attach/) -> use Access Clients and remote login without the dashboard
-- [Configuration](/configuration/) -> serve path and public-origin settings that affect dashboard URLs
+- [Install](/install/) -> install the CLI and open local or remote Current Hosts
+- [Remote attach](/remote-attach/) -> use Access Clients and Remote Login without the dashboard
+- [Configuration](/configuration/) -> configure Current Host origins and public request identity
 - [Caplets Vault](/vault/) -> CLI Vault setup, grants, and diagnostics

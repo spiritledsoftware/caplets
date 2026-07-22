@@ -4,6 +4,7 @@ import {
   buildMutagenSyncPolicy,
   managedSyncQuarantineRecord,
   mutagenProjectSyncDoctorData,
+  parseMutagenVersionOutput,
   planMutagenSyncCreateCommand,
   planMutagenSyncListCommand,
   planMutagenSyncTerminateCommand,
@@ -19,6 +20,10 @@ const serverProjectRoot = "/state/caplets/workspaces/fp/project";
 describe("project binding Mutagen command planning", () => {
   it("plans the version command", () => {
     expect(planMutagenVersionCommand()).toEqual({ command: "mutagen", args: ["version"] });
+  });
+
+  it("parses unknown version output conservatively", () => {
+    expect(parseMutagenVersionOutput("mutagen dev build")).toEqual({ version: "unknown" });
   });
 
   it("plans sync creation with the project roots and binding-scoped name", () => {

@@ -40,6 +40,45 @@ jobs:
       - name: Run quality gates
         run: pnpm verify
 
+  postgres-contracts:
+    name: PostgreSQL contracts
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: caplets_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d caplets_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CAPLETS_REQUIRE_TEST_POSTGRES: "1"
+      CAPLETS_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/caplets_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run PostgreSQL contracts
+        run: pnpm postgres:contracts
+
   compose:
     name: Compose smoke
     runs-on: ubuntu-latest

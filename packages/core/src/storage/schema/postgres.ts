@@ -29,7 +29,10 @@ export const capletRecords = pgTable(
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
-  (table) => [uniqueIndex("caplet_records_caplet_id_unique").on(table.capletId)],
+  (table) => [
+    uniqueIndex("caplet_records_caplet_id_unique").on(table.capletId),
+    index("caplet_records_updated_key_idx").on(table.updatedAt, table.recordKey),
+  ],
 );
 
 export const capletRevisions = pgTable(
@@ -183,6 +186,7 @@ export const vaultAccessGrants = pgTable(
     referenceName: text("reference_name").notNull(),
     originKind: text("origin_kind").notNull(),
     originPath: text("origin_path"),
+    resourceVersion: text("resource_version").notNull(),
     createdAt: text("created_at").notNull(),
     createdBy: text("created_by").notNull(),
   },
@@ -223,6 +227,7 @@ export const remoteClients = pgTable(
     hostUrl: text("host_url").notNull(),
     accessTokenHash: text("access_token_hash").notNull(),
     accessExpiresAt: text("access_expires_at").notNull(),
+    generation: integer("generation").notNull(),
     createdAt: text("created_at").notNull(),
     lastUsedAt: text("last_used_at"),
     revokedAt: text("revoked_at"),
@@ -281,6 +286,7 @@ export const remotePendingLogins = pgTable(
     createdAt: text("created_at").notNull(),
     codeExpiresAt: text("code_expires_at").notNull(),
     flowExpiresAt: text("flow_expires_at").notNull(),
+    generation: integer("generation").notNull(),
     status: text("status").notNull(),
     operatorCodeFingerprint: text("operator_code_fingerprint"),
     approvedAt: text("approved_at"),
@@ -292,6 +298,11 @@ export const remotePendingLogins = pgTable(
     uniqueIndex("remote_pending_logins_operator_code_hash_unique").on(table.operatorCodeHash),
     uniqueIndex("remote_pending_logins_refresh_hash_unique").on(table.pendingRefreshHash),
     uniqueIndex("remote_pending_logins_completion_hash_unique").on(table.pendingCompletionHash),
+    index("remote_pending_logins_status_created_idx").on(
+      table.status,
+      table.createdAt,
+      table.flowId,
+    ),
   ],
 );
 
@@ -331,10 +342,37 @@ export const dashboardSessions = pgTable(
 export const backendAuthStates = pgTable("backend_auth_states", {
   server: text("server").primaryKey(),
   generation: integer("generation").notNull(),
-  tokenBundle: jsonb("token_bundle").$type<unknown>().notNull(),
+  tokenBundle: jsonb("token_bundle").$type<unknown>(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const backendAuthFlows = pgTable(
+  "backend_auth_flows",
+  {
+    flowId: text("flow_id").primaryKey(),
+    server: text("server").notNull(),
+    status: text("status").notNull(),
+    envelopeVersion: integer("envelope_version").notNull(),
+    encryptedPayload: jsonb("encrypted_payload").$type<unknown>(),
+    startingBackendAuthGeneration: integer("starting_backend_auth_generation"),
+    completionCorrelation: text("completion_correlation"),
+    completedBackendAuthGeneration: integer("completed_backend_auth_generation"),
+    claimToken: text("claim_token"),
+    claimedAt: text("claimed_at"),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    terminalAt: text("terminal_at"),
+  },
+  (table) => [
+    uniqueIndex("backend_auth_flows_claim_token_unique").on(table.claimToken),
+    uniqueIndex("backend_auth_flows_completion_correlation_unique").on(table.completionCorrelation),
+    index("backend_auth_flows_server_created_at_idx").on(table.server, table.createdAt),
+    index("backend_auth_flows_status_expires_at_idx").on(table.status, table.expiresAt),
+    index("backend_auth_flows_status_terminal_at_idx").on(table.status, table.terminalAt),
+  ],
+);
 
 export const setupApprovals = pgTable(
   "setup_approvals",
@@ -398,6 +436,35 @@ export const projectBindings = pgTable(
   ],
 );
 
+export const idempotencyRecords = pgTable(
+  "idempotency_records",
+  {
+    principalClientId: text("principal_client_id").notNull(),
+    operationId: text("operation_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    state: text("state").notNull(),
+    ownerToken: text("owner_token"),
+    reconciliationLinks: text("reconciliation_links").notNull(),
+    responseStatus: integer("response_status"),
+    responseContentType: text("response_content_type"),
+    responseBody: text("response_body"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    heartbeatAt: text("heartbeat_at"),
+    terminalAt: text("terminal_at"),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.principalClientId, table.operationId, table.idempotencyKey],
+    }),
+    index("idempotency_records_principal_created_idx").on(table.principalClientId, table.createdAt),
+    index("idempotency_records_state_heartbeat_idx").on(table.state, table.heartbeatAt),
+    index("idempotency_records_state_expiry_idx").on(table.state, table.expiresAt),
+  ],
+);
+
 export const hostIdentity = pgTable("host_identity", {
   singleton: integer("singleton").primaryKey(),
   hostId: text("host_id").notNull().unique(),
@@ -457,6 +524,7 @@ export const postgresSchema = {
   setupApprovals,
   setupAttemptSets,
   projectBindings,
+  idempotencyRecords,
   hostIdentity,
   hostNodes,
   hostConfigGenerations,

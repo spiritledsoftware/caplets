@@ -49,9 +49,15 @@ export function daemonServeArgs(options: HttpServeOptions): string[] {
     options.host,
     "--port",
     String(options.port),
-    "--path",
-    options.path,
   ];
+  args.push(
+    "--admin-upload-staging-dir",
+    options.adminUploads.stagingDir,
+    "--admin-upload-max-concurrent",
+    String(options.adminUploads.maxConcurrent),
+    "--admin-upload-max-staged-bytes",
+    String(options.adminUploads.maxStagedBytes),
+  );
   if (options.auth.type === "remote_credentials" && options.remoteCredentialStateDir) {
     args.push("--remote-state-path", options.remoteCredentialStateDir);
   }

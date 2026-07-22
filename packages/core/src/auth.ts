@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, createHash, randomUUID } from "node:crypto";
 import {
   auth,
   type AuthResult,
+  type OAuthDiscoveryState,
   extractWWWAuthenticateParams,
   type OAuthClientProvider,
 } from "@modelcontextprotocol/sdk/client/auth";
@@ -16,9 +17,10 @@ import {
   type StoredOAuthTokenBundle,
   type StoredOAuthTokenBundleView,
 } from "./auth/store";
-import type { BackendAuthStateStore } from "./storage/backend-auth";
+import type { BackendAuthMutationOptions, BackendAuthStateStore } from "./storage/backend-auth";
 import type { CapletServerConfig } from "./config";
 import { CapletsError, redactSecrets } from "./errors";
+import { readLimitedText } from "./http/utils";
 
 export {
   authStorePath,
@@ -217,12 +219,82 @@ function authRefreshTarget(target: CapletServerConfig | GenericAuthTarget): Gene
   };
 }
 
+export const BACKEND_AUTH_FLOW_STATE_VERSION = 1;
+export const DEFAULT_BACKEND_AUTH_FLOW_TTL_MS = 10 * 60_000;
+
+type BackendAuthFlowStateBase = {
+  version: 1;
+  flowId: string;
+  server: string;
+  redirectUri: string;
+  stateVerifier: string;
+  pkceVerifier: string;
+  startingBackendAuthGeneration: number;
+  createdAt: string;
+  expiresAt: string;
+  configurationFingerprint: string;
+};
+
+export type McpBackendAuthFlowState = BackendAuthFlowStateBase & {
+  provider: "mcp";
+  discovery: OAuthDiscoveryState;
+  clientId?: string | undefined;
+  clientSecret?: string | undefined;
+};
+
+export type GenericBackendAuthFlowState = BackendAuthFlowStateBase & {
+  provider: "generic";
+  backend: GenericAuthTarget["backend"];
+  authType: "oauth2" | "oidc";
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  clientId: string;
+  clientSecret?: string | undefined;
+  scope?: string | undefined;
+  issuer?: string | undefined;
+  allowLoopbackHttp: boolean;
+  protectedResourceOrigin?: string | undefined;
+};
+
+export type BackendAuthFlowState = McpBackendAuthFlowState | GenericBackendAuthFlowState;
+
+export type BackendAuthCompletionCorrelation = {
+  flowId: string;
+  completionCorrelation: string;
+};
+
+export type BackendAuthCompletionPersistence = (
+  bundle: StoredOAuthTokenBundle,
+  options: BackendAuthMutationOptions,
+) => Promise<StoredOAuthTokenBundleView>;
+
+export function backendAuthCompletionCorrelation(
+  bundle: StoredOAuthTokenBundle,
+): BackendAuthCompletionCorrelation | undefined {
+  const value = bundle.metadata?.backendAuthFlow;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.flowId === "string" && typeof candidate.completionCorrelation === "string"
+    ? {
+        flowId: candidate.flowId,
+        completionCorrelation: candidate.completionCorrelation,
+      }
+    : undefined;
+}
+type DurableOAuthStartOptions = {
+  flowId?: string | undefined;
+  now?: Date | undefined;
+  expiresAt?: Date | undefined;
+  persist?: ((state: BackendAuthFlowState) => Promise<void>) | undefined;
+};
+
 export class FileOAuthProvider implements OAuthClientProvider {
-  private verifier = base64url(randomBytes(32));
-  private readonly stateValue = base64url(randomBytes(24));
+  private verifier: string;
+  private readonly stateValue: string;
   private bundle: StoredOAuthTokenBundle | undefined;
   private generation: number | undefined;
-  private clientInfo?: OAuthClientInformationMixed;
+  private clientInfo: OAuthClientInformationMixed | undefined;
+  private discoveryStateValue: OAuthDiscoveryState | undefined;
   readonly clientMetadataUrl?: string;
 
   constructor(
@@ -234,10 +306,22 @@ export class FileOAuthProvider implements OAuthClientProvider {
     private readonly options: {
       ignoreLegacyDynamicTokens?: boolean;
       operatorClientId?: string;
+      stateValue?: string;
+      codeVerifier?: string;
+      clientInformation?: OAuthClientInformationMixed;
+      discoveryState?: OAuthDiscoveryState;
+      initialGeneration?: number;
+      completionCorrelation?: string;
+      flowId?: string;
+      persistTokenBundle?: BackendAuthCompletionPersistence;
     } = {},
   ) {
     this.bundle = initialState?.bundle;
-    this.generation = initialState?.generation;
+    this.generation = options.initialGeneration ?? initialState?.generation;
+    this.verifier = options.codeVerifier ?? base64url(randomBytes(32));
+    this.stateValue = options.stateValue ?? base64url(randomBytes(24));
+    this.clientInfo = options.clientInformation;
+    this.discoveryStateValue = options.discoveryState;
     if (
       (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
       this.server.auth.clientMetadataUrl
@@ -338,14 +422,40 @@ export class FileOAuthProvider implements OAuthClientProvider {
       scope: tokens.scope,
       clientId: clientInformation?.client_id,
       clientSecret: clientInformation?.client_secret,
+      ...(this.options.flowId && this.options.completionCorrelation
+        ? {
+            metadata: {
+              backendAuthFlow: {
+                flowId: this.options.flowId,
+                completionCorrelation: this.options.completionCorrelation,
+              },
+            },
+          }
+        : {}),
     });
-    const authStore = requireBackendAuthStore(this.authStore);
-    const persisted = await authStore.writeTokenBundle(bundle, {
+    const mutationOptions = {
       expectedGeneration: this.generation,
       ...(this.options.operatorClientId ? { operatorClientId: this.options.operatorClientId } : {}),
-    });
+    };
+    const persisted = this.options.persistTokenBundle
+      ? await this.options.persistTokenBundle(bundle, mutationOptions)
+      : await requireBackendAuthStore(this.authStore).writeTokenBundle(bundle, mutationOptions);
     this.bundle = persisted.bundle;
     this.generation = persisted.generation;
+  }
+
+  tokenBundleView(): StoredOAuthTokenBundleView | undefined {
+    return this.bundle && this.generation !== undefined
+      ? { bundle: this.bundle, generation: this.generation }
+      : undefined;
+  }
+
+  saveDiscoveryState(state: OAuthDiscoveryState): void {
+    this.discoveryStateValue = state;
+  }
+
+  discoveryState(): OAuthDiscoveryState | undefined {
+    return this.discoveryStateValue;
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
@@ -379,10 +489,11 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
 export type StartedOAuthFlow = {
   authorizationUrl: string;
+  state?: BackendAuthFlowState | undefined;
   complete(callbackUrl: string): Promise<void>;
 };
 
-export async function startOAuthFlow(
+export async function startOAuthFlowState(
   server: CapletServerConfig,
   options: {
     redirectUri: string;
@@ -390,8 +501,8 @@ export async function startOAuthFlow(
     authDir?: string;
     operatorClientId?: string;
     print?: (line: string) => void;
-  },
-): Promise<StartedOAuthFlow> {
+  } & DurableOAuthStartOptions,
+): Promise<{ authorizationUrl: string; state?: McpBackendAuthFlowState | undefined }> {
   if (
     server.transport === "stdio" ||
     !server.url ||
@@ -404,14 +515,16 @@ export async function startOAuthFlow(
   }
 
   const authStore = requireBackendAuthStore(options.authStore);
-  const initialState = await authStore.readTokenBundle(server.server);
+  const authState = await authStore.readState(server.server);
+  const initialState = authState.bundle
+    ? { bundle: authState.bundle, generation: authState.generation }
+    : undefined;
   let redirectUrl: URL | undefined;
   const provider = new FileOAuthProvider(
     server,
     options.redirectUri,
     (url) => {
       redirectUrl = url;
-      options.print?.(`Open this URL to authorize ${server.server}:\n${url.toString()}`);
     },
     authStore,
     initialState,
@@ -426,32 +539,140 @@ export async function startOAuthFlow(
       serverUrl: server.url,
       ...(scope ? { scope } : {}),
     });
-    if (first === "AUTHORIZED") {
-      return { authorizationUrl: "", complete: async () => {} };
-    }
+    if (first === "AUTHORIZED") return { authorizationUrl: "" };
   } catch (error) {
     throw normalizeMcpOAuthError(server, error);
   }
   if (!redirectUrl) {
     throw new CapletsError("AUTH_FAILED", "OAuth authorization URL was not provided");
   }
+  const { flowId, createdAt, expiresAt } = durableFlowIdentity(options);
+  const clientInformation = provider.clientInformation();
+  const discovery = requireMcpDiscoveryState(provider, server.server);
+  const state: McpBackendAuthFlowState = {
+    version: BACKEND_AUTH_FLOW_STATE_VERSION,
+    flowId,
+    server: server.server,
+    provider: "mcp",
+    redirectUri: options.redirectUri,
+    stateVerifier: provider.state(),
+    pkceVerifier: provider.codeVerifier(),
+    configurationFingerprint: mcpOAuthConfigurationFingerprint(
+      server,
+      options.redirectUri,
+      discovery,
+    ),
+    startingBackendAuthGeneration: authState.generation,
+    ...(clientInformation?.client_id ? { clientId: clientInformation.client_id } : {}),
+    ...(clientInformation?.client_secret ? { clientSecret: clientInformation.client_secret } : {}),
+    discovery,
+    createdAt,
+    expiresAt,
+  };
+  await options.persist?.(state);
+  options.print?.(`Open this URL to authorize ${server.server}:\n${redirectUrl.toString()}`);
+  return { authorizationUrl: redirectUrl.toString(), state };
+}
+
+export async function completeOAuthFlowState(
+  server: CapletServerConfig,
+  state: McpBackendAuthFlowState,
+  callbackUrl: string,
+  options: {
+    authStore?: BackendAuthStateStore;
+    operatorClientId?: string | undefined;
+    correlation?: BackendAuthCompletionCorrelation | undefined;
+    persistTokenBundle?: BackendAuthCompletionPersistence | undefined;
+    now?: Date | undefined;
+  },
+): Promise<StoredOAuthTokenBundleView> {
+  const authConfig = assertMcpFlowState(server, state, options.now ?? new Date());
+  if (options.correlation && options.correlation.flowId !== state.flowId) {
+    throw new CapletsError("REQUEST_INVALID", "OAuth completion correlation does not match flow.");
+  }
+  assertNoOAuthCallbackError(server, callbackUrl);
+  const completion = extractCompletion(callbackUrl);
+  if (completion.state !== state.stateVerifier) throw oauthStateMismatchError(server.server);
+  const provider = new FileOAuthProvider(
+    server,
+    state.redirectUri,
+    () => {},
+    options.authStore,
+    undefined,
+    {
+      stateValue: state.stateVerifier,
+      codeVerifier: state.pkceVerifier,
+      initialGeneration: state.startingBackendAuthGeneration,
+      discoveryState: state.discovery,
+      ...(options.correlation
+        ? {
+            flowId: options.correlation.flowId,
+            completionCorrelation: options.correlation.completionCorrelation,
+          }
+        : {}),
+      ...(state.clientId
+        ? {
+            clientInformation: {
+              client_id: state.clientId,
+              ...(state.clientSecret ? { client_secret: state.clientSecret } : {}),
+            } as OAuthClientInformationMixed,
+          }
+        : {}),
+      ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
+      ...(options.persistTokenBundle ? { persistTokenBundle: options.persistTokenBundle } : {}),
+    },
+  );
+  const tokenEndpoint = new URL(
+    state.discovery.authorizationServerMetadata?.token_endpoint ?? "/token",
+    state.discovery.authorizationServerUrl,
+  ).href;
+  let tokenFailureStatus: number | undefined;
+  const fetchOAuth = async (url: string | URL, init?: RequestInit): Promise<Response> => {
+    const response = await fetch(url, init);
+    if (new URL(url).href === tokenEndpoint && !response.ok) {
+      tokenFailureStatus = response.status;
+    }
+    return response;
+  };
+  const scope = scopesFor(authConfig);
+  try {
+    await auth(provider, {
+      serverUrl: server.url!,
+      authorizationCode: completion.code,
+      ...(scope ? { scope } : {}),
+      fetchFn: fetchOAuth,
+    });
+  } catch (error) {
+    throw normalizeMcpOAuthError(server, error, tokenFailureStatus);
+  }
+  const persisted = provider.tokenBundleView();
+  if (!persisted) {
+    throw new CapletsError("AUTH_FAILED", "OAuth completion did not persist credentials.");
+  }
+  return persisted;
+}
+
+export async function startOAuthFlow(
+  server: CapletServerConfig,
+  options: {
+    redirectUri: string;
+    authStore?: BackendAuthStateStore;
+    authDir?: string;
+    operatorClientId?: string;
+    print?: (line: string) => void;
+  } & DurableOAuthStartOptions,
+): Promise<StartedOAuthFlow> {
+  const started = await startOAuthFlowState(server, options);
+  if (!started.state) return { authorizationUrl: "", complete: async () => {} };
+  const state = started.state;
   return {
-    authorizationUrl: redirectUrl.toString(),
+    authorizationUrl: started.authorizationUrl,
+    state,
     complete: async (callbackUrl: string) => {
-      assertNoOAuthCallbackError(server, callbackUrl);
-      const completion = extractCompletion(callbackUrl);
-      if (completion.state !== provider.state()) {
-        throw oauthStateMismatchError(server.server);
-      }
-      try {
-        await auth(provider, {
-          serverUrl: server.url!,
-          authorizationCode: completion.code,
-          ...(scope ? { scope } : {}),
-        });
-      } catch (error) {
-        throw normalizeMcpOAuthError(server, error);
-      }
+      await completeOAuthFlowState(server, state, callbackUrl, {
+        ...(options.authStore !== undefined ? { authStore: options.authStore } : {}),
+        ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
+      });
     },
   };
 }
@@ -547,7 +768,17 @@ function assertNoOAuthCallbackError(target: { server: string }, callbackUrl: str
   );
 }
 
-function normalizeMcpOAuthError(server: CapletServerConfig, error: unknown): unknown {
+function normalizeMcpOAuthError(
+  server: CapletServerConfig,
+  error: unknown,
+  tokenFailureStatus?: number,
+): unknown {
+  if (tokenFailureStatus !== undefined) {
+    return new CapletsError("AUTH_FAILED", "OAuth token request failed", {
+      server: server.server,
+      status: tokenFailureStatus,
+    });
+  }
   if (
     (server.auth?.type === "oauth2" || server.auth?.type === "oidc") &&
     !server.auth.clientId &&
@@ -568,6 +799,202 @@ function normalizeMcpOAuthError(server: CapletServerConfig, error: unknown): unk
   return error;
 }
 
+function durableFlowIdentity(options: DurableOAuthStartOptions): {
+  flowId: string;
+  createdAt: string;
+  expiresAt: string;
+} {
+  const now = options.now ?? new Date();
+  const expiresAt = options.expiresAt ?? new Date(now.getTime() + DEFAULT_BACKEND_AUTH_FLOW_TTL_MS);
+  if (
+    !Number.isFinite(now.getTime()) ||
+    !Number.isFinite(expiresAt.getTime()) ||
+    expiresAt.getTime() <= now.getTime()
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "OAuth flow expiry must be in the future.");
+  }
+  const flowId = options.flowId ?? randomUUID();
+  if (!flowId.trim() || flowId.length > 512) {
+    throw new CapletsError("REQUEST_INVALID", "OAuth flow ID is invalid.");
+  }
+  return {
+    flowId,
+    createdAt: now.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
+function assertMcpFlowState(
+  server: CapletServerConfig,
+  state: McpBackendAuthFlowState,
+  now: Date,
+): OAuthLikeAuthConfig {
+  if (
+    server.transport === "stdio" ||
+    !server.url ||
+    (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc")
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `${server.server} is not a configured OAuth remote server`,
+    );
+  }
+  assertCommonFlowState(state, "mcp", server.server, now);
+  if (!state.discovery?.authorizationServerUrl) {
+    throw new CapletsError("AUTH_FAILED", "Persisted OAuth discovery state is invalid.", {
+      server: server.server,
+    });
+  }
+  if (
+    state.configurationFingerprint !==
+    mcpOAuthConfigurationFingerprint(server, state.redirectUri, state.discovery)
+  ) {
+    throw oauthConfigurationChangedError(server.server);
+  }
+  return server.auth;
+}
+
+function assertGenericFlowIdentity(
+  target: GenericAuthTarget,
+  state: GenericBackendAuthFlowState,
+  now: Date,
+): void {
+  assertCommonFlowState(state, "generic", target.server, now);
+  if (state.backend !== target.backend || state.authType !== target.auth?.type) {
+    throw oauthConfigurationChangedError(target.server);
+  }
+}
+
+function assertCommonFlowState(
+  state: BackendAuthFlowState,
+  provider: BackendAuthFlowState["provider"],
+  server: string,
+  now: Date,
+): void {
+  const createdAt = Date.parse(state.createdAt);
+  const expiresAt = Date.parse(state.expiresAt);
+  if (
+    state.version !== BACKEND_AUTH_FLOW_STATE_VERSION ||
+    state.provider !== provider ||
+    state.server !== server ||
+    !state.flowId ||
+    !state.redirectUri ||
+    !state.stateVerifier ||
+    !state.pkceVerifier ||
+    !state.configurationFingerprint ||
+    !Number.isSafeInteger(state.startingBackendAuthGeneration) ||
+    state.startingBackendAuthGeneration < 0 ||
+    !Number.isFinite(createdAt) ||
+    !Number.isFinite(expiresAt) ||
+    createdAt >= expiresAt
+  ) {
+    throw new CapletsError("AUTH_FAILED", "Persisted OAuth flow state is invalid.", { server });
+  }
+  if (!Number.isFinite(now.getTime()) || now.getTime() >= expiresAt) {
+    throw new CapletsError("AUTH_FAILED", "OAuth flow has expired.", {
+      server,
+      flowId: state.flowId,
+    });
+  }
+}
+
+function requireMcpDiscoveryState(
+  provider: FileOAuthProvider,
+  server: string,
+): OAuthDiscoveryState {
+  const discovery = provider.discoveryState();
+  if (!discovery?.authorizationServerUrl) {
+    throw new CapletsError(
+      "AUTH_FAILED",
+      "OAuth discovery state was not available for durable completion.",
+      { server },
+    );
+  }
+  try {
+    return JSON.parse(JSON.stringify(discovery)) as OAuthDiscoveryState;
+  } catch {
+    throw new CapletsError("AUTH_FAILED", "OAuth discovery state was not serializable.", {
+      server,
+    });
+  }
+}
+
+function mcpOAuthConfigurationFingerprint(
+  server: CapletServerConfig,
+  redirectUri: string,
+  discovery: OAuthDiscoveryState,
+): string {
+  const authConfig =
+    server.auth?.type === "oauth2" || server.auth?.type === "oidc" ? server.auth : undefined;
+  return hashOAuthConfiguration([
+    "mcp",
+    server.server,
+    server.url,
+    redirectUri,
+    authConfig?.type,
+    authConfig?.authorizationUrl,
+    authConfig?.tokenUrl,
+    authConfig?.issuer,
+    authConfig?.resourceMetadataUrl,
+    authConfig?.authorizationServerMetadataUrl,
+    authConfig?.openidConfigurationUrl,
+    authConfig?.clientMetadataUrl,
+    authConfig?.clientId,
+    authConfig?.clientSecret,
+    authConfig?.scopes,
+    discovery.authorizationServerUrl,
+    discovery.resourceMetadataUrl,
+    discovery.authorizationServerMetadata,
+    discovery.resourceMetadata,
+  ]);
+}
+
+function genericOAuthConfigurationFingerprint(input: {
+  target: GenericAuthTarget;
+  authConfig: OAuthLikeAuthConfig;
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  redirectUri: string;
+  issuer?: string | undefined;
+}): string {
+  return hashOAuthConfiguration([
+    "generic",
+    input.target.server,
+    input.target.backend,
+    input.target.url,
+    input.target.baseUrl,
+    input.target.specUrl,
+    input.target.resolvedScopes,
+    input.authConfig.type,
+    input.authConfig.authorizationUrl,
+    input.authConfig.tokenUrl,
+    input.authConfig.issuer,
+    input.authConfig.resourceMetadataUrl,
+    input.authConfig.authorizationServerMetadataUrl,
+    input.authConfig.openidConfigurationUrl,
+    input.authConfig.clientMetadataUrl,
+    input.authConfig.clientId,
+    input.authConfig.clientSecret,
+    input.authConfig.scopes,
+    input.authorizationEndpoint,
+    input.tokenEndpoint,
+    input.redirectUri,
+    input.issuer,
+  ]);
+}
+
+function hashOAuthConfiguration(parts: unknown[]): string {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("base64url");
+}
+
+function oauthConfigurationChangedError(server: string): CapletsError {
+  return new CapletsError(
+    "AUTH_FAILED",
+    "OAuth configuration changed after authorization started. Re-run auth login.",
+    { server, nextAction: "run_caplets_auth_login" },
+  );
+}
+
 type AuthorizationServerMetadata = {
   issuer?: string;
   authorization_endpoint?: string;
@@ -576,7 +1003,7 @@ type AuthorizationServerMetadata = {
   [key: string]: unknown;
 };
 
-export async function startGenericOAuthFlow(
+export async function startGenericOAuthFlowState(
   target: GenericAuthTarget,
   options: {
     redirectUri: string;
@@ -584,17 +1011,17 @@ export async function startGenericOAuthFlow(
     authDir?: string;
     operatorClientId?: string;
     print?: (line: string) => void;
-  },
-): Promise<StartedOAuthFlow> {
+  } & DurableOAuthStartOptions,
+): Promise<{ authorizationUrl: string; state: GenericBackendAuthFlowState }> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
   }
   const authStore = requireBackendAuthStore(options.authStore);
   const authConfig = target.auth as OAuthLikeAuthConfig;
-  const initialState = await authStore.readTokenBundle(target.server);
+  const authState = await authStore.readState(target.server);
   const redirectUri = authConfig.redirectUri ?? options.redirectUri;
   const verifier = base64url(randomBytes(32));
-  const state = base64url(randomBytes(24));
+  const stateVerifier = base64url(randomBytes(24));
   const allowLoopbackHttp = isLoopbackDevelopmentTarget(target, authConfig);
   const metadata = await discoverAuthorizationServer(target, authConfig, allowLoopbackHttp);
   const authorizationEndpoint = authConfig.authorizationUrl ?? metadata.authorization_endpoint;
@@ -620,72 +1047,174 @@ export async function startGenericOAuthFlow(
   authorizationUrl.searchParams.set("redirect_uri", redirectUri);
   authorizationUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
   authorizationUrl.searchParams.set("code_challenge_method", "S256");
-  authorizationUrl.searchParams.set("state", state);
-  if (scope) {
-    authorizationUrl.searchParams.set("scope", scope);
-  }
+  authorizationUrl.searchParams.set("state", stateVerifier);
+  if (scope) authorizationUrl.searchParams.set("scope", scope);
+  const { flowId, createdAt, expiresAt } = durableFlowIdentity(options);
+  const state: GenericBackendAuthFlowState = {
+    version: BACKEND_AUTH_FLOW_STATE_VERSION,
+    flowId,
+    server: target.server,
+    provider: "generic",
+    authType: authConfig.type,
+    backend: target.backend,
+    startingBackendAuthGeneration: authState.generation,
+    redirectUri,
+    stateVerifier,
+    pkceVerifier: verifier,
+    configurationFingerprint: genericOAuthConfigurationFingerprint({
+      target,
+      authConfig,
+      authorizationEndpoint,
+      tokenEndpoint,
+      redirectUri,
+      issuer: metadata.issuer,
+    }),
+    authorizationEndpoint,
+    tokenEndpoint,
+    clientId: client.clientId,
+    ...(client.clientSecret ? { clientSecret: client.clientSecret } : {}),
+    ...(scope ? { scope } : {}),
+    ...(metadata.issuer ? { issuer: metadata.issuer } : {}),
+    allowLoopbackHttp,
+    ...(protectedResourceOrigin(target, authConfig)
+      ? { protectedResourceOrigin: protectedResourceOrigin(target, authConfig) }
+      : {}),
+    createdAt,
+    expiresAt,
+  };
+  await options.persist?.(state);
   options.print?.(`Open this URL to authorize ${target.server}:\n${authorizationUrl.toString()}`);
+  return { authorizationUrl: authorizationUrl.toString(), state };
+}
+
+export async function completeGenericOAuthFlowState(
+  target: GenericAuthTarget,
+  state: GenericBackendAuthFlowState,
+  callbackUrl: string,
+  options: {
+    authStore?: BackendAuthStateStore;
+    operatorClientId?: string | undefined;
+    correlation?: BackendAuthCompletionCorrelation | undefined;
+    persistTokenBundle?: BackendAuthCompletionPersistence | undefined;
+    now?: Date | undefined;
+  },
+): Promise<StoredOAuthTokenBundleView> {
+  if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
+    throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
+  }
+  assertGenericFlowIdentity(target, state, options.now ?? new Date());
+  if (options.correlation && options.correlation.flowId !== state.flowId) {
+    throw new CapletsError("REQUEST_INVALID", "OAuth completion correlation does not match flow.");
+  }
+  assertNoOAuthCallbackError(target, callbackUrl);
+  const completion = extractCompletion(callbackUrl);
+  if (completion.state !== state.stateVerifier) throw oauthStateMismatchError(target.server);
+  const authConfig = target.auth as OAuthLikeAuthConfig;
+  const allowLoopbackHttp = isLoopbackDevelopmentTarget(target, authConfig);
+  const metadata = await discoverAuthorizationServer(target, authConfig, allowLoopbackHttp);
+  const authorizationEndpoint = authConfig.authorizationUrl ?? metadata.authorization_endpoint;
+  const tokenEndpoint = authConfig.tokenUrl ?? metadata.token_endpoint;
+  if (!authorizationEndpoint || !tokenEndpoint) {
+    throw new CapletsError("AUTH_FAILED", "OAuth metadata is missing endpoints", {
+      server: target.server,
+    });
+  }
+  assertAllowedAuthUrl(authorizationEndpoint, "authorization endpoint", allowLoopbackHttp);
+  assertAllowedAuthUrl(tokenEndpoint, "token endpoint", allowLoopbackHttp);
+  const fingerprint = genericOAuthConfigurationFingerprint({
+    target,
+    authConfig,
+    authorizationEndpoint,
+    tokenEndpoint,
+    redirectUri: state.redirectUri,
+    issuer: metadata.issuer,
+  });
+  if (
+    fingerprint !== state.configurationFingerprint ||
+    authorizationEndpoint !== state.authorizationEndpoint ||
+    tokenEndpoint !== state.tokenEndpoint ||
+    allowLoopbackHttp !== state.allowLoopbackHttp
+  ) {
+    throw oauthConfigurationChangedError(target.server);
+  }
+  const params = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: completion.code,
+    redirect_uri: state.redirectUri,
+    client_id: state.clientId,
+    code_verifier: state.pkceVerifier,
+  });
+  if (state.clientSecret) params.set("client_secret", state.clientSecret);
+  const tokenResponse = await fetchJson(
+    state.tokenEndpoint,
+    target.requestTimeoutMs,
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    },
+    state.allowLoopbackHttp,
+    "oauth_token",
+  );
+  const idToken = asString(tokenResponse.id_token);
+  const idClaims = parseJwtPayload(idToken);
+  validateOidcToken(authConfig, metadata, idToken, idClaims, state.clientId);
+  const bundle = stripUndefined({
+    server: target.server,
+    authType: state.authType,
+    accessToken: requireString(tokenResponse.access_token, "access_token"),
+    refreshToken: asString(tokenResponse.refresh_token),
+    tokenType: asString(tokenResponse.token_type),
+    expiresAt:
+      typeof tokenResponse.expires_in === "number"
+        ? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
+        : undefined,
+    scope: asString(tokenResponse.scope) ?? state.scope,
+    idToken,
+    issuer: asString(idClaims?.iss) ?? metadata.issuer ?? authConfig.issuer,
+    subject: asString(idClaims?.sub),
+    clientId: state.clientId,
+    clientSecret: state.clientSecret,
+    protectedResourceOrigin: state.protectedResourceOrigin,
+    metadata: {
+      ...(redactSecrets({
+        protectedResource: target.url ?? target.baseUrl ?? target.specUrl,
+        authorizationServer: metadata,
+        requestedScopes: state.scope?.split(/\s+/u).filter(Boolean),
+        dynamicClient: authConfig.clientId ? undefined : { client_id: state.clientId },
+      }) as Record<string, unknown>),
+      ...(options.correlation ? { backendAuthFlow: options.correlation } : {}),
+    },
+  });
+  const mutationOptions = {
+    expectedGeneration: state.startingBackendAuthGeneration,
+    ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
+  };
+  return options.persistTokenBundle
+    ? await options.persistTokenBundle(bundle, mutationOptions)
+    : await requireBackendAuthStore(options.authStore).writeTokenBundle(bundle, mutationOptions);
+}
+
+export async function startGenericOAuthFlow(
+  target: GenericAuthTarget,
+  options: {
+    redirectUri: string;
+    authStore?: BackendAuthStateStore;
+    authDir?: string;
+    operatorClientId?: string;
+    print?: (line: string) => void;
+  } & DurableOAuthStartOptions,
+): Promise<StartedOAuthFlow> {
+  const started = await startGenericOAuthFlowState(target, options);
+  const state = started.state;
   return {
-    authorizationUrl: authorizationUrl.toString(),
+    authorizationUrl: started.authorizationUrl,
+    state,
     complete: async (callbackUrl: string) => {
-      assertNoOAuthCallbackError(target, callbackUrl);
-      const completion = extractCompletion(callbackUrl);
-      if (completion.state !== state) {
-        throw oauthStateMismatchError(target.server);
-      }
-      const params = new URLSearchParams({
-        grant_type: "authorization_code",
-        code: completion.code,
-        redirect_uri: redirectUri,
-        client_id: client.clientId,
-        code_verifier: verifier,
+      await completeGenericOAuthFlowState(target, state, callbackUrl, {
+        ...(options.authStore !== undefined ? { authStore: options.authStore } : {}),
+        ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
       });
-      if (client.clientSecret) {
-        params.set("client_secret", client.clientSecret);
-      }
-      const tokenResponse = await fetchJson(
-        tokenEndpoint,
-        target.requestTimeoutMs,
-        {
-          method: "POST",
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          body: params.toString(),
-        },
-        allowLoopbackHttp,
-      );
-      const idToken = asString(tokenResponse.id_token);
-      const idClaims = parseJwtPayload(idToken);
-      validateOidcToken(authConfig, metadata, idToken, idClaims, client.clientId);
-      await authStore.writeTokenBundle(
-        stripUndefined({
-          server: target.server,
-          authType: authConfig.type,
-          accessToken: requireString(tokenResponse.access_token, "access_token"),
-          refreshToken: asString(tokenResponse.refresh_token),
-          tokenType: asString(tokenResponse.token_type),
-          expiresAt:
-            typeof tokenResponse.expires_in === "number"
-              ? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
-              : undefined,
-          scope: asString(tokenResponse.scope) ?? scope,
-          idToken,
-          issuer: asString(idClaims?.iss) ?? metadata.issuer ?? authConfig.issuer,
-          subject: asString(idClaims?.sub),
-          clientId: client.clientId,
-          clientSecret: client.clientSecret,
-          protectedResourceOrigin: protectedResourceOrigin(target, authConfig),
-          metadata: redactSecrets({
-            protectedResource: target.url ?? target.baseUrl ?? target.specUrl,
-            authorizationServer: metadata,
-            requestedScopes: scope?.split(/\s+/u).filter(Boolean),
-            dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
-          }) as Record<string, unknown>,
-        }),
-        {
-          expectedGeneration: initialState?.generation,
-          ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
-        },
-      );
     },
   };
 }
@@ -703,12 +1232,7 @@ export async function runGenericOAuthFlow(
     print?: (line: string) => void;
   },
 ): Promise<StoredOAuthTokenBundle> {
-  if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
-    throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
-  }
   const authStore = requireBackendAuthStore(options.authStore);
-  const authConfig = target.auth as OAuthLikeAuthConfig;
-  const initialState = await authStore.readTokenBundle(target.server);
   let callbackCode: string | undefined;
   let callbackState: string | undefined;
   const callback = await createLoopbackCallback((url) => {
@@ -722,44 +1246,17 @@ export async function runGenericOAuthFlow(
     callbackCode = url.searchParams.get("code") ?? undefined;
     callbackState = url.searchParams.get("state") ?? undefined;
   });
-  const redirectUri = authConfig.redirectUri ?? callback.redirectUri;
-  const verifier = base64url(randomBytes(32));
-  const state = base64url(randomBytes(24));
-  const allowLoopbackHttp = isLoopbackDevelopmentTarget(target, authConfig);
   try {
-    const metadata = await discoverAuthorizationServer(target, authConfig, allowLoopbackHttp);
-    const authorizationEndpoint = authConfig.authorizationUrl ?? metadata.authorization_endpoint;
-    const tokenEndpoint = authConfig.tokenUrl ?? metadata.token_endpoint;
-    if (!authorizationEndpoint || !tokenEndpoint) {
-      throw new CapletsError("AUTH_FAILED", "OAuth metadata is missing endpoints", {
-        server: target.server,
-      });
-    }
-    assertAllowedAuthUrl(authorizationEndpoint, "authorization endpoint", allowLoopbackHttp);
-    assertAllowedAuthUrl(tokenEndpoint, "token endpoint", allowLoopbackHttp);
-    const client = await resolveGenericClient(
-      target,
-      authConfig,
-      metadata,
-      redirectUri,
-      allowLoopbackHttp,
-    );
-    const scope = scopesFor(authConfig, target.resolvedScopes);
-    const authorizationUrl = new URL(authorizationEndpoint);
-    authorizationUrl.searchParams.set("response_type", "code");
-    authorizationUrl.searchParams.set("client_id", client.clientId);
-    authorizationUrl.searchParams.set("redirect_uri", redirectUri);
-    authorizationUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
-    authorizationUrl.searchParams.set("code_challenge_method", "S256");
-    authorizationUrl.searchParams.set("state", state);
-    if (scope) {
-      authorizationUrl.searchParams.set("scope", scope);
-    }
-    options.print?.(`Open this URL to authorize ${target.server}:\n${authorizationUrl.toString()}`);
+    const started = await startGenericOAuthFlowState(target, {
+      redirectUri: callback.redirectUri,
+      authStore,
+      ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
+      ...(options.print ? { print: options.print } : {}),
+    });
     if (!options.noOpen) {
       await (options.open
-        ? options.open(authorizationUrl.toString())
-        : openBrowser(authorizationUrl.toString()));
+        ? options.open(started.authorizationUrl)
+        : openBrowser(started.authorizationUrl));
     }
     const manualInput =
       options.manualInput ?? (options.noOpen ? await options.readManualInput?.() : undefined);
@@ -773,61 +1270,14 @@ export async function runGenericOAuthFlow(
               }
             : undefined,
         );
-    if (completion.state !== state) {
-      throw oauthStateMismatchError(target.server);
-    }
-    const params = new URLSearchParams({
-      grant_type: "authorization_code",
-      code: completion.code,
-      redirect_uri: redirectUri,
-      client_id: client.clientId,
-      code_verifier: verifier,
-    });
-    if (client.clientSecret) {
-      params.set("client_secret", client.clientSecret);
-    }
-    const tokenResponse = await fetchJson(
-      tokenEndpoint,
-      target.requestTimeoutMs,
-      {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: params.toString(),
-      },
-      allowLoopbackHttp,
-    );
-    const idToken = asString(tokenResponse.id_token);
-    const idClaims = parseJwtPayload(idToken);
-    validateOidcToken(authConfig, metadata, idToken, idClaims, client.clientId);
-    const bundle = stripUndefined({
-      server: target.server,
-      authType: authConfig.type,
-      accessToken: requireString(tokenResponse.access_token, "access_token"),
-      refreshToken: asString(tokenResponse.refresh_token),
-      tokenType: asString(tokenResponse.token_type),
-      expiresAt:
-        typeof tokenResponse.expires_in === "number"
-          ? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
-          : undefined,
-      scope: asString(tokenResponse.scope) ?? scope,
-      idToken,
-      issuer: asString(idClaims?.iss) ?? metadata.issuer ?? authConfig.issuer,
-      subject: asString(idClaims?.sub),
-      clientId: client.clientId,
-      clientSecret: client.clientSecret,
-      protectedResourceOrigin: protectedResourceOrigin(target, authConfig),
-      metadata: redactSecrets({
-        protectedResource: target.url ?? target.baseUrl ?? target.specUrl,
-        authorizationServer: metadata,
-        requestedScopes: scope?.split(/\s+/u).filter(Boolean),
-        dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
-      }) as Record<string, unknown>,
-    });
-    await authStore.writeTokenBundle(bundle, {
-      expectedGeneration: initialState?.generation,
+    const callbackUrl = completion.state
+      ? `${started.state.redirectUri}?code=${encodeURIComponent(completion.code)}&state=${encodeURIComponent(completion.state)}`
+      : `${started.state.redirectUri}?code=${encodeURIComponent(completion.code)}`;
+    const persisted = await completeGenericOAuthFlowState(target, started.state, callbackUrl, {
+      authStore,
       ...(options.operatorClientId ? { operatorClientId: options.operatorClientId } : {}),
     });
-    return bundle;
+    return persisted.bundle;
   } finally {
     await callback.close();
   }
@@ -1198,6 +1648,39 @@ function refreshedExpiresAt(expiresIn: unknown, fallback?: string): string | und
   return undefined;
 }
 
+const MAX_OAUTH_ERROR_RESPONSE_BYTES = 4 * 1024;
+
+class OAuthTokenResponseError extends CapletsError {
+  readonly errorCode: string | undefined;
+
+  constructor(status: number, errorCode: string | undefined) {
+    super("AUTH_FAILED", "OAuth token request failed", { status });
+    this.errorCode = errorCode;
+  }
+}
+
+async function readOAuthErrorCode(response: Response): Promise<string | undefined> {
+  let text: string;
+  try {
+    text = await readLimitedText(response, {
+      maxBytes: MAX_OAUTH_ERROR_RESPONSE_BYTES,
+      errorMessage: "OAuth token error response exceeded byte limit",
+    });
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const errorCode = Reflect.get(parsed, "error");
+    return typeof errorCode === "string" && /^[A-Za-z][A-Za-z0-9._~-]{0,127}$/u.test(errorCode)
+      ? errorCode
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function fetchOptionalJson(
   url: string,
   timeoutMs?: number,
@@ -1215,6 +1698,7 @@ async function fetchJson(
   timeoutMs = 60_000,
   init: RequestInit = {},
   allowLoopbackHttp = false,
+  failureKind: "metadata" | "oauth_token" = "metadata",
 ): Promise<Record<string, unknown>> {
   assertAllowedAuthUrl(url, "OAuth discovery URL", allowLoopbackHttp);
   const controller = new AbortController();
@@ -1222,6 +1706,9 @@ async function fetchJson(
   try {
     const response = await fetch(url, { ...init, redirect: "manual", signal: controller.signal });
     if (!response.ok) {
+      if (failureKind === "oauth_token") {
+        throw new OAuthTokenResponseError(response.status, await readOAuthErrorCode(response));
+      }
       throw new CapletsError("AUTH_FAILED", "OAuth metadata request failed", {
         status: response.status,
       });

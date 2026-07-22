@@ -39,7 +39,7 @@ const fallbackFieldDescriptions = new Map<string, string>([
   ["maxSearchLimit", "Maximum accepted search result limit."],
   ["negativeCacheTtlMs", "Milliseconds failed discovery results stay cached."],
   ["overallTimeoutMs", "Overall timeout in milliseconds for completion discovery."],
-  ["resources", "Hosted resource requirements for this Caplet."],
+  ["resources", "Resource requirements for this Caplet's execution."],
   ["required", "Whether this capability requires the declared runtime feature or binding."],
   ["setup", "Optional setup and verification metadata."],
   ["tags", "Optional tags for grouping or searching Caplets."],
@@ -258,7 +258,7 @@ Singular form:
 | \`actions\` | Required | object | Configured CLI actions keyed by stable tool name. |
 | \`disabled\` | Optional | boolean | When true, omit this Caplet from discovery. |
 | \`projectBinding\` | Optional | object | Project Binding requirements for Caplets that need an attached project. |
-| \`runtime\` | Optional | object | Runtime feature and resource requirements for hosted execution. |
+| \`runtime\` | Optional | object | Runtime feature and resource requirements for execution. |
 
 Plural form child fields:
 
@@ -267,7 +267,7 @@ Plural form child fields:
 | \`actions\` | Required | object | Configured CLI actions keyed by stable tool name. |
 | \`disabled\` | Optional | boolean | When true, omit this Caplet from discovery. |
 | \`projectBinding\` | Optional | object | Project Binding requirements for Caplets that need an attached project. |
-| \`runtime\` | Optional | object | Runtime feature and resource requirements for hosted execution. |
+| \`runtime\` | Optional | object | Runtime feature and resource requirements for execution. |
 | \`name\` | Optional | string | See the canonical schema for details. |
 | \`description\` | Optional | string | See the canonical schema for details. |
 | \`tags\` | Optional | array | Optional tags for grouping or searching Caplets. |

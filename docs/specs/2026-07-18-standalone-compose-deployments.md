@@ -66,7 +66,10 @@ The hardened descriptor defaults to an exact Caplets version tag. The checked-in
 
 `docker-compose.yml` is a complete SQLite deployment containing the Caplets runtime service and `caplets-data` volume. It has no required configuration variables. It pulls the published Caplets image when that image is not already present and starts with the image's normal initialization and HTTP-serving behavior.
 
-The default bind remains `127.0.0.1:5387`. `CAPLETS_BIND_ADDRESS`, `CAPLETS_PORT`, `CAPLETS_SERVER_URL`, and existing runtime settings remain explicit overrides.
+The default bind remains `127.0.0.1:5387`. `CAPLETS_BIND_ADDRESS`, `CAPLETS_PORT`,
+`CAPLETS_SERVER_URL`, and existing runtime settings remain explicit overrides.
+`CAPLETS_SERVER_URL` is a Current Host Origin with no non-root path, query, fragment, or embedded
+credentials. Deployment readiness probes use `/api/v1/healthz`.
 
 ## PostgreSQL Convenience Deployment
 
@@ -133,7 +136,11 @@ The hardened topology uses two networks:
 - an internal database network shared by PostgreSQL, migrator, and runtime; and
 - a runtime network attached only to Caplets to preserve outbound API access and the loopback-bound HTTP port.
 
-PostgreSQL and the migration container have no general outbound network path. PostgreSQL has no published host port. Caplets binds to `127.0.0.1:5387` by default. Remote exposure and TLS belong to an operator-managed reverse proxy or private network outside this descriptor.
+PostgreSQL and the migration container have no general outbound network path. PostgreSQL has no
+published host port. Caplets binds to `127.0.0.1:5387` by default. Remote exposure and TLS belong to
+an operator-managed reverse proxy or private network outside this descriptor. That proxy must expose
+`/.well-known/caplets`, `/api`, exact `/mcp`, and `/dashboard` at the origin root and forward
+Project Binding WebSocket upgrades; prefix-only hosting is unsupported.
 
 ### Container Restrictions
 
@@ -144,6 +151,14 @@ The Caplets runtime and migration containers run as the image's non-root user wi
 - writable `/data` only for the runtime service;
 - all Linux capabilities dropped; and
 - `no-new-privileges` enabled.
+
+All three runtime descriptors set `CAPLETS_ADMIN_UPLOAD_STAGING_DIR` to
+`/data/state/caplets/admin-uploads`, inside the writable `caplets-data` volume. The hardened
+runtime must not stage legal Admin bundles in its 64 MiB `/tmp` tmpfs: the default one-upload
+admission quota is 369,283,314 bytes (about 352.2 MiB), covering one 64 MiB `CAPLET.md` document, up
+to 256 MiB of auxiliary files, a bounded manifest, and bounded multipart framing. Operators that use
+a dedicated staging mount must provide at least that capacity and raise
+`CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES` deliberately when increasing upload concurrency.
 
 PostgreSQL retains the official image's required initialization privilege transition and writable paths. Additional PostgreSQL restrictions may be included only when first initialization and restart are verified with a fresh named volume. PostgreSQL receives a 60-second shutdown grace period.
 

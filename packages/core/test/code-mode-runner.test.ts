@@ -43,8 +43,133 @@ describe("runCodeMode", () => {
       ok: true,
       value: { ok: true, count: 4 },
       diagnostics: [],
-      meta: { timeoutMs: 10_000 },
+      meta: { timeoutMs: 10_000, maxTimeoutMs: 120_000 },
     });
+  });
+  it.each([
+    ["the default maximum", undefined],
+    ["an attempted higher override", Number.MAX_SAFE_INTEGER],
+    ["an attempted infinite override", Number.POSITIVE_INFINITY],
+  ])(
+    "rejects direct timeouts above 120 seconds before sandbox execution with %s",
+    async (_label, maxTimeoutMs) => {
+      const sandbox = {
+        run: vi.fn(async () => ({ ok: true as const, value: null, logs: [] })),
+      };
+
+      const result = await runCodeMode({
+        code: "return true;",
+        service: service(),
+        timeoutMs: 120_001,
+        ...(maxTimeoutMs === undefined ? {} : { maxTimeoutMs }),
+        sandbox,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "diagnostic_blocked" },
+        diagnostics: [{ code: "TIMEOUT_POLICY_EXCEEDED", severity: "error" }],
+        meta: { timeoutMs: 120_001, maxTimeoutMs: 120_000 },
+      });
+      expect(sandbox.run).not.toHaveBeenCalled();
+    },
+  );
+  it("rejects timeout policy before allocating a session sandbox", async () => {
+    const createSession = vi.fn(async () => {
+      throw new Error("Session sandbox must not be allocated.");
+    });
+    const sandboxFactory = vi.fn(() => ({ createSession }));
+    const sessionManager = new CodeModeSessionManager({ sandboxFactory });
+    try {
+      const result = await runCodeMode({
+        code: "return true;",
+        service: service(),
+        timeoutMs: 120_001,
+        sessionManager,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "diagnostic_blocked" },
+        diagnostics: [{ code: "TIMEOUT_POLICY_EXCEEDED", severity: "error" }],
+      });
+      expect(sandboxFactory).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    } finally {
+      sessionManager.close();
+    }
+  });
+
+  it.each([
+    ["a NaN timeout", { timeoutMs: Number.NaN }],
+    ["a positive-infinite timeout", { timeoutMs: Number.POSITIVE_INFINITY }],
+    ["a negative-infinite timeout", { timeoutMs: Number.NEGATIVE_INFINITY }],
+    ["a NaN lower policy", { timeoutMs: 1_000, maxTimeoutMs: Number.NaN }],
+    [
+      "a negative-infinite lower policy",
+      { timeoutMs: 1_000, maxTimeoutMs: Number.NEGATIVE_INFINITY },
+    ],
+  ])("rejects %s before sandbox execution", async (_label, policy) => {
+    const sandbox = {
+      run: vi.fn(async () => ({ ok: true as const, value: null, logs: [] })),
+    };
+
+    const result = await runCodeMode({
+      code: "return true;",
+      service: service(),
+      ...policy,
+      sandbox,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "diagnostic_blocked" },
+      diagnostics: [{ code: "TIMEOUT_POLICY_EXCEEDED", severity: "error" }],
+    });
+    expect(Number.isFinite(result.meta.timeoutMs)).toBe(true);
+    expect(Number.isFinite(result.meta.maxTimeoutMs)).toBe(true);
+    expect(sandbox.run).not.toHaveBeenCalled();
+  });
+
+  it("accepts exactly 120 seconds through the direct runner seam", async () => {
+    const sandbox = {
+      run: vi.fn(async () => ({ ok: true as const, value: "accepted", logs: [] })),
+    };
+
+    const result = await runCodeMode({
+      code: 'return "accepted";',
+      service: service(),
+      timeoutMs: 120_000,
+      sandbox,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: "accepted",
+      meta: { timeoutMs: 120_000, maxTimeoutMs: 120_000 },
+    });
+    expect(sandbox.run).toHaveBeenCalledOnce();
+  });
+
+  it("retains a lower direct maximum as the effective policy", async () => {
+    const sandbox = {
+      run: vi.fn(async () => ({ ok: true as const, value: null, logs: [] })),
+    };
+
+    const result = await runCodeMode({
+      code: "return true;",
+      service: service(),
+      timeoutMs: 5_001,
+      maxTimeoutMs: 5_000,
+      sandbox,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      diagnostics: [{ code: "TIMEOUT_POLICY_EXCEEDED", severity: "error" }],
+      meta: { timeoutMs: 5_001, maxTimeoutMs: 5_000 },
+    });
+    expect(sandbox.run).not.toHaveBeenCalled();
   });
 
   it("blocks diagnostics before Caplet calls", async () => {

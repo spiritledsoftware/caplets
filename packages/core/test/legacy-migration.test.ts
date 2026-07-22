@@ -108,7 +108,7 @@ async function createFullLegacyFixture(): Promise<FullLegacyFixture> {
     now: new Date("2026-07-18T10:01:00.000Z"),
   });
 
-  const hostUrl = "https://host.example.test/caplets";
+  const hostUrl = "https://host.example.test";
   const remoteNow = new Date();
   const remote = new RemoteServerCredentialStore({ dir: remoteDir });
   const usedPairing = remote.createPairingCode({

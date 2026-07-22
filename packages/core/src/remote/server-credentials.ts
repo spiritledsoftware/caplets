@@ -25,6 +25,7 @@ export type RemoteClientStatus = {
   role: RemoteClientRole;
   hostUrl: string;
   createdAt: string;
+  generation: number;
   lastUsedAt?: string | undefined;
   revokedAt?: string | undefined;
 };
@@ -51,6 +52,7 @@ export type RemotePendingLoginStatus = {
   createdAt: string;
   codeExpiresAt: string;
   flowExpiresAt: string;
+  generation: number;
   approvedAt?: string | undefined;
   deniedAt?: string | undefined;
   cancelledAt?: string | undefined;

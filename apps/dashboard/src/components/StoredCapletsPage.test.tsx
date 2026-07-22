@@ -4,15 +4,28 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { dashboardApi, toast } = vi.hoisted(() => ({
-  dashboardApi: vi.fn(),
+const { adminClient, toast } = vi.hoisted(() => ({
+  adminClient: {
+    adminV2CreateCapletRecordFromDocument: vi.fn(),
+    adminV2DeleteCapletRecord: vi.fn(),
+    adminV2DeleteCapletRecordRevision: vi.fn(),
+    adminV2GetCapletRecord: vi.fn(),
+    adminV2GetCapletRecordRevision: vi.fn(),
+    adminV2ListCapletRecordRevisions: vi.fn(),
+    adminV2ListCapletRecords: vi.fn(),
+    adminV2PutCapletRecordCurrentRevision: vi.fn(),
+    adminV2UpdateCapletRecord: vi.fn(),
+  },
   toast: {
     error: vi.fn(),
     success: vi.fn(),
   },
 }));
 
-vi.mock("@/lib/api", () => ({ dashboardApi }));
+vi.mock("@/lib/api", () => ({
+  ...adminClient,
+  createDashboardMutationIntent: () => ({ idempotencyKey: "test-intent" }),
+}));
 vi.mock("sonner", () => ({ toast }));
 
 import {
@@ -61,95 +74,6 @@ function currentRecord(): StoredCapletRecord {
 
 function replaceCurrent(record: StoredCapletRecord) {
   records = [record];
-}
-
-function responseFor(path: string, options?: RequestInit) {
-  const method = options?.method ?? "GET";
-  if (path === "stored-caplets" && method === "GET") return { records };
-  if (path === "stored-caplets" && method === "POST") {
-    const body = JSON.parse(String(options?.body)) as {
-      id: string;
-      document: string;
-      historyLimit?: number;
-    };
-    documentBody = body.document;
-    revisions = [{ revisionKey: "revision-1", sequence: 1, name: "Imported Caplet" }];
-    const record = storedRecord({
-      id: body.id,
-      recordKey: `record-${body.id}`,
-      headGeneration: 1,
-      historyLimit: body.historyLimit,
-      currentRevision: {
-        revisionKey: "revision-1",
-        sequence: 1,
-        name: "Imported Caplet",
-      },
-    });
-    replaceCurrent(record);
-    return { record };
-  }
-
-  if (path.endsWith("/revisions") && method === "GET") return { revisions };
-  if (path.endsWith("/restore") && method === "POST") {
-    const previous = currentRecord();
-    const restored = storedRecord({
-      ...previous,
-      headGeneration: generation(previous) + 1,
-      currentRevision: {
-        revisionKey: "revision-restored",
-        sequence: 3,
-        name: "Alpha tools restored",
-      },
-    });
-    documentBody = "# Alpha restored\n";
-    revisions = [
-      { revisionKey: "revision-restored", sequence: 3, name: "Alpha tools restored" },
-      ...revisions,
-    ];
-    replaceCurrent(restored);
-    return { record: restored };
-  }
-
-  if (path.includes("/revisions/") && method === "DELETE") {
-    const revisionKey = decodeURIComponent(path.split("/revisions/")[1] ?? "");
-    revisions = revisions.filter((revision) => revision.revisionKey !== revisionKey);
-    const previous = currentRecord();
-    const record = storedRecord({ ...previous, headGeneration: generation(previous) + 1 });
-    replaceCurrent(record);
-    return { record };
-  }
-
-  if (path === "stored-caplets/alpha" && method === "PUT") {
-    const body = JSON.parse(String(options?.body)) as {
-      document: string;
-      expectedGeneration: number;
-    };
-    documentBody = body.document;
-    const previous = currentRecord();
-    const record = storedRecord({
-      ...previous,
-      headGeneration: body.expectedGeneration + 1,
-      currentRevision: {
-        revisionKey: "revision-3",
-        sequence: 3,
-        name: "Alpha tools",
-      },
-    });
-    revisions = [{ revisionKey: "revision-3", sequence: 3, name: "Alpha tools" }, ...revisions];
-    replaceCurrent(record);
-    return { record };
-  }
-
-  if (path === "stored-caplets/alpha" && method === "DELETE") {
-    records = [];
-    revisions = [];
-    return { deleted: true, id: "alpha" };
-  }
-
-  if (path.startsWith("stored-caplets/") && method === "GET") {
-    return { record: currentRecord(), document: documentBody };
-  }
-  throw new Error(`Unexpected dashboard request: ${method} ${path}`);
 }
 
 async function flush() {
@@ -234,10 +158,91 @@ beforeEach(() => {
     { revisionKey: "revision-2", sequence: 2, name: "Alpha tools" },
     { revisionKey: "revision-1", sequence: 1, name: "Alpha tools old" },
   ];
-  dashboardApi.mockImplementation((path: string, options?: RequestInit) =>
-    Promise.resolve(responseFor(path, options)),
+  for (const operation of Object.values(adminClient)) operation.mockReset();
+  adminClient.adminV2ListCapletRecords.mockImplementation(async () => ({ items: records }));
+  adminClient.adminV2GetCapletRecord.mockImplementation(async () => ({
+    data: { record: currentRecord(), document: documentBody },
+    etag: `"generation-${generation(currentRecord())}"`,
+  }));
+  adminClient.adminV2GetCapletRecordRevision.mockImplementation(
+    async (_id: string, revisionKey: string) => ({
+      data: revisions.find((revision) => revision.revisionKey === revisionKey),
+      etag: `"${revisionKey}-etag"`,
+    }),
   );
-  dashboardApi.mockClear();
+  adminClient.adminV2ListCapletRecordRevisions.mockImplementation(async () => ({
+    items: revisions,
+  }));
+  adminClient.adminV2CreateCapletRecordFromDocument.mockImplementation(
+    async (id: string, document: string, _intent: unknown, historyLimit?: number) => {
+      documentBody = document;
+      revisions = [{ revisionKey: "revision-1", sequence: 1, name: "Imported Caplet" }];
+      const record = storedRecord({
+        id,
+        recordKey: `record-${id}`,
+        headGeneration: 1,
+        historyLimit,
+        currentRevision: {
+          revisionKey: "revision-1",
+          sequence: 1,
+          name: "Imported Caplet",
+        },
+      });
+      replaceCurrent(record);
+      return record;
+    },
+  );
+  adminClient.adminV2UpdateCapletRecord.mockImplementation(
+    async (_id: string, body: { document: string }) => {
+      documentBody = body.document;
+      const previous = currentRecord();
+      const record = storedRecord({
+        ...previous,
+        headGeneration: generation(previous) + 1,
+        currentRevision: {
+          revisionKey: "revision-3",
+          sequence: 3,
+          name: "Alpha tools",
+        },
+      });
+      revisions = [{ revisionKey: "revision-3", sequence: 3, name: "Alpha tools" }, ...revisions];
+      replaceCurrent(record);
+      return record;
+    },
+  );
+  adminClient.adminV2PutCapletRecordCurrentRevision.mockImplementation(async () => {
+    const previous = currentRecord();
+    const restored = storedRecord({
+      ...previous,
+      headGeneration: generation(previous) + 1,
+      currentRevision: {
+        revisionKey: "revision-restored",
+        sequence: 3,
+        name: "Alpha tools restored",
+      },
+    });
+    documentBody = "# Alpha restored\n";
+    revisions = [
+      { revisionKey: "revision-restored", sequence: 3, name: "Alpha tools restored" },
+      ...revisions,
+    ];
+    replaceCurrent(restored);
+    return restored;
+  });
+  adminClient.adminV2DeleteCapletRecordRevision.mockImplementation(
+    async (_id: string, revisionKey: string) => {
+      revisions = revisions.filter((revision) => revision.revisionKey !== revisionKey);
+      const previous = currentRecord();
+      const record = storedRecord({ ...previous, headGeneration: generation(previous) + 1 });
+      replaceCurrent(record);
+      return { record };
+    },
+  );
+  adminClient.adminV2DeleteCapletRecord.mockImplementation(async (id: string) => {
+    records = [];
+    revisions = [];
+    return { deleted: true, id };
+  });
   toast.error.mockClear();
   toast.success.mockClear();
   action = vi.fn(async (_label, callback) => {
@@ -266,7 +271,81 @@ describe("Stored Caplets administration", () => {
     expect(document.body.textContent).toContain("SQL record");
     expect(document.body.textContent).toContain("Generation");
     expect(document.body.textContent).toContain("5 revisions");
-    expect(dashboardApi).toHaveBeenCalledWith("stored-caplets");
+    expect(adminClient.adminV2ListCapletRecords).toHaveBeenCalledOnce();
+  });
+
+  it("loads one record page initially and renders records beyond 100 after an explicit action", async () => {
+    const page = Array.from({ length: 100 }, (_, index) =>
+      storedRecord({
+        id: `record-${String(index).padStart(3, "0")}`,
+        recordKey: `key-${index}`,
+        currentRevision: {
+          revisionKey: `revision-${index}`,
+          sequence: 1,
+          name: `Stored Caplet ${index}`,
+        },
+      }),
+    );
+    const laterRecord = storedRecord({
+      id: "record-100",
+      recordKey: "key-100",
+      currentRevision: {
+        revisionKey: "revision-100",
+        sequence: 1,
+        name: "Later Stored Caplet",
+      },
+    });
+    adminClient.adminV2ListCapletRecords.mockImplementation(
+      async ({ cursor }: { cursor?: string } = {}) =>
+        cursor === "page-2" ? { items: [laterRecord] } : { items: page, nextCursor: "page-2" },
+    );
+
+    await mount();
+    expect(adminClient.adminV2ListCapletRecords).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain("Later Stored Caplet");
+
+    await click("Load more stored Caplets");
+    await waitFor(() =>
+      document.body.textContent?.includes("Later Stored Caplet") ? true : undefined,
+    );
+    expect(adminClient.adminV2ListCapletRecords).toHaveBeenNthCalledWith(2, {
+      cursor: "page-2",
+    });
+  });
+
+  it("loads one revision page and exposes later history after an explicit action", async () => {
+    adminClient.adminV2ListCapletRecordRevisions.mockImplementation(
+      async (_id: string, { cursor }: { cursor?: string } = {}) =>
+        cursor === "history-page-2"
+          ? {
+              items: [
+                {
+                  revisionKey: "revision-100",
+                  sequence: 100,
+                  name: "Later revision",
+                },
+              ],
+            }
+          : {
+              items: Array.from({ length: 100 }, (_, index) => ({
+                revisionKey: `revision-${index}`,
+                sequence: index,
+                name: `Revision ${index}`,
+              })),
+              nextCursor: "history-page-2",
+            },
+    );
+
+    await mount();
+    await inspectAlpha();
+    expect(adminClient.adminV2ListCapletRecordRevisions).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain("Later revision");
+
+    await click("Load more revisions");
+    await waitFor(() => (document.body.textContent?.includes("Later revision") ? true : undefined));
+    expect(adminClient.adminV2ListCapletRecordRevisions).toHaveBeenNthCalledWith(2, "alpha", {
+      cursor: "history-page-2",
+    });
   });
 
   it("imports CAPLET.md with an optional history limit", async () => {
@@ -284,24 +363,18 @@ describe("Stored Caplets administration", () => {
     await click("Import record");
 
     await waitFor(() =>
-      dashboardApi.mock.calls.some(
-        ([path, options]) => path === "stored-caplets" && options?.method === "POST",
-      )
-        ? true
-        : undefined,
+      adminClient.adminV2CreateCapletRecordFromDocument.mock.calls.length ? true : undefined,
     );
-    expect(dashboardApi).toHaveBeenCalledWith("stored-caplets", {
-      method: "POST",
-      body: JSON.stringify({
-        id: "imported-caplet",
-        document: "# Imported Caplet\n",
-        historyLimit: 7,
-      }),
-    });
+    expect(adminClient.adminV2CreateCapletRecordFromDocument).toHaveBeenCalledWith(
+      "imported-caplet",
+      "# Imported Caplet\n",
+      { idempotencyKey: "test-intent" },
+      7,
+    );
     expect(action).toHaveBeenCalledWith("Imported imported-caplet", expect.any(Function));
   });
 
-  it("edits the current Markdown with its observed CAS generation", async () => {
+  it("edits the current Markdown with its observed detail ETag", async () => {
     await mount();
     await inspectAlpha();
     await click("Edit Markdown");
@@ -312,19 +385,14 @@ describe("Stored Caplets administration", () => {
     await click("Save new revision");
 
     await waitFor(() =>
-      dashboardApi.mock.calls.some(
-        ([path, options]) => path === "stored-caplets/alpha" && options?.method === "PUT",
-      )
-        ? true
-        : undefined,
+      adminClient.adminV2UpdateCapletRecord.mock.calls.length ? true : undefined,
     );
-    expect(dashboardApi).toHaveBeenCalledWith("stored-caplets/alpha", {
-      method: "PUT",
-      body: JSON.stringify({
-        document: "# Alpha tools\n\nUpdated document.\n",
-        expectedGeneration: 2,
-      }),
-    });
+    expect(adminClient.adminV2UpdateCapletRecord).toHaveBeenCalledWith(
+      "alpha",
+      { document: "# Alpha tools\n\nUpdated document.\n" },
+      '"generation-2"',
+      { idempotencyKey: "test-intent" },
+    );
   });
 
   it("restores a prior revision after confirmation", async () => {
@@ -333,20 +401,18 @@ describe("Stored Caplets administration", () => {
     await click("Restore revision 1");
 
     await waitFor(() =>
-      dashboardApi.mock.calls.some(
-        ([path]) => path === "stored-caplets/alpha/revisions/revision-1/restore",
-      )
-        ? true
-        : undefined,
+      adminClient.adminV2PutCapletRecordCurrentRevision.mock.calls.length ? true : undefined,
     );
     expect(confirmAction).toHaveBeenCalledWith(
       "Restore revision 1?",
       expect.stringContaining("creates a new current revision"),
     );
-    expect(dashboardApi).toHaveBeenCalledWith("stored-caplets/alpha/revisions/revision-1/restore", {
-      method: "POST",
-      body: JSON.stringify({ expectedGeneration: 2 }),
-    });
+    expect(adminClient.adminV2PutCapletRecordCurrentRevision).toHaveBeenCalledWith(
+      "alpha",
+      "revision-1",
+      '"generation-2"',
+      { idempotencyKey: "test-intent" },
+    );
   });
 
   it("deletes a revision only after destructive confirmation", async () => {
@@ -355,22 +421,21 @@ describe("Stored Caplets administration", () => {
     await click("Delete revision 1");
 
     await waitFor(() =>
-      dashboardApi.mock.calls.some(
-        ([path, options]) =>
-          path === "stored-caplets/alpha/revisions/revision-1" && options?.method === "DELETE",
-      )
-        ? true
-        : undefined,
+      adminClient.adminV2DeleteCapletRecordRevision.mock.calls.length ? true : undefined,
     );
     expect(confirmDestructive).toHaveBeenCalledWith(
       "Delete revision 1?",
       expect.stringContaining("permanently removes"),
       "Delete revision",
     );
-    expect(dashboardApi).toHaveBeenCalledWith("stored-caplets/alpha/revisions/revision-1", {
-      method: "DELETE",
-      body: JSON.stringify({ expectedGeneration: 2 }),
-    });
+    expect(adminClient.adminV2GetCapletRecordRevision).toHaveBeenCalledWith("alpha", "revision-1");
+    expect(adminClient.adminV2DeleteCapletRecordRevision).toHaveBeenCalledWith(
+      "alpha",
+      "revision-1",
+      '"revision-1-etag"',
+      '"generation-2"',
+      { idempotencyKey: "test-intent" },
+    );
   });
 
   it("hard-deletes a record only after typed id confirmation", async () => {
@@ -379,20 +444,15 @@ describe("Stored Caplets administration", () => {
     await click("Hard-delete record");
 
     await waitFor(() =>
-      dashboardApi.mock.calls.some(
-        ([path, options]) => path === "stored-caplets/alpha" && options?.method === "DELETE",
-      )
-        ? true
-        : undefined,
+      adminClient.adminV2DeleteCapletRecord.mock.calls.length ? true : undefined,
     );
     expect(confirmTyped).toHaveBeenCalledWith(
       "Hard-delete Alpha tools?",
       expect.stringContaining("permanently deletes the SQL record"),
       "delete alpha",
     );
-    expect(dashboardApi).toHaveBeenCalledWith("stored-caplets/alpha", {
-      method: "DELETE",
-      body: JSON.stringify({ expectedGeneration: 2 }),
+    expect(adminClient.adminV2DeleteCapletRecord).toHaveBeenCalledWith("alpha", '"generation-2"', {
+      idempotencyKey: "test-intent",
     });
     await waitFor(() =>
       document.body.textContent?.includes("No SQL Caplet Records yet") ? true : undefined,

@@ -1,9 +1,14 @@
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getTableConfig as getPgTableConfig } from "drizzle-orm/pg-core";
+import { getTableConfig as getSqliteTableConfig } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 import { parseCapletFileDocument } from "../src/caplet-files";
 import { createHostStorage } from "../src/storage";
+import { capletRecords as postgresCapletRecords } from "../src/storage/schema/postgres";
+import { capletRecords as sqliteCapletRecords } from "../src/storage/schema/sqlite";
 
 const directories: string[] = [];
 
@@ -13,7 +18,56 @@ afterEach(() => {
   }
 });
 
+function indexColumnName(column: unknown): string | undefined {
+  if (typeof column !== "object" || column === null || !("name" in column)) return undefined;
+  return typeof column.name === "string" ? column.name : undefined;
+}
+
 describe("Caplet Record storage", () => {
+  it("defines and migrates the Caplet Record keyset index used by SQLite page plans", async () => {
+    const indexName = "caplet_records_updated_key_idx";
+    const sqliteIndex = getSqliteTableConfig(sqliteCapletRecords).indexes.find(
+      (index) => index.config.name === indexName,
+    );
+    const postgresIndex = getPgTableConfig(postgresCapletRecords).indexes.find(
+      (index) => index.config.name === indexName,
+    );
+    expect(sqliteIndex?.config.columns.map(indexColumnName)).toEqual(["updated_at", "record_key"]);
+    expect(postgresIndex?.config.columns.map(indexColumnName)).toEqual([
+      "updated_at",
+      "record_key",
+    ]);
+
+    const directory = mkdtempSync(join(tmpdir(), "caplets-record-index-"));
+    directories.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+    try {
+      if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
+      expect(storage.database.db.all(sql.raw(`PRAGMA index_info("${indexName}")`))).toEqual([
+        expect.objectContaining({ seqno: 0, name: "updated_at" }),
+        expect.objectContaining({ seqno: 1, name: "record_key" }),
+      ]);
+      for (const direction of ["ASC", "DESC"]) {
+        expect(
+          storage.database.db.all(
+            sql.raw(
+              `EXPLAIN QUERY PLAN SELECT record_key FROM caplet_records ORDER BY updated_at ${direction}, record_key ${direction} LIMIT 50`,
+            ),
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            detail: expect.stringContaining(`USING COVERING INDEX ${indexName}`),
+          }),
+        ]);
+      }
+    } finally {
+      await storage.close();
+    }
+  });
+
   it("persists structured frontmatter and body as a current revision", async () => {
     const directory = mkdtempSync(join(tmpdir(), "caplets-records-"));
     directories.push(directory);
@@ -326,11 +380,55 @@ mcpServer:
       await storage.caplets.importBundle(input("existing"));
       await expect(
         storage.caplets.importBundles([input("new-record"), input("existing")]),
-      ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      ).rejects.toMatchObject({ code: "CONFIG_EXISTS" });
       await expect(storage.caplets.get("new-record")).resolves.toBeUndefined();
       await expect(
         storage.caplets.importBundles([input("new-record"), input("second-record")]),
       ).resolves.toMatchObject([{ id: "new-record" }, { id: "second-record" }]);
+    } finally {
+      await storage.close();
+    }
+  });
+
+  it("allows exactly one of two competing SQLite imports for the same Record", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "caplets-record-race-"));
+    directories.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+    const input = {
+      id: "competing-record",
+      operator: { clientId: "operator_import", role: "operator" as const },
+      files: [
+        {
+          path: "CAPLET.md",
+          executable: false,
+          content: Buffer.from(`---
+name: Competing Record
+description: Exercise atomic create collision behavior.
+mcpServer:
+  command: competing-mcp
+---
+# Competing Record
+`),
+        },
+      ],
+    };
+
+    try {
+      const results = await Promise.allSettled([
+        storage.caplets.importBundle(input),
+        storage.caplets.importBundle(input),
+      ]);
+      expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+      const rejected = results.find((result) => result.status === "rejected");
+      if (rejected?.status !== "rejected") throw new Error("Expected one rejected import.");
+      expect(rejected.reason).toMatchObject({ code: "CONFIG_EXISTS" });
+      await expect(storage.caplets.get("competing-record")).resolves.toMatchObject({
+        id: "competing-record",
+        headGeneration: 1,
+      });
     } finally {
       await storage.close();
     }
@@ -503,6 +601,276 @@ mcpServer:
       expect(created.recordKey).toBe(changed.recordKey);
     } finally {
       await storage.close();
+    }
+  });
+  it("pages Caplet Records with stable ties, SQL filters, and bounded projections", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-20T12:00:00.000Z"));
+    const directory = mkdtempSync(join(tmpdir(), "caplets-record-pages-"));
+    directories.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+    const operator = { clientId: "operator_pages", role: "operator" } as const;
+    const files = (name: string, description: string, tags: string[]) => [
+      {
+        path: "CAPLET.md",
+        executable: false,
+        content: Buffer.from(`---
+name: ${name}
+description: ${description}
+tags: [${tags.join(", ")}]
+mcpServer:
+  command: page-mcp
+---
+# ${name}
+`),
+      },
+    ];
+
+    try {
+      const alpha = await storage.caplets.importBundle({
+        id: "alpha",
+        files: files("Alpha", "Catalog search target.", ["shared", "alpha"]),
+        installation: {
+          sourceKind: "catalog",
+          sourceIdentity: "official/alpha",
+        },
+        operator,
+      });
+      const beta = await storage.caplets.importBundle({
+        id: "beta",
+        files: files("Beta Needle", "Detached local record.", ["shared", "beta"]),
+        installation: {
+          sourceKind: "local",
+          sourceIdentity: "/tmp/beta",
+        },
+        operator,
+      });
+      const gamma = await storage.caplets.importBundle({
+        id: "gamma",
+        files: files("Gamma", "Unmanaged record.", ["other"]),
+        operator,
+      });
+      const betaInstallation = await storage.installations.getActive("beta");
+      if (!betaInstallation) throw new Error("Expected beta installation.");
+      await storage.installations.detach({
+        capletId: "beta",
+        installationKey: betaInstallation.installationKey,
+        expectedGeneration: 1,
+        operator,
+      });
+
+      const expected = [alpha, beta, gamma].sort((left, right) =>
+        left.recordKey < right.recordKey ? 1 : -1,
+      );
+      const summaries = expected.map(
+        ({ currentRevision: { revisionKey, sequence, name, createdAt }, ...record }) => ({
+          ...record,
+          currentRevision: { revisionKey, sequence, name, createdAt },
+        }),
+      );
+      const first = await storage.caplets.listRecordsPage({ limit: 1 });
+      expect(first).toEqual({
+        items: [summaries[0]],
+        nextKey: {
+          updatedAt: expected[0]!.updatedAt,
+          recordKey: expected[0]!.recordKey,
+        },
+      });
+      const second = await storage.caplets.listRecordsPage({
+        limit: 1,
+        after: first.nextKey,
+      });
+      const third = await storage.caplets.listRecordsPage({
+        limit: 1,
+        after: second.nextKey,
+      });
+      expect([...first.items, ...second.items, ...third.items]).toEqual(summaries);
+      expect(third.nextKey).toBeUndefined();
+      const ascendingRecords = [];
+      let ascendingRecordAfter: typeof first.nextKey;
+      do {
+        const page = await storage.caplets.listRecordsPage({
+          limit: 1,
+          sort: "asc",
+          after: ascendingRecordAfter,
+        });
+        ascendingRecords.push(...page.items);
+        ascendingRecordAfter = page.nextKey;
+      } while (ascendingRecordAfter !== undefined);
+      expect(ascendingRecords).toEqual(summaries.toReversed());
+      await expect(storage.caplets.list()).resolves.toEqual(expected);
+
+      await expect(storage.caplets.listRecordsPage({ source: "catalog" })).resolves.toMatchObject({
+        items: [{ id: "alpha" }],
+      });
+      await expect(
+        storage.caplets.listRecordsPage({ source: "local", status: "detached" }),
+      ).resolves.toMatchObject({ items: [{ id: "beta" }] });
+      await expect(storage.caplets.listRecordsPage({ status: "active" })).resolves.toMatchObject({
+        items: [{ id: "alpha" }],
+      });
+      expect(
+        (await storage.caplets.listRecordsPage({ tag: "shared" })).items.map(({ id }) => id).sort(),
+      ).toEqual(["alpha", "beta"]);
+      await expect(
+        storage.caplets.listRecordsPage({ search: "bEtA nEeDlE" }),
+      ).resolves.toMatchObject({ items: [{ id: "beta" }] });
+      await expect(storage.caplets.listRecordsPage({ search: "%" })).resolves.toEqual({
+        items: [],
+      });
+      await expect(storage.caplets.listRecordsPage({ limit: 500 })).resolves.toMatchObject({
+        items: summaries,
+      });
+
+      for (const limit of [0, 501, 1.5]) {
+        await expect(storage.caplets.listRecordsPage({ limit })).rejects.toMatchObject({
+          code: "REQUEST_INVALID",
+        });
+      }
+    } finally {
+      await storage.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("pages one Caplet Record revision history by stable creation key", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-20T12:00:00.000Z"));
+    const directory = mkdtempSync(join(tmpdir(), "caplets-revision-pages-"));
+    directories.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "caplets.sqlite3"),
+    });
+    const operator = { clientId: "operator_revision_pages", role: "operator" } as const;
+    const files = (name: string) => [
+      {
+        path: "CAPLET.md",
+        executable: false,
+        content: Buffer.from(`---
+name: ${name}
+description: Page immutable Caplet revision history.
+mcpServer:
+  command: revisions-mcp
+---
+# ${name}
+`),
+      },
+    ];
+
+    try {
+      const firstRevision = await storage.caplets.importBundle({
+        id: "revision-pages",
+        files: files("First"),
+        historyLimit: 3,
+        operator,
+      });
+      vi.setSystemTime(new Date("2026-07-20T13:00:00.000Z"));
+      const secondRevision = await storage.caplets.updateBundle({
+        id: "revision-pages",
+        files: files("Second"),
+        expectedGeneration: 1,
+        operator,
+      });
+      const thirdRevision = await storage.caplets.updateBundle({
+        id: "revision-pages",
+        files: files("Third"),
+        expectedGeneration: 2,
+        operator,
+      });
+      const expected = [
+        firstRevision.currentRevision,
+        secondRevision.currentRevision,
+        thirdRevision.currentRevision,
+      ]
+        .sort((left, right) =>
+          left.createdAt === right.createdAt
+            ? left.revisionKey < right.revisionKey
+              ? 1
+              : -1
+            : left.createdAt < right.createdAt
+              ? 1
+              : -1,
+        )
+        .map(({ revisionKey, sequence, name, createdAt }) => ({
+          revisionKey,
+          sequence,
+          name,
+          createdAt,
+        }));
+
+      const first = await storage.caplets.listRevisionsPage("revision-pages", operator, {
+        limit: 1,
+      });
+      const second = await storage.caplets.listRevisionsPage("revision-pages", operator, {
+        limit: 1,
+        after: first.nextKey,
+      });
+      const third = await storage.caplets.listRevisionsPage("revision-pages", operator, {
+        limit: 1,
+        after: second.nextKey,
+      });
+      expect([...first.items, ...second.items, ...third.items]).toEqual(expected);
+      expect(Object.keys(first.items[0]!).sort()).toEqual([
+        "createdAt",
+        "name",
+        "revisionKey",
+        "sequence",
+      ]);
+      expect(first.nextKey).toEqual({
+        createdAt: expected[0]!.createdAt,
+        revisionKey: expected[0]!.revisionKey,
+      });
+      expect(third.nextKey).toBeUndefined();
+      const ascending = [];
+      let ascendingAfter: typeof first.nextKey;
+      do {
+        const page = await storage.caplets.listRevisionsPage("revision-pages", operator, {
+          limit: 1,
+          sort: "asc",
+          after: ascendingAfter,
+        });
+        ascending.push(...page.items);
+        ascendingAfter = page.nextKey;
+      } while (ascendingAfter !== undefined);
+      expect(ascending).toEqual(expected.toReversed());
+      await expect(
+        storage.caplets.listRevisionsPage("missing", operator, { limit: 1 }),
+      ).rejects.toMatchObject({ code: "CONFIG_NOT_FOUND" });
+      await expect(storage.caplets.listRevisions("revision-pages", operator)).resolves.toEqual(
+        expected.map(({ revisionKey, sequence, name }) => ({ revisionKey, sequence, name })),
+      );
+      await expect(
+        storage.caplets.listRevisionsPage("revision-pages", operator, { limit: 500 }),
+      ).resolves.toEqual({ items: expected });
+      await expect(
+        storage.caplets.deleteRevision({
+          id: "revision-pages",
+          revisionKey: "missing-revision",
+          expectedGeneration: 3,
+          operator,
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_NOT_FOUND" });
+      await expect(
+        storage.caplets.restoreRevision({
+          id: "revision-pages",
+          revisionKey: "missing-revision",
+          expectedGeneration: 3,
+          operator,
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_NOT_FOUND" });
+
+      for (const limit of [0, 501, 1.5]) {
+        await expect(
+          storage.caplets.listRevisionsPage("revision-pages", operator, { limit }),
+        ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+      }
+    } finally {
+      await storage.close();
+      vi.useRealTimers();
     }
   });
 });

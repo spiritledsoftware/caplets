@@ -96,18 +96,18 @@ describe("caplets daemon CLI", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-client-url-"));
     try {
       const loopback = await installDaemon(
-        { host: "127.0.0.1", port: 5387, path: "/caplets", validate: false },
+        { host: "127.0.0.1", port: 5387, validate: false },
         { env: testEnv(dir), platform: "linux", commandRunner: fakeRunner() },
       );
-      expect(daemonClientBaseUrl(loopback.config)).toEqual(
-        new URL("http://127.0.0.1:5387/caplets"),
-      );
+      expect(daemonClientBaseUrl(loopback.config)).toEqual(new URL("http://127.0.0.1:5387"));
+      expect(loopback.config.serve).not.toHaveProperty("path");
+      expect(loopback.config.command.args).not.toContain("--path");
 
       const wildcard = {
         ...loopback.config,
         serve: { ...loopback.config.serve, host: "0.0.0.0" },
       };
-      expect(daemonClientBaseUrl(wildcard)).toEqual(new URL("http://127.0.0.1:5387/caplets"));
+      expect(daemonClientBaseUrl(wildcard)).toEqual(new URL("http://127.0.0.1:5387"));
 
       const network = {
         ...loopback.config,
@@ -121,7 +121,7 @@ describe("caplets daemon CLI", () => {
 
   it("passes upstream URL through daemon install", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-upstream-"));
-    const upstreamUrl = "https://upstream.caplets.example.com/caplets";
+    const upstreamUrl = "https://upstream.caplets.example.com";
     try {
       const out: string[] = [];
       await runCli(
@@ -155,6 +155,71 @@ describe("caplets daemon CLI", () => {
       expect(updateResult.config.serve.upstreamUrl).toBe(upstreamUrl);
       expect(updateUpstreamArgIndex).toBeGreaterThanOrEqual(0);
       expect(updateResult.config.command.args[updateUpstreamArgIndex + 1]).toBe(upstreamUrl);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes and preserves admin upload settings through daemon install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-admin-uploads-"));
+    try {
+      const out: string[] = [];
+      await runCli(
+        [
+          "daemon",
+          "install",
+          "--json",
+          "--no-validate",
+          "--admin-upload-staging-dir",
+          "/srv/caplets/uploads",
+          "--admin-upload-max-concurrent",
+          "4",
+          "--admin-upload-max-staged-bytes",
+          "400000000",
+        ],
+        {
+          env: testEnv(dir),
+          writeOut: (value) => out.push(value),
+          daemon: { platform: "linux", commandRunner: fakeRunner() },
+        },
+      );
+
+      const result = JSON.parse(out.join("")) as {
+        config: {
+          serve: {
+            adminUploads: {
+              stagingDir: string;
+              maxConcurrent: number;
+              maxStagedBytes: number;
+            };
+          };
+          command: { args: string[] };
+        };
+      };
+      expect(result.config.serve.adminUploads).toEqual({
+        stagingDir: "/srv/caplets/uploads",
+        maxConcurrent: 4,
+        maxStagedBytes: 400_000_000,
+      });
+      expect(result.config.command.args).toEqual(
+        expect.arrayContaining([
+          "--admin-upload-staging-dir",
+          "/srv/caplets/uploads",
+          "--admin-upload-max-concurrent",
+          "4",
+          "--admin-upload-max-staged-bytes",
+          "400000000",
+        ]),
+      );
+
+      const updateOut: string[] = [];
+      await runCli(["daemon", "install", "--dry-run", "--json"], {
+        env: testEnv(dir),
+        writeOut: (value) => updateOut.push(value),
+        daemon: { platform: "linux", commandRunner: fakeRunner() },
+      });
+      const updated = JSON.parse(updateOut.join("")) as typeof result;
+      expect(updated.config.serve.adminUploads).toEqual(result.config.serve.adminUploads);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -449,7 +514,6 @@ describe("daemon paths and config", () => {
         {
           host: "127.0.0.1",
           port: "5480",
-          path: "/caplets",
           env: ["NAME=value=with=equals", "EMPTY="],
           inheritEnv: true,
           validate: false,
@@ -530,7 +594,7 @@ describe("daemon paths and config", () => {
       });
 
       expect(out.join("")).toMatch(
-        /^Caplets daemon is running \(running\)\.\nHealth check failed for http:\/\/127\.0\.0\.1:\d+\/v1\/healthz with HTTP 503\.\n$/u,
+        /^Caplets daemon is running \(running\)\.\nHealth check failed for http:\/\/127\.0\.0\.1:\d+\/api\/v1\/healthz with HTTP 503\.\n$/u,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -717,6 +781,7 @@ describe("daemon paths and config", () => {
     expect(args).toContain(serve.remoteCredentialStateDir);
     expect(args).not.toContain("--user");
     expect(args).not.toContain("--password");
+    expect(args).not.toContain("--path");
   });
 
   it("validates updates to running daemons on a temporary loopback port", async () => {
@@ -741,7 +806,7 @@ describe("daemon paths and config", () => {
           validateCommand: async (config) => {
             validatedPorts.push(config.serve.port);
             expect(config.serve.host).toBe("127.0.0.1");
-            return { ok: true, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` };
+            return { ok: true, url: `http://127.0.0.1:${config.serve.port}/api/v1/healthz` };
           },
         },
       );
@@ -777,7 +842,10 @@ describe("daemon paths and config", () => {
           env: { ...initialEnv, CAPLETS_SERVER_URL: "https://caplets.example.com:5480" },
           validateCommand: async (config) => {
             validated.push({ host: config.serve.host, port: config.serve.port });
-            return { ok: true, url: `http://${config.serve.host}:${config.serve.port}/v1/healthz` };
+            return {
+              ok: true,
+              url: `http://${config.serve.host}:${config.serve.port}/api/v1/healthz`,
+            };
           },
         },
       );
@@ -810,8 +878,8 @@ describe("daemon paths and config", () => {
           validateCommand: async (config) => {
             validatedPorts.push(config.serve.port);
             return validatedPorts.length === 1
-              ? { ok: false, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` }
-              : { ok: true, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` };
+              ? { ok: false, url: `http://127.0.0.1:${config.serve.port}/api/v1/healthz` }
+              : { ok: true, url: `http://127.0.0.1:${config.serve.port}/api/v1/healthz` };
           },
         },
       );
@@ -847,7 +915,7 @@ describe("daemon paths and config", () => {
           ...options,
           validateCommand: async (config) => {
             validatedPorts.push(config.serve.port);
-            return { ok: true, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` };
+            return { ok: true, url: `http://127.0.0.1:${config.serve.port}/api/v1/healthz` };
           },
         },
       );
@@ -1165,7 +1233,7 @@ describe("daemon paths and config", () => {
       const result = await installDaemon(
         { validate: false, dryRun: true, allowUnauthenticatedHttp: true },
         {
-          env: { ...testEnv(dir), CAPLETS_SERVER_URL: "https://caplets.example.com/daemon" },
+          env: { ...testEnv(dir), CAPLETS_SERVER_URL: "https://caplets.example.com/" },
           home: "/home/alice",
           platform: "linux",
           commandRunner: fakeRunner(),
@@ -1183,7 +1251,7 @@ describe("daemon paths and config", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-update-origin-"));
     try {
       const options = {
-        env: { ...testEnv(dir), CAPLETS_SERVER_URL: "https://caplets.example.com/daemon" },
+        env: { ...testEnv(dir), CAPLETS_SERVER_URL: "https://caplets.example.com/" },
         home: "/home/alice",
         platform: "linux" as const,
         commandRunner: fakeRunner(),
@@ -2928,7 +2996,7 @@ createServer((_request, response) => response.end("ok")).listen(${port}, "127.0.
         command: {
           ...result.config.command,
           executable: "C:\\Users\\Alice\\AppData\\Roaming\\pnpm\\caplets.cmd",
-          args: ["serve", "--path", "pa th"],
+          args: ["serve", "--remote-state-path", "pa th"],
         },
       };
 
@@ -2938,7 +3006,7 @@ createServer((_request, response) => response.end("ok")).listen(${port}, "127.0.
           "/d",
           "/s",
           "/c",
-          '"C:\\Users\\Alice\\AppData\\Roaming\\pnpm\\caplets.cmd" serve --path "pa th"',
+          '"C:\\Users\\Alice\\AppData\\Roaming\\pnpm\\caplets.cmd" serve --remote-state-path "pa th"',
         ],
       });
     } finally {

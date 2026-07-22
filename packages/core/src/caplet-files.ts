@@ -1,4 +1,14 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readSync,
+} from "node:fs";
+import { open as openFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { CapletsError } from "./errors";
 export {
@@ -29,7 +39,7 @@ import type {
   CapletFileWarning,
 } from "./caplet-files-bundle";
 
-const MAX_CAPLET_FILE_BYTES = 128 * 1024;
+export const MAX_CAPLET_FILE_BYTES = 128 * 1024;
 
 export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   return loadCapletFilesWithPaths(root)?.config;
@@ -84,7 +94,7 @@ export function discoverCapletFiles(root: string): Array<{ id: string; path: str
 
     if (entry.isDirectory()) {
       const capletPath = join(path, "CAPLET.md");
-      if (existsSync(capletPath) && statSync(capletPath).isFile()) {
+      if (isRegularFileNoFollow(capletPath)) {
         addCandidate(entry.name, capletPath);
       }
     }
@@ -163,7 +173,7 @@ function discoverCapletFilesBestEffort(
 
     if (entry.isDirectory()) {
       const capletPath = join(path, "CAPLET.md");
-      if (existsSync(capletPath) && statSync(capletPath).isFile()) {
+      if (isRegularFileNoFollow(capletPath)) {
         addCandidate(entry.name, capletPath, true);
       }
     }
@@ -172,16 +182,69 @@ function discoverCapletFilesBestEffort(
   return Array.from(byId.values()).map(({ id, path }) => ({ id, path }));
 }
 
-function readCapletFile(path: string): unknown {
-  const stat = statSync(path);
-  if (stat.size > MAX_CAPLET_FILE_BYTES) {
-    throw new CapletsError(
-      "CONFIG_INVALID",
-      `Caplet file at ${path} exceeds the ${MAX_CAPLET_FILE_BYTES} byte limit`,
-    );
+export async function readCapletFileText(path: string): Promise<string> {
+  const file = await openFile(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const content = Buffer.allocUnsafe(MAX_CAPLET_FILE_BYTES + 1);
+  let offset = 0;
+  try {
+    if (!(await file.stat()).isFile()) throw invalidCapletFileType(path);
+    while (offset < content.byteLength) {
+      const { bytesRead } = await file.read(content, offset, content.byteLength - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+  } finally {
+    await file.close();
   }
-  const text = readFileSync(path, "utf8");
-  return readCapletFileContent(path, text, dirname(path), normalizeLocalPath);
+  if (offset > MAX_CAPLET_FILE_BYTES) throw oversizedCapletFile(path);
+  return content.subarray(0, offset).toString("utf8");
+}
+
+export function readCapletFileTextSync(path: string): string {
+  const file = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const content = Buffer.allocUnsafe(MAX_CAPLET_FILE_BYTES + 1);
+  let offset = 0;
+  try {
+    if (!fstatSync(file).isFile()) throw invalidCapletFileType(path);
+    while (offset < content.byteLength) {
+      const bytesRead = readSync(file, content, offset, content.byteLength - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+  } finally {
+    closeSync(file);
+  }
+  if (offset > MAX_CAPLET_FILE_BYTES) throw oversizedCapletFile(path);
+  return content.subarray(0, offset).toString("utf8");
+}
+
+function readCapletFile(path: string): unknown {
+  return readCapletFileContent(
+    path,
+    readCapletFileTextSync(path),
+    dirname(path),
+    normalizeLocalPath,
+  );
+}
+
+function oversizedCapletFile(path: string): CapletsError {
+  return new CapletsError(
+    "CONFIG_INVALID",
+    `Caplet file at ${path} exceeds the ${MAX_CAPLET_FILE_BYTES} byte limit`,
+  );
+}
+
+function invalidCapletFileType(path: string): CapletsError {
+  return new CapletsError("CONFIG_INVALID", `Caplet file at ${path} must be a regular file`);
+}
+
+function isRegularFileNoFollow(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 export function validateCapletFile(path: string): void {

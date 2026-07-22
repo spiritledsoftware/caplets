@@ -10,7 +10,6 @@ export function observedOutputShapeStorageKey(key: ObservedOutputShapeKey): stri
 
 export function observedOutputShapeKey(input: {
   scope: ObservedOutputShapeKey["scope"];
-  workspaceId?: string | undefined;
   projectFingerprint?: string | undefined;
   caplet: CapletConfig;
   toolName: string;
@@ -21,7 +20,6 @@ export function observedOutputShapeKey(input: {
   const outputSchemaHash = schemaHash(input.outputSchema) ?? undefined;
   return {
     scope: input.scope,
-    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     ...(input.projectFingerprint ? { projectFingerprint: input.projectFingerprint } : {}),
     capletId: input.caplet.server,
     backendKind: input.caplet.backend,

@@ -27,33 +27,29 @@ describe("dashboard activity and access actions", () => {
       clientLabel: "Old laptop",
     });
 
-    const approved = await dashboardPost(
+    const approved = await dashboardPatch(
       setup,
-      `/dashboard/api/access/pending-logins/${approveTarget.flowId}/approve`,
-      { grantedRole: "access" },
+      `/api/v2/admin/remote-login-requests/${approveTarget.flowId}`,
+      { action: "approve", grantedRole: "access" },
     );
     expect(approved.status).toBe(200);
     await expect(approved.json()).resolves.toMatchObject({
-      pendingLogin: {
-        flowId: approveTarget.flowId,
-        requestedRole: "operator",
-        grantedRole: "access",
-      },
+      flowId: approveTarget.flowId,
+      requestedRole: "operator",
+      grantedRole: "access",
     });
 
-    const denied = await dashboardPost(
+    const denied = await dashboardPatch(
       setup,
-      `/dashboard/api/access/pending-logins/${denyTarget.flowId}/deny`,
-      {},
+      `/api/v2/admin/remote-login-requests/${denyTarget.flowId}`,
+      { action: "deny" },
     );
     expect(denied.status).toBe(200);
-    await expect(denied.json()).resolves.toMatchObject({ pendingLogin: { status: "denied" } });
+    await expect(denied.json()).resolves.toMatchObject({ status: "denied" });
 
-    const activity = await dashboardGet(setup, "/dashboard/api/activity");
+    const activity = await dashboardGet(setup, "/api/v2/admin/activity");
     expect(activity.status).toBe(200);
     const text = await activity.text();
-    expect(text).toContain('"action":"pending_login_approved"');
-    expect(text).toContain('"action":"pending_login_denied"');
     expect(text).toContain('"action":"remote_pending_login_approved"');
     expect(text).toContain('"action":"remote_pending_login_denied"');
     expect(text).toContain('"actorClientId"');
@@ -74,19 +70,17 @@ describe("dashboard activity and access actions", () => {
       now: new Date(Date.now() - 11 * 60_000),
     });
 
-    const approved = await dashboardPost(
+    const approved = await dashboardPatch(
       setup,
-      `/dashboard/api/access/pending-logins/${expired.flowId}/approve`,
-      { grantedRole: "operator" },
+      `/api/v2/admin/remote-login-requests/${expired.flowId}`,
+      { action: "approve", grantedRole: "operator" },
     );
 
     expect(approved.status).toBe(401);
     await expect(approved.json()).resolves.toMatchObject({
-      ok: false,
-      error: {
-        code: "AUTH_FAILED",
-        message: expect.stringContaining("code has expired"),
-      },
+      code: "AUTH_FAILED",
+      detail: expect.stringContaining("code has expired"),
+      status: 401,
     });
     await expect(setup.store.listPendingLogins()).resolves.toContainEqual(
       expect.objectContaining({ flowId: expired.flowId, status: "pending" }),
@@ -113,10 +107,9 @@ describe("dashboard activity and access actions", () => {
       pendingCompletionSecret: other.pendingCompletionSecret,
     });
 
-    const revoked = await dashboardPost(
+    const revoked = await dashboardDelete(
       setup,
-      `/dashboard/api/access/clients/${otherCredentials.clientId}/revoke`,
-      {},
+      `/api/v2/admin/remote-clients/${otherCredentials.clientId}`,
     );
     expect(revoked.status).toBe(200);
     await expect(revoked.json()).resolves.toMatchObject({
@@ -124,22 +117,21 @@ describe("dashboard activity and access actions", () => {
       clientId: otherCredentials.clientId,
     });
 
-    const downgraded = await dashboardPost(
+    const downgraded = await dashboardPatch(
       setup,
-      `/dashboard/api/access/clients/${setup.operatorClientId}/role`,
+      `/api/v2/admin/remote-clients/${setup.operatorClientId}`,
       { role: "access" },
     );
     expect(downgraded.status).toBe(200);
     await expect(downgraded.json()).resolves.toMatchObject({
-      client: { role: "access" },
-      sessionEnded: true,
+      role: "access",
     });
 
-    const summary = await dashboardGet(setup, "/dashboard/api/summary");
+    const summary = await dashboardGet(setup, "/api/v2/admin/host");
     expect(summary.status).toBe(401);
 
-    const activity = await setup.app.request("http://127.0.0.1:5387/dashboard/api/activity", {
-      headers: { cookie: setup.cookie },
+    const activity = await setup.app.request("http://127.0.0.1:5387/api/v2/admin/activity", {
+      headers: { cookie: setup.cookie, "sec-fetch-site": "same-origin" },
     });
     expect(activity.status).toBe(401);
 
@@ -225,19 +217,38 @@ async function authenticatedDashboard() {
 
 async function dashboardGet(setup: Setup, path: string) {
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
-    headers: { cookie: setup.cookie },
+    headers: { cookie: setup.cookie, "sec-fetch-site": "same-origin" },
   });
 }
 
-async function dashboardPost(setup: Setup, path: string, body: unknown) {
+async function dashboardPatch(setup: Setup, path: string, body: unknown) {
+  return dashboardConditionalMutation(setup, path, "PATCH", body);
+}
+
+async function dashboardDelete(setup: Setup, path: string) {
+  return dashboardConditionalMutation(setup, path, "DELETE");
+}
+
+async function dashboardConditionalMutation(
+  setup: Setup,
+  path: string,
+  method: "PATCH" | "DELETE",
+  body?: unknown,
+) {
+  const current = await dashboardGet(setup, path);
+  const etag = current.headers.get("etag");
+  if (!etag) throw new Error(`Missing ETag for ${path}`);
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
-    method: "POST",
+    method,
     headers: {
       cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
       "x-caplets-csrf": setup.csrfToken,
-      "content-type": "application/json",
+      "content-type": method === "PATCH" ? "application/merge-patch+json" : "application/json",
+      "idempotency-key": crypto.randomUUID(),
+      "if-match": etag,
     },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
 
@@ -286,13 +297,17 @@ function httpOptions(stateDir: string): HttpServeOptions {
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     auth: { type: "remote_credentials" },
     remoteCredentialStateDir: stateDir,
     allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
   };
 }
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, lt, sql } from "drizzle-orm";
 import {
   isStoredOAuthTokenBundle,
   type StoredOAuthTokenBundle,
@@ -7,18 +7,39 @@ import {
 } from "../auth/store";
 import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
+import {
+  MAX_STORAGE_PAGE_LIMIT,
+  storagePageLimit,
+  type KeysetSortDirection,
+  type StorageKeysetPage,
+} from "./keyset-page";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
 import type {
   HostDatabase,
   HostDatabaseTransaction,
   PostgresHostDatabase,
+  PostgresHostTransaction,
   SqliteHostDatabase,
 } from "./types";
 
 export type BackendAuthMutationOptions = {
   expectedGeneration?: number | undefined;
   operatorClientId?: string | undefined;
+};
+
+export type BackendAuthStateSnapshot = {
+  generation: number;
+  bundle?: StoredOAuthTokenBundle | undefined;
+};
+export type BackendAuthConnectionPageKey = {
+  server: string;
+};
+
+export type BackendAuthConnectionPageInput = {
+  limit?: number | undefined;
+  after?: BackendAuthConnectionPageKey | undefined;
+  sort?: KeysetSortDirection | undefined;
 };
 
 type BackendAuthRow = {
@@ -32,7 +53,7 @@ type BackendAuthRow = {
 export class BackendAuthStateStore {
   constructor(private readonly database: HostDatabase) {}
 
-  async readTokenBundle(server: string): Promise<StoredOAuthTokenBundleView | undefined> {
+  async readState(server: string): Promise<BackendAuthStateSnapshot> {
     validateServer(server);
     const row =
       this.database.dialect === "sqlite"
@@ -48,22 +69,88 @@ export class BackendAuthStateStore {
               .where(eq(postgres.backendAuthStates.server, server))
               .limit(1)
           )[0];
-    return row ? tokenBundleView(row, server) : undefined;
+    return row ? stateSnapshot(row, server) : { generation: 0 };
   }
 
-  async listTokenBundles(): Promise<StoredOAuthTokenBundleView[]> {
+  async readTokenBundle(server: string): Promise<StoredOAuthTokenBundleView | undefined> {
+    const state = await this.readState(server);
+    return state.bundle ? { bundle: state.bundle, generation: state.generation } : undefined;
+  }
+
+  async listConnectionsPage(
+    input: BackendAuthConnectionPageInput = {},
+  ): Promise<StorageKeysetPage<StoredOAuthTokenBundleView, BackendAuthConnectionPageKey>> {
+    const limit = storagePageLimit(input.limit);
+    const sort = input.sort ?? "asc";
+    if (input.after !== undefined) validateConnectionPageKey(input.after);
     const rows =
       this.database.dialect === "sqlite"
         ? this.database.db
             .select()
             .from(sqlite.backendAuthStates)
-            .orderBy(asc(sqlite.backendAuthStates.server))
+            .where(
+              and(
+                isNotNull(sqlite.backendAuthStates.tokenBundle),
+                input.after
+                  ? sort === "asc"
+                    ? gt(sqlite.backendAuthStates.server, input.after.server)
+                    : lt(sqlite.backendAuthStates.server, input.after.server)
+                  : undefined,
+              ),
+            )
+            .orderBy(
+              sort === "asc"
+                ? asc(sqlite.backendAuthStates.server)
+                : desc(sqlite.backendAuthStates.server),
+            )
+            .limit(limit + 1)
             .all()
         : await this.database.db
             .select()
             .from(postgres.backendAuthStates)
-            .orderBy(asc(postgres.backendAuthStates.server));
-    return rows.map((row) => tokenBundleView(row, row.server));
+            .where(
+              and(
+                isNotNull(postgres.backendAuthStates.tokenBundle),
+                input.after
+                  ? sort === "asc"
+                    ? sql`${postgres.backendAuthStates.server} COLLATE "C" > ${input.after.server}`
+                    : sql`${postgres.backendAuthStates.server} COLLATE "C" < ${input.after.server}`
+                  : undefined,
+              ),
+            )
+            .orderBy(
+              sort === "asc"
+                ? sql`${postgres.backendAuthStates.server} COLLATE "C" ASC`
+                : sql`${postgres.backendAuthStates.server} COLLATE "C" DESC`,
+            )
+            .limit(limit + 1);
+    const hasNext = rows.length > limit;
+    if (hasNext) rows.pop();
+    const items = rows.map((row) => {
+      const state = stateSnapshot(row, row.server);
+      if (!state.bundle) {
+        throw new CapletsError("INTERNAL_ERROR", `Backend auth state for ${row.server} is empty.`);
+      }
+      return { bundle: state.bundle, generation: state.generation };
+    });
+    return {
+      items,
+      ...(hasNext ? { nextKey: { server: items[items.length - 1]!.bundle.server } } : {}),
+    };
+  }
+
+  async listTokenBundles(): Promise<StoredOAuthTokenBundleView[]> {
+    const items: StoredOAuthTokenBundleView[] = [];
+    let after: BackendAuthConnectionPageKey | undefined;
+    do {
+      const page = await this.listConnectionsPage({
+        limit: MAX_STORAGE_PAGE_LIMIT,
+        ...(after ? { after } : {}),
+      });
+      items.push(...page.items);
+      after = page.nextKey;
+    } while (after);
+    return items;
   }
 
   async writeTokenBundle(
@@ -151,6 +238,32 @@ export class BackendAuthStateStore {
   }
 }
 
+export function writeBackendAuthTokenBundleInTransaction(
+  bundle: StoredOAuthTokenBundle,
+  options: BackendAuthMutationOptions,
+  transaction: Extract<HostDatabaseTransaction, { dialect: "sqlite" }>,
+): StoredOAuthTokenBundleView;
+export function writeBackendAuthTokenBundleInTransaction(
+  bundle: StoredOAuthTokenBundle,
+  options: BackendAuthMutationOptions,
+  transaction: Extract<HostDatabaseTransaction, { dialect: "postgres" }>,
+): Promise<StoredOAuthTokenBundleView>;
+export function writeBackendAuthTokenBundleInTransaction(
+  bundle: StoredOAuthTokenBundle,
+  options: BackendAuthMutationOptions,
+  transaction: HostDatabaseTransaction,
+): StoredOAuthTokenBundleView | Promise<StoredOAuthTokenBundleView> {
+  validateServer(bundle.server);
+  const candidate: unknown = bundle;
+  if (!isStoredOAuthTokenBundle(candidate)) {
+    throw new CapletsError("REQUEST_INVALID", `Invalid OAuth token bundle for ${bundle.server}.`);
+  }
+  validateMutationOptions(options);
+  return transaction.dialect === "sqlite"
+    ? writeSqliteTransaction(transaction.db, candidate, options)
+    : writePostgresTransaction(transaction.db, candidate, options);
+}
+
 type SqliteBackendAuthDatabase =
   | SqliteHostDatabase
   | Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0];
@@ -215,11 +328,7 @@ function verifyLegacyBundlesSqlite(
       .from(sqlite.backendAuthStates)
       .where(eq(sqlite.backendAuthStates.server, bundle.server))
       .get();
-    if (
-      !row ||
-      stableJsonStringify(tokenBundleView(row, bundle.server).bundle) !==
-        stableJsonStringify(bundle)
-    ) {
+    if (!row || !storedBundleMatches(row, bundle)) {
       throw legacyBundleVerificationError(bundle.server);
     }
   }
@@ -235,11 +344,7 @@ async function verifyLegacyBundlesPostgres(
       .from(postgres.backendAuthStates)
       .where(eq(postgres.backendAuthStates.server, bundle.server))
       .limit(1);
-    if (
-      !row ||
-      stableJsonStringify(tokenBundleView(row, bundle.server).bundle) !==
-        stableJsonStringify(bundle)
-    ) {
+    if (!row || !storedBundleMatches(row, bundle)) {
       throw legacyBundleVerificationError(bundle.server);
     }
   }
@@ -279,11 +384,7 @@ function assertLegacyBundlesMatchSqlite(
       .from(sqlite.backendAuthStates)
       .where(eq(sqlite.backendAuthStates.server, bundle.server))
       .get();
-    if (
-      row &&
-      stableJsonStringify(tokenBundleView(row, bundle.server).bundle) !==
-        stableJsonStringify(bundle)
-    ) {
+    if (row && !storedBundleMatches(row, bundle)) {
       throw new CapletsError(
         "CONFIG_EXISTS",
         `Backend auth state for ${bundle.server} conflicts with the legacy snapshot.`,
@@ -302,11 +403,7 @@ async function assertLegacyBundlesMatchPostgres(
       .from(postgres.backendAuthStates)
       .where(eq(postgres.backendAuthStates.server, bundle.server))
       .limit(1);
-    if (
-      row &&
-      stableJsonStringify(tokenBundleView(row, bundle.server).bundle) !==
-        stableJsonStringify(bundle)
-    ) {
+    if (row && !storedBundleMatches(row, bundle)) {
       throw new CapletsError(
         "CONFIG_EXISTS",
         `Backend auth state for ${bundle.server} conflicts with the legacy snapshot.`,
@@ -320,46 +417,52 @@ function writeSqlite(
   bundle: StoredOAuthTokenBundle,
   options: BackendAuthMutationOptions,
 ): StoredOAuthTokenBundleView {
-  return db.transaction((transaction) => {
-    const current = transaction
-      .select()
-      .from(sqlite.backendAuthStates)
-      .where(eq(sqlite.backendAuthStates.server, bundle.server))
-      .get();
-    if (current) tokenBundleView(current, bundle.server);
-    assertExpectedGeneration(current, options.expectedGeneration);
-    const generation = (current?.generation ?? 0) + 1;
-    const now = new Date().toISOString();
+  return db.transaction((transaction) => writeSqliteTransaction(transaction, bundle, options));
+}
+
+function writeSqliteTransaction(
+  transaction: SqliteBackendAuthDatabase,
+  bundle: StoredOAuthTokenBundle,
+  options: BackendAuthMutationOptions,
+): StoredOAuthTokenBundleView {
+  const current = transaction
+    .select()
+    .from(sqlite.backendAuthStates)
+    .where(eq(sqlite.backendAuthStates.server, bundle.server))
+    .get();
+  if (current) stateSnapshot(current, bundle.server);
+  assertExpectedGeneration(current, options.expectedGeneration);
+  const generation = (current?.generation ?? 0) + 1;
+  const now = new Date().toISOString();
+  transaction
+    .insert(sqlite.backendAuthStates)
+    .values({
+      server: bundle.server,
+      generation,
+      tokenBundle: bundle,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: sqlite.backendAuthStates.server,
+      set: { generation, tokenBundle: bundle, updatedAt: now },
+    })
+    .run();
+  if (options.operatorClientId) {
     transaction
-      .insert(sqlite.backendAuthStates)
-      .values({
-        server: bundle.server,
-        generation,
-        tokenBundle: bundle,
-        createdAt: current?.createdAt ?? now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: sqlite.backendAuthStates.server,
-        set: { generation, tokenBundle: bundle, updatedAt: now },
-      })
+      .insert(sqlite.operatorActivity)
+      .values(
+        activityValues(
+          options.operatorClientId,
+          "backend_auth_written",
+          bundle.server,
+          generation,
+          now,
+        ),
+      )
       .run();
-    if (options.operatorClientId) {
-      transaction
-        .insert(sqlite.operatorActivity)
-        .values(
-          activityValues(
-            options.operatorClientId,
-            "backend_auth_written",
-            bundle.server,
-            generation,
-            now,
-          ),
-        )
-        .run();
-    }
-    return { bundle, generation };
-  });
+  }
+  return { bundle, generation };
 }
 
 async function writePostgres(
@@ -367,46 +470,54 @@ async function writePostgres(
   bundle: StoredOAuthTokenBundle,
   options: BackendAuthMutationOptions,
 ): Promise<StoredOAuthTokenBundleView> {
-  return await db.transaction(async (transaction) => {
-    await lockPostgresState(transaction, bundle.server);
-    const [current] = await transaction
-      .select()
-      .from(postgres.backendAuthStates)
-      .where(eq(postgres.backendAuthStates.server, bundle.server))
-      .for("update")
-      .limit(1);
-    if (current) tokenBundleView(current, bundle.server);
-    assertExpectedGeneration(current, options.expectedGeneration);
-    const generation = (current?.generation ?? 0) + 1;
-    const now = new Date().toISOString();
+  return await db.transaction(
+    async (transaction) => await writePostgresTransaction(transaction, bundle, options),
+  );
+}
+
+async function writePostgresTransaction(
+  transaction: PostgresHostTransaction,
+  bundle: StoredOAuthTokenBundle,
+  options: BackendAuthMutationOptions,
+): Promise<StoredOAuthTokenBundleView> {
+  await lockPostgresState(transaction, bundle.server);
+  const [current] = await transaction
+    .select()
+    .from(postgres.backendAuthStates)
+    .where(eq(postgres.backendAuthStates.server, bundle.server))
+    .for("update")
+    .limit(1);
+  if (current) stateSnapshot(current, bundle.server);
+  assertExpectedGeneration(current, options.expectedGeneration);
+  const generation = (current?.generation ?? 0) + 1;
+  const now = new Date().toISOString();
+  await transaction
+    .insert(postgres.backendAuthStates)
+    .values({
+      server: bundle.server,
+      generation,
+      tokenBundle: bundle,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: postgres.backendAuthStates.server,
+      set: { generation, tokenBundle: bundle, updatedAt: now },
+    });
+  if (options.operatorClientId) {
     await transaction
-      .insert(postgres.backendAuthStates)
-      .values({
-        server: bundle.server,
-        generation,
-        tokenBundle: bundle,
-        createdAt: current?.createdAt ?? now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: postgres.backendAuthStates.server,
-        set: { generation, tokenBundle: bundle, updatedAt: now },
-      });
-    if (options.operatorClientId) {
-      await transaction
-        .insert(postgres.operatorActivity)
-        .values(
-          activityValues(
-            options.operatorClientId,
-            "backend_auth_written",
-            bundle.server,
-            generation,
-            now,
-          ),
-        );
-    }
-    return { bundle, generation };
-  });
+      .insert(postgres.operatorActivity)
+      .values(
+        activityValues(
+          options.operatorClientId,
+          "backend_auth_written",
+          bundle.server,
+          generation,
+          now,
+        ),
+      );
+  }
+  return { bundle, generation };
 }
 
 function deleteSqlite(
@@ -420,25 +531,21 @@ function deleteSqlite(
       .from(sqlite.backendAuthStates)
       .where(eq(sqlite.backendAuthStates.server, server))
       .get();
-    if (current) tokenBundleView(current, server);
+    const state = current ? stateSnapshot(current, server) : undefined;
     assertExpectedGeneration(current, options.expectedGeneration);
-    if (!current) return false;
+    if (!current || !state?.bundle) return false;
+    const generation = current.generation + 1;
     const now = new Date().toISOString();
     transaction
-      .delete(sqlite.backendAuthStates)
+      .update(sqlite.backendAuthStates)
+      .set({ generation, tokenBundle: null, updatedAt: now })
       .where(eq(sqlite.backendAuthStates.server, server))
       .run();
     if (options.operatorClientId) {
       transaction
         .insert(sqlite.operatorActivity)
         .values(
-          activityValues(
-            options.operatorClientId,
-            "backend_auth_deleted",
-            server,
-            current.generation,
-            now,
-          ),
+          activityValues(options.operatorClientId, "backend_auth_deleted", server, generation, now),
         )
         .run();
     }
@@ -459,24 +566,20 @@ async function deletePostgres(
       .where(eq(postgres.backendAuthStates.server, server))
       .for("update")
       .limit(1);
-    if (current) tokenBundleView(current, server);
+    const state = current ? stateSnapshot(current, server) : undefined;
     assertExpectedGeneration(current, options.expectedGeneration);
-    if (!current) return false;
+    if (!current || !state?.bundle) return false;
+    const generation = current.generation + 1;
     const now = new Date().toISOString();
     await transaction
-      .delete(postgres.backendAuthStates)
+      .update(postgres.backendAuthStates)
+      .set({ generation, tokenBundle: null, updatedAt: now })
       .where(eq(postgres.backendAuthStates.server, server));
     if (options.operatorClientId) {
       await transaction
         .insert(postgres.operatorActivity)
         .values(
-          activityValues(
-            options.operatorClientId,
-            "backend_auth_deleted",
-            server,
-            current.generation,
-            now,
-          ),
+          activityValues(options.operatorClientId, "backend_auth_deleted", server, generation, now),
         );
     }
     return true;
@@ -492,20 +595,27 @@ async function lockPostgresState(
   );
 }
 
-function tokenBundleView(row: BackendAuthRow, expectedServer: string): StoredOAuthTokenBundleView {
+function stateSnapshot(row: BackendAuthRow, expectedServer: string): BackendAuthStateSnapshot {
   if (
     row.server !== expectedServer ||
     !Number.isInteger(row.generation) ||
     row.generation < 1 ||
-    !isStoredOAuthTokenBundle(row.tokenBundle) ||
-    row.tokenBundle.server !== expectedServer
+    (row.tokenBundle !== null &&
+      (!isStoredOAuthTokenBundle(row.tokenBundle) || row.tokenBundle.server !== expectedServer))
   ) {
     throw new CapletsError(
       "INTERNAL_ERROR",
       `Stored backend auth state for ${expectedServer} is invalid.`,
     );
   }
-  return { bundle: row.tokenBundle, generation: row.generation };
+  return row.tokenBundle === null
+    ? { generation: row.generation }
+    : { bundle: row.tokenBundle, generation: row.generation };
+}
+
+function storedBundleMatches(row: BackendAuthRow, bundle: StoredOAuthTokenBundle): boolean {
+  const state = stateSnapshot(row, bundle.server);
+  return Boolean(state.bundle && stableJsonStringify(state.bundle) === stableJsonStringify(bundle));
 }
 
 function assertExpectedGeneration(
@@ -513,7 +623,7 @@ function assertExpectedGeneration(
   expectedGeneration: number | undefined,
 ): void {
   if (expectedGeneration === undefined) return;
-  if (current?.generation === expectedGeneration) return;
+  if ((current?.generation ?? 0) === expectedGeneration) return;
   throw new CapletsError(
     "REQUEST_INVALID",
     "Authoritative Host State changed after it was read; reload and retry.",
@@ -548,6 +658,20 @@ function validateServer(server: string): void {
   if (!server.trim() || server.includes("/") || server.includes("\\") || server.includes("..")) {
     throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);
   }
+}
+
+function validateConnectionPageKey(value: unknown): asserts value is BackendAuthConnectionPageKey {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !("server" in value) ||
+    typeof value.server !== "string"
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Backend auth connection page key is invalid.");
+  }
+  validateServer(value.server);
 }
 
 function validateMutationOptions(options: BackendAuthMutationOptions): void {

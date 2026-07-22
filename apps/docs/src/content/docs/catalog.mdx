@@ -50,6 +50,11 @@ Agents and tools should use the structured read API rather than scraping HTML:
 - `https://catalog.caplets.dev/api/v1/catalog`
 - `https://catalog.caplets.dev/api/v1/catalog/entries/<entryKey>`
 
+Use `?view=compact` for the content-free index projection. Add `limit=1..500`,
+`sort=asc|desc`, optional `after=<entryKey>`, and optional `q=<query>` for a bounded
+keyset page. A response with more matches includes `nextEntryKey`; pass that exact
+opaque key as the next `after` value with the same sort and query.
+
 The API returns the same shared catalog entry model used by the site and CLI indexing
 statuses. The npm subpath `@caplets/core/catalog` exposes worker-safe implementation
 helpers for this v1 model, but the stable external discovery contract is the versioned

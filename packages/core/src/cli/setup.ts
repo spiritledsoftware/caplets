@@ -2,12 +2,12 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
+import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
 import { loadConfig, resolveConfigPath, resolveProjectConfigPath } from "../config";
 import { daemonClientBaseUrl, daemonStatus, installDaemon } from "../daemon";
 import type { DaemonConfig, DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
-import { isCapletsCloudUrl } from "../remote/options";
-import { isLoopbackHost } from "../server/options";
+import { isLoopbackCurrentHostHostname } from "../current-host/origin";
 import {
   detectAddMcpClients,
   listSupportedAddMcpClients,
@@ -31,7 +31,7 @@ export const setupIntegrationIds = [
 
 export type SetupIntegrationId = (typeof setupIntegrationIds)[number];
 export type SetupFormat = "plain" | "json";
-export type SetupTargetOption = SetupTargetKind | "local" | "remote" | "cloud" | "hosted_worker";
+export type SetupTargetOption = SetupTargetKind | "local" | "remote";
 
 export type SetupCommandResult = {
   stdout: string;
@@ -178,7 +178,7 @@ export function formatSetupMenu(): string {
     "  Interactive setup shows detected MCP clients first; choose all to list all supported MCP clients.",
     "",
     "Remote setup:",
-    "  Use --remote-url <url> (or --server-url <url>) to configure remote/cloud attach instead of the local daemon.",
+    "  Use --remote-url <origin> (or --server-url <origin>) to configure generic remote attach instead of the local daemon.",
     "",
     "Advanced manual config fallback:",
     "  caplets setup mcp-client --output ./caplets.mcp.json",
@@ -188,7 +188,7 @@ export function formatSetupMenu(): string {
     "  caplets setup codex",
     "  caplets setup opencode --dry-run",
     "  caplets setup mcp-client --client codex",
-    "  caplets setup codex --remote-url https://caplets.example.com/caplets",
+    "  caplets setup codex --remote-url https://caplets.example.com",
     "",
   ].join("\n");
 }
@@ -248,6 +248,7 @@ export async function runSetup(integration: string, options: SetupOptions = {}):
 }
 
 async function executeSetup(integration: string, options: SetupOptions): Promise<SetupResult> {
+  const targetKind = resolveSetupTargetKind(options);
   const id = parseSetupIntegrationId(integration);
   setupDefinition(id, options, "http://127.0.0.1:5387/");
   const runner = options.runCommand ?? defaultSetupCommandRunner;
@@ -377,7 +378,7 @@ async function executeSetup(integration: string, options: SetupOptions): Promise
     integration: id,
     name: definition.name,
     mode: isRemoteSetup(options) ? "remote" : "local",
-    targetKind: resolveSetupTargetKind(options),
+    targetKind,
     dryRun: Boolean(options.dryRun),
     phases,
     actions,
@@ -511,7 +512,7 @@ function isCredentialFreeLocalSetupDaemon(config: Pick<DaemonConfig, "serve">): 
 }
 
 function assertCredentialFreeLocalSetupDaemonHost(config: Pick<DaemonConfig, "serve">): void {
-  if (!isLoopbackHost(config.serve.host)) {
+  if (!isLoopbackCurrentHostHostname(config.serve.host)) {
     throw new CapletsError(
       "REQUEST_INVALID",
       `caplets setup cannot configure credential-free local attach for daemon host ${config.serve.host}. Reinstall the local daemon on 127.0.0.1 or use remote setup.`,
@@ -742,12 +743,12 @@ function remoteSetupDefinition(
   id: SetupIntegrationId,
   options: SetupOptions,
 ): { name: string; actions: SetupAction[]; nextSteps: string[] } {
-  const serverUrl =
+  const serverUrl = canonicalizeCurrentHostOrigin(
     nonEmpty(options.remoteUrl) ??
-    nonEmpty(options.serverUrl) ??
-    nonEmpty(options.env?.CAPLETS_REMOTE_URL) ??
-    "https://caplets.example.com/caplets";
-  const mode = isCapletsCloudUrl(serverUrl) ? "cloud" : "remote";
+      nonEmpty(options.serverUrl) ??
+      nonEmpty(options.env?.CAPLETS_REMOTE_URL) ??
+      "https://caplets.example.com",
+  );
 
   if (id === "opencode") {
     return {
@@ -762,7 +763,7 @@ function remoteSetupDefinition(
       ],
       nextSteps: [
         `Run caplets remote login ${serverUrl} before starting OpenCode.`,
-        `Run OpenCode with CAPLETS_MODE=${mode} and CAPLETS_REMOTE_URL=${serverUrl}.`,
+        `Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
       ],
     };
   }
@@ -780,7 +781,7 @@ function remoteSetupDefinition(
       ],
       nextSteps: [
         `Run caplets remote login ${serverUrl} before starting Pi.`,
-        `Start Pi with CAPLETS_MODE=${mode} and CAPLETS_REMOTE_URL=${serverUrl}.`,
+        `Start Pi with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
       ],
     };
   }
@@ -990,7 +991,13 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 function isRemoteSetup(options: SetupOptions): boolean {
-  return Boolean(options.remote ?? nonEmpty(options.remoteUrl) ?? nonEmpty(options.serverUrl));
+  if (options.remote !== undefined) return options.remote;
+  return (
+    nonEmpty(options.remoteUrl) !== undefined ||
+    nonEmpty(options.serverUrl) !== undefined ||
+    options.target === "remote" ||
+    options.target === "remote_host"
+  );
 }
 
 function resolveSetupTargetKind(options: SetupOptions): SetupTargetKind {
@@ -998,10 +1005,9 @@ function resolveSetupTargetKind(options: SetupOptions): SetupTargetKind {
     if (isSetupTargetKind(options.target)) return options.target;
     if (options.target === "local") return "local_host";
     if (options.target === "remote") return "remote_host";
-    if (options.target === "cloud" || options.target === "hosted_worker") return "hosted_sandbox";
     throw new CapletsError(
       "REQUEST_INVALID",
-      "setup target must be one of: local_host, remote_host, hosted_sandbox",
+      "setup target must be one of: local_host, remote_host",
     );
   }
   return isRemoteSetup(options) ? "remote_host" : "local_host";

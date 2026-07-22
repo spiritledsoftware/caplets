@@ -1,0 +1,1 @@
+CREATE INDEX "remote_pending_logins_status_created_idx" ON "remote_pending_logins" USING btree ("status","created_at","flow_id");

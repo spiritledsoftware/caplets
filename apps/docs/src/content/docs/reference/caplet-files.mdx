@@ -161,7 +161,7 @@ or `capletSets` only when composing or nesting another Caplets collection.
 | `shadowing`           | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.               |
 | `setup`               | Optional | object                                                                                            | Optional explicit setup and verification metadata for this Caplet.             |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.        |
-| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                |
+| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements.                                     |
 | `auth`                | Optional | object                                                                                            | Shared auth inherited by plural remote backend entries.                        |
 | `catalog`             | Optional | object                                                                                            | Optional presentation metadata for public catalog surfaces.                    |
 | `mcpServer`           | Optional | object                                                                                            | MCP server backend configuration for this Caplet.                              |
@@ -199,12 +199,12 @@ Project Binding requirements for Caplets that need an attached project.
 
 ### `runtime`
 
-Runtime feature and resource requirements for hosted execution.
+Runtime feature and resource requirements.
 
 | Field       | Status   | Type   | Description                                         |
 | ----------- | -------- | ------ | --------------------------------------------------- |
 | `features`  | Optional | array  | Runtime features this Caplet expects from the host. |
-| `resources` | Optional | object | Hosted resource requirements for this Caplet.       |
+| `resources` | Optional | object | Resource requirements for this Caplet's execution.  |
 
 ### `mcpServer`
 
@@ -224,7 +224,7 @@ MCP server backend configuration for this Caplet.
 | `toolCacheTtlMs`   | Optional | integer                    | Milliseconds downstream tool metadata stays fresh. Set 0 to refresh every time. |
 | `disabled`         | Optional | boolean                    | When true, omit this Caplet from discovery and do not start its MCP server.     |
 | `projectBinding`   | Optional | object                     | Project Binding requirements for Caplets that need an attached project.         |
-| `runtime`          | Optional | object                     | Runtime feature and resource requirements for hosted execution.                 |
+| `runtime`          | Optional | object                     | Runtime feature and resource requirements.                                      |
 
 ### `mcpServers`
 
@@ -244,7 +244,7 @@ Multiple MCP server backend configurations keyed by child ID.
 | `toolCacheTtlMs`   | Optional | integer                                                                                           | Milliseconds downstream tool metadata stays fresh. Set 0 to refresh every time. |
 | `disabled`         | Optional | boolean                                                                                           | When true, omit this Caplet from discovery and do not start its MCP server.     |
 | `projectBinding`   | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.         |
-| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                 |
+| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements.                                      |
 | `name`             | Optional | string                                                                                            | See the canonical schema for details.                                           |
 | `description`      | Optional | string                                                                                            | See the canonical schema for details.                                           |
 | `tags`             | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                                |
@@ -266,7 +266,7 @@ OpenAPI endpoint backend configuration for this Caplet.
 | `operationCacheTtlMs` | Optional | integer | Milliseconds OpenAPI operation metadata stays fresh. Set 0 to refresh every time. |
 | `disabled`            | Optional | boolean | When true, omit this Caplet from discovery.                                       |
 | `projectBinding`      | Optional | object  | Project Binding requirements for Caplets that need an attached project.           |
-| `runtime`             | Optional | object  | Runtime feature and resource requirements for hosted execution.                   |
+| `runtime`             | Optional | object  | Runtime feature and resource requirements.                                        |
 
 ### `openapiEndpoints`
 
@@ -282,7 +282,7 @@ Multiple OpenAPI endpoint backend configurations keyed by child ID.
 | `operationCacheTtlMs` | Optional | integer                                                                                           | Milliseconds OpenAPI operation metadata stays fresh. Set 0 to refresh every time. |
 | `disabled`            | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                                       |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.           |
-| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                   |
+| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements.                                        |
 | `name`                | Optional | string                                                                                            | See the canonical schema for details.                                             |
 | `description`         | Optional | string                                                                                            | See the canonical schema for details.                                             |
 | `tags`                | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                                  |
@@ -306,7 +306,7 @@ Google Discovery API backend configuration for this Caplet.
 | `excludeOperations`   | Optional | array   | Optional list of excludeOperations.                                                        |
 | `disabled`            | Optional | boolean | When true, omit this Caplet from discovery.                                                |
 | `projectBinding`      | Optional | object  | Project Binding requirements for Caplets that need an attached project.                    |
-| `runtime`             | Optional | object  | Runtime feature and resource requirements for hosted execution.                            |
+| `runtime`             | Optional | object  | Runtime feature and resource requirements.                                                 |
 
 ### `googleDiscoveryApis`
 
@@ -324,7 +324,7 @@ Multiple Google Discovery API backend configurations keyed by child ID.
 | `excludeOperations`   | Optional | array                                                                                             | Optional list of excludeOperations.                                                        |
 | `disabled`            | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                                                |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.                    |
-| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                            |
+| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements.                                                 |
 | `name`                | Optional | string                                                                                            | See the canonical schema for details.                                                      |
 | `description`         | Optional | string                                                                                            | See the canonical schema for details.                                                      |
 | `tags`                | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                                           |
@@ -349,7 +349,7 @@ GraphQL endpoint backend configuration for this Caplet.
 | `selectionDepth`      | Optional | integer | Maximum depth for auto-generated GraphQL selection sets.                          |
 | `disabled`            | Optional | boolean | When true, omit this Caplet from discovery.                                       |
 | `projectBinding`      | Optional | object  | Project Binding requirements for Caplets that need an attached project.           |
-| `runtime`             | Optional | object  | Runtime feature and resource requirements for hosted execution.                   |
+| `runtime`             | Optional | object  | Runtime feature and resource requirements.                                        |
 
 ### `graphqlEndpoints`
 
@@ -368,7 +368,7 @@ Multiple GraphQL endpoint backend configurations keyed by child ID.
 | `selectionDepth`      | Optional | integer                                                                                           | Maximum depth for auto-generated GraphQL selection sets.                          |
 | `disabled`            | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                                       |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.           |
-| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                   |
+| `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements.                                        |
 | `name`                | Optional | string                                                                                            | See the canonical schema for details.                                             |
 | `description`         | Optional | string                                                                                            | See the canonical schema for details.                                             |
 | `tags`                | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                                  |
@@ -389,7 +389,7 @@ HTTP API backend configuration for this Caplet.
 | `maxResponseBytes` | Optional | integer | Maximum HTTP action response body bytes to read.                              |
 | `disabled`         | Optional | boolean | When true, omit this Caplet from discovery.                                   |
 | `projectBinding`   | Optional | object  | Project Binding requirements for Caplets that need an attached project.       |
-| `runtime`          | Optional | object  | Runtime feature and resource requirements for hosted execution.               |
+| `runtime`          | Optional | object  | Runtime feature and resource requirements.                                    |
 
 ### `httpApis`
 
@@ -404,7 +404,7 @@ Multiple HTTP API backend configurations keyed by child ID.
 | `maxResponseBytes` | Optional | integer                                                                                           | Maximum HTTP action response body bytes to read.                        |
 | `disabled`         | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                             |
 | `projectBinding`   | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project. |
-| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.         |
+| `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements.                              |
 | `name`             | Optional | string                                                                                            | See the canonical schema for details.                                   |
 | `description`      | Optional | string                                                                                            | See the canonical schema for details.                                   |
 | `tags`             | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                        |
@@ -423,7 +423,7 @@ Singular form:
 | `actions`        | Required | object  | Configured CLI actions keyed by stable tool name.                       |
 | `disabled`       | Optional | boolean | When true, omit this Caplet from discovery.                             |
 | `projectBinding` | Optional | object  | Project Binding requirements for Caplets that need an attached project. |
-| `runtime`        | Optional | object  | Runtime feature and resource requirements for hosted execution.         |
+| `runtime`        | Optional | object  | Runtime feature and resource requirements for execution.                |
 
 Plural form child fields:
 
@@ -432,7 +432,7 @@ Plural form child fields:
 | `actions`        | Required | object                                                                                            | Configured CLI actions keyed by stable tool name.                       |
 | `disabled`       | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                             |
 | `projectBinding` | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project. |
-| `runtime`        | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.         |
+| `runtime`        | Optional | object                                                                                            | Runtime feature and resource requirements for execution.                |
 | `name`           | Optional | string                                                                                            | See the canonical schema for details.                                   |
 | `description`    | Optional | string                                                                                            | See the canonical schema for details.                                   |
 | `tags`           | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                        |
@@ -455,7 +455,7 @@ Nested Caplet collection backend configuration for this Caplet.
 | `toolCacheTtlMs`     | Optional | integer | Milliseconds tool metadata stays fresh.                                 |
 | `disabled`           | Optional | boolean | When true, omit this Caplet from discovery.                             |
 | `projectBinding`     | Optional | object  | Project Binding requirements for Caplets that need an attached project. |
-| `runtime`            | Optional | object  | Runtime feature and resource requirements for hosted execution.         |
+| `runtime`            | Optional | object  | Runtime feature and resource requirements.                              |
 
 ### `capletSets`
 
@@ -470,7 +470,7 @@ Multiple nested Caplet collection backend configurations keyed by child ID.
 | `toolCacheTtlMs`     | Optional | integer                                                                                           | Milliseconds tool metadata stays fresh.                                 |
 | `disabled`           | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                             |
 | `projectBinding`     | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project. |
-| `runtime`            | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.         |
+| `runtime`            | Optional | object                                                                                            | Runtime feature and resource requirements.                              |
 | `name`               | Optional | string                                                                                            | See the canonical schema for details.                                   |
 | `description`        | Optional | string                                                                                            | See the canonical schema for details.                                   |
 | `tags`               | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                        |

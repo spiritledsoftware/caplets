@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS } from "./runner";
 import type { CodeModeRunMeta } from "./types";
 
 export const CODE_MODE_SESSION_ID_DESCRIPTION =
@@ -10,6 +11,7 @@ export const codeModeRunInputSchema = z.object({
     .number()
     .int()
     .positive()
+    .max(ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS)
     .optional()
     .describe("Optional execution timeout in milliseconds."),
   sessionId: z.string().min(1).optional().describe(CODE_MODE_SESSION_ID_DESCRIPTION),
@@ -28,6 +30,7 @@ export function codeModeRunInputJsonSchema(): Record<string, unknown> {
       timeoutMs: {
         type: "integer",
         minimum: 1,
+        maximum: ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS,
         description: "Optional execution timeout in milliseconds.",
       },
       sessionId: {

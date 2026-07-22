@@ -679,7 +679,6 @@ function mergeServeOverrides(
   const overrides: RawDaemonServeOptions = {};
   setDefinedServeOverride(overrides, "host", install.host ?? existingOverrides?.host);
   setDefinedServeOverride(overrides, "port", install.port ?? existingOverrides?.port);
-  setDefinedServeOverride(overrides, "path", install.path ?? existingOverrides?.path);
   setDefinedServeOverride(
     overrides,
     "remoteStatePath",
@@ -699,6 +698,21 @@ function mergeServeOverrides(
     overrides,
     "trustProxy",
     install.trustProxy ?? existingOverrides?.trustProxy,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "adminUploadStagingDir",
+    install.adminUploadStagingDir ?? existingOverrides?.adminUploadStagingDir,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "adminUploadMaxConcurrent",
+    install.adminUploadMaxConcurrent ?? existingOverrides?.adminUploadMaxConcurrent,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "adminUploadMaxStagedBytes",
+    install.adminUploadMaxStagedBytes ?? existingOverrides?.adminUploadMaxStagedBytes,
   );
   if (
     existing &&
@@ -725,13 +739,19 @@ function legacyServeOverrides(existing: DaemonConfig): RawDaemonServeOptions {
   return {
     host: existing.serve.host,
     port: existing.serve.port,
-    path: existing.serve.path,
     ...(existing.serve.remoteCredentialStateDir
       ? { remoteStatePath: existing.serve.remoteCredentialStateDir }
       : {}),
     ...(existing.serve.upstreamUrl ? { upstreamUrl: existing.serve.upstreamUrl } : {}),
     allowUnauthenticatedHttp: existing.serve.allowUnauthenticatedHttp,
     trustProxy: existing.serve.trustProxy,
+    ...(existing.serve.adminUploads
+      ? {
+          adminUploadStagingDir: existing.serve.adminUploads.stagingDir,
+          adminUploadMaxConcurrent: existing.serve.adminUploads.maxConcurrent,
+          adminUploadMaxStagedBytes: existing.serve.adminUploads.maxStagedBytes,
+        }
+      : {}),
   };
 }
 

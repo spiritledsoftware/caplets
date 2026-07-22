@@ -282,13 +282,7 @@ function parsePiNativeOptions(
   const result: PiCapletsSettings = {};
   const mode = raw.mode;
   if (mode !== undefined) {
-    if (
-      mode !== "auto" &&
-      mode !== "local" &&
-      mode !== "remote" &&
-      mode !== "cloud" &&
-      mode !== "daemon"
-    ) {
+    if (mode !== "auto" && mode !== "local" && mode !== "remote" && mode !== "daemon") {
       return undefined;
     }
     result.mode = mode;
@@ -309,7 +303,7 @@ function parsePiNativeOptions(
   }
   if (remote) {
     const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
-    for (const key of ["url", "workspace"] as const) {
+    for (const key of ["url"] as const) {
       const field = remote[key];
       if (field !== undefined) {
         if (typeof field !== "string") return undefined;
@@ -403,7 +397,6 @@ function shouldShowStatusWidget(
   }
   return (
     options.mode === "remote" ||
-    options.mode === "cloud" ||
     options.mode === "daemon" ||
     !!options.remote?.url ||
     process.env.CAPLETS_REMOTE_URL !== undefined ||

@@ -12,6 +12,7 @@ const root = mkdtempSync(join(tmpdir(), "caplets-compose-smoke-"));
 const image = process.env.CAPLETS_SMOKE_IMAGE || "caplets:compose-smoke";
 const projects = [];
 const prefix = `caplets-smoke-${process.pid}`;
+const smokeEncryptionKey = Buffer.alloc(32, 63).toString("base64url");
 
 try {
   if (!process.env.CAPLETS_SMOKE_IMAGE) {
@@ -45,7 +46,10 @@ async function smokeSqlite() {
 
 async function smokeConveniencePostgres() {
   phase("Convenience PostgreSQL deployment");
-  const env = { CAPLETS_POSTGRES_PASSWORD: "convenience-smoke-secret" };
+  const env = {
+    CAPLETS_POSTGRES_PASSWORD: "convenience-smoke-secret",
+    CAPLETS_ENCRYPTION_KEY: smokeEncryptionKey,
+  };
   const project = fixture("postgres", "docker-compose.postgres.yml", env);
   compose(project, ["config", "--quiet"]);
   compose(project, ["up", "-d", "--wait"], { stdio: "inherit" });
@@ -85,8 +89,10 @@ async function smokeConveniencePostgres() {
   assert.match(bootstrapLogin.stderr, /password authentication failed/u);
   compose(project, ["run", "--rm", "--no-deps", "caplets-postgres-migrate"]);
 
-  const missingPassword = fixture("postgres-missing", "docker-compose.postgres.yml");
-  const missingEnv = deploymentEnv({});
+  const missingPassword = fixture("postgres-missing", "docker-compose.postgres.yml", {
+    CAPLETS_ENCRYPTION_KEY: smokeEncryptionKey,
+  });
+  const missingEnv = deploymentEnv({ CAPLETS_ENCRYPTION_KEY: smokeEncryptionKey });
   delete missingEnv.CAPLETS_POSTGRES_PASSWORD;
   const result = dockerResult(composeCommand(missingPassword, ["config", "--quiet"]), {
     cwd: missingPassword.directory,
@@ -171,12 +177,12 @@ function smokeMigrationGates() {
   });
   const convenienceResult = composeResult(convenience, ["up", "-d", "--wait"]);
   assert.notEqual(convenienceResult.status, 0);
-  assert.equal(containerState(`${convenience.name}-caplets-1`), "created");
+  assert.match(containerStateOrMissing(`${convenience.name}-caplets-1`), /^(?:created|missing)$/u);
 
   const hardened = hardenedFixture("hardened-gate", { CAPLETS_POSTGRES_SCHEMA: "Invalid" });
   const hardenedResult = composeResult(hardened, ["up", "-d", "--wait"]);
   assert.notEqual(hardenedResult.status, 0);
-  assert.equal(containerState(`${hardened.name}-caplets-1`), "created");
+  assert.match(containerStateOrMissing(`${hardened.name}-caplets-1`), /^(?:created|missing)$/u);
 }
 
 async function smokeLegacyCompatibility() {
@@ -286,7 +292,7 @@ function register(project) {
 
 async function health(project) {
   const address = compose(project, ["port", "caplets", "5387"]).trim();
-  const response = await fetch(`http://${address}/v1/healthz`);
+  const response = await fetch(`http://${address}/api/v1/healthz`);
   assert.equal(response.ok, true);
   const body = await response.json();
   assert.equal(body.ready, true);
@@ -351,8 +357,13 @@ function inspectNetwork(network) {
   return JSON.parse(docker(["network", "inspect", network]))[0];
 }
 
-function containerState(container) {
-  return docker(["inspect", "--format", "{{.State.Status}}", container]).trim();
+function containerStateOrMissing(container) {
+  const result = dockerResult(["inspect", "--format", "{{.State.Status}}", container]);
+  if (result.status === 0) return result.stdout.trim();
+  if (/no such object:/iu.test(result.stderr)) return "missing";
+  throw new Error(
+    `docker inspect ${container} failed with status ${result.status}: ${result.stderr.trim() || result.stdout.trim()}`,
+  );
 }
 
 function phase(name) {

@@ -1,14 +1,19 @@
 import {
   chmodSync,
-  existsSync,
+  closeSync,
+  fsyncSync,
   mkdirSync,
+  lstatSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_AUTH_DIR } from "../config/paths";
+import { CapletsError } from "../errors";
 import type { RemoteProfileCredential } from "./profiles";
 
 export type RemoteCredentialStoreOptions = {
@@ -27,12 +32,20 @@ export class FileRemoteCredentialStore {
   }
 
   async load(key: string): Promise<RemoteProfileCredential | undefined> {
+    assertGenericKey(key);
     const path = this.pathForKey(key);
-    if (!existsSync(path)) return undefined;
-    return parseRemoteProfileCredential(JSON.parse(readFileSync(path, "utf8")));
+    const stat = lstatOptional(path);
+    if (!stat) return undefined;
+    if (!stat.isFile() || stat.isSymbolicLink()) throw invalidCredentialState();
+    try {
+      return parseRemoteProfileCredential(JSON.parse(readFileSync(path, "utf8")));
+    } catch {
+      return undefined;
+    }
   }
 
   async save(key: string, credential: RemoteProfileCredential): Promise<void> {
+    assertGenericKey(key);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     try {
       chmodSync(this.root, 0o700);
@@ -40,37 +53,71 @@ export class FileRemoteCredentialStore {
       // Best effort on platforms without POSIX permissions.
     }
     const path = this.pathForKey(key);
+    const existing = lstatOptional(path);
+    if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+      throw invalidCredentialState();
+    }
     const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tempPath, `${JSON.stringify(credential, null, 2)}\n`, { mode: 0o600 });
+    const descriptor = openSync(tempPath, "wx", 0o600);
+    try {
+      writeSync(descriptor, `${JSON.stringify(credential, null, 2)}\n`);
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
     try {
       chmodSync(tempPath, 0o600);
-    } catch {
-      // Best effort on platforms without POSIX permissions.
+      renameSync(tempPath, path);
+    } catch (error) {
+      rmSync(tempPath, { force: true });
+      throw error;
     }
-    renameSync(tempPath, path);
   }
 
   async delete(key: string): Promise<boolean> {
+    assertGenericKey(key);
     const path = this.pathForKey(key);
-    if (!existsSync(path)) return false;
+    const stat = lstatOptional(path);
+    if (!stat) return false;
+    if (!stat.isFile() && !stat.isSymbolicLink()) throw invalidCredentialState();
     rmSync(path, { force: true });
     return true;
   }
 }
 
-function parseRemoteProfileCredential(value: unknown): RemoteProfileCredential | undefined {
+export function parseRemoteProfileCredential(value: unknown): RemoteProfileCredential | undefined {
   if (!isRecord(value)) return undefined;
   return {
     ...(typeof value.accessToken === "string" ? { accessToken: value.accessToken } : {}),
     ...(typeof value.refreshToken === "string" ? { refreshToken: value.refreshToken } : {}),
     ...(typeof value.tokenType === "string" ? { tokenType: value.tokenType } : {}),
     ...(typeof value.expiresAt === "string" ? { expiresAt: value.expiresAt } : {}),
-    ...(Array.isArray(value.scope)
-      ? { scope: value.scope.filter((entry): entry is string => typeof entry === "string") }
+    ...(Array.isArray(value.scope) && value.scope.every((entry) => typeof entry === "string")
+      ? { scope: value.scope }
       : {}),
     ...(typeof value.clientSecret === "string" ? { clientSecret: value.clientSecret } : {}),
     ...(typeof value.pairingCode === "string" ? { pairingCode: value.pairingCode } : {}),
   };
+}
+
+function lstatOptional(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function invalidCredentialState(): CapletsError {
+  return new CapletsError("REQUEST_INVALID", "Remote credential state is invalid.");
+}
+
+function assertGenericKey(key: string): void {
+  if (key.startsWith("remote:")) return;
+  throw new CapletsError("REQUEST_INVALID", "Remote credential key is invalid.");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

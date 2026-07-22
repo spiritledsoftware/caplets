@@ -2,12 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CloudAuthStore } from "../src/cloud-auth/store";
 import { installDaemon } from "../src/daemon";
 import type { DaemonConfig, DaemonManager, NativeDaemonStatus } from "../src/daemon/types";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { resolveRemoteSelection } from "../src/remote/selection";
-import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 const tempDirs: string[] = [];
 
@@ -26,13 +24,14 @@ describe("resolveRemoteSelection", () => {
     await expect(resolveRemoteSelection({}, {})).rejects.toThrow(/CAPLETS_REMOTE_URL/u);
   });
 
-  it("resolves setup-validated loopback HTTP attach URLs as credential-free local daemon selections", async () => {
+  it("resolves a setup-validated loopback origin as a credential-free daemon selection", async () => {
     const daemon = await setupPersistedLocalDaemon();
     const fetched: string[] = [];
     await expect(
       resolveRemoteSelection(
         {
-          remoteUrl: "http://127.0.0.1:5387/caplets",
+          authDir: daemon.options.home,
+          remoteUrl: "http://127.0.0.1:5387",
           fetch: async (url) => {
             fetched.push(String(url));
             return Response.json({ ok: true });
@@ -44,25 +43,25 @@ describe("resolveRemoteSelection", () => {
     ).resolves.toMatchObject({
       kind: "local_daemon",
       remote: {
-        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
-        attachUrl: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        baseUrl: new URL("http://127.0.0.1:5387"),
+        attachUrl: new URL("http://127.0.0.1:5387/api/v1/attach"),
         auth: { type: "none" },
       },
     });
-    expect(fetched).toEqual(["http://127.0.0.1:5387/caplets/v1/healthz"]);
+    expect(fetched).toEqual(["http://127.0.0.1:5387/api/v1/healthz"]);
   });
 
-  it("does not classify spoofed loopback discovery as a local daemon without persisted daemon config", async () => {
+  it("does not classify a spoofed loopback origin as the local daemon", async () => {
     const dir = tempDir("caplets-remote-selection-spoof-daemon-");
     const manager = runningDaemonManager();
     const fetched: string[] = [];
     await expect(
       resolveRemoteSelection(
         {
-          remoteUrl: "http://127.0.0.1:9999/caplets",
+          remoteUrl: "http://127.0.0.1:9999",
           fetch: async (url) => {
             fetched.push(String(url));
-            return Response.json({ name: "caplets", transport: "http" });
+            return Response.json({ ok: true });
           },
         },
         daemonTestEnv(dir),
@@ -72,39 +71,12 @@ describe("resolveRemoteSelection", () => {
     expect(fetched).toEqual([]);
   });
 
-  it("does not classify loopback URLs as local daemons when the persisted daemon URL differs", async () => {
-    const daemon = await setupPersistedLocalDaemon();
-    const fetched: string[] = [];
-    await expect(
-      resolveRemoteSelection(
-        {
-          remoteUrl: "http://127.0.0.1:9999/caplets",
-          fetch: async (url) => {
-            fetched.push(String(url));
-            return Response.json({ ok: true });
-          },
-        },
-        daemon.env,
-        { daemon: daemon.options },
-      ),
-    ).rejects.toMatchObject({ projectBindingCode: "remote_credentials_required" });
-    expect(fetched).toEqual([]);
-  });
-
-  it("prefers a stored self-hosted Remote Profile over local daemon classification for loopback URLs", async () => {
+  it("prefers a stored Remote Profile over local daemon classification", async () => {
     const authDir = tempDir("caplets-remote-selection-loopback-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "http://127.0.0.1:5387/caplets",
-      clientId: "rcli_loopback",
-      clientLabel: "Loopback Test Device",
-      credentials: {
-        accessToken: "profile-access-token",
-        refreshToken: "profile-refresh-token",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-      },
+    await saveProfile(authDir, "http://127.0.0.1:5387", {
+      accessToken: "profile-access-token",
+      refreshToken: "profile-refresh-token",
+      expiresAt: "2999-01-01T00:00:00.000Z",
     });
 
     await expect(
@@ -112,32 +84,24 @@ describe("resolveRemoteSelection", () => {
         { authDir },
         {
           CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
         },
       ),
     ).resolves.toMatchObject({
-      kind: "self_hosted_remote",
+      kind: "remote",
       remote: {
-        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
+        baseUrl: new URL("http://127.0.0.1:5387"),
         auth: { type: "bearer", token: "profile-access-token" },
       },
     });
   });
 
-  it("resolves self-hosted remote auth from a stored Remote Profile", async () => {
+  it("resolves generic remote authentication from a stored Remote Profile", async () => {
     const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
-      clientId: "rcli_123",
-      clientLabel: "Test Device",
-      credentials: {
-        accessToken: "profile-access-token",
-        refreshToken: "profile-refresh-token",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-      },
+    await saveProfile(authDir, "https://caplets.example.com", {
+      accessToken: "profile-access-token",
+      refreshToken: "profile-refresh-token",
+      expiresAt: "2999-01-01T00:00:00.000Z",
     });
 
     await expect(
@@ -145,39 +109,58 @@ describe("resolveRemoteSelection", () => {
         { authDir },
         {
           CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com",
         },
       ),
     ).resolves.toMatchObject({
-      kind: "self_hosted_remote",
+      kind: "remote",
       remote: {
-        baseUrl: new URL("https://caplets.example.com/caplets"),
+        baseUrl: new URL("https://caplets.example.com"),
         auth: { type: "bearer", token: "profile-access-token" },
       },
     });
   });
 
-  it("refreshes expired self-hosted credentials before returning the upstream", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
-      clientId: "rcli_123",
-      clientLabel: "Test Device",
-      credentials: {
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        tokenType: "Bearer",
-        expiresAt: "2026-06-19T00:00:00.000Z",
+  it("treats a former Cloud hostname as an ordinary Current Host origin", async () => {
+    const authDir = tempDir("caplets-remote-selection-former-cloud-");
+    await saveProfile(authDir, "https://cloud.caplets.dev", {
+      accessToken: "generic-access-token",
+      refreshToken: "generic-refresh-token",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        { authDir },
+        {
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_CLOUD_AUTH_PATH: join(authDir, "legacy-cloud-auth.json"),
+        },
+      ),
+    ).resolves.toMatchObject({
+      kind: "remote",
+      remote: {
+        baseUrl: new URL("https://cloud.caplets.dev"),
+        mcpUrl: new URL("https://cloud.caplets.dev/mcp"),
+        attachUrl: new URL("https://cloud.caplets.dev/api/v1/attach"),
+        auth: { type: "bearer", token: "generic-access-token" },
       },
+    });
+  });
+
+  it("refreshes expired generic credentials through the Current Host API", async () => {
+    const authDir = tempDir("caplets-remote-selection-refresh-");
+    await saveProfile(authDir, "https://caplets.example.com", {
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      expiresAt: "2020-01-01T00:00:00.000Z",
     });
 
     const resolved = await resolveRemoteSelection(
       {
         authDir,
         fetch: async (url, init) => {
-          expect(String(url)).toBe("https://caplets.example.com/caplets/v1/remote/refresh");
+          expect(String(url)).toBe("https://caplets.example.com/api/v1/remote/refresh");
           expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
           return Response.json({
             clientId: "rcli_123",
@@ -191,43 +174,73 @@ describe("resolveRemoteSelection", () => {
       },
       {
         CAPLETS_MODE: "remote",
-        CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        CAPLETS_REMOTE_URL: "https://caplets.example.com",
       },
     );
 
     expect(resolved).toMatchObject({
-      kind: "self_hosted_remote",
+      kind: "remote",
       remote: { auth: { type: "bearer", token: "new-access" } },
     });
-    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    const status = await store.getSelfHostedProfileStatus({
-      hostUrl: "https://caplets.example.com/caplets",
-    });
-    expect(status).toMatchObject({
-      clientLabel: "Test Device",
-      expiresAt: "2999-01-01T00:00:00.000Z",
-    });
-    await expect(store.credentials.load(status!.key)).resolves.toMatchObject({
-      accessToken: "new-access",
-      refreshToken: "new-refresh",
-      expiresAt: "2999-01-01T00:00:00.000Z",
-    });
+    await expect(
+      resolveRemoteSelection(
+        {
+          authDir,
+          fetch: async () => {
+            throw new Error("refreshed credentials should not be refreshed again");
+          },
+        },
+        { CAPLETS_REMOTE_URL: "https://caplets.example.com" },
+      ),
+    ).resolves.toMatchObject({ remote: { auth: { token: "new-access" } } });
   });
 
-  it("surfaces transient self-hosted refresh failures without requiring login", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
-      clientId: "rcli_123",
-      clientLabel: "Test Device",
-      credentials: {
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        tokenType: "Bearer",
-        expiresAt: "2026-06-19T00:00:00.000Z",
-      },
+  it("serializes concurrent expired credential refreshes", async () => {
+    const authDir = tempDir("caplets-remote-selection-refresh-lock-");
+    await saveProfile(authDir, "https://caplets.example.com", {
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+    let refreshCalls = 0;
+    const refreshStarted = Promise.withResolvers<void>();
+    const releaseRefresh = Promise.withResolvers<void>();
+    const fetchRefresh: typeof fetch = async (_url, init) => {
+      refreshCalls += 1;
+      expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
+      refreshStarted.resolve();
+      await releaseRefresh.promise;
+      return Response.json({
+        clientId: "rcli_123",
+        accessToken: "new-access",
+        refreshToken: "new-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      });
+    };
+
+    const leftPending = resolveRemoteSelection(
+      { authDir, fetch: fetchRefresh },
+      { CAPLETS_REMOTE_URL: "https://caplets.example.com" },
+    );
+    const rightPending = resolveRemoteSelection(
+      { authDir, fetch: fetchRefresh },
+      { CAPLETS_REMOTE_URL: "https://caplets.example.com" },
+    );
+    await refreshStarted.promise;
+    releaseRefresh.resolve();
+    const [left, right] = await Promise.all([leftPending, rightPending]);
+
+    expect(refreshCalls).toBe(1);
+    expect(left).toMatchObject({ remote: { auth: { token: "new-access" } } });
+    expect(right).toMatchObject({ remote: { auth: { token: "new-access" } } });
+  });
+
+  it("surfaces transient refresh failures without requiring login", async () => {
+    const authDir = tempDir("caplets-remote-selection-transient-");
+    await saveProfile(authDir, "https://caplets.example.com", {
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      expiresAt: "2020-01-01T00:00:00.000Z",
     });
 
     await expect(
@@ -236,41 +249,21 @@ describe("resolveRemoteSelection", () => {
           authDir,
           fetch: async () =>
             Response.json(
-              {
-                ok: false,
-                error: {
-                  code: "SERVER_UNAVAILABLE",
-                  message: "Remote credential state is locked.",
-                },
-              },
+              { error: { code: "SERVER_UNAVAILABLE", message: "Remote state is locked." } },
               { status: 503 },
             ),
         },
-        {
-          CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        },
+        { CAPLETS_REMOTE_URL: "https://caplets.example.com" },
       ),
-    ).rejects.toMatchObject({
-      code: "SERVER_UNAVAILABLE",
-      message: "Remote credential state is locked.",
-    });
+    ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE", message: "Remote state is locked." });
   });
 
-  it("reports revoked self-hosted credentials with relogin and operator approval guidance", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
-      clientId: "rcli_123",
-      clientLabel: "Test Device",
-      credentials: {
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        tokenType: "Bearer",
-        expiresAt: "2026-06-19T00:00:00.000Z",
-      },
+  it("reports revoked credentials with relogin guidance", async () => {
+    const authDir = tempDir("caplets-remote-selection-revoked-");
+    await saveProfile(authDir, "https://caplets.example.com", {
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      expiresAt: "2020-01-01T00:00:00.000Z",
     });
 
     await expect(
@@ -283,517 +276,43 @@ describe("resolveRemoteSelection", () => {
               { status: 401 },
             ),
         },
-        {
-          CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        },
+        { CAPLETS_REMOTE_URL: "https://caplets.example.com" },
       ),
     ).rejects.toMatchObject({
       projectBindingCode: "remote_credentials_revoked",
-      recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
+      recoveryCommand: "caplets remote login https://caplets.example.com",
       message: expect.stringContaining("server operator"),
     });
   });
 
-  it("treats stale self-hosted refresh responses as revoked credentials", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
-      clientId: "rcli_123",
-      credentials: {
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        tokenType: "Bearer",
-        expiresAt: "2026-06-19T00:00:00.000Z",
-      },
-    });
-
-    await expect(
-      resolveRemoteSelection(
-        {
-          authDir,
-          fetch: async () =>
-            Response.json(
-              { error: { code: "AUTH_FAILED", message: "Remote refresh credential is stale." } },
-              { status: 401 },
-            ),
-        },
-        {
-          CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        },
-      ),
-    ).rejects.toMatchObject({
-      projectBindingCode: "remote_credentials_revoked",
-      recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
-    });
-  });
-
-  it("preserves CAPLETS_REMOTE_WORKSPACE for self-hosted remotes", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
-      clientId: "rcli_123",
-      clientLabel: "Test Device",
-      credentials: {
-        accessToken: "profile-access-token",
-        refreshToken: "profile-refresh-token",
-        tokenType: "Bearer",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-      },
-    });
-
-    const resolved = await resolveRemoteSelection(
-      { authDir },
-      {
-        CAPLETS_MODE: "remote",
-        CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        CAPLETS_REMOTE_WORKSPACE: "tenant-a",
-      },
-    );
-
-    expect(resolved).toMatchObject({
-      kind: "self_hosted_remote",
-      remote: { workspace: "tenant-a" },
-    });
-  });
-
-  it("serializes concurrent expired self-hosted credential refreshes", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({
-      root: join(authDir, "remote-profiles"),
-    }).saveSelfHostedProfile({
-      hostUrl: "https://caplets.example.com/caplets",
-      clientId: "rcli_123",
-      clientLabel: "Test Device",
-      credentials: {
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        expiresAt: "2026-06-19T00:00:00.000Z",
-      },
-    });
-    let refreshCalls = 0;
-    const fetchRefresh: typeof fetch = async (_url, init) => {
-      refreshCalls += 1;
-      expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      return Response.json({
-        clientId: "rcli_123",
-        clientLabel: "Test Device",
-        accessToken: "new-access",
-        refreshToken: "new-refresh",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-      });
-    };
-
-    const [left, right] = await Promise.all([
-      resolveRemoteSelection(
-        { authDir, fetch: fetchRefresh },
-        {
-          CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        },
-      ),
-      resolveRemoteSelection(
-        { authDir, fetch: fetchRefresh },
-        {
-          CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-        },
-      ),
-    ]);
-
-    expect(refreshCalls).toBe(1);
-    expect(left).toMatchObject({ remote: { auth: { type: "bearer", token: "new-access" } } });
-    expect(right).toMatchObject({ remote: { auth: { type: "bearer", token: "new-access" } } });
-  });
-
-  it("fails closed when self-hosted attach has only legacy env-token state", async () => {
+  it("fails closed when only legacy environment token state exists", async () => {
     await expect(
       resolveRemoteSelection(
         {},
         {
-          CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
-          CAPLETS_REMOTE_TOKEN: "remote-token",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com",
+          CAPLETS_REMOTE_TOKEN: "legacy-token",
         },
       ),
     ).rejects.toMatchObject({
       projectBindingCode: "remote_credentials_required",
-      recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
-    });
-  });
-
-  it("uses saved Cloud Remote Profiles in cloud mode and ignores self-hosted token vars", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") }).saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "workspace_personal",
-      workspaceSlug: "personal",
-      credentials: {
-        accessToken: "cloud-access",
-        refreshToken: "cloud-refresh",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-        tokenType: "Bearer",
-      },
-    });
-
-    const resolved = await resolveRemoteSelection(
-      { authDir },
-      {
-        CAPLETS_MODE: "cloud",
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        CAPLETS_REMOTE_TOKEN: "self-hosted-token",
-      },
-    );
-
-    expect(resolved).toMatchObject({
-      kind: "hosted_cloud",
-      selectedWorkspace: "personal",
-      remote: {
-        baseUrl: new URL("https://cloud.caplets.dev"),
-        auth: { type: "bearer", token: "cloud-access" },
-      },
-    });
-  });
-
-  it("honors an explicit Cloud workspace with a bare Cloud URL", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "workspace_team",
-      workspaceSlug: "team",
-      credentials: {
-        accessToken: "old-cloud-access",
-        refreshToken: "old-cloud-refresh",
-        expiresAt: "2026-06-03T00:00:00.000Z",
-        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-        tokenType: "Bearer",
-      },
-    });
-    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
-
-    const resolved = await resolveRemoteSelection(
-      {
-        authDir,
-        remoteUrl: "https://cloud.caplets.dev",
-        workspace: "team",
-        fetch: async (url, init) => {
-          expect(String(url)).toBe("https://cloud.caplets.dev/api/cloud-client/refresh");
-          expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-cloud-refresh" });
-          return Response.json({
-            status: "authenticated",
-            cloudUrl: "https://cloud.caplets.dev",
-            workspaceId: "workspace_team",
-            workspaceSlug: "team",
-            accessToken: "new-cloud-access",
-            refreshToken: "new-cloud-refresh",
-            expiresAt: "2999-01-01T00:00:00.000Z",
-            scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-            tokenType: "Bearer",
-          });
-        },
-      },
-      {
-        CAPLETS_MODE: "cloud",
-      },
-    );
-
-    expect(resolved).toMatchObject({
-      kind: "hosted_cloud",
-      selectedWorkspace: "team",
-      remote: {
-        mcpUrl: new URL("https://cloud.caplets.dev/v1/ws/team/mcp"),
-        auth: { type: "bearer", token: "new-cloud-access" },
-      },
-    });
-  });
-
-  it("fails with workspace-specific recovery when a Cloud host has profiles but no selected workspace", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "workspace_team",
-      workspaceSlug: "team",
-      credentials: {
-        accessToken: "cloud-access",
-        refreshToken: "cloud-refresh",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-      },
-    });
-    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
-
-    await expect(
-      resolveRemoteSelection(
-        { authDir },
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        },
-      ),
-    ).rejects.toMatchObject({
-      projectBindingCode: "workspace_switch_required",
-      recoveryCommand: "caplets remote login <cloud-url> --workspace <workspace>",
-    });
-  });
-
-  it("derives Cloud MCP and Project Binding URLs from the selected workspace", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(
-      hostedCredentials({
-        cloudUrl: "https://cloud.pr-2.preview.caplets.dev",
-        workspaceSlug: "personal-c9b49d",
-      }),
-    );
-
-    const resolved = await resolveRemoteSelection(
-      {},
-      {
-        CAPLETS_MODE: "cloud",
-        CAPLETS_REMOTE_URL: "https://cloud.pr-2.preview.caplets.dev",
-        CAPLETS_CLOUD_AUTH_PATH: path,
-      },
-    );
-
-    expect(resolved).toMatchObject({
-      kind: "hosted_cloud",
-      selectedWorkspace: "personal-c9b49d",
-      remote: {
-        baseUrl: new URL("https://cloud.pr-2.preview.caplets.dev/"),
-        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/mcp"),
-        attachUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach"),
-        controlUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/admin"),
-        healthUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/healthz"),
-        projectBindingWebSocketUrl: new URL(
-          "wss://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach/project-bindings/connect",
-        ),
-      },
-    });
-  });
-
-  it("normalizes copied Cloud MCP endpoints for attach", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(
-      hostedCredentials({
-        cloudUrl: "https://cloud.pr-2.preview.caplets.dev",
-        workspaceSlug: "personal-c9b49d",
-      }),
-    );
-
-    const resolved = await resolveRemoteSelection(
-      {
-        remoteUrl: "https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp",
-      },
-      {
-        CAPLETS_MODE: "cloud",
-        CAPLETS_CLOUD_AUTH_PATH: path,
-      },
-    );
-
-    expect(resolved).toMatchObject({
-      kind: "hosted_cloud",
-      selectedWorkspace: "personal-c9b49d",
-      remote: {
-        baseUrl: new URL("https://cloud.pr-2.preview.caplets.dev/"),
-        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/mcp"),
-        attachUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach"),
-        projectBindingWebSocketUrl: new URL(
-          "wss://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach/project-bindings/connect",
-        ),
-      },
-      cloudPresence: {
-        url: new URL("https://cloud.pr-2.preview.caplets.dev/"),
-      },
-    });
-  });
-
-  it("accepts legacy Cloud Auth credentials that predate hosted MCP tool scope", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(
-      hostedCredentials({
-        scope: ["project_binding:read", "project_binding:write"],
-      }),
-    );
-
-    const resolved = await resolveRemoteSelection(
-      {},
-      {
-        CAPLETS_MODE: "cloud",
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        CAPLETS_CLOUD_AUTH_PATH: path,
-      },
-    );
-
-    expect(resolved).toMatchObject({
-      kind: "hosted_cloud",
-      selectedWorkspace: "personal",
-    });
-  });
-
-  it("requires Cloud Auth credentials to include project binding scopes", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(
-      hostedCredentials({
-        scope: ["project_binding:read"],
-      }),
-    );
-
-    await expect(
-      resolveRemoteSelection(
-        {},
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-          CAPLETS_CLOUD_AUTH_PATH: path,
-        },
-      ),
-    ).rejects.toMatchObject({
-      projectBindingCode: "cloud_auth_required",
-      recoveryCommand: "caplets remote login <cloud-url>",
-    });
-  });
-
-  it("rejects copied Cloud MCP endpoints for a different selected workspace", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(
-      hostedCredentials({
-        cloudUrl: "https://cloud.pr-2.preview.caplets.dev",
-        workspaceSlug: "personal-c9b49d",
-      }),
-    );
-
-    await expect(
-      resolveRemoteSelection(
-        {
-          remoteUrl: "https://cloud.pr-2.preview.caplets.dev/ws/team/mcp",
-        },
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_CLOUD_AUTH_PATH: path,
-        },
-      ),
-    ).rejects.toMatchObject({
-      projectBindingCode: "workspace_switch_required",
-    });
-  });
-
-  it("refreshes expired Cloud credentials before returning the upstream", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(
-      hostedCredentials({
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        expiresAt: "2026-06-03T00:00:00.000Z",
-      }),
-    );
-
-    const resolved = await resolveRemoteSelection(
-      {
-        fetch: async (url, init) => {
-          expect(String(url)).toBe("https://cloud.caplets.dev/api/cloud-client/refresh");
-          expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
-          return Response.json({
-            status: "authenticated",
-            cloudUrl: "https://cloud.caplets.dev",
-            workspaceId: "workspace_personal",
-            workspaceSlug: "personal",
-            accessToken: "new-access",
-            refreshToken: "new-refresh",
-            expiresAt: "2999-01-01T00:00:00.000Z",
-            scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-            tokenType: "Bearer",
-            credentialFamilyId: "family_123",
-          });
-        },
-      },
-      {
-        CAPLETS_MODE: "cloud",
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        CAPLETS_CLOUD_AUTH_PATH: path,
-      },
-    );
-
-    expect(resolved.remote.auth).toEqual({ type: "bearer", token: "new-access" });
-  });
-
-  it("serializes concurrent expired Cloud Remote Profile refreshes", async () => {
-    const authDir = tempDir("caplets-remote-selection-auth-");
-    await new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") }).saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "workspace_personal",
-      workspaceSlug: "personal",
-      credentials: {
-        accessToken: "old-access",
-        refreshToken: "old-refresh",
-        expiresAt: "2026-06-03T00:00:00.000Z",
-        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-        tokenType: "Bearer",
-      },
-    });
-    let refreshCalls = 0;
-    const fetchRefresh: typeof fetch = async (_url, init) => {
-      refreshCalls += 1;
-      expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      return Response.json({
-        status: "authenticated",
-        cloudUrl: "https://cloud.caplets.dev",
-        workspaceId: "workspace_personal",
-        workspaceSlug: "personal",
-        accessToken: "new-access",
-        refreshToken: "new-refresh",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
-        tokenType: "Bearer",
-        credentialFamilyId: "family_123",
-      });
-    };
-
-    const [left, right] = await Promise.all([
-      resolveRemoteSelection(
-        { authDir, fetch: fetchRefresh },
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        },
-      ),
-      resolveRemoteSelection(
-        { authDir, fetch: fetchRefresh },
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        },
-      ),
-    ]);
-
-    expect(refreshCalls).toBe(1);
-    expect(left.remote.auth).toEqual({ type: "bearer", token: "new-access" });
-    expect(right.remote.auth).toEqual({ type: "bearer", token: "new-access" });
-  });
-
-  it("requires Cloud Auth when cloud mode is selected", async () => {
-    await expect(
-      resolveRemoteSelection(
-        {},
-        {
-          CAPLETS_MODE: "cloud",
-          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-          CAPLETS_CLOUD_AUTH_PATH: tempCloudAuthPath(),
-        },
-      ),
-    ).rejects.toMatchObject({
-      projectBindingCode: "cloud_auth_required",
+      recoveryCommand: "caplets remote login https://caplets.example.com",
     });
   });
 });
+
+async function saveProfile(
+  authDir: string,
+  origin: string,
+  credentials: { accessToken: string; refreshToken: string; expiresAt: string },
+): Promise<void> {
+  await new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") }).saveRemoteProfile({
+    origin,
+    clientId: "rcli_123",
+    clientLabel: "Test Device",
+    credentials,
+  });
+}
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -810,7 +329,7 @@ async function setupPersistedLocalDaemon(): Promise<{
   const manager = runningDaemonManager();
   const options = { home, platform: "linux" as const, manager };
   await installDaemon(
-    { host: "127.0.0.1", port: 5387, path: "/caplets", validate: false, noRestart: true },
+    { host: "127.0.0.1", port: 5387, validate: false, noRestart: true },
     { env, ...options },
   );
   return { env, options };

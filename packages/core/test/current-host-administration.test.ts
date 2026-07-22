@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createCurrentHostOperations,
@@ -49,7 +50,15 @@ describe("Current Host administration operations", () => {
           bind: "127.0.0.1:5387",
           publicOrigin: null,
         });
-      const logs = await setup.operations.execute(setup.principal, { kind: "logs", limit: 5 });
+      const logs = await setup.operations.execute(setup.principal, {
+        kind: "logs",
+        sort: "asc",
+        limit: 5,
+        after: {
+          timestamp: "2026-07-20T12:00:00.000Z",
+          logKey: "daemon-0002",
+        },
+      });
       const diagnostics = await setup.operations.execute(setup.principal, { kind: "diagnostics" });
       const event = await setup.operations.execute(setup.principal, { kind: "runtime_event" });
       const binding = await setup.operations.execute(setup.principal, { kind: "project_binding" });
@@ -83,7 +92,7 @@ describe("Current Host administration operations", () => {
           runtime: expect.objectContaining({ bind: "127.0.0.1:5387" }),
         }),
       );
-      expect(logs).toEqual({ kind: "logs", entries: [], limit: 5, truncated: false });
+      expect(logs).toEqual({ kind: "logs", page: { items: [] } });
       expect(diagnostics).toEqual(expect.objectContaining({ kind: "diagnostics", status: "ok" }));
       expect(event).toEqual(expect.objectContaining({ kind: "runtime_event" }));
       expect(binding).toEqual(expect.objectContaining({ kind: "project_binding" }));
@@ -611,6 +620,342 @@ describe("Current Host administration operations", () => {
     }
   });
 
+  it("rolls authoritative SQL Vault state back when grant insertion fails", async () => {
+    let activationCalls = 0;
+    const setup = await sqlTestOperations(async () => {
+      activationCalls += 1;
+    });
+    if (setup.storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
+    try {
+      setup.storage.database.db.run(
+        sql.raw(`
+          create temp trigger fail_current_host_vault_grant
+          before insert on vault_access_grants
+          begin
+            select raise(abort, 'injected current-host grant failure');
+          end
+        `),
+      );
+
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "SQL_TOKEN",
+          value: "rolled_back_sql_secret",
+          grant: "status",
+          referenceName: "API_TOKEN",
+          createOnly: true,
+        }),
+      ).rejects.toThrow("injected current-host grant failure");
+
+      await expect(setup.storage.vaultValues.getStatus("SQL_TOKEN")).resolves.toEqual({
+        key: "SQL_TOKEN",
+        present: false,
+      });
+      await expect(setup.storage.vaultGrants.list()).resolves.toEqual([]);
+      await expect(setup.storage.operatorActivity.list()).resolves.toEqual({ entries: [] });
+      await expect(setup.storage.coordination.currentConfigGeneration()).resolves.toBe(0);
+      expect(activationCalls).toBe(0);
+    } finally {
+      setup.storage.database.db.run(
+        sql.raw("drop trigger if exists fail_current_host_vault_grant"),
+      );
+      await setup.engine.close();
+      await setup.storage.close();
+    }
+  });
+
+  it("propagates config activation failure after committing SQL Vault state", async () => {
+    const activationFailure = new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Injected config activation failure.",
+    );
+    let activationCalls = 0;
+    const setup = await sqlTestOperations(async () => {
+      activationCalls += 1;
+      throw activationFailure;
+    });
+    try {
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "SQL_TOKEN",
+          value: "committed_sql_secret",
+          grant: "status",
+          referenceName: "API_TOKEN",
+          createOnly: true,
+        }),
+      ).rejects.toBe(activationFailure);
+
+      await expect(setup.storage.vaultValues.resolveValue("SQL_TOKEN")).resolves.toBe(
+        "committed_sql_secret",
+      );
+      await expect(setup.storage.vaultGrants.list("status")).resolves.toEqual([
+        expect.objectContaining({
+          capletId: "status",
+          vaultKey: "SQL_TOKEN",
+          referenceName: "API_TOKEN",
+          createdBy: setup.principal.clientId,
+        }),
+      ]);
+      await expect(setup.storage.operatorActivity.list()).resolves.toEqual({
+        entries: [expect.objectContaining({ action: "vault.set" })],
+      });
+      await expect(setup.storage.coordination.currentConfigGeneration()).resolves.toBe(1);
+      expect(activationCalls).toBe(1);
+    } finally {
+      await setup.engine.close();
+      await setup.storage.close();
+    }
+  });
+
+  it("threads create-only and expected versions through SQL Vault mutations", async () => {
+    let activationCalls = 0;
+    const setup = await sqlTestOperations(async () => {
+      activationCalls += 1;
+    });
+    try {
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "CONDITIONAL_TOKEN",
+          value: "first_conditional_secret",
+          createOnly: true,
+        }),
+      ).resolves.toMatchObject({
+        kind: "vault_set",
+        status: { present: true, generation: 1 },
+      });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "CONDITIONAL_TOKEN",
+          value: "must_not_replace",
+          createOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_EXISTS" });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "CONDITIONAL_TOKEN",
+          value: "second_conditional_secret",
+          expectedGeneration: 1,
+        }),
+      ).resolves.toMatchObject({
+        kind: "vault_set",
+        status: { present: true, generation: 2 },
+      });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "CONDITIONAL_TOKEN",
+          value: "stale_conditional_secret",
+          expectedGeneration: 1,
+        }),
+      ).rejects.toMatchObject({
+        details: { kind: "stale_generation", expectedGeneration: 1, currentGeneration: 2 },
+      });
+      expect(activationCalls).toBe(2);
+
+      const createdGrant = await setup.operations.execute(setup.principal, {
+        kind: "vault_access_grant",
+        storedKey: "CONDITIONAL_TOKEN",
+        referenceName: "API_TOKEN",
+        capletId: "status",
+        createOnly: true,
+      });
+      const firstResourceVersion = createdGrant.grant.resourceVersion;
+      expect(firstResourceVersion).toEqual(expect.any(String));
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_access_grant",
+          storedKey: "CONDITIONAL_TOKEN",
+          referenceName: "API_TOKEN",
+          capletId: "status",
+          createOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_EXISTS" });
+
+      const updatedGrant = await setup.operations.execute(setup.principal, {
+        kind: "vault_access_grant",
+        storedKey: "CONDITIONAL_TOKEN",
+        referenceName: "API_TOKEN",
+        capletId: "status",
+        expectedResourceVersion: firstResourceVersion,
+      });
+      const secondResourceVersion = updatedGrant.grant.resourceVersion;
+      expect(secondResourceVersion).toEqual(expect.any(String));
+      expect(secondResourceVersion).not.toBe(firstResourceVersion);
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_access_grant",
+          storedKey: "CONDITIONAL_TOKEN",
+          referenceName: "API_TOKEN",
+          capletId: "status",
+          expectedResourceVersion: firstResourceVersion,
+        }),
+      ).rejects.toMatchObject({
+        details: { kind: "stale_generation", expectedResourceVersion: firstResourceVersion },
+      });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_set",
+          name: "CONDITIONAL_TOKEN",
+          value: "must_not_replace_during_grant_race",
+          expectedGeneration: 2,
+          grant: "status",
+          referenceName: "API_TOKEN",
+          grantCreateOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_EXISTS" });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_get",
+          name: "CONDITIONAL_TOKEN",
+        }),
+      ).resolves.toMatchObject({
+        kind: "vault_get",
+        status: { present: true, generation: 2 },
+      });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_access_revoke",
+          storedKey: "CONDITIONAL_TOKEN",
+          referenceName: "API_TOKEN",
+          capletId: "status",
+          expectedResourceVersion: firstResourceVersion,
+        }),
+      ).rejects.toMatchObject({
+        details: { kind: "stale_generation", expectedResourceVersion: firstResourceVersion },
+      });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_access_revoke",
+          storedKey: "CONDITIONAL_TOKEN",
+          referenceName: "API_TOKEN",
+          capletId: "status",
+          expectedResourceVersion: secondResourceVersion,
+        }),
+      ).resolves.toMatchObject({
+        kind: "vault_access_revoke",
+        revoked: [expect.objectContaining({ resourceVersion: secondResourceVersion })],
+      });
+
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_delete",
+          name: "CONDITIONAL_TOKEN",
+          expectedGeneration: 1,
+        }),
+      ).rejects.toMatchObject({
+        details: { kind: "stale_generation", expectedGeneration: 1, currentGeneration: 2 },
+      });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_delete",
+          name: "CONDITIONAL_TOKEN",
+          expectedGeneration: 2,
+        }),
+      ).resolves.toMatchObject({
+        kind: "vault_delete",
+        deleted: { deleted: true },
+      });
+    } finally {
+      await setup.engine.close();
+      await setup.storage.close();
+    }
+  });
+
+  it("resolves exact Vault grant details against the Caplet's current configured origin", async () => {
+    const setup = await sqlTestOperations(async () => undefined);
+    try {
+      await setup.operations.execute(setup.principal, {
+        kind: "vault_access_grant",
+        storedKey: "ORIGIN_TOKEN",
+        referenceName: "API_TOKEN",
+        capletId: "status",
+      });
+      const movedCapletRoot = join(setup.userRoot, "status");
+      mkdirSync(movedCapletRoot, { recursive: true });
+      writeFileSync(
+        join(movedCapletRoot, "CAPLET.md"),
+        [
+          "---",
+          "name: Status",
+          "description: Status API.",
+          "mcpServer:",
+          "  command: status-mcp",
+          "---",
+          "# Status",
+        ].join("\n"),
+      );
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_grants_page",
+          limit: 1,
+          sort: "asc",
+          storedKey: "ORIGIN_TOKEN",
+          capletId: "status",
+        }),
+      ).resolves.toEqual({
+        kind: "vault_grants_page",
+        page: { items: [] },
+      });
+      writeFileSync(setup.configPath, JSON.stringify({}));
+      await setup.operations.execute(setup.principal, {
+        kind: "vault_access_grant",
+        storedKey: "ORIGIN_TOKEN",
+        referenceName: "API_TOKEN",
+        capletId: "status",
+      });
+
+      const detail = await setup.operations.execute(setup.principal, {
+        kind: "vault_access_list",
+        storedKey: "ORIGIN_TOKEN",
+        capletId: "status",
+        referenceName: "API_TOKEN",
+      });
+      expect(detail).toEqual({
+        kind: "vault_access_list",
+        grants: [expect.objectContaining({ origin: { kind: "global-file" } })],
+      });
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_grants_page",
+          limit: 1,
+          sort: "asc",
+          storedKey: "ORIGIN_TOKEN",
+          capletId: "status",
+        }),
+      ).resolves.toEqual({
+        kind: "vault_grants_page",
+        page: {
+          items: [expect.objectContaining({ origin: { kind: "global-file" } })],
+        },
+      });
+      const resourceVersion = detail.grants[0]?.resourceVersion;
+      if (!resourceVersion) throw new Error("Expected the current grant resource version.");
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "vault_access_revoke",
+          storedKey: "ORIGIN_TOKEN",
+          capletId: "status",
+          referenceName: "API_TOKEN",
+          expectedResourceVersion: resourceVersion,
+        }),
+      ).resolves.toEqual({
+        kind: "vault_access_revoke",
+        revoked: [expect.objectContaining({ origin: { kind: "global-file" } })],
+      });
+      await expect(setup.storage.vaultGrants.list("status")).resolves.toEqual([
+        expect.objectContaining({ originKind: "global-config" }),
+      ]);
+    } finally {
+      await setup.engine.close();
+      await setup.storage.close();
+    }
+  });
+
   it("rejects credential-shaped identifiers without echoing them into outcomes or activity", async () => {
     const setup = testOperations();
     const credentialShapedIds = [
@@ -686,6 +1031,24 @@ function testOperations() {
     engine,
     control: { configPath, projectConfigPath, authDir, globalCapletsRoot, globalLockfilePath },
     activityLog: activity,
+    runtimeState: {
+      read: async () => {
+        const readiness = await engine.readiness();
+        if (readiness.ready) return { status: "ok" };
+        return {
+          status: "error",
+          ...(readiness.reason === undefined ? {} : { reason: readiness.reason }),
+        };
+      },
+    },
+    logState: { listPage: () => ({ items: [] }) },
+    projectBindingState: {
+      read: () => ({
+        state: "disconnected",
+        affectedCaplets: [],
+        actions: [],
+      }),
+    },
     remoteCredentialStore: store,
     version: "test-version",
   });
@@ -696,6 +1059,69 @@ function testOperations() {
     store,
     activity,
     operations,
+    principal: {
+      clientId: operator.clientId,
+      clientLabel: operator.clientLabel,
+      hostUrl: operator.hostUrl,
+      role: "operator" as const,
+    },
+  };
+}
+
+async function sqlTestOperations(activateConfig: () => Promise<void>) {
+  const root = tempDir("caplets-current-host-sql-operations-");
+  const userRoot = join(root, "user");
+  const projectRoot = join(root, "project", ".caplets");
+  const authDir = join(root, "auth");
+  const globalCapletsRoot = join(root, "global-caplets");
+  const globalLockfilePath = join(root, "remote-state", "caplets.lock.json");
+  const databasePath = join(root, "host.sqlite3");
+  mkdirSync(userRoot, { recursive: true });
+  mkdirSync(projectRoot, { recursive: true });
+  mkdirSync(authDir, { recursive: true });
+  mkdirSync(globalCapletsRoot, { recursive: true });
+  const configPath = join(userRoot, "config.json");
+  const projectConfigPath = join(projectRoot, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      httpApis: {
+        status: {
+          name: "Status",
+          description: "Status API.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    }),
+  );
+  const storage = await createHostStorage(
+    { type: "sqlite", path: databasePath },
+    { vaultRoot: join(root, "vault") },
+  );
+  const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+  const credentials = new RemoteServerCredentialStore({ dir: join(root, "remote-state") });
+  const operator = issueOperator(credentials, "SQL Operator");
+  const activity = new DashboardActivityLog({ dir: join(root, "activity") });
+  const operations = createCurrentHostOperations({
+    engine,
+    control: { configPath, projectConfigPath, authDir, globalCapletsRoot, globalLockfilePath },
+    activityLog: activity,
+    remoteCredentialStore: credentials,
+    vaultGrants: storage.vaultGrants,
+    vaultValues: storage.vaultValues,
+    vaultState: storage.vaultState,
+    activateConfig,
+    version: "test-version",
+  });
+  return {
+    engine,
+    storage,
+    operations,
+    configPath,
+    projectConfigPath,
+    userRoot,
     principal: {
       clientId: operator.clientId,
       clientLabel: operator.clientLabel,

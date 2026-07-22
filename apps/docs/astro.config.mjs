@@ -41,6 +41,7 @@ export default defineConfig({
           items: [
             { label: "Quick Start", link: "/" },
             { label: "Install", link: "/install/" },
+            { label: "JavaScript and TypeScript SDK", link: "/sdk/" },
           ],
         },
         {

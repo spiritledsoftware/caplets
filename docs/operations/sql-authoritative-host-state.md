@@ -76,7 +76,7 @@ separately if they matter; SQL does not make their bytes durable.
    matching object-store snapshot when S3 assets were in use.
 4. Remove stale SQLite `-wal` and `-shm` files only after preserving them and only while no process
    has the database open.
-5. Start one node and require both `caplets storage status --json` and `/v1/healthz` to report ready
+5. Start one node and require both `caplets storage status --json` and `/api/v1/healthz` to report ready
    before returning traffic.
 
 ```sh
@@ -218,11 +218,15 @@ The one-shot provisioning helper creates that non-superuser owner, then replaces
 `postgres` password with a discarded random value so the runtime credential cannot authenticate as
 the cluster superuser.
 
-Create one owner-only password file for Compose interpolation, then start the standalone topology:
+Create an owner-only environment file with the database password and one shared 32-byte encryption
+key for every Host Node, then start the standalone topology:
 
 ```sh
 umask 077
 printf 'CAPLETS_POSTGRES_PASSWORD=%s\n' "$(openssl rand -base64 32)" > .env
+printf 'CAPLETS_ENCRYPTION_KEY=%s\n' \
+  "$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))")" \
+  >> .env
 chmod 600 .env
 docker compose -f docker-compose.postgres.yml config --quiet
 docker compose -f docker-compose.postgres.yml up -d --wait
@@ -230,6 +234,16 @@ docker compose -f docker-compose.postgres.yml up -d --wait
 
 The PostgreSQL image defaults to `postgres:17-bookworm`. Set `CAPLETS_POSTGRES_IMAGE` to select a
 different full image reference. The migration job must complete successfully before runtime starts.
+
+`CAPLETS_ENCRYPTION_KEY` must be base64url encoding that decodes to exactly 32 bytes. If
+`CAPLETS_ENCRYPTION_KEY_FILE` is also configured, the direct value takes precedence; an invalid
+direct value fails closed rather than falling through to the file. Preserve this key with the
+database backups: changing or losing it makes encrypted Vault values, backend authorization flows,
+and finalized idempotency replays unreadable.
+
+`CAPLETS_ENCRYPTION_KEY_FILE` must name a readable owner-only file containing the same canonical
+value, optionally followed by one line ending. A missing, malformed, unreadable, or
+group/world-accessible file fails closed.
 
 Do not point this file at a volume initialized by the former three-role overlay.
 
@@ -240,7 +254,7 @@ high-availability topology. It retains separate administrator, migrator, and run
 image defaults, file-backed secrets, an internal database network, read-only non-root Caplets
 containers, dropped capabilities, bounded logs, and a 60-second PostgreSQL shutdown grace period.
 
-Create three owner-only host secret files:
+Create three owner-only host password files:
 
 ```sh
 mkdir -p secrets
@@ -254,8 +268,22 @@ docker compose -f docker-compose.postgres-hardened.yml config --quiet
 docker compose -f docker-compose.postgres-hardened.yml up -d --wait
 ```
 
-The short-lived `caplets-postgres-secrets` service copies each Compose secret into a role-scoped
-Docker volume owned by the non-root Caplets user. Runtime mounts only the runtime credential.
+The short-lived `caplets-postgres-secrets` service prepares the runtime credentials and encryption
+key in scoped Docker volumes owned by the non-root Caplets user with mode `0400`. On genuinely fresh
+state, it generates the encryption key once. On upgrade, it instead detects, validates, and imports
+the retained prefixed key at `/data/state/caplets/vault/vault-key`; an already prepared key is also
+retained. Every available source must contain the same 32-byte key. Malformed material, overly broad
+retained/prepared permissions, or a conflict fails before migration or runtime starts.
+
+To supply an external Docker secret for fresh state or restore, create
+`secrets/caplets-encryption-key` with the canonical base64url encoding of exactly 32 bytes and set
+host `CAPLETS_ENCRYPTION_KEY_FILE` to that path when invoking Compose. Never generate a replacement
+for an existing deployment: omit the external source so the retained key is imported, or provide
+the exact same key. Back up the `caplets-encryption-key-secret` volume with the database and
+`caplets-data`.
+
+Runtime mounts only the runtime credential and encryption-key volumes, and reads the latter through
+`CAPLETS_ENCRYPTION_KEY_FILE`; key bytes are not placed in the container environment or logs.
 PostgreSQL and the migration service attach only to the internal database network; runtime also
 attaches to an egress network. PostgreSQL has no published host port, and Caplets binds loopback by
 default. Put remote access and TLS behind an operator-managed reverse proxy or private network.
@@ -263,10 +291,12 @@ default. Put remote access and TLS behind an operator-managed reverse proxy or p
 Existing users of the former two-file, three-role overlay can reuse its project-scoped volumes:
 
 1. Keep the same Compose project name or `-p` value.
-2. Copy the existing administrator, migrator, and runtime password values into the three secret
+2. Copy the existing administrator, migrator, and runtime password values into the three password
    files above instead of generating replacements.
-3. Stop the old overlay without `--volumes`.
-4. Start only `docker-compose.postgres-hardened.yml`.
+3. Do not create a new encryption-key secret. The preparation service imports the retained
+   `caplets-data` Vault key and fails closed if an explicitly configured external key differs.
+4. Stop the old overlay without `--volumes`.
+5. Start only `docker-compose.postgres-hardened.yml`.
 
 The administrator secret must match the credential already stored in PostgreSQL. Changing its file
 cannot rotate that credential because the old value is needed to authenticate. Rotate it over the
@@ -308,7 +338,7 @@ passwords are reconciled by the pre-start job.
 Check readiness and inspect logs:
 
 ```sh
-curl --fail http://127.0.0.1:5387/v1/healthz
+curl --fail http://127.0.0.1:5387/api/v1/healthz
 docker compose -f <selected-compose-file> logs --tail 100
 ```
 
@@ -335,7 +365,7 @@ cross-host or high-availability storage.
 
 ### Readiness and fail-closed behavior
 
-`GET /v1/healthz` is the readiness probe and returns HTTP 503 when the host is not ready. PostgreSQL
+`GET /api/v1/healthz` is the readiness probe and returns HTTP 503 when the host is not ready. PostgreSQL
 readiness requires:
 
 - authoritative database connectivity and the exact released schema version;
@@ -606,7 +636,7 @@ Caplets.
 2. Render a new owner-only global config selecting the verified PostgreSQL schema/runtime URL.
 3. Atomically rename it over the global config on the same filesystem, or atomically promote the
    orchestrator release/secret version.
-4. Start one node; require storage status and `/v1/healthz` readiness. Confirm global-file manifest
+4. Start one node; require storage status and `/api/v1/healthz` readiness. Confirm global-file manifest
    parity and critical read-only Caplet operations.
 5. Start remaining nodes and only then move traffic.
 6. Retain the untouched SQLite backup/config and object snapshot for the rollback window.

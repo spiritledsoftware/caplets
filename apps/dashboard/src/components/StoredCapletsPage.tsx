@@ -54,7 +54,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { dashboardApi } from "@/lib/api";
+import {
+  adminV2CreateCapletRecordFromDocument,
+  adminV2DeleteCapletRecord,
+  adminV2DeleteCapletRecordRevision,
+  adminV2GetCapletRecord,
+  adminV2GetCapletRecordRevision,
+  adminV2ListCapletRecordRevisions,
+  adminV2ListCapletRecords,
+  adminV2PutCapletRecordCurrentRevision,
+  adminV2UpdateCapletRecord,
+  createDashboardMutationIntent,
+} from "@/lib/api";
 
 type StoredCapletRevision = {
   revisionKey: string;
@@ -84,6 +95,12 @@ type StoredCapletDetail = {
   record: StoredCapletRecord;
   document: string;
   revisions: StoredCapletRevision[];
+  revisionNextCursor?: string;
+  etag: string;
+};
+type StoredCapletPage = {
+  items: StoredCapletRecord[];
+  nextCursor?: string;
 };
 
 type StoredCapletsAction = (
@@ -138,18 +155,22 @@ function timestampLabel(value: string | undefined): string {
   return timestamp.toLocaleString();
 }
 
-async function fetchStoredCaplets(): Promise<StoredCapletRecord[]> {
-  const response = await dashboardApi<{ records?: StoredCapletRecord[] }>("stored-caplets");
-  return response.records ?? [];
+async function fetchStoredCaplets(cursor?: string) {
+  return cursor === undefined ? adminV2ListCapletRecords() : adminV2ListCapletRecords({ cursor });
 }
 
 async function fetchStoredCapletDetail(id: string): Promise<StoredCapletDetail> {
-  const encodedId = encodeURIComponent(id);
-  const [current, history] = await Promise.all([
-    dashboardApi<{ record: StoredCapletRecord; document: string }>(`stored-caplets/${encodedId}`),
-    dashboardApi<{ revisions?: StoredCapletRevision[] }>(`stored-caplets/${encodedId}/revisions`),
+  const [current, revisions] = await Promise.all([
+    adminV2GetCapletRecord(id),
+    adminV2ListCapletRecordRevisions(id),
   ]);
-  return { record: current.record, document: current.document, revisions: history.revisions ?? [] };
+  return {
+    record: current.data.record,
+    document: current.data.document,
+    revisions: revisions.items,
+    revisionNextCursor: revisions.nextCursor,
+    etag: current.etag,
+  };
 }
 
 export function StoredCapletsPage({
@@ -161,6 +182,9 @@ export function StoredCapletsPage({
   const [records, setRecords] = useState<StoredCapletRecord[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string>();
+  const [listNextCursor, setListNextCursor] = useState<string>();
+  const [listLoadingMore, setListLoadingMore] = useState(false);
+  const [listPaginationError, setListPaginationError] = useState<string>();
   const [importOpen, setImportOpen] = useState(false);
   const [importId, setImportId] = useState("");
   const [importHistoryLimit, setImportHistoryLimit] = useState("");
@@ -171,47 +195,137 @@ export function StoredCapletsPage({
   const [detail, setDetail] = useState<StoredCapletDetail>();
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
+  const [revisionLoadingMore, setRevisionLoadingMore] = useState(false);
+  const [revisionPaginationError, setRevisionPaginationError] = useState<string>();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [busyAction, setBusyAction] = useState<string>();
   const [mutationError, setMutationError] = useState<string>();
   const detailRequest = useRef(0);
+  const listRequest = useRef(0);
+  const recordCursors = useRef(new Set<string>());
+  const revisionCursors = useRef(new Set<string>());
+  const replaceRecordPage = useCallback((page: StoredCapletPage) => {
+    recordCursors.current = new Set(page.nextCursor ? [page.nextCursor] : []);
+    setRecords(page.items);
+    setListNextCursor(page.nextCursor);
+    setListPaginationError(undefined);
+  }, []);
+  const replaceDetail = useCallback((loaded: StoredCapletDetail) => {
+    revisionCursors.current = new Set(loaded.revisionNextCursor ? [loaded.revisionNextCursor] : []);
+    setDetail(loaded);
+    setRevisionPaginationError(undefined);
+  }, []);
 
   const loadRecords = useCallback(async () => {
+    const request = ++listRequest.current;
     setListLoading(true);
+    setListLoadingMore(false);
     setListError(undefined);
+    setListPaginationError(undefined);
+    setListNextCursor(undefined);
+    recordCursors.current = new Set();
     try {
-      setRecords(await fetchStoredCaplets());
+      const page = await fetchStoredCaplets();
+      if (request !== listRequest.current) return;
+      replaceRecordPage(page);
     } catch (error) {
-      setListError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setListLoading(false);
-    }
-  }, []);
-
-  const loadDetail = useCallback(async (id: string) => {
-    const request = ++detailRequest.current;
-    setDetailLoading(true);
-    setDetailError(undefined);
-    try {
-      const loaded = await fetchStoredCapletDetail(id);
-      if (request !== detailRequest.current) return;
-      setDetail(loaded);
-      setDraft(loaded.document);
-      setEditing(false);
-      setMutationError(undefined);
-    } catch (error) {
-      if (request === detailRequest.current) {
-        setDetail(undefined);
-        setDetailError(error instanceof Error ? error.message : String(error));
+      if (request === listRequest.current) {
+        setListError(error instanceof Error ? error.message : String(error));
       }
     } finally {
-      if (request === detailRequest.current) setDetailLoading(false);
+      if (request === listRequest.current) setListLoading(false);
     }
-  }, []);
+  }, [replaceRecordPage]);
+
+  const loadDetail = useCallback(
+    async (id: string) => {
+      const request = ++detailRequest.current;
+      setDetailLoading(true);
+      setRevisionLoadingMore(false);
+      setDetailError(undefined);
+      setRevisionPaginationError(undefined);
+      revisionCursors.current = new Set();
+      try {
+        const loaded = await fetchStoredCapletDetail(id);
+        if (request !== detailRequest.current) return;
+        replaceDetail(loaded);
+        setDraft(loaded.document);
+        setEditing(false);
+        setMutationError(undefined);
+      } catch (error) {
+        if (request === detailRequest.current) {
+          setDetail(undefined);
+          setDetailError(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        if (request === detailRequest.current) setDetailLoading(false);
+      }
+    },
+    [replaceDetail],
+  );
+
+  async function loadMoreRecords() {
+    if (!listNextCursor || listLoadingMore) return;
+    const cursor = listNextCursor;
+    const request = listRequest.current;
+    setListLoadingMore(true);
+    setListPaginationError(undefined);
+    try {
+      const page = await fetchStoredCaplets(cursor);
+      if (request !== listRequest.current) return;
+      if (page.nextCursor !== undefined && recordCursors.current.has(page.nextCursor)) {
+        throw new Error("Stored Caplet pagination returned a repeated cursor.");
+      }
+      if (page.nextCursor !== undefined) recordCursors.current.add(page.nextCursor);
+      setRecords((current) => [...current, ...page.items]);
+      setListNextCursor(page.nextCursor);
+    } catch (error) {
+      if (request === listRequest.current) {
+        setListPaginationError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (request === listRequest.current) setListLoadingMore(false);
+    }
+  }
+
+  async function loadMoreRevisions() {
+    if (!detail?.revisionNextCursor || revisionLoadingMore) return;
+    const cursor = detail.revisionNextCursor;
+    const recordId = detail.record.id;
+    const request = detailRequest.current;
+    setRevisionLoadingMore(true);
+    setRevisionPaginationError(undefined);
+    try {
+      const page = await adminV2ListCapletRecordRevisions(recordId, { cursor });
+      if (request !== detailRequest.current) return;
+      if (page.nextCursor !== undefined && revisionCursors.current.has(page.nextCursor)) {
+        throw new Error("Stored Caplet revision pagination returned a repeated cursor.");
+      }
+      if (page.nextCursor !== undefined) revisionCursors.current.add(page.nextCursor);
+      setDetail((current) =>
+        current?.record.id === recordId
+          ? {
+              ...current,
+              revisions: [...current.revisions, ...page.items],
+              revisionNextCursor: page.nextCursor,
+            }
+          : current,
+      );
+    } catch (error) {
+      if (request === detailRequest.current) {
+        setRevisionPaginationError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (request === detailRequest.current) setRevisionLoadingMore(false);
+    }
+  }
 
   useEffect(() => {
     void loadRecords();
+    return () => {
+      ++listRequest.current;
+    };
   }, [loadRecords]);
 
   useEffect(() => {
@@ -226,6 +340,13 @@ export function StoredCapletsPage({
     void loadDetail(selectedId);
   }, [loadDetail, selectedId]);
 
+  useEffect(
+    () => () => {
+      ++detailRequest.current;
+    },
+    [],
+  );
+
   const sortedRecords = useMemo(
     () => [...records].sort((left, right) => left.id.localeCompare(right.id)),
     [records],
@@ -237,9 +358,9 @@ export function StoredCapletsPage({
       fetchStoredCapletDetail(id),
       fetchStoredCaplets(),
     ]);
-    setDetail(nextDetail);
+    replaceDetail(nextDetail);
     setDraft(nextDetail.document);
-    setRecords(nextRecords);
+    replaceRecordPage(nextRecords);
     setEditing(false);
     setMutationError(undefined);
   }
@@ -279,21 +400,20 @@ export function StoredCapletsPage({
     setImportError(undefined);
     setBusyAction("import");
     try {
+      const intent = createDashboardMutationIntent();
       await action(`Imported ${id}`, async () => {
         try {
-          const response = await dashboardApi<{ record: StoredCapletRecord }>("stored-caplets", {
-            method: "POST",
-            body: JSON.stringify({
-              id,
-              document: importDocument,
-              ...(historyLimit === undefined ? {} : { historyLimit }),
-            }),
-          });
+          const response = await adminV2CreateCapletRecordFromDocument(
+            id,
+            importDocument,
+            intent,
+            historyLimit,
+          );
           const nextRecords = await fetchStoredCaplets();
-          setRecords(nextRecords);
+          replaceRecordPage(nextRecords);
           resetImport();
           setImportOpen(false);
-          setSelectedId(response.record.id);
+          setSelectedId(response.id);
           return response;
         } catch (error) {
           setImportError(error instanceof Error ? error.message : String(error));
@@ -323,15 +443,15 @@ export function StoredCapletsPage({
     setBusyAction("save");
     setMutationError(undefined);
     try {
+      const intent = createDashboardMutationIntent();
       await action(`Saved ${id}`, async () => {
         try {
-          const result = await dashboardApi(`stored-caplets/${encodeURIComponent(id)}`, {
-            method: "PUT",
-            body: JSON.stringify({
-              document: draft,
-              expectedGeneration: generationOf(detail.record),
-            }),
-          });
+          const result = await adminV2UpdateCapletRecord(
+            id,
+            { document: draft },
+            detail.etag,
+            intent,
+          );
           await refreshAfterMutation(id);
           return result;
         } catch (error) {
@@ -355,14 +475,14 @@ export function StoredCapletsPage({
     setBusyAction(`restore:${revision.revisionKey}`);
     setMutationError(undefined);
     try {
+      const intent = createDashboardMutationIntent();
       await action(`Restored revision ${revision.sequence ?? revision.revisionKey}`, async () => {
         try {
-          const result = await dashboardApi(
-            `stored-caplets/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revision.revisionKey)}/restore`,
-            {
-              method: "POST",
-              body: JSON.stringify({ expectedGeneration: generationOf(detail.record) }),
-            },
+          const result = await adminV2PutCapletRecordCurrentRevision(
+            id,
+            revision.revisionKey,
+            detail.etag,
+            intent,
           );
           await refreshAfterMutation(id);
           return result;
@@ -388,20 +508,22 @@ export function StoredCapletsPage({
     setBusyAction(`delete-revision:${revision.revisionKey}`);
     setMutationError(undefined);
     try {
+      const intent = createDashboardMutationIntent();
       await action(`Deleted revision ${revision.sequence ?? revision.revisionKey}`, async () => {
         try {
-          const result = await dashboardApi<{ record: StoredCapletRecord | null }>(
-            `stored-caplets/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revision.revisionKey)}`,
-            {
-              method: "DELETE",
-              body: JSON.stringify({ expectedGeneration: generationOf(detail.record) }),
-            },
+          const revisionDetail = await adminV2GetCapletRecordRevision(id, revision.revisionKey);
+          const result = await adminV2DeleteCapletRecordRevision(
+            id,
+            revision.revisionKey,
+            revisionDetail.etag,
+            detail.etag,
+            intent,
           );
           const nextRecords = await fetchStoredCaplets();
-          setRecords(nextRecords);
+          replaceRecordPage(nextRecords);
           if (result.record) {
             const nextDetail = await fetchStoredCapletDetail(id);
-            setDetail(nextDetail);
+            replaceDetail(nextDetail);
             setDraft(nextDetail.document);
             setEditing(false);
           } else {
@@ -431,13 +553,11 @@ export function StoredCapletsPage({
     setBusyAction("delete-record");
     setMutationError(undefined);
     try {
+      const intent = createDashboardMutationIntent();
       await action(`Deleted stored Caplet ${id}`, async () => {
         try {
-          const result = await dashboardApi(`stored-caplets/${encodeURIComponent(id)}`, {
-            method: "DELETE",
-            body: JSON.stringify({ expectedGeneration: generationOf(detail.record) }),
-          });
-          setRecords(await fetchStoredCaplets());
+          const result = await adminV2DeleteCapletRecord(id, detail.etag, intent);
+          replaceRecordPage(await fetchStoredCaplets());
           setSelectedId(undefined);
           return result;
         } catch (error) {
@@ -494,6 +614,8 @@ export function StoredCapletsPage({
         dirty={dirty}
         busyAction={busyAction}
         mutationError={mutationError}
+        revisionLoadingMore={revisionLoadingMore}
+        revisionPaginationError={revisionPaginationError}
         onBack={() => void returnToList()}
         onRetry={() => void loadDetail(selectedId)}
         onEdit={() => setEditing(true)}
@@ -509,6 +631,7 @@ export function StoredCapletsPage({
         onRestore={(revision) => void restoreRevision(revision)}
         onDeleteRevision={(revision) => void deleteRevision(revision)}
         onDeleteRecord={() => void deleteRecord()}
+        onLoadMoreRevisions={() => void loadMoreRevisions()}
       />
     );
   }
@@ -770,6 +893,15 @@ export function StoredCapletsPage({
               </TableBody>
             </Table>
           )}
+          {!listLoading && !listError && (listNextCursor || listPaginationError) ? (
+            <IncrementalPageFooter
+              countLabel={`${records.length} stored Caplets loaded`}
+              buttonLabel="Load more stored Caplets"
+              loading={listLoadingMore}
+              error={listPaginationError}
+              onLoadMore={() => void loadMoreRecords()}
+            />
+          ) : null}
         </CardContent>
       </Card>
     </main>
@@ -786,6 +918,8 @@ type StoredCapletDetailViewProps = {
   dirty: boolean;
   busyAction?: string;
   mutationError?: string;
+  revisionLoadingMore: boolean;
+  revisionPaginationError?: string;
   onBack: () => void;
   onRetry: () => void;
   onEdit: () => void;
@@ -797,6 +931,7 @@ type StoredCapletDetailViewProps = {
   onRestore: (revision: StoredCapletRevision) => void;
   onDeleteRevision: (revision: StoredCapletRevision) => void;
   onDeleteRecord: () => void;
+  onLoadMoreRevisions: () => void;
 };
 
 function StoredCapletDetailView({
@@ -809,6 +944,8 @@ function StoredCapletDetailView({
   dirty,
   busyAction,
   mutationError,
+  revisionLoadingMore,
+  revisionPaginationError,
   onBack,
   onRetry,
   onEdit,
@@ -820,6 +957,7 @@ function StoredCapletDetailView({
   onRestore,
   onDeleteRevision,
   onDeleteRecord,
+  onLoadMoreRevisions,
 }: StoredCapletDetailViewProps) {
   if (loading) {
     return (
@@ -1099,9 +1237,58 @@ function StoredCapletDetailView({
               </TableBody>
             </Table>
           )}
+          {detail.revisionNextCursor || revisionPaginationError ? (
+            <IncrementalPageFooter
+              countLabel={`${revisions.length} revisions loaded`}
+              buttonLabel="Load more revisions"
+              loading={revisionLoadingMore}
+              error={revisionPaginationError}
+              onLoadMore={onLoadMoreRevisions}
+            />
+          ) : null}
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+function IncrementalPageFooter({
+  countLabel,
+  buttonLabel,
+  loading,
+  error,
+  onLoadMore,
+}: {
+  countLabel: string;
+  buttonLabel: string;
+  loading: boolean;
+  error?: string;
+  onLoadMore: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2 border-t p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="text-sm text-muted-foreground" aria-live="polite">
+        {countLabel}
+        {error ? (
+          <p className="mt-1 text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        disabled={loading}
+        aria-busy={loading}
+        onClick={onLoadMore}
+      >
+        <RefreshCwIcon
+          data-icon="inline-start"
+          className={loading ? "animate-spin motion-reduce:animate-none" : undefined}
+        />
+        {buttonLabel}
+      </Button>
+    </div>
   );
 }
 

@@ -1,6 +1,7 @@
 import type { CapletConfig } from "../config-runtime";
 import type {
   CapletRuntimePlan,
+  RuntimePlanDeployment,
   RuntimePlanOptions,
   RuntimeRouteKind,
   SetupTargetKind,
@@ -12,6 +13,7 @@ export function planCapletRuntimeRoutes(
   caplets: Array<CapletConfig | Record<string, unknown>>,
   options: RuntimePlanOptions = {},
 ): CapletRuntimePlan[] {
+  assertRuntimePlanDeployment(options.deployment);
   return caplets.map((caplet) => planSingleCaplet(caplet, options));
 }
 
@@ -19,7 +21,8 @@ export function planCapletRuntimeRoute(
   caplet: CapletConfig | Record<string, unknown>,
   options: RuntimePlanOptions = {},
 ): CapletRuntimePlan {
-  return planCapletRuntimeRoutes([caplet], options)[0] ?? planSingleCaplet(caplet, options);
+  assertRuntimePlanDeployment(options.deployment);
+  return planSingleCaplet(caplet, options);
 }
 
 function planSingleCaplet(
@@ -33,13 +36,7 @@ function planSingleCaplet(
   const runtime = {
     features: features.features,
     featureProvenance: features.provenance,
-    resources: resolveRuntimeResources({
-      backend: typeof caplet.backend === "string" ? caplet.backend : undefined,
-      features: features.features,
-      explicitClass: explicitResourceClass(caplet),
-      policy: options.resourcePolicy,
-      setupRequired,
-    }),
+    resources: resolveRuntimeResources(caplet, features.features, options.resourcePolicy),
   };
   return {
     id: String(caplet.server ?? ""),
@@ -47,7 +44,8 @@ function planSingleCaplet(
     route,
     setupRequired,
     authRequired: authRequired("auth" in caplet ? caplet.auth : undefined),
-    ...(route === "process" || route === "project_bound_process"
+    ...(options.deployment !== undefined &&
+    (route === "process" || route === "project_bound_process")
       ? { setupTarget: setupTargetFor(options.deployment) }
       : {}),
     projectBindingRequired,
@@ -83,9 +81,16 @@ export function classifyCapletRuntimeRoute(caplet: Record<string, unknown>): Run
   return "local_only";
 }
 
-function setupTargetFor(deployment: RuntimePlanOptions["deployment"]): SetupTargetKind {
-  if (deployment === "local") return "local_host";
-  return deployment === "self_hosted" ? "remote_host" : "hosted_sandbox";
+function assertRuntimePlanDeployment(
+  value: unknown,
+): asserts value is RuntimePlanDeployment | undefined {
+  if (value !== undefined && value !== "local" && value !== "remote") {
+    throw new TypeError("runtime deployment must be one of: local, remote");
+  }
+}
+
+function setupTargetFor(deployment: RuntimePlanDeployment): SetupTargetKind {
+  return deployment === "local" ? "local_host" : "remote_host";
 }
 
 function authRequired(auth: unknown): boolean {
@@ -95,24 +100,10 @@ function authRequired(auth: unknown): boolean {
 function projectBindingRequiredFor(caplet: Record<string, unknown>): boolean {
   const projectBinding = caplet.projectBinding;
   return (
-    Boolean(projectBinding) &&
+    projectBinding !== null &&
     typeof projectBinding === "object" &&
     !Array.isArray(projectBinding) &&
-    (projectBinding as { required?: unknown }).required === true
+    "required" in projectBinding &&
+    projectBinding.required === true
   );
-}
-
-function explicitResourceClass(caplet: Record<string, unknown>) {
-  const runtime = caplet.runtime;
-  if (!runtime || typeof runtime !== "object" || Array.isArray(runtime)) return undefined;
-  const resources = (runtime as { resources?: unknown }).resources;
-  if (!resources || typeof resources !== "object" || Array.isArray(resources)) return undefined;
-  const value = (resources as { class?: unknown }).class;
-  return value === "small" ||
-    value === "medium" ||
-    value === "standard" ||
-    value === "large" ||
-    value === "heavy"
-    ? value
-    : undefined;
 }

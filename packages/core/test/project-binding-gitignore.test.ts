@@ -41,11 +41,11 @@ describe("Project Binding gitignore bootstrap", () => {
   it("bootstraps .caplets/.gitignore during attach once", async () => {
     const projectRoot = tempProjectRoot();
     const authDir = tempAuthDir();
-    await saveSelfHostedProfile(authDir, "http://127.0.0.1:8787/caplets");
+    await saveRemoteProfile(authDir, "http://127.0.0.1:8787");
 
     await attachProjectOnce({
       projectRoot,
-      remoteUrl: "http://127.0.0.1:8787/caplets",
+      remoteUrl: "http://127.0.0.1:8787",
       authDir,
       fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
     });
@@ -70,11 +70,11 @@ function tempAuthDir(): string {
   return root;
 }
 
-async function saveSelfHostedProfile(authDir: string, hostUrl: string): Promise<void> {
+async function saveRemoteProfile(authDir: string, origin: string): Promise<void> {
   await new FileRemoteProfileStore({
     root: join(authDir, "remote-profiles"),
-  }).saveSelfHostedProfile({
-    hostUrl,
+  }).saveRemoteProfile({
+    origin,
     clientId: "rcli_123",
     clientLabel: "Test Device",
     credentials: {

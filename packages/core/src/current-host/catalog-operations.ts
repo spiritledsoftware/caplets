@@ -9,7 +9,13 @@ import {
 import { CapletsError } from "../errors";
 import { installSqlCatalogCaplets, updateSqlCatalogCaplets } from "../storage/catalog-lifecycle";
 import {
+  storagePageLimit,
+  type KeysetSortDirection,
+  type StorageKeysetPage,
+} from "../storage/keyset-page";
+import {
   currentHostCatalogDetail,
+  currentHostCatalogEntriesPage,
   currentHostCatalogIndex,
   currentHostCatalogInstallSource,
   currentHostCatalogSearch,
@@ -26,17 +32,32 @@ import type {
 } from "./operations";
 
 type CapletsListOperation = Extract<CurrentHostOperation, { kind: "caplets_list" }>;
+type CapletsPageOperation = Extract<CurrentHostOperation, { kind: "caplets_page" }>;
 type CatalogSearchOperation = Extract<CurrentHostOperation, { kind: "catalog_search" }>;
 type CatalogIndexOperation = Extract<CurrentHostOperation, { kind: "catalog_index" }>;
+type CatalogEntriesPageOperation = Extract<CurrentHostOperation, { kind: "catalog_entries_page" }>;
 type CatalogDetailOperation = Extract<CurrentHostOperation, { kind: "catalog_detail" }>;
 type CatalogUpdatesOperation = Extract<CurrentHostOperation, { kind: "catalog_updates" }>;
+type CatalogUpdateCandidatesPageOperation = Extract<
+  CurrentHostOperation,
+  { kind: "catalog_update_candidates_page" }
+>;
 type CatalogInstallOperation = Extract<CurrentHostOperation, { kind: "catalog_install" }>;
 type CatalogUpdateOperation = Extract<CurrentHostOperation, { kind: "catalog_update" }>;
 type CapletsListOutcome = Extract<CurrentHostOperationOutcome, { kind: "caplets_list" }>;
+type CapletsPageOutcome = Extract<CurrentHostOperationOutcome, { kind: "caplets_page" }>;
 type CatalogSearchOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_search" }>;
 type CatalogIndexOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_index" }>;
+type CatalogEntriesPageOutcome = Extract<
+  CurrentHostOperationOutcome,
+  { kind: "catalog_entries_page" }
+>;
 type CatalogDetailOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_detail" }>;
 type CatalogUpdatesOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_updates" }>;
+type CatalogUpdateCandidatesPageOutcome = Extract<
+  CurrentHostOperationOutcome,
+  { kind: "catalog_update_candidates_page" }
+>;
 type CatalogInstallOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_install" }>;
 type CatalogUpdateOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_update" }>;
 
@@ -51,9 +72,37 @@ export function createCurrentHostCatalogOperations(
         globalLockfilePath: dependencies.control?.globalLockfilePath,
       }),
     }),
+    capletsPage: (operation: CapletsPageOperation): CapletsPageOutcome => {
+      const caplets = currentHostInstalledCaplets(dependencies.engine.enabledServers(), {
+        globalLockfilePath: dependencies.control?.globalLockfilePath,
+      });
+      return {
+        kind: "caplets_page",
+        page: keysetPage(
+          caplets,
+          operation.limit,
+          operation.sort,
+          operation.after?.id,
+          (item) => item.id,
+          (id) => ({ id }),
+        ),
+      };
+    },
     search: async (operation: CatalogSearchOperation): Promise<CatalogSearchOutcome> => ({
       kind: "catalog_search",
       ...(await currentHostCatalogSearch(operation)),
+    }),
+    entriesPage: async (
+      operation: CatalogEntriesPageOperation,
+    ): Promise<CatalogEntriesPageOutcome> => ({
+      kind: "catalog_entries_page",
+      page: await currentHostCatalogEntriesPage({
+        source: operation.source,
+        limit: operation.limit,
+        sort: operation.sort,
+        ...(operation.query === undefined ? {} : { query: operation.query }),
+        ...(operation.after === undefined ? {} : { after: operation.after }),
+      }),
     }),
     index: async (operation: CatalogIndexOperation): Promise<CatalogIndexOutcome> => ({
       kind: "catalog_index",
@@ -69,6 +118,24 @@ export function createCurrentHostCatalogOperations(
         context: { globalLockfilePath: dependencies.control?.globalLockfilePath },
       }),
     }),
+    updateCandidatesPage: (
+      operation: CatalogUpdateCandidatesPageOperation,
+    ): CatalogUpdateCandidatesPageOutcome => {
+      const { updates } = currentHostCatalogUpdateReadiness({
+        context: { globalLockfilePath: dependencies.control?.globalLockfilePath },
+      });
+      return {
+        kind: "catalog_update_candidates_page",
+        page: keysetPage(
+          updates,
+          operation.limit,
+          operation.sort,
+          operation.after?.id,
+          (item) => item.id,
+          (id) => ({ id }),
+        ),
+      };
+    },
     install: (
       principal: CurrentHostOperatorPrincipal,
       operation: CatalogInstallOperation,
@@ -125,7 +192,7 @@ async function catalogInstallOutcome(
       : await installCatalogFiles(dependencies, repo, capletIds, operation);
     await dependencies.activateConfig?.();
     for (const entry of installed) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "catalog_installed",
         target: { type: "catalog", id: entry.id },
@@ -134,7 +201,7 @@ async function catalogInstallOutcome(
     }
     return { kind: "catalog_install", installed, setupActions };
   } catch (error) {
-    appendCatalogFailureActivities(dependencies, principal, "catalog_installed", capletIds);
+    await appendCatalogFailureActivities(dependencies, principal, "catalog_installed", capletIds);
     throw error;
   }
 }
@@ -164,7 +231,7 @@ async function catalogUpdateOutcome(
       : await updateCatalogFiles(dependencies, capletIds, operation);
     await dependencies.activateConfig?.();
     for (const entry of installed) {
-      dependencies.activityLog.append({
+      await dependencies.activityLog.append({
         actorClientId: principal.clientId,
         action: "catalog_updated",
         target: { type: "catalog", id: entry.id },
@@ -176,7 +243,7 @@ async function catalogUpdateOutcome(
     }
     return { kind: "catalog_update", installed, setupActions: [] };
   } catch (error) {
-    appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
+    await appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
     throw error;
   }
 }
@@ -249,14 +316,14 @@ function operator(principal: CurrentHostOperatorPrincipal) {
   return { role: "operator" as const, clientId: principal.clientId };
 }
 
-function appendCatalogFailureActivities(
+async function appendCatalogFailureActivities(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   action: "catalog_installed" | "catalog_updated",
   capletIds: string[] | undefined,
-): void {
+): Promise<void> {
   for (const id of capletIds && capletIds.length > 0 ? capletIds : ["current-host"]) {
-    appendFailureActivity(dependencies, principal, action, { type: "catalog", id });
+    await appendFailureActivity(dependencies, principal, action, { type: "catalog", id });
   }
 }
 
@@ -307,16 +374,48 @@ function requiredCapletId(value: unknown): string {
   throw new CapletsError("REQUEST_INVALID", "Caplet ID is invalid.");
 }
 
-function appendFailureActivity(
+async function appendFailureActivity(
   dependencies: CurrentHostOperationsDependencies,
   principal: CurrentHostOperatorPrincipal,
   action: "catalog_installed" | "catalog_updated",
   target: { type: "catalog"; id: string },
-): void {
-  dependencies.activityLog.append({
+): Promise<void> {
+  await dependencies.activityLog.append({
     actorClientId: principal.clientId,
     action,
     outcome: "failure",
     target,
   });
+}
+
+function keysetPage<Item, Key>(
+  items: readonly Item[],
+  requestedLimit: number,
+  sort: KeysetSortDirection,
+  after: string | undefined,
+  stableKey: (item: Item) => string,
+  pageKey: (value: string) => Key,
+): StorageKeysetPage<Item, Key> {
+  const limit = storagePageLimit(requestedLimit);
+  const direction = sort === "asc" ? 1 : -1;
+  const ordered = [...items].sort((left, right) => {
+    const leftKey = stableKey(left);
+    const rightKey = stableKey(right);
+    if (leftKey === rightKey) return 0;
+    return direction * (leftKey < rightKey ? -1 : 1);
+  });
+  const remaining =
+    after === undefined
+      ? ordered
+      : ordered.filter((item) => {
+          const key = stableKey(item);
+          if (key === after) return false;
+          return direction * (key < after ? -1 : 1) > 0;
+        });
+  const pageItems = remaining.slice(0, limit);
+  if (remaining.length <= limit) return { items: pageItems };
+  return {
+    items: pageItems,
+    nextKey: pageKey(stableKey(pageItems[pageItems.length - 1]!)),
+  };
 }

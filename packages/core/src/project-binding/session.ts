@@ -1,420 +1,282 @@
-import { Buffer } from "node:buffer";
-import { fingerprintProjectRoot } from "../cloud/project-root";
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
+import { currentHostAttachUrl } from "../current-host/topology";
 import { CapletsError } from "../errors";
-import type { ResolvedCapletsRemote } from "../remote/options";
-import type { BindingTerminalReason, ProjectBindingState, ProjectBindingSyncState } from "./types";
 import {
-  defaultProjectBindingWebSocketFactory,
-  PROJECT_BINDING_SOCKET_OPEN,
-  type ProjectBindingSocketEvent,
-  type ProjectBindingWebSocket,
-  type ProjectBindingWebSocketFactory,
-} from "./transport";
+  withProjectBindingMutationDeadline,
+  type ProjectBindingMutationDeadlineOptions,
+  type ProjectBindingSessionAdapter,
+} from "./lifecycle";
 
-export type ProjectBindingSessionEvent =
-  | { type: "state"; state: ProjectBindingState; message?: string | undefined; requestId?: string }
-  | {
-      type: "ready";
-      bindingId: string;
-      sessionId: string;
-      projectRoot: string;
-      projectFingerprint: string;
-      webSocketUrl: string;
-      requestId?: string | undefined;
-    }
-  | {
-      type: "reconnecting";
-      bindingId: string;
-      sessionId: string;
-      attempt: number;
-      reason: string;
-      requestId?: string | undefined;
-    }
-  | { type: "heartbeat"; bindingId: string; sessionId: string; state: ProjectBindingState }
-  | { type: "ended"; bindingId?: string; sessionId?: string; reason: BindingTerminalReason };
+export const REMOTE_PROJECT_BINDING_UNSUPPORTED_MESSAGE =
+  "Remote Project Binding sessions are not implemented by this runtime.";
 
-export type ProjectBindingSocketServerMessage =
-  | {
-      type: "state";
-      state: ProjectBindingState;
-      syncState: ProjectBindingSyncState;
-      requestId?: string | undefined;
-    }
-  | {
-      type: "ready";
-      bindingId: string;
-      sessionId: string;
-      syncState: ProjectBindingSyncState;
-      requestId?: string | undefined;
-    }
-  | { type: "blocked"; reason: BindingTerminalReason }
-  | { type: "ended"; reason: BindingTerminalReason };
-
-export type ProjectBindingSocketClientMessage =
-  | {
-      type: "heartbeat";
-      bindingId: string;
-      sessionId: string;
-      state: ProjectBindingState;
-      syncState: ProjectBindingSyncState;
-    }
-  | { type: "end"; bindingId: string; sessionId: string; reason: BindingTerminalReason };
-
-export type RunProjectBindingSessionInput = {
-  projectRoot: string;
-  remote: ResolvedCapletsRemote;
-  remoteResolver?: (() => Promise<ResolvedCapletsRemote>) | undefined;
+export type RemoteProjectBindingSessionManagerOptions = ProjectBindingMutationDeadlineOptions & {
+  origin: URL;
+  requestInit: RequestInit;
   fetch?: typeof fetch | undefined;
-  webSocketFactory?: ProjectBindingWebSocketFactory | undefined;
-  signal?: AbortSignal | undefined;
-  heartbeatIntervalMs?: number | undefined;
-  onEvent?: ((event: ProjectBindingSessionEvent) => void) | undefined;
+  projectRoot: string;
+  heartbeatIntervalMs: number;
+  writeErr?: ((value: string) => void) | undefined;
 };
 
-export async function runProjectBindingSession(input: RunProjectBindingSessionInput): Promise<{
-  ok: true;
-  bindingId: string;
-  sessionId: string;
-  projectRoot: string;
-  projectFingerprint: string;
-  webSocketUrl: string;
-  ended: true;
-}> {
-  const webSocketFactory = input.webSocketFactory ?? defaultProjectBindingWebSocketFactory;
-  const heartbeatIntervalMs = input.heartbeatIntervalMs ?? 15_000;
-  const projectFingerprint = fingerprintProjectRoot(input.projectRoot);
-  let remote = input.remote;
-  const refreshRemote = async () => {
-    remote = input.remoteResolver ? await input.remoteResolver() : remote;
-    return remote;
-  };
-  const fetchFor = (resolvedRemote: ResolvedCapletsRemote) =>
-    input.fetch ?? resolvedRemote.fetch ?? fetch;
-  input.onEvent?.({ type: "state", state: "attaching" });
+export class RemoteProjectBindingSessionManager implements ProjectBindingSessionAdapter {
+  private bindingId: string | undefined;
+  private sessionId: string | undefined;
+  private heartbeatTimer: NodeJS.Timeout | undefined;
+  private mutationChain: Promise<void> = Promise.resolve();
+  private startInFlight: Promise<boolean> | undefined;
+  private closeInFlight: Promise<void> | undefined;
+  private mutationSequence = 0;
+  private closeMutationBoundary = 0;
+  private unsupported = false;
+  private preparingClose = false;
+  private closing = false;
+  private closed = false;
+  private timerHeartbeatQueued = false;
 
-  const initialRemote = await refreshRemote();
-  const created = await postJson<{
-    binding: {
-      bindingId: string;
-      state?: ProjectBindingState;
-      syncState?: ProjectBindingSyncState;
-    };
-    sessionId: string;
-  }>(fetchFor(initialRemote), sessionUrl(initialRemote), initialRemote.requestInit, {
-    projectRoot: input.projectRoot,
-    projectFingerprint,
-    workspaceId: initialRemote.workspace ?? "default",
-  });
-  const bindingId = created.binding.bindingId;
-  const sessionId = created.sessionId;
-  let state: ProjectBindingState = created.binding.state ?? "attaching";
-  let syncState: ProjectBindingSyncState = created.binding.syncState ?? "pending";
-  let ended = false;
-  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  const publicWebSocketUrl = initialRemote.projectBindingWebSocketUrl.toString();
+  constructor(private readonly options: RemoteProjectBindingSessionManagerOptions) {}
 
-  const emitReady = (requestId?: string | undefined) => {
-    input.onEvent?.({
-      type: "ready",
-      bindingId,
-      sessionId,
-      projectRoot: input.projectRoot,
-      projectFingerprint,
-      webSocketUrl: publicWebSocketUrl,
-      ...(requestId ? { requestId } : {}),
-    });
-  };
+  hasActiveSession(): boolean {
+    return this.bindingId !== undefined && this.sessionId !== undefined;
+  }
 
-  const heartbeat = async (socket?: ProjectBindingWebSocket | undefined) => {
-    const heartbeatRemote = await refreshRemote();
-    const payload: ProjectBindingSocketClientMessage = {
-      type: "heartbeat",
-      bindingId,
-      sessionId,
-      state,
-      syncState,
-    };
-    if (socket?.readyState === PROJECT_BINDING_SOCKET_OPEN) {
-      socket.send(JSON.stringify(payload));
-    }
-    await postJson(
-      fetchFor(heartbeatRemote),
-      heartbeatUrl(heartbeatRemote, bindingId),
-      heartbeatRemote.requestInit,
-      {
-        sessionId,
-        state,
-        syncState,
-      },
-    );
-    input.onEvent?.({ type: "heartbeat", bindingId, sessionId, state });
-  };
+  async start(): Promise<boolean> {
+    if (this.unsupported || this.closed || this.closing || this.bindingId) return false;
+    if (this.startInFlight) return await this.startInFlight;
 
-  const connect = async (attempt: number): Promise<void> => {
-    const socketRemote = await refreshRemote();
-    const socketUrl = bindingSocketUrl(socketRemote, bindingId, sessionId, projectFingerprint);
-    const socketProtocols = bindingSocketProtocols(socketRemote);
-    const socket = webSocketFactory(socketUrl, socketProtocols);
-    await waitForOpen(socket, input.signal);
-    if (input.signal?.aborted) {
-      closeSocket(socket, 1000, "aborted");
-      return;
-    }
-
-    const closePromise = new Promise<{ reconnect: boolean; reason: string }>((resolve) => {
-      listen(socket, "message", (event) => {
-        const message = parseSocketMessage(event.data);
-        if (!message) return;
-        if (message.type === "state") {
-          state = message.state;
-          syncState = message.syncState;
-          input.onEvent?.({
-            type: "state",
-            state,
-            ...(message.requestId ? { requestId: message.requestId } : {}),
-          });
-          return;
-        }
-        if (message.type === "ready") {
-          state = "ready";
-          syncState = message.syncState;
-          emitReady(message.requestId);
-          return;
-        }
-        if (message.type === "blocked") {
-          state = "blocked";
-          input.onEvent?.({ type: "ended", bindingId, sessionId, reason: message.reason });
-          resolve({ reconnect: false, reason: message.reason.message });
-          return;
-        }
-        input.onEvent?.({ type: "ended", bindingId, sessionId, reason: message.reason });
-        resolve({ reconnect: false, reason: message.reason.message });
+    const mutationSequence = ++this.mutationSequence;
+    const start = this.enqueue(async (): Promise<boolean> => {
+      if (
+        this.unsupported ||
+        this.closed ||
+        this.bindingId ||
+        (this.closing && mutationSequence > this.closeMutationBoundary)
+      ) {
+        return false;
+      }
+      const response = await this.fetchJson<{
+        binding?: { bindingId?: string | undefined };
+        sessionId?: string | undefined;
+      }>(projectBindingUrl(this.options.origin, "sessions"), {
+        method: "POST",
+        body: {
+          projectRoot: this.options.projectRoot,
+          projectFingerprint: fingerprintProjectRoot(this.options.projectRoot),
+        },
       });
-      listen(socket, "close", (event) => {
-        resolve({
-          reconnect: !input.signal?.aborted && attempt < 1,
-          reason: event.reason ?? `WebSocket closed${event.code ? ` (${event.code})` : ""}.`,
+      if (!response.binding?.bindingId || !response.sessionId) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Project Binding session response was invalid.",
+        );
+      }
+      this.bindingId = response.binding.bindingId;
+      this.sessionId = response.sessionId;
+      if (!this.preparingClose) this.startHeartbeat();
+      return true;
+    });
+    this.startInFlight = start;
+    void start.catch((error) => {
+      if (isUnsupportedRemoteProjectBinding(error)) this.unsupported = true;
+    });
+    try {
+      return await start;
+    } finally {
+      if (this.startInFlight === start) this.startInFlight = undefined;
+    }
+  }
+
+  async updateAllowedCapletIds(): Promise<void> {
+    if (this.closed || this.closing) return;
+    const mutationSequence = ++this.mutationSequence;
+    try {
+      await this.enqueue(async () => {
+        if (this.closed || (this.closing && mutationSequence > this.closeMutationBoundary)) return;
+        await this.heartbeat();
+      });
+    } catch (error) {
+      this.disconnect();
+      this.options.writeErr?.(`Remote Project Binding heartbeat failed: ${errorMessage(error)}\n`);
+      throw error;
+    }
+  }
+
+  prepareClose(): void {
+    this.preparingClose = true;
+    this.stopHeartbeat();
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    if (this.closeInFlight) return await this.closeInFlight;
+
+    this.prepareClose();
+    this.closeMutationBoundary = this.mutationSequence;
+    this.closing = true;
+    const close = this.enqueue(async () => {
+      const bindingId = this.bindingId;
+      const sessionId = this.sessionId;
+      if (bindingId && sessionId) {
+        await this.fetchJson(projectBindingUrl(this.options.origin, bindingId, "session"), {
+          method: "DELETE",
+          body: {
+            sessionId,
+            terminalReason: { code: "completed", message: "Binding Session completed." },
+          },
         });
-      });
-      listen(socket, "error", () => {
-        resolve({ reconnect: !input.signal?.aborted && attempt < 1, reason: "WebSocket error." });
-      });
+      }
+      this.bindingId = undefined;
+      this.sessionId = undefined;
+      this.closed = true;
     });
-
-    let heartbeatFailure: unknown;
-    heartbeatTimer = setInterval(() => {
-      void heartbeat(socket).catch((error) => {
-        heartbeatFailure = error;
-        closeSocket(socket, 1008, "Project Binding heartbeat failed.");
-      });
-    }, heartbeatIntervalMs);
-    await heartbeat(socket);
-
-    const closed = await Promise.race([closePromise, waitForAbort(input.signal)]);
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    heartbeatTimer = undefined;
-    closeSocket(socket, 1000, "Binding Session closed.");
-
-    if (closed === "abort") return;
-    if (heartbeatFailure) throw heartbeatFailure;
-    if (closed.reconnect) {
-      input.onEvent?.({
-        type: "reconnecting",
-        bindingId,
-        sessionId,
-        attempt: attempt + 1,
-        reason: closed.reason,
-      });
-      await connect(attempt + 1);
+    this.closeInFlight = close;
+    try {
+      await close;
+    } finally {
+      if (this.closeInFlight === close && !this.closed) this.closeInFlight = undefined;
     }
-  };
-
-  try {
-    await connect(0);
-  } finally {
-    ended = true;
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    const reason: BindingTerminalReason = input.signal?.aborted
-      ? { code: "interrupted", message: "Binding Session ended." }
-      : { code: "completed", message: "Binding Session completed." };
-    const endingRemote = await refreshRemote().catch(() => remote);
-    await endRemoteSession(
-      fetchFor(endingRemote),
-      endingRemote,
-      endingRemote.requestInit,
-      bindingId,
-      sessionId,
-      reason,
-    );
-    input.onEvent?.({ type: "ended", bindingId, sessionId, reason });
   }
 
-  return {
-    ok: true,
-    bindingId,
-    sessionId,
-    projectRoot: input.projectRoot,
-    projectFingerprint,
-    webSocketUrl: publicWebSocketUrl,
-    ended,
-  };
-}
+  dispose(): void {
+    this.preparingClose = true;
+    this.closing = true;
+    this.closed = true;
+    this.bindingId = undefined;
+    this.sessionId = undefined;
+    this.stopHeartbeat();
+  }
 
-async function postJson<T = unknown>(
-  fetchImpl: typeof fetch,
-  url: URL,
-  requestInit: RequestInit,
-  body: unknown,
-): Promise<T> {
-  const headers = new Headers(requestInit.headers);
-  headers.set("content-type", "application/json");
-  const response = await fetchImpl(url, {
-    ...requestInit,
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      `Project Binding request failed (${response.status}).`,
+  private enqueue<T>(mutation: () => Promise<T>): Promise<T> {
+    const next = this.mutationChain.then(mutation, mutation);
+    this.mutationChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private startHeartbeat(): void {
+    if (this.preparingClose || this.closed || this.closing) return;
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.timerHeartbeatQueued) return;
+      this.timerHeartbeatQueued = true;
+      const mutationSequence = ++this.mutationSequence;
+      void this.enqueue(async () => {
+        if (
+          this.preparingClose ||
+          this.closed ||
+          (this.closing && mutationSequence > this.closeMutationBoundary)
+        ) {
+          return;
+        }
+        await this.heartbeat();
+      })
+        .catch((error) => {
+          this.disconnect();
+          this.options.writeErr?.(
+            `Remote Project Binding heartbeat failed: ${errorMessage(error)}\n`,
+          );
+        })
+        .finally(() => {
+          this.timerHeartbeatQueued = false;
+        });
+    }, this.options.heartbeatIntervalMs);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (!this.heartbeatTimer) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
+  }
+
+  private disconnect(): void {
+    this.stopHeartbeat();
+    if (this.preparingClose || this.closing) return;
+    this.bindingId = undefined;
+    this.sessionId = undefined;
+    this.startInFlight = undefined;
+  }
+
+  private async heartbeat(): Promise<void> {
+    if (!this.bindingId || !this.sessionId) return;
+    await this.fetchJson(projectBindingUrl(this.options.origin, this.bindingId, "heartbeat"), {
+      method: "POST",
+      body: {
+        sessionId: this.sessionId,
+        state: "ready",
+        syncState: "idle",
+      },
+    });
+  }
+
+  private async fetchJson<T = unknown>(
+    url: URL,
+    input: { method: "POST" | "DELETE"; body: unknown },
+  ): Promise<T> {
+    return await withProjectBindingMutationDeadline(
+      (signal) => this.fetchJsonWithinDeadline<T>(url, input, signal),
+      this.options,
     );
   }
-  return (await response.json().catch(() => ({}))) as T;
+
+  private async fetchJsonWithinDeadline<T>(
+    url: URL,
+    input: { method: "POST" | "DELETE"; body: unknown },
+    signal: AbortSignal,
+  ): Promise<T> {
+    const headers = new Headers(this.options.requestInit.headers);
+    headers.set("content-type", "application/json");
+    const response = await (this.options.fetch ?? fetch)(url, {
+      ...this.options.requestInit,
+      method: input.method,
+      headers,
+      body: JSON.stringify(input.body),
+      signal,
+    });
+    if (input.method === "DELETE" && response.status === 404) return {} as T;
+    if (!response.ok) {
+      let payload: unknown;
+      try {
+        payload = (await response.json()) as unknown;
+      } catch {
+        payload = undefined;
+      }
+      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+      if (error?.code === "UNSUPPORTED_CAPABILITY" && typeof error.message === "string") {
+        throw new CapletsError("UNSUPPORTED_CAPABILITY", error.message);
+      }
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        `Project Binding request failed (${response.status}).`,
+      );
+    }
+    return (await response.json().catch(() => ({}))) as T;
+  }
 }
 
-async function endRemoteSession(
-  fetchImpl: typeof fetch,
-  remote: ResolvedCapletsRemote,
-  requestInit: RequestInit,
-  bindingId: string,
-  sessionId: string,
-  reason: BindingTerminalReason,
-): Promise<void> {
-  const headers = new Headers(requestInit.headers);
-  headers.set("content-type", "application/json");
-  await fetchImpl(endSessionUrl(remote, bindingId), {
-    ...requestInit,
-    method: "DELETE",
-    headers,
-    body: JSON.stringify({ sessionId, terminalReason: reason }),
-  }).catch(() => undefined);
+export function isUnsupportedRemoteProjectBinding(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    error.code === "UNSUPPORTED_CAPABILITY" &&
+    error.message === REMOTE_PROJECT_BINDING_UNSUPPORTED_MESSAGE
+  );
 }
 
-function sessionUrl(remote: ResolvedCapletsRemote): URL {
-  return controlProjectBindingUrl(remote, "sessions");
-}
-
-function heartbeatUrl(remote: ResolvedCapletsRemote, bindingId: string): URL {
-  return controlProjectBindingUrl(remote, `${encodeURIComponent(bindingId)}/heartbeat`);
-}
-
-function endSessionUrl(remote: ResolvedCapletsRemote, bindingId: string): URL {
-  return controlProjectBindingUrl(remote, `${encodeURIComponent(bindingId)}/session`);
-}
-
-function controlProjectBindingUrl(remote: ResolvedCapletsRemote, suffix: string): URL {
-  const url = new URL(remote.projectBindingWebSocketUrl);
-  if (url.protocol === "wss:") url.protocol = "https:";
-  if (url.protocol === "ws:") url.protocol = "http:";
-  url.pathname = url.pathname.replace(/\/connect$/u, `/${suffix}`);
+function projectBindingUrl(origin: URL, ...segments: string[]): URL {
+  const url = currentHostAttachUrl(origin);
+  const base = url.pathname;
+  url.pathname = [base, "project-bindings", ...segments.map(encodeURIComponent)].join("/");
   url.search = "";
   url.hash = "";
   return url;
 }
 
-function bindingSocketUrl(
-  remote: ResolvedCapletsRemote,
-  bindingId: string,
-  sessionId: string,
-  projectFingerprint: string,
-): string {
-  const url = new URL(remote.projectBindingWebSocketUrl);
-  url.searchParams.set("bindingId", bindingId);
-  url.searchParams.set("sessionId", sessionId);
-  url.searchParams.set("projectFingerprint", projectFingerprint);
-  return url.toString();
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function bindingSocketProtocols(remote: ResolvedCapletsRemote): string[] | undefined {
-  if (remote.auth.type !== "bearer") return undefined;
-  return [
-    "caplets.project-binding.v1",
-    `caplets.bearer.${Buffer.from(remote.auth.token).toString("base64url")}`,
-  ];
-}
-
-function parseSocketMessage(data: unknown): ProjectBindingSocketServerMessage | undefined {
-  const text =
-    typeof data === "string"
-      ? data
-      : data instanceof ArrayBuffer
-        ? new TextDecoder().decode(data)
-        : undefined;
-  if (!text) return undefined;
-  const parsed = JSON.parse(text) as Partial<ProjectBindingSocketServerMessage>;
-  return typeof parsed.type === "string"
-    ? (parsed as ProjectBindingSocketServerMessage)
-    : undefined;
-}
-
-async function waitForOpen(
-  socket: ProjectBindingWebSocket,
-  signal: AbortSignal | undefined,
-): Promise<void> {
-  if (socket.readyState === PROJECT_BINDING_SOCKET_OPEN) {
-    return;
-  }
-  await Promise.race([
-    new Promise<void>((resolve, reject) => {
-      listen(socket, "open", () => resolve(), { once: true });
-      listen(
-        socket,
-        "error",
-        () =>
-          reject(
-            new CapletsError("SERVER_UNAVAILABLE", "Project Binding WebSocket failed to open."),
-          ),
-        {
-          once: true,
-        },
-      );
-    }),
-    waitForAbort(signal).then(() => undefined),
-  ]);
-}
-
-function waitForAbort(signal: AbortSignal | undefined): Promise<"abort"> {
-  if (signal?.aborted) return Promise.resolve("abort");
-  return new Promise((resolve) => {
-    signal?.addEventListener("abort", () => resolve("abort"), { once: true });
-  });
-}
-
-function listen(
-  socket: ProjectBindingWebSocket,
-  type: "open" | "message" | "close" | "error",
-  listener: (event: ProjectBindingSocketEvent) => void,
-  options?: { once?: boolean },
-): void {
-  if (socket.addEventListener) {
-    socket.addEventListener(type, listener, options);
-    return;
-  }
-  const key = `on${type}` as const;
-  const existing = socket[key];
-  const wrapper = (event: ProjectBindingSocketEvent) => {
-    existing?.(event);
-    listener(event);
-    if (options?.once && socket[key] === wrapper) socket[key] = existing ?? null;
-  };
-  socket[key] = wrapper;
-}
-
-function closeSocket(socket: ProjectBindingWebSocket, code: number, reason: string): void {
-  try {
-    socket.close(code, reason);
-  } catch {
-    // Best-effort cleanup; the REST lease end is the durable cleanup path.
-  }
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

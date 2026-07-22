@@ -24,15 +24,10 @@ A Caplet opts into this requirement explicitly:
 }
 ```
 
-The released managed session path is wired for native Caplets Cloud sessions and native loopback
-daemon sessions that provide a project root. A self-hosted HTTPS native remote does not currently
-establish a managed Project Binding session.
-
-## How a binding starts
-
-Native OpenCode and Pi integrations can pass project context in Cloud and loopback daemon modes.
-The binding session establishes or renews a lease and waits for managed project sync before
-required Caplets are exposed.
+Managed Project Binding sessions are available to native generic Current Host and loopback daemon
+sessions that provide a project root and whose host advertises the capability. The binding session
+establishes or renews a lease and waits for managed project sync before required Caplets are
+exposed.
 
 The ordinary `caplets attach <url>` command is a thin stdio MCP adapter; it does not itself run
 managed project synchronization. Its `--once` mode is the CLI preflight for a remote binding
@@ -40,8 +35,8 @@ endpoint:
 
 ```sh
 cd /path/to/project
-caplets remote login https://caplets.example.com/caplets
-caplets attach https://caplets.example.com/caplets --once
+caplets remote login https://caplets.example.com
+caplets attach https://caplets.example.com --once
 ```
 
 A stacked runtime also attempts upstream Project Binding when a client supplies project context and
@@ -49,20 +44,134 @@ the upstream supports it. If the upstream binding path is unavailable, local pro
 non-project upstream Caplets remain available; required upstream project Caplets stay unavailable
 with a diagnostic.
 
+## CLI Attach or the public SDK
+
+Choose the client that owns the surrounding workflow:
+
+| Use                            | Choose it when                                                                                                                               |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `caplets attach`               | An MCP client should launch a thin stdio Adapter and let the CLI use a generic Remote Profile and CLI-managed login state.                   |
+| `@caplets/sdk/project-binding` | An application already owns Current Host selection, credentials, project identity, and lifecycle UI and needs to embed only the coordinator. |
+
+The SDK coordinator is not a programmatic form of Remote Login. It does not discover the Current
+Host or WebSocket endpoint, persist or refresh credentials, or poll a pending Remote Login. For
+those managed behaviors, use the CLI flow described in [Remote Attach](/remote-attach/). SDK callers
+supply an isolated client configured with the Current Host Origin, the exact Project Binding
+WebSocket URL, and a project fingerprint.
+
+## Public SDK coordinator
+
+The package root supplies the generated public HTTP client. The browser-safe coordinator is a
+separate export:
+
+```ts
+import { createClient } from "@caplets/sdk";
+import { runProjectBindingSession } from "@caplets/sdk/project-binding";
+
+const client = createClient({
+  baseUrl: "https://caplets.example.com",
+  auth: async () => getAccessToken(),
+});
+
+const result = await runProjectBindingSession({
+  client,
+  webSocketUrl: "wss://caplets.example.com/api/v1/attach/project-bindings/connect",
+  projectRoot: "/workspace/repository",
+  projectFingerprint: fingerprintFromYourApplication,
+  onEvent(event) {
+    renderBindingStatus(event);
+  },
+});
+
+if (result.error) {
+  renderBindingFailure(result.error);
+}
+```
+
+`createClient` creates an isolated Fetch client for the explicit Current Host Origin. Its `auth`
+value is optional and can be either a caller-owned static token or an async provider. A Current Host
+Origin has only scheme, host, and optional port; the SDK rejects credentials, non-root paths,
+queries, and fragments before network I/O. The example's credential functions and fingerprint value
+belong to the application; the SDK does not acquire or store them.
+
+The coordinator has no Node built-ins and can run in a modern browser or Node 22. A Node process
+that has a filesystem path can use the separate marker-aware helper:
+
+```ts
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
+
+const projectRoot = "/workspace/repository";
+const projectFingerprint = fingerprintProjectRoot(projectRoot);
+```
+
+`fingerprintProjectRoot` hashes the resolved path and recognized project markers. It is not
+exported from the browser-safe coordinator. Browser callers must calculate or obtain a stable
+fingerprint themselves and pass it to `runProjectBindingSession`.
+
+### Endpoint and protocol contract
+
+`webSocketUrl` must be the explicit `ws:` or `wss:` endpoint
+`/api/v1/attach/project-bindings/connect`. The coordinator derives only its canonical sibling
+`sessions`, `{bindingId}/heartbeat`, and `{bindingId}/session` HTTP URLs. It does not discover the
+Current Host Origin or WebSocket URL, and it does not preserve or infer a deployment prefix.
+
+Every socket offers `caplets.project-binding.v1` as its first WebSocket subprotocol, and the server
+always negotiates that exact value. When the isolated client's auth provider returns a bearer
+token, the coordinator offers `caplets.bearer.<base64url-utf8-token>` as a second subprotocol. It
+resolves async auth again for each HTTP request and for the single reconnect.
+
+Bearer credentials are never placed in the WebSocket URL, session events, SDK error messages, or
+logs. Do not add tokens to query parameters, application logs, agent configuration, or a persisted
+fingerprint. The socket URL query carries only the binding ID, session ID, and project fingerprint.
+
+### Events, results, and fixed lifecycle
+
+`onEvent` receives a discriminated union:
+
+| Event          | Meaning                                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `state`        | The server reported a binding and sync-state transition.                                                             |
+| `ready`        | The binding is usable and includes the binding/session IDs, root, fingerprint, public WebSocket URL, and sync state. |
+| `reconnecting` | An unexpected socket close or error triggered the one allowed reconnect (`attempt: 1`).                              |
+| `heartbeat`    | The dual heartbeat completed and reports the current server-returned binding and sync state.                         |
+| `ended`        | The terminal reason is known and guarded cleanup has been attempted. This is the final event.                        |
+
+The terminal promise does not resolve at `ready`; it settles after `ended`. By default it returns
+typed fields as either `{ data, error: undefined }` or
+`{ data: undefined, error: ProjectBindingSessionError }`. Set `throwOnError: true` to receive
+`ProjectBindingSessionData` directly and reject with `ProjectBindingSessionError` on failure.
+Abort is a typed failure after cleanup, not a successful end. Error kinds distinguish `http`,
+`protocol`, `socket`, `callback`, `aborted`, and `cleanup` failures without exposing credentials.
+
+The timing and retry behavior is fixed protocol policy rather than application configuration:
+
+- send both a WebSocket heartbeat and its sibling HTTP heartbeat immediately after the socket
+  opens, then every 15 seconds;
+- reconnect once after an unexpected close or socket error, then fail if that connection also
+  closes unexpectedly; and
+- finalize exactly once, even when abort, heartbeat, callback, and socket failures race. A live
+  socket receives an `end` message and gets up to one second for acknowledgement; otherwise the
+  coordinator falls back to the sibling HTTP delete. The initiating failure remains primary and a
+  cleanup failure is attached as secondary detail.
+
+There are intentionally no heartbeat, retry, or finalization tuning options. The coordinator
+maintains the connection and reports state, but Caplets core remains authoritative for lease
+ownership and expiry, readiness, synchronization policy, and the bound project copy.
+
 ## Preflight the binding path
 
 Use the finite smoke path with an explicit remote selector before editing agent configuration:
 
 ```sh
-caplets attach https://caplets.example.com/caplets --once
+caplets attach https://caplets.example.com --once
 ```
 
 This builds the local sync manifest, enforces preflight size policy, probes the selected Project
 Binding WebSocket endpoint, and exits. It does not start a sync session and is not a generic MCP
 health check.
 
-`caplets doctor` and `caplets doctor --json` report the resolved project root, fingerprint,
-workspace path, remote auth mode, WebSocket URL, and recovery command. The standalone CLI does not
+`caplets doctor` and `caplets doctor --json` report the resolved project root, fingerprint, bound
+project path, remote auth mode, WebSocket URL, and recovery command. The standalone CLI does not
 receive a live sync snapshot, so its sync fields remain `idle` with default Mutagen diagnostics.
 
 ## What is synchronized
@@ -87,33 +196,29 @@ Symbolic links are always skipped.
 Caplets creates `.caplets/.gitignore` with the contents needed to keep binding-local state out of
 the repository. It does not use that directory as a source of runtime secrets.
 
-The CLI sync preflight enforces both total-project and single-file limits. It uses the `free` policy
-by default: 25 MiB per file and 250 MiB for the selected project after exclusions. Hosted contexts
-may supply `plus` (100 MiB/1 GiB), `pro` (250 MiB/5 GiB), or `enterprise` (250 MiB/5 GiB) policy.
-A limit failure returns `sync_size_limit_exceeded`; exclude unnecessary content or change the
-applicable workspace plan before retrying.
+The CLI sync preflight enforces the Current Host's total-project and single-file limits after
+exclusions. A `sync_size_limit_exceeded` failure requires excluding unnecessary content or following
+the host's stated policy; remote synchronization is never treated as unbounded.
 
 ## Runtime safety
 
 - Project-bound working directories are resolved under the synchronized root. A configured `cwd`
   that escapes through `..` or a symbolic link is rejected.
-- Binding leases and readiness metadata are authoritative host state. Workspace bytes remain on the
-  owning Host Node.
+- Binding leases and readiness metadata are Authoritative Host State. Bound project bytes remain on
+  the owning Host Node.
 - If an owning node is lost, required Caplets are quarantined until the client rebinds to a healthy
-  node and fully resynchronizes. PostgreSQL does not reconstruct workspace bytes.
+  node and fully resynchronizes. PostgreSQL does not reconstruct bound project bytes.
 - A missing binding context hides only Caplets that declare `projectBinding.required`; unrelated
   local and upstream Caplets remain usable.
 
 ## Common failures
 
-| Diagnostic                          | Meaning                                                             | Repair                                                 |
-| ----------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------ |
-| `remote_credentials_required`       | The selected self-hosted remote has no valid Remote Profile.        | Run `caplets remote login <url>`.                      |
-| `cloud_auth_required`               | Cloud credentials or required scopes are missing.                   | Log in again to the Cloud URL.                         |
-| `workspace_switch_required`         | The requested workspace differs from the saved selection.           | Select the intended workspace, then reconnect.         |
-| `websocket_upgrade_required`        | A proxy did not pass the WebSocket upgrade.                         | Enable WebSocket forwarding for the Caplets base path. |
-| `sync_size_limit_exceeded`          | The post-exclusion project is too large.                            | Add a supported ignore rule or change the plan limit.  |
-| `lease_conflict` or `lease_expired` | Another owner holds the binding or the client stopped heartbeating. | End the stale session or reconnect and resynchronize.  |
+| Diagnostic                          | Meaning                                                             | Repair                                                      |
+| ----------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `remote_credentials_required`       | The selected Current Host has no valid generic Remote Profile.      | Run `caplets remote login <current-host-origin>`.           |
+| `websocket_upgrade_required`        | A proxy did not pass the WebSocket upgrade.                         | Forward WebSocket upgrades at the canonical origin path.    |
+| `sync_size_limit_exceeded`          | The post-exclusion project is too large.                            | Add a supported ignore rule or follow the host policy.      |
+| `lease_conflict` or `lease_expired` | Another owner holds the binding or the client stopped heartbeating. | End the stale session or reconnect and fully resynchronize. |
 
 Start with `caplets doctor --json`; its Project Binding section carries resolved selection and
 recovery fields without exposing credentials. Use the active session's own diagnostics for live

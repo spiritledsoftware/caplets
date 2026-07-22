@@ -614,6 +614,43 @@ export class RemoteServerCredentialStore {
     });
   }
 
+  countClients(): number {
+    return this.loadState().clients.length;
+  }
+
+  countPendingLogins(statuses?: readonly RemotePendingLoginState[], now = new Date()): number {
+    return this.withStateLock(() => {
+      const state = this.loadState();
+      if (cleanupPendingLogins(state, now)) this.saveState(state);
+      if (!statuses || statuses.length === 0) return state.pendingLogins.length;
+      const included = new Set(statuses);
+      let total = 0;
+      for (const login of state.pendingLogins) {
+        if (included.has(login.status)) total += 1;
+      }
+      return total;
+    });
+  }
+
+  listPendingLoginsBounded(
+    limit: number,
+    statuses?: readonly RemotePendingLoginState[],
+    now = new Date(),
+  ): RemotePendingLoginStatus[] {
+    return this.withStateLock(() => {
+      const state = this.loadState();
+      if (cleanupPendingLogins(state, now)) this.saveState(state);
+      const included = statuses && statuses.length > 0 ? new Set(statuses) : undefined;
+      const logins: RemotePendingLoginStatus[] = [];
+      for (const login of state.pendingLogins) {
+        if (included && !included.has(login.status)) continue;
+        logins.push(pendingLoginStatus(login));
+        if (logins.length === limit) break;
+      }
+      return logins;
+    });
+  }
+
   listClients(): RemoteClientStatus[] {
     return this.loadState()
       .clients.map(clientStatus)
@@ -1413,6 +1450,7 @@ function clientStatus(client: StoredRemoteClient): RemoteClientStatus {
     role: client.role,
     hostUrl: client.hostUrl,
     createdAt: client.createdAt,
+    generation: 1,
     ...(client.lastUsedAt ? { lastUsedAt: client.lastUsedAt } : {}),
     ...(client.revokedAt ? { revokedAt: client.revokedAt } : {}),
   };
@@ -1435,6 +1473,7 @@ function pendingLoginStatus(flow: StoredPendingLogin): RemotePendingLoginStatus 
     createdAt: flow.createdAt,
     codeExpiresAt: flow.codeExpiresAt,
     flowExpiresAt: flow.flowExpiresAt,
+    generation: 1,
     ...(flow.approvedAt ? { approvedAt: flow.approvedAt } : {}),
     ...(flow.deniedAt ? { deniedAt: flow.deniedAt } : {}),
     ...(flow.cancelledAt ? { cancelledAt: flow.cancelledAt } : {}),

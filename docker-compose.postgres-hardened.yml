@@ -45,14 +45,22 @@ services:
       - FOWNER
     security_opt:
       - no-new-privileges:true
+    environment:
+      CAPLETS_LEGACY_ENCRYPTION_KEY_FILE: /data/state/caplets/vault/vault-key
+      CAPLETS_PREPARED_ENCRYPTION_KEY_FILE: /prepared/encryption/key
+      CAPLETS_EXTERNAL_ENCRYPTION_KEY_FILE: /run/secrets/caplets_encryption_key
+      CAPLETS_EXTERNAL_ENCRYPTION_KEY_CONFIGURED: ${CAPLETS_ENCRYPTION_KEY_FILE:+1}
     secrets:
       - caplets_postgres_admin_password
       - caplets_postgres_migrator_password
       - caplets_postgres_runtime_password
+      - caplets_encryption_key
     volumes:
+      - caplets-data:/data:ro
       - caplets-postgres-admin-secret:/prepared/admin
       - caplets-postgres-migrator-secret:/prepared/migrator
       - caplets-postgres-runtime-secret:/prepared/runtime
+      - caplets-encryption-key-secret:/prepared/encryption
     entrypoint:
       - /bin/sh
       - -ec
@@ -63,6 +71,7 @@ services:
         install --owner="$${owner_uid}" --group="$${owner_gid}" --mode=0400 /run/secrets/caplets_postgres_admin_password /prepared/admin/password
         install --owner="$${owner_uid}" --group="$${owner_gid}" --mode=0400 /run/secrets/caplets_postgres_migrator_password /prepared/migrator/password
         install --owner="$${owner_uid}" --group="$${owner_gid}" --mode=0400 /run/secrets/caplets_postgres_runtime_password /prepared/runtime/password
+        CAPLETS_KEY_OWNER_UID="$${owner_uid}" CAPLETS_KEY_OWNER_GID="$${owner_gid}" node /usr/local/lib/caplets/postgres/prepare-encryption-key.mjs
     logging: *bounded-logging
 
   caplets-postgres-migrate:
@@ -128,6 +137,8 @@ services:
       CAPLETS_BASE_CONFIG: /data/config/caplets/config.json
       CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
       CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server
+      CAPLETS_ADMIN_UPLOAD_STAGING_DIR: /data/state/caplets/admin-uploads
+      CAPLETS_ENCRYPTION_KEY_FILE: /run/caplets-secrets/encryption/key
       CAPLETS_POSTGRES_HOST: caplets-postgres
       CAPLETS_POSTGRES_PORT: "5432"
       CAPLETS_POSTGRES_DATABASE: ${CAPLETS_POSTGRES_DATABASE:-caplets}
@@ -138,6 +149,7 @@ services:
     volumes:
       - caplets-data:/data
       - caplets-postgres-runtime-secret:/run/caplets-secrets/runtime:ro
+      - caplets-encryption-key-secret:/run/caplets-secrets/encryption:ro
     networks:
       - database
       - runtime
@@ -154,7 +166,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          node -e "fetch('http://127.0.0.1:5387/v1/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+          node -e "fetch('http://127.0.0.1:5387/api/v1/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 5
@@ -167,6 +179,7 @@ volumes:
   caplets-postgres-admin-secret:
   caplets-postgres-migrator-secret:
   caplets-postgres-runtime-secret:
+  caplets-encryption-key-secret:
 
 secrets:
   caplets_postgres_admin_password:
@@ -175,6 +188,8 @@ secrets:
     file: ${CAPLETS_POSTGRES_MIGRATOR_PASSWORD_FILE:-./secrets/postgres-migrator-password}
   caplets_postgres_runtime_password:
     file: ${CAPLETS_POSTGRES_RUNTIME_PASSWORD_FILE:-./secrets/postgres-runtime-password}
+  caplets_encryption_key:
+    file: ${CAPLETS_ENCRYPTION_KEY_FILE:-/dev/null}
 
 networks:
   database:

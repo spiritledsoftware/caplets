@@ -1248,7 +1248,7 @@ describe("@caplets/pi", () => {
     });
   });
 
-  it("loads cloud mode from Pi settings", async () => {
+  it("rejects removed cloud mode in Pi settings", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockImplementation(async (path: string) =>
@@ -1262,12 +1262,9 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: "cloud",
-        remote: { url: "https://cloud.caplets.dev" },
-      }),
-    );
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+      telemetryIntegration: "pi",
+    });
   });
 
   it("ignores package entry args and uses empty settings without top-level caplets config", async () => {

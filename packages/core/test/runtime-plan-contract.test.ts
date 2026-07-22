@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   HIDDEN_REASON_CODES,
   inferRuntimeFeatures,
+  isRuntimeResourceClassAllowed,
   planCapletRuntimeRoute,
   resolveRuntimeResources,
+  resourceClassRank,
   type HiddenReasonCode,
 } from "../src/runtime-plan";
 
@@ -52,11 +54,17 @@ const runtimeCapletFixtures = {
   localOnly: { server: "local_only", backend: "unknown", expectedRoute: "local_only" },
 } as const;
 
-describe("hosted runtime route-plan contract", () => {
+describe("generic runtime route-plan contract", () => {
   it("classifies canonical fixture routes", () => {
     for (const fixture of Object.values(runtimeCapletFixtures)) {
       expect(planCapletRuntimeRoute(fixture).route).toBe(fixture.expectedRoute);
     }
+  });
+
+  it.each(["hosted", "self_hosted"])("rejects removed deployment %s", (deployment) => {
+    expect(() =>
+      planCapletRuntimeRoute(runtimeCapletFixtures.cli, { deployment: deployment as never }),
+    ).toThrow("runtime deployment must be one of: local, remote");
   });
 
   it("infers Docker and browser features from explicit and command provenance", () => {
@@ -76,9 +84,9 @@ describe("hosted runtime route-plan contract", () => {
     ).toContain("browser");
   });
 
-  it("resolves Hosted Sandbox resource classes conservatively", () => {
-    expect(resolveRuntimeResources({ features: [], backend: "http" }).class).toBe("small");
-    expect(resolveRuntimeResources({ features: [], backend: "cli" }).class).toBe("medium");
+  it("resolves canonical runtime resource classes conservatively", () => {
+    expect(resolveRuntimeResources({ features: [], backend: "http" }).class).toBe("standard");
+    expect(resolveRuntimeResources({ features: [], backend: "cli" }).class).toBe("standard");
     expect(resolveRuntimeResources({ features: ["docker"], backend: "cli" }).class).toBe("large");
     expect(resolveRuntimeResources({ features: ["browser"], backend: "cli" }).class).toBe("large");
     expect(resolveRuntimeResources({ features: ["docker", "browser"], backend: "cli" }).class).toBe(
@@ -88,12 +96,41 @@ describe("hosted runtime route-plan contract", () => {
       resolveRuntimeResources({
         features: ["docker"],
         backend: "cli",
-        policy: { maxClass: "medium" },
+        policy: { maxClass: "standard" },
       }),
-    ).toMatchObject({ class: "medium", cappedByPolicy: "medium" });
+    ).toMatchObject({ class: "standard", cappedByPolicy: "standard" });
   });
 
-  it("exports every canonical hidden reason code as a stable literal union", () => {
+  it.each([{ explicitClass: "small" }, { policy: { maxClass: "medium" } }])(
+    "rejects removed hosted resource aliases",
+    (input) => {
+      expect(() =>
+        resolveRuntimeResources({
+          features: [],
+          ...input,
+        } as never),
+      ).toThrow(/must be one of: standard, large, heavy/u);
+    },
+  );
+  it("rejects removed resource aliases in raw Caplet plans", () => {
+    expect(() =>
+      planCapletRuntimeRoute({
+        ...runtimeCapletFixtures.cli,
+        runtime: { resources: { class: "small" } },
+      }),
+    ).toThrow("runtime resource class must be one of: standard, large, heavy");
+  });
+
+  it.each(["small", "medium"])("rejects removed resource alias %s in public helpers", (value) => {
+    expect(() => resourceClassRank(value as never)).toThrow(
+      "runtime resource class must be one of: standard, large, heavy",
+    );
+    expect(() => isRuntimeResourceClassAllowed(value as never, "heavy")).toThrow(
+      "runtime resource class must be one of: standard, large, heavy",
+    );
+  });
+
+  it("exports only generic runtime planning reason codes", () => {
     const required: HiddenReasonCode[] = [
       "setup_required",
       "setup_running",
@@ -114,14 +151,7 @@ describe("hosted runtime route-plan contract", () => {
       "project_binding_syncing",
       "project_binding_blocked",
       "project_binding_stale",
-      "provider_unavailable",
-      "provider_capacity_exhausted",
-      "provider_queue_timeout",
       "policy_denied",
-      "billing_required",
-      "subscription_past_due",
-      "usage_limit_reached",
-      "email_verification_required",
       "docker_required",
       "docker_denied",
       "browser_required",

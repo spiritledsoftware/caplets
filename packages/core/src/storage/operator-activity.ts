@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, lt, or, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or, type SQL } from "drizzle-orm";
 import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
 import * as postgres from "./schema/postgres";
 import * as sqlite from "./schema/sqlite";
+import { storagePageLimit, type KeysetSortDirection, type StorageKeysetPage } from "./keyset-page";
 import type {
   HostDatabase,
   HostDatabaseTransaction,
@@ -12,6 +13,9 @@ import type {
 } from "./types";
 
 export type OperatorActivityOutcome = "success" | "failure";
+
+export const OPERATOR_ACTIVITY_ACTION_MAX_LENGTH = 128;
+export const OPERATOR_ACTIVITY_ACTION_PATTERN = /^[a-z][a-z0-9_.-]{0,127}$/u;
 
 export type OperatorActivityMetadata = Record<string, string | number | boolean | null>;
 
@@ -46,6 +50,18 @@ export type ListOperatorActivityInput = {
   action?: string | undefined;
 };
 
+export type OperatorActivityPageKey = {
+  createdAt: string;
+  activityKey: string;
+};
+
+export type ListOperatorActivityPageInput = {
+  limit?: number | undefined;
+  after?: OperatorActivityPageKey | undefined;
+  sort?: KeysetSortDirection | undefined;
+  action?: string | undefined;
+};
+
 export type OperatorActivityPage = {
   entries: OperatorActivityEntry[];
   nextCursor?: string | undefined;
@@ -66,7 +82,7 @@ type ActivityRow = {
   createdAt: string;
 };
 
-type ActivityCursor = Pick<ActivityRow, "activityKey" | "createdAt">;
+type ActivityCursor = OperatorActivityPageKey;
 
 /**
  * SQL-authoritative Operator activity with a dashboard-compatible projection.
@@ -162,17 +178,38 @@ export class OperatorActivityStore {
     return inspectLegacyActivityPostgres(transaction.db, rows).then(verifyLegacyActivityPending);
   }
 
-  async list(input: ListOperatorActivityInput = {}): Promise<OperatorActivityPage> {
-    const limit = boundedLimit(input.limit);
-    const cursor = input.after ? await this.findCursor(input.after) : undefined;
+  async listPage(
+    input: ListOperatorActivityPageInput = {},
+  ): Promise<StorageKeysetPage<OperatorActivityEntry, OperatorActivityPageKey>> {
+    const limit = storagePageLimit(input.limit);
+    const sort = input.sort ?? "desc";
+    if (input.after !== undefined) validateActivityPageKey(input.after);
     const rows =
       this.database.dialect === "sqlite"
-        ? this.listSqlite(limit + 1, cursor, input.action)
-        : await this.listPostgres(limit + 1, cursor, input.action);
+        ? this.listSqlite(limit + 1, input.after, input.action, sort)
+        : await this.listPostgres(limit + 1, input.after, input.action, sort);
     const hasMore = rows.length > limit;
-    const entries = rows.slice(0, limit).map(activityEntry);
-    const nextCursor = hasMore ? entries.at(-1)?.id : undefined;
-    return { entries, ...(nextCursor ? { nextCursor } : {}) };
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const items = pageRows.map(activityEntry);
+    if (!hasMore) return { items };
+    const last = pageRows[pageRows.length - 1]!;
+    return {
+      items,
+      nextKey: {
+        createdAt: last.createdAt,
+        activityKey: last.activityKey,
+      },
+    };
+  }
+
+  async list(input: ListOperatorActivityInput = {}): Promise<OperatorActivityPage> {
+    const limit = boundedLimit(input.limit);
+    const after = input.after ? await this.findCursor(input.after) : undefined;
+    const page = await this.listPage({ limit, after, action: input.action });
+    return {
+      entries: page.items,
+      ...(page.nextKey ? { nextCursor: page.nextKey.activityKey } : {}),
+    };
   }
 
   private async findCursor(activityKey: string): Promise<ActivityCursor | undefined> {
@@ -201,18 +238,27 @@ export class OperatorActivityStore {
     limit: number,
     cursor: ActivityCursor | undefined,
     action: string | undefined,
+    sort: KeysetSortDirection,
   ): ActivityRow[] {
     const conditions: SQL[] = [];
     if (action !== undefined) conditions.push(eq(sqlite.operatorActivity.action, action));
     if (cursor) {
       conditions.push(
-        or(
-          lt(sqlite.operatorActivity.createdAt, cursor.createdAt),
-          and(
-            eq(sqlite.operatorActivity.createdAt, cursor.createdAt),
-            lt(sqlite.operatorActivity.activityKey, cursor.activityKey),
-          ),
-        )!,
+        sort === "asc"
+          ? or(
+              gt(sqlite.operatorActivity.createdAt, cursor.createdAt),
+              and(
+                eq(sqlite.operatorActivity.createdAt, cursor.createdAt),
+                gt(sqlite.operatorActivity.activityKey, cursor.activityKey),
+              ),
+            )!
+          : or(
+              lt(sqlite.operatorActivity.createdAt, cursor.createdAt),
+              and(
+                eq(sqlite.operatorActivity.createdAt, cursor.createdAt),
+                lt(sqlite.operatorActivity.activityKey, cursor.activityKey),
+              ),
+            )!,
       );
     }
     return this.database.dialect === "sqlite"
@@ -221,8 +267,12 @@ export class OperatorActivityStore {
           .from(sqlite.operatorActivity)
           .where(and(...conditions))
           .orderBy(
-            desc(sqlite.operatorActivity.createdAt),
-            desc(sqlite.operatorActivity.activityKey),
+            sort === "asc"
+              ? asc(sqlite.operatorActivity.createdAt)
+              : desc(sqlite.operatorActivity.createdAt),
+            sort === "asc"
+              ? asc(sqlite.operatorActivity.activityKey)
+              : desc(sqlite.operatorActivity.activityKey),
           )
           .limit(limit)
           .all()
@@ -233,18 +283,27 @@ export class OperatorActivityStore {
     limit: number,
     cursor: ActivityCursor | undefined,
     action: string | undefined,
+    sort: KeysetSortDirection,
   ): Promise<ActivityRow[]> {
     const conditions: SQL[] = [];
     if (action !== undefined) conditions.push(eq(postgres.operatorActivity.action, action));
     if (cursor) {
       conditions.push(
-        or(
-          lt(postgres.operatorActivity.createdAt, cursor.createdAt),
-          and(
-            eq(postgres.operatorActivity.createdAt, cursor.createdAt),
-            lt(postgres.operatorActivity.activityKey, cursor.activityKey),
-          ),
-        )!,
+        sort === "asc"
+          ? or(
+              gt(postgres.operatorActivity.createdAt, cursor.createdAt),
+              and(
+                eq(postgres.operatorActivity.createdAt, cursor.createdAt),
+                gt(postgres.operatorActivity.activityKey, cursor.activityKey),
+              ),
+            )!
+          : or(
+              lt(postgres.operatorActivity.createdAt, cursor.createdAt),
+              and(
+                eq(postgres.operatorActivity.createdAt, cursor.createdAt),
+                lt(postgres.operatorActivity.activityKey, cursor.activityKey),
+              ),
+            )!,
       );
     }
     return this.database.dialect === "postgres"
@@ -253,8 +312,12 @@ export class OperatorActivityStore {
           .from(postgres.operatorActivity)
           .where(and(...conditions))
           .orderBy(
-            desc(postgres.operatorActivity.createdAt),
-            desc(postgres.operatorActivity.activityKey),
+            sort === "asc"
+              ? asc(postgres.operatorActivity.createdAt)
+              : desc(postgres.operatorActivity.createdAt),
+            sort === "asc"
+              ? asc(postgres.operatorActivity.activityKey)
+              : desc(postgres.operatorActivity.activityKey),
           )
           .limit(limit)
       : [];
@@ -419,6 +482,8 @@ function validateAppendInput(input: AppendOperatorActivityInput): void {
   if (
     typeof input.actorClientId !== "string" ||
     typeof input.action !== "string" ||
+    !OPERATOR_ACTIVITY_ACTION_PATTERN.test(input.action) ||
+    input.action.length > OPERATOR_ACTIVITY_ACTION_MAX_LENGTH ||
     !input.target ||
     typeof input.target.type !== "string" ||
     typeof input.target.id !== "string" ||
@@ -454,6 +519,26 @@ function isMetadataValue(value: unknown): value is string | number | boolean | n
     typeof value === "number" ||
     typeof value === "boolean"
   );
+}
+
+function validateActivityPageKey(value: unknown): asserts value is OperatorActivityPageKey {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    !("createdAt" in value) ||
+    !("activityKey" in value) ||
+    typeof value.createdAt !== "string" ||
+    typeof value.activityKey !== "string" ||
+    !value.activityKey
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "Operator Activity page key is invalid.");
+  }
+  const createdAt = new Date(value.createdAt);
+  if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== value.createdAt) {
+    throw new CapletsError("REQUEST_INVALID", "Operator Activity page key is invalid.");
+  }
 }
 
 function boundedLimit(limit: number | undefined): number {

@@ -26,6 +26,7 @@ import {
   vaultBootstrapResolver,
   type ConfigVaultResolver,
 } from "../src/config";
+import { DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES } from "../src/admin-api/bundle-contract";
 import { listCaplets } from "../src/cli/inspection";
 import { CapletsError } from "../src/errors";
 import { ServerRegistry } from "../src/registry";
@@ -75,6 +76,41 @@ describe("config", () => {
       exposureDiscoveryConcurrency: 8,
     });
     expect(config.mcpServers.github?.exposure).toBe("direct_and_code_mode");
+  });
+
+  it("keeps generic runtime requirements without hosted schema taxonomy", () => {
+    const config = parseConfig({
+      mcpServers: {
+        browser: {
+          name: "Browser",
+          description: "Automate browser tasks safely.",
+          command: "browser-mcp",
+          runtime: {
+            features: ["browser", "docker"],
+            resources: { class: "heavy" },
+          },
+        },
+      },
+    });
+
+    expect(config.mcpServers.browser?.runtime).toEqual({
+      features: ["browser", "docker"],
+      resources: { class: "heavy" },
+    });
+    expect(JSON.stringify(configJsonSchema())).not.toMatch(/hosted|sandbox/iu);
+    expect(JSON.stringify(capletJsonSchema())).not.toMatch(/hosted|sandbox/iu);
+    expect(() =>
+      parseConfig({
+        mcpServers: {
+          browser: {
+            name: "Browser",
+            description: "Automate browser tasks safely.",
+            command: "browser-mcp",
+            runtime: { resources: { class: "small" } },
+          },
+        },
+      }),
+    ).toThrow();
   });
 
   it("accepts per-Caplet shadowing policy and exposes it in the generated schema", () => {
@@ -218,12 +254,14 @@ describe("config", () => {
       serve: {
         host: "127.0.0.1",
         port: 5480,
-        path: "/caplets",
         remoteStatePath: "/var/lib/caplets/remote-auth",
-        upstreamUrl: "https://upstream.example.com/caplets",
+        upstreamUrl: "https://upstream.example.com",
         allowUnauthenticatedHttp: true,
         trustProxy: true,
         publicOrigins: ["https://caplets.example.com"],
+        adminUploadStagingDir: "/var/lib/caplets/uploads",
+        adminUploadMaxConcurrent: 3,
+        adminUploadMaxStagedBytes: 400_000_000,
       },
     });
 
@@ -231,24 +269,60 @@ describe("config", () => {
       serve: {
         host: "127.0.0.1",
         port: 5480,
-        path: "/caplets",
         remoteStatePath: "/var/lib/caplets/remote-auth",
-        upstreamUrl: "https://upstream.example.com/caplets",
+        upstreamUrl: "https://upstream.example.com",
         allowUnauthenticatedHttp: true,
         trustProxy: true,
         publicOrigins: ["https://caplets.example.com"],
+        adminUploadStagingDir: "/var/lib/caplets/uploads",
+        adminUploadMaxConcurrent: 3,
+        adminUploadMaxStagedBytes: 400_000_000,
       },
     });
   });
 
-  it("rejects transport and non-origin values in global serve config", () => {
+  it("rejects removed serve.path and non-origin values in global serve config", () => {
     expect(() => parseConfig({ serve: { transport: "http" } })).toThrow(CapletsError);
+    expect(() => parseConfig({ serve: { path: "/prefix" } })).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({ serve: { upstreamUrl: "https://upstream.example.com/path" } }),
+    ).toThrow(CapletsError);
     expect(() =>
       parseConfig({ serve: { publicOrigins: ["https://caplets.example.com/path"] } }),
     ).toThrow(CapletsError);
     expect(() =>
       parseConfig({ serve: { publicOrigins: ["https://user:pass@caplets.example.com"] } }),
     ).toThrow(CapletsError);
+  });
+
+  it("rejects invalid admin upload serve config", () => {
+    expect(() => parseConfig({ serve: { adminUploadStagingDir: "  " } })).toThrow(CapletsError);
+    expect(() => parseConfig({ serve: { adminUploadMaxConcurrent: 1.5 } })).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({ serve: { adminUploadMaxConcurrent: Number.MAX_SAFE_INTEGER + 1 } }),
+    ).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({
+        serve: { adminUploadMaxStagedBytes: DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES - 1 },
+      }),
+    ).toThrow(CapletsError);
+  });
+
+  it("publishes the runtime admin upload request minimum in config schema", () => {
+    const schema = configJsonSchema() as {
+      properties: {
+        serve: { properties: { adminUploadMaxStagedBytes: { minimum?: number } } };
+      };
+    };
+
+    expect(schema.properties.serve.properties.adminUploadMaxStagedBytes.minimum).toBe(
+      DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES,
+    );
+    expect(() =>
+      parseConfig({
+        serve: { adminUploadMaxStagedBytes: DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES },
+      }),
+    ).not.toThrow();
   });
 
   it("publishes origin-only validation for serve public origins", () => {

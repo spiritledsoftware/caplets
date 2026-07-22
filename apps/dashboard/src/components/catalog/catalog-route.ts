@@ -1,4 +1,4 @@
-import { dashboardBasePath, dashboardPath } from "@/lib/paths";
+import { dashboardPath } from "@/lib/paths";
 
 export type CatalogLocation = { mode: "list" } | { mode: "detail"; entryKey: string };
 
@@ -6,28 +6,26 @@ export type CatalogHistoryState = {
   catalogListHref: string;
 };
 
-export function catalogListHref(pathname?: string): string {
-  return dashboardPath("catalog", pathname);
+export function catalogListHref(): string {
+  return dashboardPath("catalog");
 }
 
-export function catalogDetailHref(entryKey: string, pathname?: string): string {
-  return dashboardPath(`catalog/${encodeURIComponent(entryKey)}`, pathname);
+export function catalogDetailHref(entryKey: string): string {
+  if (!isSafeEntryKey(entryKey)) {
+    throw new TypeError("Catalog entryKey must be one safe encoded path segment.");
+  }
+  return dashboardPath(`catalog/${encodeURIComponent(entryKey)}`);
 }
 
 export function catalogLocationFromPath(pathname: string): CatalogLocation {
-  const basePath = dashboardBasePath(pathname);
-  const normalizedPathname = pathname.replace(/\/+$/u, "");
-  const relativePath = normalizedPathname.startsWith(basePath)
-    ? normalizedPathname.slice(basePath.length)
-    : normalizedPathname;
-  const segments = relativePath.replace(/^\/+|\/+$/gu, "").split("/");
+  const prefix = `${dashboardPath("catalog")}/`;
+  if (!pathname.startsWith(prefix)) return { mode: "list" };
 
-  if (segments[0] !== "catalog" || segments.length !== 2 || !segments[1]) {
-    return { mode: "list" };
-  }
+  const encodedEntryKey = pathname.slice(prefix.length);
+  if (!encodedEntryKey || encodedEntryKey.includes("/")) return { mode: "list" };
 
   try {
-    const entryKey = decodeURIComponent(segments[1]);
+    const entryKey = decodeURIComponent(encodedEntryKey);
     return isSafeEntryKey(entryKey) ? { mode: "detail", entryKey } : { mode: "list" };
   } catch {
     return { mode: "list" };
@@ -37,8 +35,10 @@ export function catalogLocationFromPath(pathname: string): CatalogLocation {
 function isSafeEntryKey(entryKey: string): boolean {
   return (
     entryKey.length > 0 &&
-    !hasControlCharacter(entryKey) &&
-    !entryKey.split("/").some((segment) => segment === "." || segment === "..")
+    entryKey !== "." &&
+    entryKey !== ".." &&
+    !entryKey.includes("/") &&
+    !hasControlCharacter(entryKey)
   );
 }
 

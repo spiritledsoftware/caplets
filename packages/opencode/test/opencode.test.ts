@@ -343,35 +343,6 @@ describe("@caplets/opencode", () => {
     });
   });
 
-  it("passes cloud mode config into the native service", async () => {
-    vi.resetModules();
-    const nativeMocks = {
-      createNativeCapletsService: vi.fn(() => ({
-        listTools: () => [],
-        execute: vi.fn(async () => ({})),
-        reload: vi.fn(async () => true),
-        onToolsChanged: vi.fn(() => () => {}),
-        close: vi.fn(async () => {}),
-      })),
-      registerNativeCapletsProcessCleanup: vi.fn(),
-      hasNativeRuntimeSelectionEnv: vi.fn(() => false),
-      readNativeDefaults: vi.fn(() => undefined),
-    };
-    vi.doMock("@caplets/core/native", () => nativeMocks);
-    const plugin = (await import("../src/index")).default;
-
-    await plugin(
-      {} as never,
-      { mode: "cloud", remote: { url: "https://cloud.caplets.dev" } } as never,
-    );
-
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
-      mode: "cloud",
-      remote: { url: "https://cloud.caplets.dev" },
-      telemetryIntegration: "opencode",
-    });
-  });
-
   it("uses Caplets native defaults when no explicit config is provided", async () => {
     vi.resetModules();
     const nativeMocks = {

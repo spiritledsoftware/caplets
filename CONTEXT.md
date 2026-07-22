@@ -81,12 +81,32 @@ A paired remote client whose role allows Remote Attach, MCP, and Project Binding
 _Avoid_: Regular device token, user token
 
 **Operator Client**:
-A paired remote client whose role allows dashboard and admin operations against the Caplets host, including remote-client administration, Caplet installation and configuration, and Vault administration.
+A paired remote client whose role includes every Access Client capability and additionally allows dashboard and host administration, including remote-client administration, Caplet installation and configuration, and Vault administration.
 _Avoid_: Admin device token, dashboard token
 
 **Current Host**:
 The Caplets host that served the active dashboard session and owns the runtime state being administered in that session.
 _Avoid_: Only server, global host singleton
+
+**Current Host Origin**:
+The canonical HTTP(S) origin of a Current Host: scheme, host, and optional port, with no credentials, non-root path, query, or fragment. Current Host configuration and clients resolve fixed Protocol Namespaces from this origin.
+_Avoid_: Service root, base path, endpoint URL, host URL with path
+
+**Protocol Namespace**:
+A fixed origin-root path owned by one Current Host interface: discovery at `/.well-known/caplets`, public HTTP at `/api`, exact MCP at `/mcp`, or browser UI and private ceremonies beneath `/dashboard`. Protocol Namespaces are not deployment or reverse-proxy configuration.
+_Avoid_: Configured prefix, relocatable route root, service base path
+
+**Dashboard Session Credential**:
+A host-only, HttpOnly browser credential established from an approved Operator Client and accepted only by the canonical Admin API and dashboard-private ceremonies with same-origin and conditional CSRF checks.
+_Avoid_: Dashboard token, browser bearer, dashboard-wide authority
+
+**Admin API**:
+The canonical `/api/v2/admin/*` HTTP resource interface through which Operator bearer clients and same-origin Dashboard Session Credentials administer the Current Host under explicit credential-mode precedence.
+_Avoid_: Remote CLI RPC, dashboard backend, mixed-auth endpoint, dashboard Admin alias
+
+**Caplets SDK**:
+The typed client Module for the canonical public Caplets HTTP API and the versioned Attach Project Binding WebSocket session protocol. It excludes MCP and dashboard-private authentication ceremonies.
+_Avoid_: Admin client, core client, dashboard session client
 
 **Operator Activity Log**:
 A host-owned record of sensitive Operator Client actions performed through the dashboard or operator admin surfaces.

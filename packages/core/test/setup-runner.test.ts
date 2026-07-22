@@ -13,9 +13,9 @@ describe("setup runner", () => {
     vi.doUnmock("../src/daemon");
   });
 
-  it("accepts only local_host, remote_host, and hosted_sandbox setup targets", async () => {
-    const accepted: SetupTargetKind[] = ["local_host", "remote_host", "hosted_sandbox"];
-    expect([...accepted].sort()).toEqual(["hosted_sandbox", "local_host", "remote_host"]);
+  it("accepts only local_host and remote_host setup targets", async () => {
+    const accepted: SetupTargetKind[] = ["local_host", "remote_host"];
+    expect([...accepted].sort()).toEqual(["local_host", "remote_host"]);
 
     for (const targetKind of accepted) {
       await expect(
@@ -34,8 +34,8 @@ describe("setup runner", () => {
     }
   });
 
-  it.each(["local", "remote_server", "hosted_container"])(
-    "rejects legacy stored setup target %s",
+  it.each(["local", "remote_server", "hosted_container", "hosted_sandbox"])(
+    "rejects removed or legacy stored setup target %s",
     async (targetKind) => {
       await expect(
         runCapletSetup({
@@ -51,7 +51,7 @@ describe("setup runner", () => {
         }),
       ).rejects.toMatchObject({
         code: "REQUEST_INVALID",
-        message: "setup target must be one of: local_host, remote_host, hosted_sandbox",
+        message: "setup target must be one of: local_host, remote_host",
       });
     },
   );
@@ -271,7 +271,7 @@ describe("setup runner", () => {
                 phase: "daemon",
                 label: "Start local Caplets daemon",
                 status: "completed",
-                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+                daemonBaseUrl: "http://127.0.0.1:5387/",
                 message: "daemon is healthy",
               };
             },
@@ -281,11 +281,11 @@ describe("setup runner", () => {
 
       expect(result.phases).toMatchObject([
         { phase: "config", status: "completed", path: configPath },
-        { phase: "daemon", status: "completed", daemonBaseUrl: "http://127.0.0.1:5387/caplets" },
+        { phase: "daemon", status: "completed", daemonBaseUrl: "http://127.0.0.1:5387/" },
         { phase: "integration", status: "completed" },
       ]);
       expect(upserts).toEqual([
-        { clientId: "codex", daemonBaseUrl: "http://127.0.0.1:5387/caplets", local: true },
+        { clientId: "codex", daemonBaseUrl: "http://127.0.0.1:5387/", local: true },
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -383,7 +383,7 @@ describe("setup runner", () => {
         expect.anything(),
       );
       expect(upserts).toEqual([
-        { clientId: "zed", daemonBaseUrl: "http://127.0.0.1:5387/caplets", local: true },
+        { clientId: "zed", daemonBaseUrl: "http://127.0.0.1:5387/", local: true },
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -438,7 +438,7 @@ describe("setup runner", () => {
       );
       expect(result.phases).toMatchObject([
         { phase: "config", status: "completed" },
-        { phase: "daemon", status: "completed", daemonBaseUrl: "http://127.0.0.1:5387/caplets" },
+        { phase: "daemon", status: "completed", daemonBaseUrl: "http://127.0.0.1:5387/" },
         { phase: "integration", status: "completed" },
       ]);
     } finally {
@@ -516,7 +516,7 @@ describe("setup runner", () => {
                 phase: "daemon",
                 label: "Start local Caplets daemon",
                 status: "completed",
-                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+                daemonBaseUrl: "http://127.0.0.1:5387/",
               };
             },
           },
@@ -561,7 +561,7 @@ describe("setup runner", () => {
                 phase: "daemon",
                 label: "Start local Caplets daemon",
                 status: "completed",
-                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+                daemonBaseUrl: "http://127.0.0.1:5387/",
               };
             },
           },
@@ -606,7 +606,7 @@ describe("setup runner", () => {
                 phase: "daemon",
                 label: "Start local Caplets daemon",
                 status: "completed",
-                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+                daemonBaseUrl: "http://127.0.0.1:5387/",
               };
             },
           },
@@ -642,7 +642,7 @@ describe("setup runner", () => {
               phase: "daemon",
               label: "Start local Caplets daemon",
               status: "completed",
-              daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+              daemonBaseUrl: "http://127.0.0.1:5387/",
             };
           },
         },
@@ -720,7 +720,7 @@ describe("setup runner", () => {
                 phase: "daemon",
                 label: "Start local Caplets daemon",
                 status: "completed",
-                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+                daemonBaseUrl: "http://127.0.0.1:5387/",
               };
             },
           },
@@ -744,7 +744,7 @@ describe("setup runner", () => {
 
   it("native setup installs the plugin and writes daemon defaults", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-native-setup-defaults-"));
-    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const daemonBaseUrl = "http://127.0.0.1:5387";
     const commands: Array<{ command: string; args: string[] }> = [];
     const defaultsPath = join(dir, "native-defaults.json");
     try {
@@ -800,7 +800,7 @@ describe("setup runner", () => {
               phase: "daemon",
               label: "Reuse local Caplets daemon",
               status: "reused",
-              daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+              daemonBaseUrl: "http://127.0.0.1:5387/",
             }),
           },
         }),
@@ -808,7 +808,7 @@ describe("setup runner", () => {
 
       expect(result.phases).toMatchObject([
         { phase: "config", status: "completed" },
-        { phase: "daemon", status: "reused", daemonBaseUrl: "http://127.0.0.1:5387/caplets" },
+        { phase: "daemon", status: "reused", daemonBaseUrl: "http://127.0.0.1:5387/" },
         { phase: "integration", status: "completed" },
       ]);
     } finally {
@@ -816,7 +816,7 @@ describe("setup runner", () => {
     }
   });
 
-  it("uses neutral setup target names in CLI setup copy", async () => {
+  it("uses only local and remote setup targets in CLI setup", async () => {
     const local = await runSetup("opencode", {
       target: "local_host",
       dryRun: true,
@@ -824,39 +824,106 @@ describe("setup runner", () => {
     });
     expect(JSON.parse(local)).toMatchObject({ targetKind: "local_host" });
 
-    const remoteServer = await runSetup("opencode", {
+    const remoteHost = await runSetup("opencode", {
       remote: true,
       target: "remote_host",
       dryRun: true,
       format: "json",
     });
-    expect(JSON.parse(remoteServer)).toMatchObject({ targetKind: "remote_host" });
+    expect(JSON.parse(remoteHost)).toMatchObject({ targetKind: "remote_host" });
 
-    const hostedContainer = await runSetup("opencode", {
-      target: "hosted_sandbox",
+    const remoteAlias = await runSetup("opencode", {
+      target: "remote",
       dryRun: true,
       format: "json",
     });
-    expect(JSON.parse(hostedContainer)).toMatchObject({ targetKind: "hosted_sandbox" });
+    expect(JSON.parse(remoteAlias)).toMatchObject({ targetKind: "remote_host" });
   });
 
-  it.each(["remote", "cloud", "hosted_worker"])(
-    "serializes legacy CLI setup alias %s to a semantic target",
+  it.each(["hosted_sandbox", "cloud", "hosted_worker"])(
+    "rejects removed CLI setup target %s",
     async (target) => {
-      const result = await runSetup("opencode", {
-        target: target as "remote" | "cloud" | "hosted_worker",
-        dryRun: true,
-        format: "json",
+      await expect(
+        runSetup("opencode", {
+          target: target as never,
+          dryRun: true,
+          format: "json",
+        }),
+      ).rejects.toMatchObject({
+        code: "REQUEST_INVALID",
+        message: "setup target must be one of: local_host, remote_host",
       });
-      expect(JSON.parse(result).targetKind).toBe(
-        target === "remote" ? "remote_host" : "hosted_sandbox",
-      );
     },
   );
 
+  it("rejects a removed target before running setup phases or actions", async () => {
+    const ensureUserConfig = vi.fn(async () => ({
+      phase: "config" as const,
+      label: "config",
+      status: "completed" as const,
+    }));
+    const ensureDaemon = vi.fn(async () => ({
+      phase: "daemon" as const,
+      label: "daemon",
+      status: "completed" as const,
+      daemonBaseUrl: "http://127.0.0.1:5387/",
+    }));
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "" }));
+
+    await expect(
+      runSetup("opencode", {
+        target: "hosted_sandbox" as never,
+        setupOperations: { ensureUserConfig, ensureDaemon },
+        runCommand,
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    expect(ensureUserConfig).not.toHaveBeenCalled();
+    expect(ensureDaemon).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it("treats former Cloud hostnames as ordinary generic remote setup", async () => {
+    const result = JSON.parse(
+      await runSetup("opencode", {
+        remote: true,
+        remoteUrl: "https://cloud.caplets.dev",
+        dryRun: true,
+        format: "json",
+      }),
+    );
+
+    expect(result).toMatchObject({ mode: "remote", targetKind: "remote_host" });
+    expect(result.nextSteps).toContain(
+      "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://cloud.caplets.dev.",
+    );
+  });
+
+  it("canonicalizes remote setup origins and rejects non-origin authority", async () => {
+    const result = JSON.parse(
+      await runSetup("opencode", {
+        remoteUrl: "HTTPS://CAPLETS.EXAMPLE.COM:443",
+        dryRun: true,
+        format: "json",
+      }),
+    );
+    expect(result.nextSteps).toContain(
+      "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://caplets.example.com.",
+    );
+
+    for (const remoteUrl of [
+      "https://caplets.example.com/caplets",
+      "https://user:secret@caplets.example.com",
+      "http://caplets.example.com",
+    ]) {
+      await expect(
+        runSetup("opencode", { remoteUrl, dryRun: true, format: "json" }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    }
+  });
+
   it("configures a targeted add-mcp client with daemon attach and no credential env", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-target-"));
-    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const daemonBaseUrl = "http://127.0.0.1:5387/";
     const upserts: unknown[] = [];
     try {
       const result = JSON.parse(
@@ -885,7 +952,7 @@ describe("setup runner", () => {
         {
           status: "completed",
           clientId: "zed",
-          command: "caplets attach http://127.0.0.1:5387/caplets",
+          command: "caplets attach http://127.0.0.1:5387/",
           path: join(dir, "zed.json"),
         },
       ]);
@@ -896,7 +963,7 @@ describe("setup runner", () => {
 
   it("filters detected MCP clients to stdio-capable choices before prompting", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-detected-stdio-"));
-    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const daemonBaseUrl = "http://127.0.0.1:5387/";
     const clients = [
       {
         id: "vscode",
@@ -941,7 +1008,7 @@ describe("setup runner", () => {
 
   it("keeps codex as a compatibility alias for the add-mcp adapter", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-codex-"));
-    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const daemonBaseUrl = "http://127.0.0.1:5387/";
     const upserts: unknown[] = [];
     const commands: unknown[] = [];
     try {
@@ -1008,7 +1075,7 @@ describe("setup runner", () => {
       const output = await runSetup("mcp-client", {
         client: "zed",
         env: { CAPLETS_CONFIG: join(dir, "config.json") },
-        setupOperations: fakeSetupPhases("http://127.0.0.1:5387/caplets"),
+        setupOperations: fakeSetupPhases("http://127.0.0.1:5387/"),
         mcpOperations: {
           listSupportedClients: () => fakeMcpClients(),
           upsertServer: async () => ({
@@ -1023,7 +1090,7 @@ describe("setup runner", () => {
 
       expect(output).toContain("configured Zed MCP client (project)");
       expect(output).toContain(`at ${join(dir, "zed.json")}`);
-      expect(output).toContain("command: caplets attach http://127.0.0.1:5387/caplets");
+      expect(output).toContain("command: caplets attach http://127.0.0.1:5387/");
       expect(output).toContain("dropped unsupported fields: headers");
       expect(output).toContain(`additional paths: ${join(dir, "backup.json")}`);
     } finally {
@@ -1039,7 +1106,7 @@ describe("setup runner", () => {
           client: "zed",
           format: "json",
           env: { CAPLETS_CONFIG: join(dir, "config.json") },
-          setupOperations: fakeSetupPhases("http://127.0.0.1:5387/caplets"),
+          setupOperations: fakeSetupPhases("http://127.0.0.1:5387/"),
           mcpOperations: {
             listSupportedClients: () => fakeMcpClients(),
             upsertServer: async () => ({
@@ -1069,7 +1136,7 @@ describe("setup runner", () => {
       capletId: "browser",
       contentHash: "content",
       setupHash: "setup",
-      targetKind: "hosted_sandbox",
+      targetKind: "remote_host",
       runtimeFeatures: ["browser"],
       actor: "cli-yes",
       approved: true,
@@ -1081,7 +1148,7 @@ describe("setup runner", () => {
     expect(attempts[0]).toMatchObject({
       setupHash: "setup",
       runtimeFeatures: ["browser"],
-      targetKind: "hosted_sandbox",
+      targetKind: "remote_host",
     });
   });
 
@@ -1155,8 +1222,8 @@ function mockDaemonModule() {
     daemonStatus: vi.fn(),
     installDaemon: vi.fn(),
     daemonClientBaseUrl: vi.fn(
-      (config: { serve: { host: string; port: number; path: string } }) =>
-        new URL(`http://${config.serve.host}:${config.serve.port}${config.serve.path}`),
+      (config: { serve: { host: string; port: number } }) =>
+        new URL(`http://${config.serve.host}:${config.serve.port}`),
     ),
   };
 }
@@ -1187,7 +1254,6 @@ function daemonConfig(serve: {
       transport: "http",
       host: "127.0.0.1",
       port: 5387,
-      path: "/caplets",
       loopback: true,
       warnUnauthenticatedNetwork: false,
       trustProxy: false,

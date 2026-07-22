@@ -1,6 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CURRENT_HOST_NAMESPACES, CURRENT_HOST_PATHS } from "../current-host/topology";
+
+const DASHBOARD_PAGE_ROUTES: Record<string, true> = {
+  access: true,
+  activity: true,
+  caplets: true,
+  catalog: true,
+  runtime: true,
+  settings: true,
+  "stored-caplets": true,
+  vault: true,
+};
 
 export function dashboardShell(): string {
   return `<!doctype html>
@@ -25,32 +37,60 @@ export function dashboardStaticResponse(
 ): Response | undefined {
   const filePath = dashboardStaticFilePath(requestPath, distDir);
   if (!filePath || !existsSync(filePath)) return undefined;
-  const cacheControl = requestPath.startsWith("/_astro/")
+  const cacheControl = requestPath.startsWith(`${CURRENT_HOST_PATHS.dashboardAssets}/`)
     ? "public, max-age=31536000, immutable"
     : "no-store";
   return new Response(readFileSync(filePath), {
     headers: { "cache-control": cacheControl, "content-type": contentType(filePath) },
   });
 }
+export function dashboardStaticRouteExists(
+  requestPath: string,
+  distDir = defaultDashboardDistDir(),
+): boolean {
+  const filePath = dashboardStaticFilePath(requestPath, distDir);
+  return filePath !== undefined && existsSync(filePath);
+}
 
 function dashboardStaticFilePath(requestPath: string, distDir: string): string | undefined {
   const decodedPath = safeDecodePath(requestPath);
   if (!decodedPath || hasUnsafePathSegment(decodedPath)) return undefined;
-  if (decodedPath.startsWith("/_astro/")) {
-    return safeJoin(distDir, decodedPath.slice(1));
+  if (requestPath === CURRENT_HOST_NAMESPACES.dashboard) {
+    return safeJoin(distDir, "index.html");
   }
-  if (decodedPath === "/dashboard" || decodedPath === "/dashboard/") {
-    return safeJoin(distDir, "dashboard/index.html");
+  if (requestPath.endsWith("/")) return undefined;
+
+  const assetPrefix = `${CURRENT_HOST_PATHS.dashboardAssets}/`;
+  if (
+    requestPath === decodedPath &&
+    requestPath.startsWith(assetPrefix) &&
+    decodedPath.startsWith(assetPrefix)
+  ) {
+    return safeJoin(distDir, `_astro/${decodedPath.slice(assetPrefix.length)}`);
   }
-  if (!decodedPath.startsWith("/dashboard/")) return undefined;
-  if (decodedPath.startsWith("/dashboard/api/")) return undefined;
-  const route = decodedPath.slice("/dashboard/".length).replace(/\/$/u, "");
-  if (!route) return safeJoin(distDir, "dashboard/index.html");
+
+  if (
+    decodedPath === CURRENT_HOST_PATHS.dashboardApi ||
+    decodedPath.startsWith(`${CURRENT_HOST_PATHS.dashboardApi}/`)
+  ) {
+    return undefined;
+  }
+
+  const dashboardPrefix = `${CURRENT_HOST_NAMESPACES.dashboard}/`;
+  if (!requestPath.startsWith(dashboardPrefix) || !decodedPath.startsWith(dashboardPrefix)) {
+    return undefined;
+  }
+  const route = decodedPath.slice(dashboardPrefix.length);
+  if (requestPath === decodedPath && Object.hasOwn(DASHBOARD_PAGE_ROUTES, route)) {
+    return safeJoin(distDir, `${route}/index.html`);
+  }
   if (isCatalogDetailRequest(requestPath)) {
-    return safeJoin(distDir, "dashboard/catalog/index.html");
+    return safeJoin(distDir, "catalog/index.html");
   }
-  if (route.includes(".")) return safeJoin(distDir, route);
-  return safeJoin(distDir, `dashboard/${route}/index.html`);
+  if (requestPath === decodedPath && !route.includes("/")) {
+    return safeJoin(distDir, `dashboard/${route}`);
+  }
+  return undefined;
 }
 
 function hasUnsafePathSegment(path: string): boolean {
@@ -58,12 +98,26 @@ function hasUnsafePathSegment(path: string): boolean {
 }
 
 function isCatalogDetailRequest(requestPath: string): boolean {
-  const normalizedPath = requestPath.replace(/\/+$/u, "");
-  const prefix = "/dashboard/catalog/";
-  if (!normalizedPath.startsWith(prefix)) return false;
-  const encodedEntryKey = normalizedPath.slice(prefix.length);
+  const prefix = `${CURRENT_HOST_NAMESPACES.dashboard}/catalog/`;
+  if (!requestPath.startsWith(prefix)) return false;
+  const encodedEntryKey = requestPath.slice(prefix.length);
   if (!encodedEntryKey || encodedEntryKey.includes("/")) return false;
-  return !/\.(?:css|gif|ico|jpe?g|js|json|mjs|png|svg|webp)$/iu.test(encodedEntryKey);
+  const entryKey = safeDecodePath(encodedEntryKey);
+  return (
+    entryKey !== undefined &&
+    entryKey !== "." &&
+    entryKey !== ".." &&
+    !entryKey.includes("/") &&
+    !hasControlCharacter(entryKey)
+  );
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
 }
 
 function safeDecodePath(value: string): string | undefined {
@@ -82,6 +136,7 @@ function safeJoin(root: string, relativePath: string): string | undefined {
   }
   return candidate;
 }
+
 function defaultDashboardDistDir(): string {
   const repoDistDir = join(process.cwd(), "apps/dashboard/dist");
   if (existsSync(repoDistDir)) return repoDistDir;

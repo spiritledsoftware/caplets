@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { resolveCapletsRoot, resolveConfigPath } from "../config";
-import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
+import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
 
 export type NativeDefaults = {
   version: 1;
@@ -36,7 +36,7 @@ export function writeNativeDefaults(
     version: 1,
     source: input.source,
     updatedAt: (options.now ?? new Date()).toISOString(),
-    daemon: { url: input.daemon.url },
+    daemon: { url: validateNativeDefaultsDaemonUrl(input.daemon.url) },
   };
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${JSON.stringify(defaults, null, 2)}\n`, { mode: 0o600 });
@@ -51,8 +51,8 @@ export function readNativeDefaults(
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (!isNativeDefaults(parsed)) throw new Error("invalid native defaults shape");
-    validateNativeDefaultsDaemonUrl(parsed.daemon.url);
-    return parsed;
+    const daemonUrl = validateNativeDefaultsDaemonUrl(parsed.daemon.url);
+    return { ...parsed, daemon: { url: daemonUrl } };
   } catch (error) {
     options.writeWarning?.(
       `Ignoring Caplets native defaults at ${path}: ${error instanceof Error ? error.message : "invalid file"}`,
@@ -61,11 +61,12 @@ export function readNativeDefaults(
   }
 }
 
-function validateNativeDefaultsDaemonUrl(value: string): void {
-  const url = parseServerBaseUrl(value);
-  if (url.protocol !== "http:" || !isLoopbackHost(url.hostname)) {
-    throw new Error("daemon.url must be a loopback HTTP URL");
+function validateNativeDefaultsDaemonUrl(value: string): string {
+  const origin = canonicalizeCurrentHostOrigin(value);
+  if (new URL(origin).protocol !== "http:") {
+    throw new Error("daemon.url must be a loopback HTTP origin");
   }
+  return origin;
 }
 
 function isNativeDefaults(value: unknown): value is NativeDefaults {

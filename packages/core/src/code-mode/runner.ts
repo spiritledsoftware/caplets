@@ -18,7 +18,7 @@ import type {
 } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const DEFAULT_MAX_TIMEOUT_MS = Number.MAX_SAFE_INTEGER;
+export const ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS = 120_000;
 const DEFAULT_RETURNED_LOG_BYTES = 12 * 1024;
 
 export type RunCodeModeInput = {
@@ -37,8 +37,11 @@ export type RunCodeModeInput = {
 
 export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunEnvelope> {
   const startedAt = Date.now();
-  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxTimeoutMs = input.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS;
+  const requestedTimeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMsIsValid = Number.isFinite(requestedTimeoutMs);
+  const timeoutPolicy = effectiveCodeModeTimeoutPolicy(input.maxTimeoutMs);
+  const timeoutMs = timeoutMsIsValid ? requestedTimeoutMs : timeoutPolicy.maxTimeoutMs;
+  const { maxTimeoutMs } = timeoutPolicy;
   const callable = listCodeModeCallableCaplets(input.service);
   const declaration = generateCodeModeDeclarations({ caplets: callable });
   const declarationHash = codeModeDeclarationHash(declaration);
@@ -105,20 +108,32 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     };
   }
 
-  const diagnostics =
-    timeoutMs > maxTimeoutMs
-      ? [
-          {
+  const timeoutPolicyDiagnostic = !timeoutMsIsValid
+    ? {
+        code: "TIMEOUT_POLICY_EXCEEDED",
+        severity: "error" as const,
+        message: `timeoutMs must be finite and <= ${maxTimeoutMs}.`,
+      }
+    : !timeoutPolicy.valid
+      ? {
+          code: "TIMEOUT_POLICY_EXCEEDED",
+          severity: "error" as const,
+          message: "maxTimeoutMs must be finite or omitted.",
+        }
+      : timeoutMs > maxTimeoutMs
+        ? {
             code: "TIMEOUT_POLICY_EXCEEDED",
             severity: "error" as const,
             message: `timeoutMs must be <= ${maxTimeoutMs}.`,
-          },
-        ]
-      : diagnoseCodeModeTypeScript({
-          code: input.code,
-          declaration,
-          ...(diagnosticsSession === undefined ? {} : { session: diagnosticsSession }),
-        });
+          }
+        : undefined;
+  const diagnostics = timeoutPolicyDiagnostic
+    ? [timeoutPolicyDiagnostic]
+    : diagnoseCodeModeTypeScript({
+        code: input.code,
+        declaration,
+        ...(diagnosticsSession === undefined ? {} : { session: diagnosticsSession }),
+      });
   if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
     const diagnosticJournalScope =
       input.sessionManager && input.sessionId
@@ -347,6 +362,21 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     diagnostics,
     logs,
     meta: meta(),
+  };
+}
+function effectiveCodeModeTimeoutPolicy(maxTimeoutMs: number | undefined): {
+  maxTimeoutMs: number;
+  valid: boolean;
+} {
+  if (maxTimeoutMs === undefined || maxTimeoutMs === Number.POSITIVE_INFINITY) {
+    return { maxTimeoutMs: ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS, valid: true };
+  }
+  if (!Number.isFinite(maxTimeoutMs)) {
+    return { maxTimeoutMs: ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS, valid: false };
+  }
+  return {
+    maxTimeoutMs: Math.min(maxTimeoutMs, ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS),
+    valid: true,
   };
 }
 

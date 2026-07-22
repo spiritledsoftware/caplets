@@ -31,9 +31,35 @@ export {
   CapletRecordStore,
   type CapletBundleInputFile,
   type CapletRecordView,
+  type CapletRecordSummaryView,
   type ReadCapletBundleResult,
+  type ImportCapletBundleSourcesInput,
+  type ReadCapletBundleSourcesResult,
+  type UpdateCapletBundleSourcesInput,
+  type UpdateCapletFromBundleSourcesInput,
 } from "./caplet-records";
+export {
+  bufferBundleFileSource,
+  readVerifiedBundleFile,
+  stagedBundleFileSource,
+  type BufferBundleFileInput,
+  type ReopenableBundleFileSource,
+  type StagedBundleFileInput,
+} from "./bundle-source";
+export { normalizeBundlePath, validateBundlePathSet } from "./bundle-path";
 export { BackendAuthStateStore, type BackendAuthMutationOptions } from "./backend-auth";
+export {
+  BACKEND_AUTH_FLOW_ENVELOPE_VERSION,
+  BackendAuthFlowRepository,
+  DEFAULT_BACKEND_AUTH_FLOW_RETENTION_MS,
+  MAX_BACKEND_AUTH_FLOW_PRUNE_BATCH,
+  type BackendAuthFlowClaim,
+  type BackendAuthFlowClaimResult,
+  type BackendAuthFlowRepositoryOptions,
+  type BackendAuthFlowSerializableState,
+  type BackendAuthFlowStatus,
+  type BackendAuthFlowView,
+} from "./backend-auth-flows";
 export { DashboardSessionRepository } from "./dashboard-sessions";
 export {
   ProjectBindingStore,
@@ -46,9 +72,13 @@ export {
 } from "./project-bindings";
 export {
   RemoteSecurityStore,
+  type CancelPendingLoginInput,
   type ChangeRemoteClientRoleInput,
+  type CompletedPendingLoginCredentials,
+  type CompletePendingLoginInput,
   type OperatorPendingLoginFlowInput,
   type OperatorPendingLoginInput,
+  type RefreshPendingLoginMutationInput,
   type RevokeRemoteClientInput,
 } from "./remote-security";
 export {
@@ -75,7 +105,24 @@ export {
   type VaultValueSetOptions,
   type VaultValueStoreOptions,
 } from "./vault-values";
+export { VaultStateStore, type SetVaultValueAndGrantInput } from "./vault-state";
 export { createHostStorageVaultResolver } from "./vault-resolver";
+export {
+  DEFAULT_IDEMPOTENCY_MAX_ROWS_PER_PRINCIPAL,
+  DEFAULT_IDEMPOTENCY_PENDING_TTL_MS,
+  DEFAULT_IDEMPOTENCY_RETENTION_MS,
+  IdempotencyStore,
+  MAX_IDEMPOTENCY_FINAL_BODY_BYTES,
+  MAX_IDEMPOTENCY_KEY_LENGTH,
+  type IdempotencyClaimInput,
+  type IdempotencyClaimResult,
+  type IdempotencyFinalResponse,
+  type IdempotencyFinalizeInput,
+  type IdempotencyHeartbeatInput,
+  type IdempotencyPruneResult,
+  type IdempotencyState,
+  type IdempotencyStoreOptions,
+} from "./idempotency";
 export {
   HOST_STORAGE_SCHEMA_VERSION,
   type HostStorageConfig,

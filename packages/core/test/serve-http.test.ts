@@ -1,43 +1,62 @@
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer, request as sendHttpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { serve, type WebSocketServerLike } from "@hono/node-server";
-import BetterSqlite3 from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { serve, type ServerType, type WebSocketServerLike } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
+import { backendAuthCompletionCorrelation } from "../src/auth";
+import { canonicalRootOpenApiJson } from "../src/admin-api/openapi-representation";
+import {
+  attachManifestRevisionEventSchema,
+  createRootOpenApiDocument,
+} from "../src/admin-api/openapi";
 import { CapletsEngine } from "../src/engine";
-import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import type { CapletsEngineOptions } from "../src/engine";
 import { CapletsError } from "../src/errors";
-import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import type { ProjectBindingLease } from "../src/project-binding";
+import { PROJECT_BINDING_SOCKET_PROTOCOL } from "../src/project-binding/protocol";
 import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
+import { createHostStorage } from "../src/storage";
 import {
+  ATTACH_INVOKE_REQUEST_MAX_BYTES,
+  AUTH_REQUEST_MAX_BYTES,
   CAPLETS_STACK_CHAIN_HEADER,
+  CONTROL_REQUEST_MAX_BYTES,
   createHttpServeApp,
+  createNodeServerFetch,
+  PROJECT_BINDING_STATE_POLL_INTERVAL_MS,
   sanitizeRemoteEngineOptions,
+  shutdownHttpServer,
 } from "../src/serve/http";
 import * as serveHttpModule from "../src/serve/http";
-import type { HttpAttachSessionFactory, HttpMcpSessionFactory } from "../src/serve/http";
+import type {
+  CapletsHttpApp,
+  HttpAttachSessionFactory,
+  HttpMcpSessionFactory,
+} from "../src/serve/http";
+import { readLimitedJsonObject } from "../src/serve/request-body";
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import { buildManifestExposureProjection } from "../src/exposure/projection";
 import type { HttpServeOptions } from "../src/serve/options";
-import { BackendAuthStateStore } from "../src/storage/backend-auth";
-import { sqliteSchema } from "../src/storage/schema/sqlite";
 
 const dirs: string[] = [];
-const backendAuthDatabases: Array<InstanceType<typeof BetterSqlite3>> = [];
 
 afterEach(() => {
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
-  for (const database of backendAuthDatabases.splice(0)) database.close();
 });
 
 it("forces remote artifact paths off after caller engine options", () => {
@@ -54,55 +73,1022 @@ it("forces remote artifact paths off after caller engine options", () => {
     vaultRecoveryTarget: "remote",
   });
 });
+describe("readLimitedJsonObject", () => {
+  const encoder = new TextEncoder();
+  const jsonObjectOverheadBytes = encoder.encode('{"value":""}').byteLength;
+  const jsonAtLength = (length: number): string =>
+    `{"value":"${"x".repeat(length - jsonObjectOverheadBytes)}"}`;
+  const requestWithBody = (
+    body: ReadableStream<Uint8Array>,
+    headers?: Record<string, string>,
+  ): Request =>
+    new Request("http://127.0.0.1/request", {
+      method: "POST",
+      headers,
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+  it("accepts a streamed JSON object exactly at the byte limit", async () => {
+    const maxBytes = 32;
+    const encoded = encoder.encode(jsonAtLength(maxBytes));
+    expect(encoded.byteLength).toBe(maxBytes);
+
+    const parsed = await readLimitedJsonObject(
+      requestWithBody(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoded);
+            controller.close();
+          },
+        }),
+      ),
+      "Test request",
+      maxBytes,
+    );
+
+    expect(parsed).toEqual({ value: "x".repeat(20) });
+  });
+
+  it("cancels on the first byte over the limit without pulling a trailing chunk", async () => {
+    const maxBytes = 32;
+    const encoded = encoder.encode(jsonAtLength(maxBytes + 1));
+    const chunks = [
+      encoded.subarray(0, maxBytes),
+      encoded.subarray(maxBytes),
+      encoder.encode("private trailing sentinel"),
+    ];
+    let pulls = 0;
+    let canceled = false;
+    const request = requestWithBody(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            const chunk = chunks[pulls];
+            pulls += 1;
+            if (chunk) controller.enqueue(chunk);
+            else controller.close();
+          },
+          cancel() {
+            canceled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    );
+
+    await expect(readLimitedJsonObject(request, "Test request", maxBytes)).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Test request body is too large.",
+    });
+    expect(pulls).toBe(2);
+    expect(canceled).toBe(true);
+  });
+
+  it("rejects a declared oversized body before pulling its stream", async () => {
+    let pulls = 0;
+    const request = requestWithBody(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            pulls += 1;
+            controller.enqueue(encoder.encode("{}"));
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      { "content-length": "33" },
+    );
+
+    await expect(readLimitedJsonObject(request, "Test request", 32)).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Test request body is too large.",
+    });
+    expect(pulls).toBe(0);
+  });
+
+  it("rejects malformed declared lengths before pulling the stream", async () => {
+    for (const contentLength of ["-1", "1.5", "not-a-length"]) {
+      let pulls = 0;
+      const request = requestWithBody(
+        new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(encoder.encode("{}"));
+              controller.close();
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { "content-length": contentLength },
+      );
+
+      await expect(readLimitedJsonObject(request, "Test request", 32)).rejects.toMatchObject({
+        code: "REQUEST_INVALID",
+        message: "Test request content length must be a non-negative integer.",
+      });
+      expect(pulls).toBe(0);
+    }
+  });
+
+  it("reports invalid UTF-8 and malformed JSON without reflecting input", async () => {
+    const cases = [
+      {
+        bytes: new Uint8Array([0xc3, 0x28, ...encoder.encode("private utf8 sentinel")]),
+        secret: "private utf8 sentinel",
+      },
+      {
+        bytes: encoder.encode('{"secret":"private malformed sentinel"'),
+        secret: "private malformed sentinel",
+      },
+    ];
+
+    for (const { bytes, secret } of cases) {
+      const error = await readLimitedJsonObject(
+        requestWithBody(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(bytes);
+              controller.close();
+            },
+          }),
+        ),
+        "Test request",
+        128,
+      ).then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(CapletsError);
+      expect(error).toMatchObject({
+        code: "REQUEST_INVALID",
+        message: "Test request body must be valid JSON.",
+      });
+      expect(String(error)).not.toContain(secret);
+    }
+  });
+
+  it("bounds the materialized-body fallback", async () => {
+    const bytes = encoder.encode(jsonAtLength(33));
+    const request = {
+      headers: new Headers(),
+      body: null,
+      arrayBuffer: async () => bytes.buffer,
+    } as unknown as Request;
+
+    await expect(readLimitedJsonObject(request, "Test request", 32)).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Test request body is too large.",
+    });
+  });
+});
+
 describe("createHttpServeApp", () => {
-  it("serves root info and health without auth", async () => {
+  it("keeps the registered public API method/path manifest aligned with OpenAPI", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: remoteCredentialStore(),
+      attachSessionFactory: () => ({
+        manifest: async () => attachManifest("manifest-route-parity", "parity"),
+        invoke: async () => ({ ok: true }),
+        onManifestChanged: () => () => {},
+        close: async () => {},
+      }),
+    });
+    const runtime = new Set(
+      app.routes
+        .filter((route) => route.method !== "ALL" && route.path.startsWith("/api"))
+        .map(
+          (route) =>
+            `${route.method.toUpperCase()} ${route.path.replaceAll(/:([A-Za-z0-9_]+)/gu, "{$1}")}`,
+        ),
+    );
+    const document = createRootOpenApiDocument();
+    const documented = new Set<string>();
+    for (const [path, pathItem] of Object.entries(document.paths ?? {})) {
+      for (const method of ["get", "post", "put", "patch", "delete"] as const) {
+        if (pathItem?.[method]) documented.add(`${method.toUpperCase()} ${path}`);
+      }
+    }
+    for (const operation of ["GET /api", "GET /api/openapi.json", "GET /api/v1"]) {
+      documented.add(operation);
+    }
+
+    expect([...runtime].sort()).toEqual([...documented].sort());
+    for (const excluded of [
+      "/",
+      "/.well-known/caplets",
+      "/mcp",
+      "/dashboard",
+      "/api/v1/admin",
+      "/api/v1/remote/pairing/exchange",
+    ]) {
+      expect([...runtime].some((operation) => operation.endsWith(` ${excluded}`))).toBe(false);
+      expect(Object.keys(document.paths ?? {})).not.toContain(excluded);
+    }
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("serves the fixed public discovery topology and canonical health", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const root = await app.request("http://127.0.0.1:5387/");
-    expect(root.status).toBe(200);
-    await expect(root.json()).resolves.toMatchObject({
-      name: "caplets",
-      transport: "http",
-      base: "/",
-      versions: [
-        {
-          version: 1,
-          path: "/v1",
-          links: {
-            mcp: "/v1/mcp",
-            admin: "/v1/admin",
-            attachManifest: "/v1/attach/manifest",
-            attachEvents: "/v1/attach/events",
-            attachInvoke: "/v1/attach/invoke",
-            health: "/v1/healthz",
-          },
-        },
-      ],
-      auth: { type: "development_unauthenticated" },
-    });
+    const root = await app.request("http://127.0.0.1:5387/", { redirect: "manual" });
+    expect(root.status).toBe(302);
+    expect(root.headers.get("location")).toBe("/dashboard");
+    expect(root.headers.get("cache-control")).toBe("no-store");
 
-    const v1 = await app.request("http://127.0.0.1:5387/v1");
-    expect(v1.status).toBe(200);
-    await expect(v1.json()).resolves.toMatchObject({
-      version: 1,
+    const wellKnown = await app.request("http://127.0.0.1:5387/.well-known/caplets");
+    expect(wellKnown.status).toBe(200);
+    expect(wellKnown.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(wellKnown.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(await wellKnown.text()).toBe(
+      '{"schemaVersion":1,"links":{"api":"/api","openapi":"/api/openapi.json","mcp":"/mcp","dashboard":"/dashboard"}}\n',
+    );
+    const wellKnownEtag = wellKnown.headers.get("etag");
+    expect(wellKnownEtag).toMatch(/^"[A-Za-z0-9_-]+"$/u);
+
+    const wellKnownHead = await app.request("http://127.0.0.1:5387/.well-known/caplets", {
+      method: "HEAD",
+    });
+    expect(wellKnownHead.status).toBe(200);
+    expect(wellKnownHead.headers.get("etag")).toBe(wellKnownEtag);
+    expect(await wellKnownHead.text()).toBe("");
+
+    const wellKnownConditional = await app.request("http://127.0.0.1:5387/.well-known/caplets", {
+      headers: { "If-None-Match": `"other", W/${wellKnownEtag}` },
+    });
+    expect(wellKnownConditional.status).toBe(304);
+    expect(wellKnownConditional.headers.get("etag")).toBe(wellKnownEtag);
+    expect(await wellKnownConditional.text()).toBe("");
+
+    const api = await app.request("http://127.0.0.1:5387/api");
+    expect(api.status).toBe(200);
+    expect(api.headers.get("cache-control")).toBe("no-store");
+    await expect(api.json()).resolves.toEqual({
+      name: "caplets",
+      protocol: "caplets-http",
+      schemaVersion: 1,
       links: {
-        mcp: "/v1/mcp",
-        admin: "/v1/admin",
-        attachManifest: "/v1/attach/manifest",
-        attachEvents: "/v1/attach/events",
-        attachInvoke: "/v1/attach/invoke",
-        health: "/v1/healthz",
+        self: "/api",
+        openapi: "/api/openapi.json",
+        v1: "/api/v1",
+        admin: "/api/v2/admin/host",
       },
     });
 
-    const health = await app.request("http://127.0.0.1:5387/v1/healthz");
-    expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toEqual({
-      status: "ok",
-      ready: true,
+    const v1 = await app.request("http://127.0.0.1:5387/api/v1");
+    expect(v1.status).toBe(200);
+    expect(v1.headers.get("cache-control")).toBe("no-store");
+    await expect(v1.json()).resolves.toEqual({
+      version: 1,
+      path: "/api/v1",
+      links: {
+        health: "/api/v1/healthz",
+        attachManifest: "/api/v1/attach/manifest",
+        attachEvents: "/api/v1/attach/events",
+        attachInvoke: "/api/v1/attach/invoke",
+      },
     });
 
+    const health = await app.request("http://127.0.0.1:5387/api/v1/healthz");
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toEqual({ status: "ok", ready: true });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("returns exact 405 only for unsupported canonical methods and exact JSON 404 otherwise", async () => {
+    const { engine } = testEngine();
+    const dashboardDistDir = tempDir("caplets-dashboard-routes-");
+    mkdirSync(join(dashboardDistDir, "activity"), { recursive: true });
+    mkdirSync(join(dashboardDistDir, "_astro"), { recursive: true });
+    writeFileSync(join(dashboardDistDir, "activity", "index.html"), "<main>activity</main>");
+    writeFileSync(join(dashboardDistDir, "_astro", "app.js"), "export {};");
+    const store = remoteCredentialStore();
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      dashboardDistDir,
+    });
+
+    for (const [path, method, allow] of [
+      ["/", "POST", "GET, HEAD"],
+      ["/.well-known/caplets", "POST", "GET, HEAD"],
+      ["/api", "POST", "GET, HEAD"],
+      ["/api/openapi.json", "POST", "GET, HEAD"],
+      ["/api/v1", "POST", "GET, HEAD"],
+      ["/api/v1/healthz", "POST", "GET, HEAD"],
+      ["/api/v1/remote/login/start", "GET", "POST"],
+      ["/api/v1/attach/manifest", "POST", "GET, HEAD"],
+      ["/api/v1/attach/project-bindings/connect", "POST", "GET, HEAD"],
+      ["/api/v2/admin/host", "POST", "GET, HEAD"],
+      [
+        `/api/v2/admin/catalog/entries/${encodeURIComponent("catalog:https%2F%2Fexample.test")}`,
+        "POST",
+        "GET, HEAD",
+      ],
+      ["/dashboard/activity", "POST", "GET, HEAD"],
+      ["/dashboard/_astro/app.js", "DELETE", "GET, HEAD"],
+    ] as const) {
+      const response = await app.request(`http://127.0.0.1:5387${path}`, { method });
+      expect(response.status, `${method} ${path}`).toBe(405);
+      expect(response.headers.get("allow"), `${method} ${path}`).toBe(allow);
+    }
+
+    for (const path of [
+      "/api/",
+      "/api/v1/",
+      "/mcp/",
+      "/v1/healthz",
+      "/v1/mcp",
+      "/v1/admin",
+      "/v2/admin/host",
+      "/api/v1/admin",
+      "/api/v1/remote/pairing/exchange",
+      "/openapi.json",
+      "/tenant/tools/api",
+    ]) {
+      const response = await app.request(`http://127.0.0.1:5387${path}`);
+      expect(response.status, path).toBe(404);
+      expect(response.headers.get("content-type"), path).toBe("application/json");
+      expect(response.headers.get("cache-control"), path).toBe("no-store");
+      expect(await response.text(), path).toBe('{"error":"not_found"}');
+      expect(response.headers.get("location"), path).toBeNull();
+      expect(response.headers.get("deprecation"), path).toBeNull();
+      expect(response.headers.get("link"), path).toBeNull();
+    }
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects raw request paths normalized by the Node HTTP adapter", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+    const server = await startTestHttpServer(app);
+
+    const canonical = await requestRawHttp(server.origin, "/api/v1/healthz");
+    expect(canonical.status).toBe(200);
+
+    for (const path of ["/tenant/%2e%2e/api/v1/healthz", "/api/%2e/v1/healthz"]) {
+      const response = await requestRawHttp(server.origin, path);
+      expect(response.status, path).toBe(404);
+      expect(response.headers["content-type"], path).toBe("application/json");
+      expect(response.headers["cache-control"], path).toBe("no-store");
+      expect(response.body, path).toBe('{"error":"not_found"}');
+      expect(response.headers.location, path).toBeUndefined();
+    }
+
+    await server.close();
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("mounts the Admin resource surface behind exact Operator bearer or dashboard authority", async () => {
+    const credentialStore = remoteCredentialStore();
+    const accessCredentials = pairedClient(credentialStore);
+    const operatorCredentials = pairedClient(credentialStore, "http://127.0.0.1:5387/", "operator");
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({
+        auth: { type: "remote_credentials" },
+      }),
+      engine,
+      { writeErr: () => {}, remoteCredentialStore: credentialStore },
+    );
+
+    const bearer = await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
+      headers: {
+        authorization: `Bearer ${operatorCredentials.accessToken}`,
+        "x-caplets-csrf": "ignored-by-bearer",
+      },
+    });
+    expect(bearer.status).toBe(200);
+    expect(bearer.headers.get("cache-control")).toBe("no-store");
+
+    for (const [name, headers, status, code, type] of [
+      [
+        "missing bearer",
+        undefined,
+        401,
+        "AUTH_REQUIRED",
+        "urn:caplets:problem:authentication-required",
+      ],
+      [
+        "malformed bearer",
+        { authorization: "Bearer" },
+        401,
+        "AUTH_REQUIRED",
+        "urn:caplets:problem:authentication-required",
+      ],
+      [
+        "Access Client bearer",
+        { authorization: `Bearer ${accessCredentials.accessToken}` },
+        403,
+        "AUTH_FAILED",
+        "urn:caplets:problem:forbidden",
+      ],
+      [
+        "invalid dashboard cookie",
+        { cookie: "caplets_dashboard_session=not-bearer-authority" },
+        401,
+        "AUTH_REQUIRED",
+        "urn:caplets:problem:authentication-required",
+      ],
+    ] as const) {
+      const response = await app.request(
+        "http://127.0.0.1:5387/api/v2/admin/host",
+        headers ? { headers } : undefined,
+      );
+      expect(response.status, name).toBe(status);
+      expect(response.headers.get("content-type"), name).toBe("application/problem+json");
+      expect(response.headers.get("cache-control"), name).toBe("no-store");
+      await expect(response.json(), name).resolves.toMatchObject({ status, code, type });
+    }
+
+    expect(
+      (await app.request("http://127.0.0.1:5387/tenant/tools/dashboard/api/summary")).status,
+    ).toBe(404);
+    expect((await app.request("http://127.0.0.1:5387/tenant/tools/v2/admin/host")).status).toBe(
+      404,
+    );
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("projects authoritative Host runtime, logs, and active Project Binding state", async () => {
+    const credentialStore = remoteCredentialStore();
+    const operatorCredentials = pairedClient(credentialStore, "http://127.0.0.1:5387/", "operator");
+    const { engine } = testEngine();
+    vi.spyOn(engine, "readiness").mockResolvedValue({
+      ready: false,
+      reason: "database_unavailable",
+    });
+    const listPage = vi.fn().mockResolvedValue({
+      items: [
+        {
+          timestamp: "2026-07-20T12:00:00.000Z",
+          level: "error",
+          message: "Runtime storage probe failed.",
+          source: "runtime",
+        },
+      ],
+    });
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-host-state-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(
+      httpOptions({
+        auth: { type: "remote_credentials" },
+      }),
+      engine,
+      {
+        writeErr: () => {},
+        remoteCredentialStore: credentialStore,
+        currentHostLogState: { listPage },
+        projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+      },
+    );
+    const authorization = `Bearer ${operatorCredentials.accessToken}`;
+
+    const binding = await app.request(
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
+      {
+        method: "POST",
+        headers: { authorization, "content-type": "application/json" },
+        body: JSON.stringify({
+          projectRoot: "/repo",
+          projectFingerprint: "sha256_host_state",
+        }),
+      },
+    );
+    expect(binding.status).toBe(201);
+
+    const host = await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
+      headers: { authorization },
+    });
+    expect(host.status).toBe(200);
+    await expect(host.json()).resolves.toMatchObject({
+      sections: {
+        runtime: { status: "error" },
+        projectBinding: { state: "connected" },
+      },
+    });
+
+    const runtime = await app.request("http://127.0.0.1:5387/api/v2/admin/runtime", {
+      headers: { authorization },
+    });
+    expect(runtime.status).toBe(200);
+    await expect(runtime.json()).resolves.toMatchObject({
+      runtime: { status: "error", reason: "database_unavailable" },
+    });
+
+    const diagnostics = await app.request("http://127.0.0.1:5387/api/v2/admin/diagnostics", {
+      headers: { authorization },
+    });
+    expect(diagnostics.status).toBe(200);
+    await expect(diagnostics.json()).resolves.toMatchObject({
+      status: "error",
+      checks: [{ id: "runtime", status: "error", detail: "database_unavailable" }],
+    });
+
+    const projectBinding = await app.request("http://127.0.0.1:5387/api/v2/admin/project-binding", {
+      headers: { authorization },
+    });
+    expect(projectBinding.status).toBe(200);
+    await expect(projectBinding.json()).resolves.toMatchObject({ state: "connected" });
+
+    const logs = await app.request("http://127.0.0.1:5387/api/v2/admin/logs", {
+      headers: { authorization },
+    });
+    expect(logs.status).toBe(200);
+    await expect(logs.json()).resolves.toMatchObject({
+      items: [{ message: "Runtime storage probe failed." }],
+    });
+    expect(listPage).toHaveBeenCalledWith({ sort: "asc" });
+
+    const events = await app.request("http://127.0.0.1:5387/api/v2/admin/events", {
+      headers: { authorization },
+    });
+    expect(events.status).toBe(200);
+    const reader = events.body?.getReader();
+    const eventChunk = await reader?.read();
+    await reader?.cancel();
+    const eventBody = new TextDecoder().decode(eventChunk?.value);
+    expect(eventBody).toContain('"status":"error"');
+    expect(eventBody).toContain('"state":"connected"');
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("answers Current Host Project Binding state with a bounded repository lookup", async () => {
+    const context = testContext();
+    const storage = await testAuthoritativeHostStorage(context.configPath);
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: storage,
+      watch: false,
+    });
+    const existsActive = vi.spyOn(storage.projectBindings, "existsActive").mockResolvedValue(true);
+    const list = vi
+      .spyOn(storage.projectBindings, "list")
+      .mockRejectedValue(new Error("Current Host state must not scan binding history."));
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: storage,
+    });
+
+    try {
+      const response = await app.request("http://127.0.0.1:5387/api/v2/admin/project-binding");
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ state: "connected" });
+      expect(existsActive).toHaveBeenCalledOnce();
+      expect(existsActive).toHaveBeenCalledWith(expect.any(Date));
+      expect(list).not.toHaveBeenCalled();
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+    }
+  });
+
+  it("bounds active request drain and rejects work admitted after shutdown starts", async () => {
+    const { engine } = testEngine();
+    const closeEngine = vi.spyOn(engine, "close");
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+    const requestStarted = Promise.withResolvers<void>();
+    const releaseRequest = Promise.withResolvers<void>();
+    app.get("/shutdown-hang", async (c) => {
+      requestStarted.resolve();
+      await releaseRequest.promise;
+      return c.text("completed");
+    });
+    app.get("/shutdown-late", (c) => c.text("admitted"));
+    const server = await startTestHttpServer(app);
+    const hangingRequest = fetch(`${server.origin}/shutdown-hang`).then(
+      () => "completed",
+      () => "closed",
+    );
+    let shutdown: Promise<void> | undefined;
+
+    try {
+      await requestStarted.promise;
+      shutdown = shutdownHttpServer(server.server, app, engine, { activeRequestGraceMs: 25 });
+      const lateAppResponse = await app.request("http://127.0.0.1/shutdown-late");
+      const lateNetwork = fetch(`${server.origin}/shutdown-late`).then(
+        () => "admitted",
+        () => "rejected",
+      );
+      // This live-server regression deliberately observes the real shutdown grace deadline.
+      const settledWithinGrace = await Promise.race([
+        shutdown.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+      ]);
+      const lateNetworkResult = await lateNetwork;
+
+      expect(settledWithinGrace).toBe(true);
+      expect(lateAppResponse.status).toBe(503);
+      expect(lateNetworkResult).toBe("rejected");
+      await expect(hangingRequest).resolves.toBe("closed");
+      expect(closeEngine).toHaveBeenCalledOnce();
+    } finally {
+      releaseRequest.resolve();
+      await shutdown?.catch(() => undefined);
+      if (!shutdown) {
+        await server.close();
+        await engine.close();
+      }
+    }
+  });
+
+  it("refreshes an initial stream when its first durable poll resolves with newer state", async () => {
+    const context = testContext();
+    const storage = await testAuthoritativeHostStorage(context.configPath);
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: storage,
+      watch: false,
+    });
+    const pollRead = Promise.withResolvers<boolean>();
+    const initialRead = Promise.withResolvers<boolean>();
+    vi.spyOn(storage.projectBindings, "existsActive")
+      .mockImplementationOnce(() => pollRead.promise)
+      .mockImplementationOnce(() => initialRead.promise)
+      .mockResolvedValue(true);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: storage,
+    });
+
+    try {
+      const response = await app.request("http://127.0.0.1:5387/api/v2/admin/events");
+      const reader = response.body!.getReader();
+      initialRead.resolve(false);
+      const initial = await reader.read();
+      expect(new TextDecoder().decode(initial.value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      const changed = reader.read();
+      pollRead.resolve(true);
+      const closing = Promise.withResolvers<void>();
+      setImmediate(() => {
+        void app.closeCapletsSessions().then(closing.resolve, closing.reject);
+      });
+      const next = await changed;
+      expect(next.done).toBe(false);
+      expect(new TextDecoder().decode(next.value)).toContain(
+        '"projectBinding":{"state":"connected"}',
+      );
+      await closing.promise;
+      await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+    }
+  });
+
+  it("streams cross-Host-Node durable Project Binding changes without duplicate snapshots or orphan polling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-21T12:00:00.000Z"));
+    const context = testContext();
+    const observerStorage = await testAuthoritativeHostStorage(context.configPath);
+    const writerStorage = await testAuthoritativeHostStorage(context.configPath);
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: observerStorage,
+      watch: false,
+    });
+    const existsActive = vi.spyOn(observerStorage.projectBindings, "existsActive");
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: observerStorage,
+    });
+
+    try {
+      const response = await app.request("http://127.0.0.1:5387/api/v2/admin/events");
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const initial = await reader.read();
+      expect(new TextDecoder().decode(initial.value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      const first = await writerStorage.projectBindings.create({
+        bindingId: "binding-cross-node-expiry",
+        sessionId: "session-cross-node-expiry",
+        projectFingerprint: "sha256:cross-node-expiry",
+        projectRoot: "/client/cross-node-expiry",
+        serverProjectRoot: "/host/cross-node-expiry",
+        ownerNodeId: "writer-node",
+        leaseTtlMs: 2_000,
+      });
+      const connected = reader.read();
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await connected).value)).toContain(
+        '"projectBinding":{"state":"connected"}',
+      );
+
+      await writerStorage.projectBindings.heartbeat({
+        bindingId: first.bindingId,
+        ownerNodeId: first.ownerNodeId,
+        sessionId: first.sessionId,
+        expectedGeneration: first.generation,
+        state: "ready",
+        syncState: "idle",
+        leaseTtlMs: 2_000,
+      });
+      let unchangedSettled = false;
+      const expired = reader.read().finally(() => {
+        unchangedSettled = true;
+      });
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(unchangedSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await expired).value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      const second = await writerStorage.projectBindings.create({
+        bindingId: "binding-cross-node-end",
+        sessionId: "session-cross-node-end",
+        projectFingerprint: "sha256:cross-node-end",
+        projectRoot: "/client/cross-node-end",
+        serverProjectRoot: "/host/cross-node-end",
+        ownerNodeId: "writer-node",
+        leaseTtlMs: 2_000,
+      });
+      const reconnected = reader.read();
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await reconnected).value)).toContain(
+        '"projectBinding":{"state":"connected"}',
+      );
+
+      await writerStorage.projectBindings.end({
+        bindingId: second.bindingId,
+        ownerNodeId: second.ownerNodeId,
+        expectedGeneration: second.generation,
+      });
+      const ended = reader.read();
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS);
+      expect(new TextDecoder().decode((await ended).value)).toContain(
+        '"projectBinding":{"state":"disconnected"}',
+      );
+
+      await reader.cancel("subscriber disconnected");
+      const callsAfterCancel = existsActive.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS * 5);
+      expect(existsActive).toHaveBeenCalledTimes(callsAfterCancel);
+
+      const closingResponse = await app.request("http://127.0.0.1:5387/api/v2/admin/events");
+      const closingReader = closingResponse.body!.getReader();
+      await closingReader.read();
+      await app.closeCapletsSessions();
+      const callsAfterClose = existsActive.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(PROJECT_BINDING_STATE_POLL_INTERVAL_MS * 5);
+      expect(existsActive).toHaveBeenCalledTimes(callsAfterClose);
+      await expect(closingReader.read()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+      await writerStorage.close();
+      await observerStorage.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("serves the canonical root OpenAPI bytes publicly with conditional caching", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/api/openapi.json");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(
+      "application/vnd.oai.openapi+json;version=3.1",
+    );
+    expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(await response.text()).toBe(canonicalRootOpenApiJson());
+    const etag = response.headers.get("etag");
+    expect(etag).toMatch(/^"[A-Za-z0-9_-]+"$/u);
+
+    const conditional = await app.request("http://127.0.0.1:5387/api/openapi.json", {
+      headers: { "If-None-Match": `W/${etag}` },
+    });
+    expect(conditional.status).toBe(304);
+    expect(await conditional.text()).toBe("");
+    expect(conditional.headers.get("etag")).toBe(etag);
+    expect((await app.request("http://127.0.0.1:5387/openapi.json")).status).toBe(404);
+
+    await engine.close();
+  });
+
+  it("applies upload admission configuration and drains active requests before clean close", async () => {
+    const context = testContext();
+    const storage = await testAuthoritativeHostStorage(context.configPath);
+    const stagingRoot = tempDir("caplets-admin-upload-serve-");
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      hostStorage: storage,
+      watch: false,
+    });
+    const app = createHttpServeApp(
+      httpOptions({
+        adminUploads: {
+          stagingDir: stagingRoot,
+          maxConcurrent: 1,
+          maxStagedBytes: 400_000_000,
+        },
+      }),
+      engine,
+      { writeErr: () => {}, control: context, authoritativeStorage: storage },
+    );
+
+    const requestStarted = Promise.withResolvers<void>();
+    const releaseRequest = Promise.withResolvers<void>();
+    let pulled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          if (pulled) return;
+          pulled = true;
+          requestStarted.resolve();
+          await releaseRequest.promise;
+          controller.enqueue(new TextEncoder().encode("--empty-upload--\r\n"));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const activeRequest = Promise.resolve(
+      app.fetch(
+        new Request("http://127.0.0.1:5387/api/v2/admin/caplet-records/upload-test/bundle", {
+          method: "PUT",
+          headers: {
+            "content-type": "multipart/form-data; boundary=empty-upload",
+            "idempotency-key": "empty-upload",
+            "if-none-match": "*",
+          },
+          body,
+          duplex: "half",
+        } as RequestInit & { duplex: "half" }),
+      ),
+    );
+    await requestStarted.promise;
+    expect(
+      readdirSync(stagingRoot).filter((entry) => entry.startsWith("caplets-admin-upload-")),
+    ).toHaveLength(1);
+    const concurrentUpload = await app.request(
+      "http://127.0.0.1:5387/api/v2/admin/caplet-records/upload-capacity/bundle",
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "multipart/form-data; boundary=capacity-upload",
+          "idempotency-key": "capacity-upload",
+          "if-none-match": "*",
+        },
+        body: "--capacity-upload--\r\n",
+      },
+    );
+    expect(concurrentUpload.status).toBe(429);
+    expect(concurrentUpload.headers.get("retry-after")).toBe("1");
+    let closed = false;
+    const closing = app.closeCapletsSessions().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    releaseRequest.resolve();
+    const upload = await activeRequest;
+    expect(upload.status).toBe(400);
+    await closing;
+    expect(readdirSync(stagingRoot)).toEqual([]);
+
+    await engine.close();
+    await storage.close();
+  });
+
+  it("applies the named body class to representative auth, dashboard, and attach routes", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const store = remoteCredentialStore();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      control: context,
+      remoteCredentialStore: store,
+    });
+    const authApp = createHttpServeApp(
+      httpOptions({ auth: { type: "remote_credentials" } }),
+      engine,
+      {
+        writeErr: () => {},
+        control: context,
+        remoteCredentialStore: store,
+      },
+    );
+    const encoder = new TextEncoder();
+    const routeCases = [
+      {
+        name: "auth",
+        app: authApp,
+        url: "http://127.0.0.1:5387/api/v1/remote/login/start",
+        maxBytes: AUTH_REQUEST_MAX_BYTES,
+        headers: { "content-type": "application/json" },
+        body: { clientLabel: "Bounded Client" },
+        status: 200,
+        expected: { flowId: expect.any(String) },
+      },
+      {
+        app,
+        name: "dashboard",
+        url: "http://127.0.0.1:5387/dashboard/api/private/vault-reveals",
+        maxBytes: CONTROL_REQUEST_MAX_BYTES,
+        headers: {
+          "content-type": "application/json",
+          "x-caplets-csrf": "development_unauthenticated",
+        },
+        body: {},
+        status: 400,
+        expected: {
+          ok: false,
+          error: { code: "REQUEST_INVALID", message: "key must be a non-empty string." },
+        },
+      },
+      {
+        app,
+        name: "attach",
+        url: "http://127.0.0.1:5387/api/v1/attach/invoke",
+        maxBytes: ATTACH_INVOKE_REQUEST_MAX_BYTES,
+        headers: { "content-type": "application/json" },
+        body: {},
+        status: 400,
+        expected: {
+          ok: false,
+          error: {
+            code: "REQUEST_INVALID",
+            message: "Attach invoke request requires revision, kind, and exportId.",
+          },
+        },
+      },
+    ] as const;
+
+    for (const routeCase of routeCases) {
+      const inLimit = await routeCase.app.request(routeCase.url, {
+        method: "POST",
+        headers: routeCase.headers,
+        body: JSON.stringify(routeCase.body),
+      });
+      expect(inLimit.status, `${routeCase.name} in-limit status`).toBe(routeCase.status);
+      await expect(inLimit.json()).resolves.toMatchObject(routeCase.expected);
+
+      let pulls = 0;
+      const declaredOversize = await routeCase.app.request(routeCase.url, {
+        method: "POST",
+        headers: {
+          ...routeCase.headers,
+          "content-length": String(routeCase.maxBytes + 1),
+        },
+        body: new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(encoder.encode("{}"));
+              controller.close();
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+      expect(declaredOversize.status, `${routeCase.name} declared-oversize status`).toBe(400);
+      await expect(declaredOversize.json()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "REQUEST_INVALID", message: expect.stringContaining("too large") },
+      });
+      expect(pulls, `${routeCase.name} declared-oversize pulls`).toBe(0);
+    }
+
+    await authApp.closeCapletsSessions();
+    await app.closeCapletsSessions();
     await engine.close();
   });
 
@@ -113,12 +1099,12 @@ describe("createHttpServeApp", () => {
       writeErr: (value) => logs.push(value),
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/healthz");
+    const response = await app.request("http://127.0.0.1:5387/api/v1/healthz");
 
     expect(response.status).toBe(200);
-    expect(logs.join("")).toContain("<-- GET /v1/healthz");
+    expect(logs.join("")).toContain("<-- GET /api/v1/healthz");
     const plainLogs = logs.join("").replaceAll(String.fromCharCode(27), "");
-    expect(plainLogs).toContain("--> GET /v1/healthz");
+    expect(plainLogs).toContain("--> GET /api/v1/healthz");
     expect(plainLogs).toContain("200");
 
     await engine.close();
@@ -135,11 +1121,11 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const missing = await app.request("http://127.0.0.1:5387/v1/mcp", { method: "POST" });
+    const missing = await app.request("http://127.0.0.1:5387/mcp", { method: "POST" });
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toBeNull();
 
-    const wrong = await app.request("http://127.0.0.1:5387/v1/mcp", {
+    const wrong = await app.request("http://127.0.0.1:5387/mcp", {
       method: "POST",
       headers: {
         authorization: `Basic ${Buffer.from("caplets:password").toString("base64")}`,
@@ -166,13 +1152,7 @@ describe("createHttpServeApp", () => {
       remoteCredentialStore: store,
     });
 
-    const root = await app.request("http://127.0.0.1:5387/");
-    expect(root.status).toBe(200);
-    await expect(root.json()).resolves.toMatchObject({
-      auth: { type: "remote_credentials" },
-    });
-
-    const basic = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const basic = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: {
         authorization: `Basic ${Buffer.from("caplets:password").toString("base64")}`,
       },
@@ -180,29 +1160,25 @@ describe("createHttpServeApp", () => {
     expect(basic.status).toBe(401);
     expect(basic.headers.get("www-authenticate")).toBeNull();
 
-    const attach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const attach = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { authorization: `Bearer ${credentials.accessToken}` },
     });
     expect(attach.status).toBe(200);
 
     const project = await app.request(
-      "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/bind_123/status",
       { headers: { authorization: `Bearer ${credentials.accessToken}` } },
     );
     expect(project.status).toBe(200);
 
-    const control = await app.request("http://127.0.0.1:5387/v1/admin", {
-      method: "POST",
+    const admin = await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
       headers: {
         authorization: `Bearer ${operatorCredentials.accessToken}`,
-        "content-type": "application/json",
       },
-      body: JSON.stringify({ command: "list", arguments: {} }),
     });
-    expect(control.status).toBe(200);
-    await expect(control.json()).resolves.toMatchObject({ ok: true });
+    expect(admin.status).toBe(200);
 
-    const mcp = await app.request("http://127.0.0.1:5387/v1/mcp", {
+    const mcp = await app.request("http://127.0.0.1:5387/mcp", {
       method: "POST",
       headers: {
         authorization: `Bearer ${credentials.accessToken}`,
@@ -223,18 +1199,18 @@ describe("createHttpServeApp", () => {
     });
     expect(mcp.status).toBe(200);
 
-    const operatorAttach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const operatorAttach = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { authorization: `Bearer ${operatorCredentials.accessToken}` },
     });
     expect(operatorAttach.status).toBe(200);
 
     const operatorProjectBinding = await app.request(
-      "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/bind_123/status",
       { headers: { authorization: `Bearer ${operatorCredentials.accessToken}` } },
     );
     expect(operatorProjectBinding.status).toBe(200);
 
-    const operatorMcp = await app.request("http://127.0.0.1:5387/v1/mcp", {
+    const operatorMcp = await app.request("http://127.0.0.1:5387/mcp", {
       method: "POST",
       headers: {
         authorization: `Bearer ${operatorCredentials.accessToken}`,
@@ -257,69 +1233,6 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("reports remote credential host identity metadata from the public origin", async () => {
-    const { engine } = testEngine();
-    const app = createHttpServeApp(
-      httpOptions({
-        publicOrigin: "https://caplets.example.com",
-        auth: { type: "remote_credentials" },
-      }),
-      engine,
-      { writeErr: () => {}, remoteCredentialStore: remoteCredentialStore() },
-    );
-
-    const root = await app.request("http://127.0.0.1:5387/");
-    expect(root.status).toBe(200);
-    await expect(root.json()).resolves.toMatchObject({
-      remote: {
-        hostIdentity: "https://caplets.example.com/",
-        audience: "https://caplets.example.com/",
-      },
-      versions: [
-        expect.objectContaining({
-          remote: {
-            hostIdentity: "https://caplets.example.com/",
-            audience: "https://caplets.example.com/",
-          },
-        }),
-      ],
-    });
-
-    const version = await app.request("http://127.0.0.1:5387/v1");
-    expect(version.status).toBe(200);
-    await expect(version.json()).resolves.toMatchObject({
-      remote: {
-        hostIdentity: "https://caplets.example.com/",
-        audience: "https://caplets.example.com/",
-      },
-    });
-
-    await engine.close();
-  });
-
-  it("rejects legacy Pairing Code exchange over HTTP", async () => {
-    const { engine } = testEngine();
-    const store = remoteCredentialStore();
-    const issued = store.createPairingCode({ hostUrl: "http://127.0.0.1:5387/" });
-    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
-      writeErr: () => {},
-      remoteCredentialStore: store,
-    });
-
-    const exchanged = await app.request("http://127.0.0.1:5387/v1/remote/pairing/exchange", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: issued.code, clientLabel: "Test Client" }),
-    });
-
-    expect(exchanged.status).toBe(400);
-    await expect(exchanged.json()).resolves.toMatchObject({
-      error: { code: "REQUEST_INVALID", message: expect.stringContaining("no longer supported") },
-    });
-
-    await engine.close();
-  });
-
   it("does not collapse HTTP pending login starts into an eight-flow empty-source quota", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
@@ -329,7 +1242,7 @@ describe("createHttpServeApp", () => {
     });
 
     for (let index = 0; index < 9; index += 1) {
-      const started = await app.request("http://127.0.0.1:5387/v1/remote/login/start", {
+      const started = await app.request("http://127.0.0.1:5387/api/v1/remote/login/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ clientLabel: `Client ${index}` }),
@@ -361,7 +1274,7 @@ describe("createHttpServeApp", () => {
     };
 
     for (let index = 0; index < 8; index += 1) {
-      const started = await app.request("http://10.0.0.5:5387/v1/remote/login/start", {
+      const started = await app.request("http://10.0.0.5:5387/api/v1/remote/login/start", {
         method: "POST",
         headers,
         body: JSON.stringify({ clientLabel: `Client ${index}` }),
@@ -369,7 +1282,7 @@ describe("createHttpServeApp", () => {
       expect(started.status).toBe(200);
     }
 
-    const blocked = await app.request("http://10.0.0.5:5387/v1/remote/login/start", {
+    const blocked = await app.request("http://10.0.0.5:5387/api/v1/remote/login/start", {
       method: "POST",
       headers,
       body: JSON.stringify({ clientLabel: "Blocked client" }),
@@ -379,7 +1292,7 @@ describe("createHttpServeApp", () => {
       error: { message: "Too many active pending logins for this source." },
     });
 
-    const otherSource = await app.request("http://10.0.0.5:5387/v1/remote/login/start", {
+    const otherSource = await app.request("http://10.0.0.5:5387/api/v1/remote/login/start", {
       method: "POST",
       headers: { ...headers, "x-forwarded-for": "203.0.113.8" },
       body: JSON.stringify({ clientLabel: "Other source" }),
@@ -397,7 +1310,7 @@ describe("createHttpServeApp", () => {
       remoteCredentialStore: store,
     });
 
-    const started = await app.request("http://127.0.0.1:5387/v1/remote/login/start", {
+    const started = await app.request("http://127.0.0.1:5387/api/v1/remote/login/start", {
       method: "POST",
       headers: { host: "attacker.example.com", "content-type": "application/json" },
       body: JSON.stringify({ clientLabel: "Blocked client" }),
@@ -416,7 +1329,7 @@ describe("createHttpServeApp", () => {
       remoteCredentialStore: store,
     });
 
-    const started = await app.request("http://127.0.0.1:5387/v1/remote/login/start", {
+    const started = await app.request("http://127.0.0.1:5387/api/v1/remote/login/start", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -444,7 +1357,7 @@ describe("createHttpServeApp", () => {
     expect(pending.pendingRefreshSecret).toMatch(/^cap_pending_refresh_/u);
     expect(pending.pendingCompletionSecret).toMatch(/^cap_pending_complete_/u);
 
-    const waiting = await app.request("http://127.0.0.1:5387/v1/remote/login/poll", {
+    const waiting = await app.request("http://127.0.0.1:5387/api/v1/remote/login/poll", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -455,12 +1368,12 @@ describe("createHttpServeApp", () => {
     expect(waiting.status).toBe(200);
     await expect(waiting.json()).resolves.toMatchObject({ status: "pending" });
 
-    expect(await app.request("http://127.0.0.1:5387/v1/remote/login/approve")).toMatchObject({
+    expect(await app.request("http://127.0.0.1:5387/api/v1/remote/login/approve")).toMatchObject({
       status: 404,
     });
     store.approvePendingLogin({ operatorCode: pending.operatorCode });
 
-    const approved = await app.request("http://127.0.0.1:5387/v1/remote/login/poll", {
+    const approved = await app.request("http://127.0.0.1:5387/api/v1/remote/login/poll", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -471,7 +1384,7 @@ describe("createHttpServeApp", () => {
     expect(approved.status).toBe(200);
     await expect(approved.json()).resolves.toMatchObject({ status: "approved" });
 
-    const completed = await app.request("http://127.0.0.1:5387/v1/remote/login/complete", {
+    const completed = await app.request("http://127.0.0.1:5387/api/v1/remote/login/complete", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -488,7 +1401,7 @@ describe("createHttpServeApp", () => {
     expect(credentials.accessToken).not.toBe(pending.pendingRefreshSecret);
     expect(credentials.refreshToken).not.toBe(pending.pendingCompletionSecret);
 
-    const attach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const attach = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { authorization: `Bearer ${credentials.accessToken}` },
     });
     expect(attach.status).toBe(200);
@@ -507,7 +1420,7 @@ describe("createHttpServeApp", () => {
       } as unknown as RemoteServerCredentialStore,
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/remote/refresh", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ refreshToken: "refresh-token" }),
@@ -536,7 +1449,7 @@ describe("createHttpServeApp", () => {
       } as unknown as RemoteServerCredentialStore,
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/remote/refresh", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ refreshToken: "refresh-token" }),
@@ -560,7 +1473,7 @@ describe("createHttpServeApp", () => {
       remoteCredentialStore: store,
     });
 
-    const revoked = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+    const revoked = await app.request("http://127.0.0.1:5387/api/v1/remote/client", {
       method: "DELETE",
       headers: { authorization: `Bearer ${credentials.accessToken}` },
     });
@@ -570,7 +1483,7 @@ describe("createHttpServeApp", () => {
       revoked: true,
       clientId: credentials.clientId,
     });
-    const attach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const attach = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { authorization: `Bearer ${credentials.accessToken}` },
     });
     expect(attach.status).toBe(401);
@@ -596,7 +1509,7 @@ describe("createHttpServeApp", () => {
       remoteCredentialStore: store,
     });
 
-    const revokedAccess = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+    const revokedAccess = await app.request("http://127.0.0.1:5387/api/v1/remote/client", {
       method: "DELETE",
       headers: {
         authorization: `Bearer ${access.accessToken}`,
@@ -610,17 +1523,17 @@ describe("createHttpServeApp", () => {
       clientId: access.clientId,
     });
     expect(
-      await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
         headers: { authorization: `Bearer ${access.accessToken}` },
       }),
     ).toHaveProperty("status", 401);
     expect(
-      await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
         headers: { authorization: `Bearer ${otherAccess.accessToken}` },
       }),
     ).toHaveProperty("status", 200);
 
-    const revokedOperator = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+    const revokedOperator = await app.request("http://127.0.0.1:5387/api/v1/remote/client", {
       method: "DELETE",
       headers: {
         authorization: `Bearer ${operator.accessToken}`,
@@ -634,26 +1547,19 @@ describe("createHttpServeApp", () => {
       clientId: operator.clientId,
     });
     expect(
-      await app.request("http://127.0.0.1:5387/v1/admin", {
-        method: "POST",
+      await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
         headers: {
           authorization: `Bearer ${operator.accessToken}`,
-          "content-type": "application/json",
         },
-        body: JSON.stringify({ command: "list", arguments: {} }),
       }),
     ).toHaveProperty("status", 401);
     expect(
-      await app.request("http://127.0.0.1:5387/v1/admin", {
-        method: "POST",
+      await app.request("http://127.0.0.1:5387/api/v2/admin/host", {
         headers: {
           authorization: `Bearer ${otherOperator.accessToken}`,
-          "content-type": "application/json",
         },
-        body: JSON.stringify({ command: "list", arguments: {} }),
       }),
     ).toHaveProperty("status", 200);
-
     await engine.close();
   });
 
@@ -702,7 +1608,7 @@ describe("createHttpServeApp", () => {
       },
     );
 
-    const refreshed = await app.request("http://10.0.0.5:5387/v1/remote/refresh", {
+    const refreshed = await app.request("http://10.0.0.5:5387/api/v1/remote/refresh", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -714,7 +1620,7 @@ describe("createHttpServeApp", () => {
     expect(refreshed.status).toBe(200);
     const nextCredentials = (await refreshed.json()) as { accessToken: string };
 
-    const attach = await app.request("http://10.0.0.5:5387/v1/attach/manifest", {
+    const attach = await app.request("http://10.0.0.5:5387/api/v1/attach/manifest", {
       headers: {
         authorization: `Bearer ${nextCredentials.accessToken}`,
         "x-forwarded-proto": "https",
@@ -736,98 +1642,9 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const missing = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const missing = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest");
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toBeNull();
-
-    await engine.close();
-  });
-
-  it("requires remote credentials on control path and dispatches authenticated list requests", async () => {
-    const context = testContext();
-    const engine = new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    });
-    const store = remoteCredentialStore();
-    const accessCredentials = pairedClient(store);
-    const operatorCredentials = pairedClient(store, "http://127.0.0.1:5387/", "operator");
-    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
-      writeErr: () => {},
-      control: context,
-      remoteCredentialStore: store,
-    });
-
-    const missing = await app.request("http://127.0.0.1:5387/v1/admin", { method: "POST" });
-    expect(missing.status).toBe(401);
-    expect(missing.headers.get("www-authenticate")).toBeNull();
-
-    const denied = await app.request("http://127.0.0.1:5387/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${accessCredentials.accessToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ command: "list", arguments: {} }),
-    });
-    expect(denied.status).toBe(403);
-    await expect(denied.text()).resolves.toContain("operator role required");
-
-    const listed = await app.request("http://127.0.0.1:5387/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${operatorCredentials.accessToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ command: "list", arguments: {} }),
-    });
-    expect(listed.status).toBe(200);
-    await expect(listed.json()).resolves.toMatchObject({ ok: true });
-
-    await engine.close();
-  });
-
-  it("records the validated Operator client for administrative Vault mutations", async () => {
-    const context = testContext();
-    const authDir = tempDir("caplets-http-admin-vault-auth-");
-    const engine = new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    });
-    const store = remoteCredentialStore();
-    const operator = pairedClient(store, "http://127.0.0.1:5387/", "operator");
-    const app = createHttpServeApp(
-      httpOptions({ auth: { type: "remote_credentials" }, remoteCredentialStateDir: store.dir }),
-      engine,
-      {
-        writeErr: () => {},
-        control: { ...context, authDir },
-        remoteCredentialStore: store,
-      },
-    );
-
-    const response = await app.request("http://127.0.0.1:5387/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${operator.accessToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        command: "vault_set",
-        arguments: { name: "GH_TOKEN", value: "administrative_secret" },
-      }),
-    });
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      ok: true,
-      result: { key: "GH_TOKEN", present: true },
-    });
-    expect(
-      new DashboardActivityLog({ dir: store.dir }).list({ action: "vault_set" }).entries,
-    ).toEqual([expect.objectContaining({ actorClientId: operator.clientId, action: "vault_set" })]);
 
     await engine.close();
   });
@@ -842,12 +1659,12 @@ describe("createHttpServeApp", () => {
     });
 
     const missing = await app.request(
-      "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/bind_123/status",
     );
     expect(missing.status).toBe(401);
 
     const response = await app.request(
-      "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/bind_123/status",
       {
         headers: {
           authorization: `Bearer ${credentials.accessToken}`,
@@ -863,14 +1680,14 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("exposes the Project Binding WebSocket upgrade route under a base path", async () => {
+  it("exposes the Project Binding WebSocket upgrade route at its fixed path", async () => {
     const { engine } = testEngine();
-    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+    const app = createHttpServeApp(httpOptions(), engine, {
       writeErr: () => {},
     });
 
     const response = await app.request(
-      "http://127.0.0.1:5387/caplets/v1/attach/project-bindings/connect",
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/connect",
     );
 
     expect(response.status).toBe(426);
@@ -889,12 +1706,22 @@ describe("createHttpServeApp", () => {
       writeErr: () => {},
       projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
     });
+    const events = await app.request("http://127.0.0.1:5387/api/v2/admin/events");
+    expect(events.status).toBe(200);
+    const eventReader = events.body!.getReader();
+    const initialEvent = await eventReader.read();
+    expect(new TextDecoder().decode(initialEvent.value)).toContain(
+      '"projectBinding":{"state":"disconnected"}',
+    );
 
-    const session = await app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
-    });
+    const session = await app.request(
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      },
+    );
     expect(session.status).toBe(201);
     const created = (await session.json()) as {
       binding: {
@@ -915,9 +1742,17 @@ describe("createHttpServeApp", () => {
       },
       sessionId: expect.any(String),
     });
+    const connectedEvent = await eventReader.read();
+    expect(new TextDecoder().decode(connectedEvent.value)).toContain(
+      '"projectBinding":{"state":"connected"}',
+    );
+    let nextEventSettled = false;
+    const nextEvent = eventReader.read().finally(() => {
+      nextEventSettled = true;
+    });
 
     const heartbeat = await app.request(
-      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+      `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -933,9 +1768,11 @@ describe("createHttpServeApp", () => {
       ok: true,
       binding: { bindingId: created.binding.bindingId, state: "ready", syncState: "idle" },
     });
+    await Promise.resolve();
+    expect(nextEventSettled).toBe(false);
 
     const status = await app.request(
-      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+      `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
     );
     expect(status.status).toBe(200);
     await expect(status.json()).resolves.toMatchObject({
@@ -945,7 +1782,7 @@ describe("createHttpServeApp", () => {
     });
 
     const ended = await app.request(
-      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+      `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/session`,
       { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
     );
     expect(ended.status).toBe(200);
@@ -953,6 +1790,11 @@ describe("createHttpServeApp", () => {
       ok: true,
       binding: { bindingId: created.binding.bindingId, state: "ended", syncState: "not_started" },
     });
+    const disconnectedEvent = await nextEvent;
+    expect(new TextDecoder().decode(disconnectedEvent.value)).toContain(
+      '"projectBinding":{"state":"disconnected"}',
+    );
+    await eventReader.cancel("test complete");
 
     await engine.close();
   });
@@ -974,7 +1816,7 @@ describe("createHttpServeApp", () => {
       binding: { projectFingerprint: string; serverProjectRoot: string };
     }> {
       const response = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: {
@@ -1021,7 +1863,7 @@ describe("createHttpServeApp", () => {
     });
 
     const response = await app.request(
-      "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1032,7 +1874,7 @@ describe("createHttpServeApp", () => {
     expect(response.status).toBe(500);
     expect(attemptedBindingId).toBeTruthy();
     const status = await app.request(
-      `http://127.0.0.1:5387/v1/attach/project-bindings/${attemptedBindingId}/status`,
+      `http://127.0.0.1:5387/api/v1/attach/project-bindings/${attemptedBindingId}/status`,
     );
     await expect(status.json()).resolves.toMatchObject({
       bindingId: attemptedBindingId,
@@ -1080,6 +1922,78 @@ describe("createHttpServeApp", () => {
     } finally {
       await app.closeCapletsSessions();
       await engine.close();
+    }
+  });
+
+  it("maintains durable backend OAuth flows until the HTTP lifecycle closes", async () => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), "caplets-backend-auth-maintenance-"));
+    dirs.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "host-state.sqlite3"),
+    });
+    const expireDue = vi.spyOn(storage.backendAuthFlows, "expireDue");
+    const prune = vi.spyOn(storage.backendAuthFlows, "prune");
+    const { engine } = testEngine();
+    let app: CapletsHttpApp | undefined;
+    try {
+      app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        backendAuthFlows: storage.backendAuthFlows,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(expireDue).toHaveBeenCalledOnce();
+      expect(prune).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(expireDue).toHaveBeenCalledTimes(2);
+      expect(prune).toHaveBeenCalledTimes(2);
+
+      await app.closeCapletsSessions();
+      app = undefined;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(expireDue).toHaveBeenCalledTimes(2);
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally {
+      await app?.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("maintains durable Admin idempotency records until the HTTP lifecycle closes", async () => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), "caplets-idempotency-maintenance-"));
+    dirs.push(directory);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(directory, "host-state.sqlite3"),
+    });
+    const prune = vi.spyOn(storage.idempotency, "prune");
+    const { engine } = testEngine();
+    let app: CapletsHttpApp | undefined;
+    try {
+      app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        authoritativeStorage: storage,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prune).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(prune).toHaveBeenCalledTimes(2);
+
+      await app.closeCapletsSessions();
+      app = undefined;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally {
+      await app?.closeCapletsSessions();
+      await engine.close();
+      await storage.close();
+      vi.useRealTimers();
     }
   });
 
@@ -1133,7 +2047,7 @@ describe("createHttpServeApp", () => {
       };
 
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1147,7 +2061,7 @@ describe("createHttpServeApp", () => {
       await vi.advanceTimersByTimeAsync(60_000);
 
       const heartbeat = await app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1156,7 +2070,7 @@ describe("createHttpServeApp", () => {
       );
       expect(heartbeat.status).toBe(404);
       const status = await app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
       );
       await expect(status.json()).resolves.toMatchObject({
         bindingId: created.binding.bindingId,
@@ -1190,7 +2104,7 @@ describe("createHttpServeApp", () => {
       };
 
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1204,7 +2118,7 @@ describe("createHttpServeApp", () => {
       vi.setSystemTime(new Date("2026-06-25T12:01:00.001Z"));
 
       const heartbeat = await app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1249,7 +2163,7 @@ describe("createHttpServeApp", () => {
       };
 
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1262,7 +2176,7 @@ describe("createHttpServeApp", () => {
       };
       workspaces.deferNextWrite();
       const heartbeat = app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1283,7 +2197,7 @@ describe("createHttpServeApp", () => {
         expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
       ]);
       const status = await app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
       );
       await expect(status.json()).resolves.toMatchObject({
         bindingId: created.binding.bindingId,
@@ -1317,7 +2231,7 @@ describe("createHttpServeApp", () => {
       };
 
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1327,7 +2241,7 @@ describe("createHttpServeApp", () => {
       const created = (await session.json()) as {
         binding: { bindingId: string; expiresAt: string };
       };
-      const statusUrl = `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`;
+      const statusUrl = `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/status`;
       workspaces.deferNextWrite();
       workspaces.failNextWrite();
       await vi.advanceTimersByTimeAsync(60_000);
@@ -1381,7 +2295,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1392,7 +2306,7 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const heartbeatUrl = `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`;
+      const heartbeatUrl = `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`;
       workspaces.deferNextWrite();
       const first = app.request(heartbeatUrl, {
         method: "POST",
@@ -1451,7 +2365,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1464,7 +2378,7 @@ describe("createHttpServeApp", () => {
       };
       workspaces.deferNextWrite();
       const heartbeat = app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1501,7 +2415,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1514,7 +2428,7 @@ describe("createHttpServeApp", () => {
       workspaces.failNextWrite();
 
       const ended = await app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/session`,
         { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
       );
       expect(ended.status).toBe(500);
@@ -1543,7 +2457,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1581,11 +2495,14 @@ describe("createHttpServeApp", () => {
 
     try {
       workspaces.deferNextWrite();
-      const creating = app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
-      });
+      const creating = app.request(
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
       await workspaces.nextWriteStarted;
       const closing = app.closeCapletsSessions();
       workspaces.releaseNextWrite();
@@ -1593,7 +2510,7 @@ describe("createHttpServeApp", () => {
       expect((await creating).status).toBe(503);
       await closing;
       const rejectedAfterShutdown = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1614,6 +2531,69 @@ describe("createHttpServeApp", () => {
     }
   });
 
+  it("retries durable cleanup when a just-admitted create races shutdown", async () => {
+    const { engine } = testEngine();
+    vi.spyOn(engine, "hostNodeIdentity").mockReturnValue("node-race");
+    const storageRoot = mkdtempSync(join(tmpdir(), "caplets-binding-state-"));
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(storageRoot, workspaceRoot);
+    const storage = await createHostStorage({
+      type: "sqlite",
+      path: join(storageRoot, "host-state.sqlite3"),
+    });
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const endDurableBinding = storage.projectBindings.end.bind(storage.projectBindings);
+    let endAttempts = 0;
+    let successfulEnds = 0;
+    vi.spyOn(storage.projectBindings, "end").mockImplementation(async (input) => {
+      endAttempts += 1;
+      if (endAttempts === 1) {
+        throw new Error("transient durable end failure");
+      }
+      const ended = await endDurableBinding(input);
+      successfulEnds += 1;
+      return ended;
+    });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      authoritativeStorage: storage,
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      workspaces.deferNextWrite();
+      const creating = app.request(
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_race" }),
+        },
+      );
+      await workspaces.nextWriteStarted;
+      const closing = app.closeCapletsSessions();
+      workspaces.releaseNextWrite();
+
+      expect((await creating).status).not.toBe(201);
+      await closing;
+      await expect(storage.projectBindings.list()).resolves.toEqual([
+        expect.objectContaining({ active: false, generation: 2, state: "ended" }),
+      ]);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_race"),
+        ),
+      ).resolves.toEqual([expect.objectContaining({ active: false, state: "ended" })]);
+
+      await app.closeCapletsSessions();
+      expect(successfulEnds).toBe(1);
+    } finally {
+      await app.closeCapletsSessions().catch(() => undefined);
+      await engine.close();
+      await storage.close();
+    }
+  });
+
   it("accepts Project Binding WebSocket connections for owned sessions", async () => {
     const { engine } = testEngine();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
@@ -1626,7 +2606,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await withTimeout(
-        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
@@ -1638,11 +2618,10 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string; state: string; syncState: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
-      );
+      const socket = openProjectBindingSocket(server.origin, created);
       try {
         await withTimeout(waitForSocketOpen(socket), "open Project Binding WebSocket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await expect(
           withTimeout(nextSocketJson(socket), "receive Project Binding ready"),
         ).resolves.toMatchObject({
@@ -1663,7 +2642,7 @@ describe("createHttpServeApp", () => {
         await withTimeout(
           waitFor(async () => {
             const status = await fetch(
-              `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+              `${server.origin}/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
             );
             const payload = (await status.json()) as { state: string; syncState: string };
             expect(payload).toMatchObject({ state: "ready", syncState: "idle" });
@@ -1674,55 +2653,116 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
   });
 
-  it("ends Project Binding sessions when sockets close without an explicit end message", async () => {
+  it("retains an unexpectedly closed socket for one reconnect and terminalizes explicit end once", async () => {
     const { engine } = testEngine();
+    const store = remoteCredentialStore();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
     dirs.push(workspaceRoot);
-    const app = createHttpServeApp(httpOptions(), engine, {
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
       writeErr: () => {},
-      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
     });
     const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
-
+    const credentials = pairedClient(store, `${server.origin}/`);
     try {
       const session = await withTimeout(
-        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            projectRoot: "/repo",
+            projectFingerprint: TEST_PROJECT_FINGERPRINT,
+          }),
         }),
-        "create Project Binding session",
+        "create authenticated Project Binding session",
       );
       expect(session.status).toBe(201);
       const created = (await session.json()) as {
-        binding: { bindingId: string };
+        binding: { bindingId: string; expiresAt: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
+      const socketOptions = {
+        projectFingerprint: TEST_PROJECT_FINGERPRINT,
+        accessToken: credentials.accessToken,
+      };
+      const first = openProjectBindingSocket(server.origin, created, socketOptions);
+      try {
+        await withTimeout(waitForSocketOpen(first), "open first Project Binding socket");
+        expect(first.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+        await withTimeout(nextSocketJson(first), "receive first Project Binding ready");
+        const closed = waitForSocketClose(first);
+        first.terminate();
+        await withTimeout(closed, "observe unexpected first socket close");
+      } finally {
+        first.terminate();
+      }
+      const retained = await fetch(
+        `${server.origin}/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+        { headers: { authorization: `Bearer ${credentials.accessToken}` } },
       );
-      await withTimeout(waitForSocketOpen(socket), "open Project Binding WebSocket");
-      await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
-      socket.close();
-
-      await withTimeout(
-        waitFor(async () => {
-          const status = await fetch(
-            `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
-          );
-          await expect(status.json()).resolves.toMatchObject({
+      await expect(retained.json()).resolves.toMatchObject({
+        bindingId: created.binding.bindingId,
+        state: "attaching",
+        expiresAt: created.binding.expiresAt,
+      });
+      expect(Date.now()).toBeLessThan(Date.parse(created.binding.expiresAt));
+      const second = openProjectBindingSocket(server.origin, created, socketOptions);
+      try {
+        await withTimeout(waitForSocketOpen(second), "open reconnected Project Binding socket");
+        expect(second.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+        await expect(
+          withTimeout(nextSocketJson(second), "receive reconnected Project Binding ready"),
+        ).resolves.toMatchObject({
+          type: "ready",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+        });
+        const ended = nextSocketJson(second);
+        const closed = waitForSocketClose(second);
+        second.send(
+          JSON.stringify({
+            type: "end",
             bindingId: created.binding.bindingId,
-            state: "not_attached",
-          });
-        }),
-        "observe Project Binding close cleanup",
+            sessionId: created.sessionId,
+            reason: { code: "completed", message: "Project Binding completed." },
+          }),
+        );
+        await expect(withTimeout(ended, "receive explicit Project Binding end")).resolves.toEqual({
+          type: "ended",
+          reason: { code: "completed", message: "Project Binding completed." },
+        });
+        await expect(
+          withTimeout(closed, "close explicitly ended Project Binding socket"),
+        ).resolves.toMatchObject({ code: 1000 });
+      } finally {
+        second.terminate();
+      }
+      expect(
+        workspaces.writeLeases.filter(
+          (lease) => lease.bindingId === created.binding.bindingId && !lease.active,
+        ),
+      ).toHaveLength(1);
+      const status = await fetch(
+        `${server.origin}/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+        { headers: { authorization: `Bearer ${credentials.accessToken}` } },
       );
+      await expect(status.json()).resolves.toEqual({
+        bindingId: created.binding.bindingId,
+        state: "not_attached",
+      });
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -1741,7 +2781,7 @@ describe("createHttpServeApp", () => {
 
     try {
       for (const heartbeatFirst of [true, false]) {
-        const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        const session = await fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
@@ -1750,16 +2790,17 @@ describe("createHttpServeApp", () => {
           binding: { bindingId: string };
           sessionId: string;
         };
-        const socketUrl =
-          `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=` +
-          `${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`;
-        const first = new WebSocket(socketUrl);
-        const second = new WebSocket(socketUrl);
+        const first = openProjectBindingSocket(server.origin, created);
+        const second = openProjectBindingSocket(server.origin, created);
+        const firstReady = nextSocketJson(first);
+        const secondReady = nextSocketJson(second);
         try {
           await withTimeout(waitForSocketOpen(first), "open first Project Binding socket");
           await withTimeout(waitForSocketOpen(second), "open second Project Binding socket");
-          await withTimeout(nextSocketJson(first), "receive first Project Binding ready");
-          await withTimeout(nextSocketJson(second), "receive second Project Binding ready");
+          expect(first.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+          expect(second.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+          await withTimeout(firstReady, "receive first Project Binding ready");
+          await withTimeout(secondReady, "receive second Project Binding ready");
 
           const heartbeatSocket = heartbeatFirst ? first : second;
           const endingSocket = heartbeatFirst ? second : first;
@@ -1813,7 +2854,7 @@ describe("createHttpServeApp", () => {
 
           expect(heartbeatMessages).toEqual([]);
           const status = await app.request(
-            `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+            `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
           );
           await expect(status.json()).resolves.toMatchObject({
             bindingId: created.binding.bindingId,
@@ -1835,12 +2876,13 @@ describe("createHttpServeApp", () => {
         }
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
   }, 30_000);
 
-  it("makes a peer socket close terminal against a deferred heartbeat", async () => {
+  it("keeps a queued heartbeat authoritative when its peer socket closes", async () => {
     const { engine } = testEngine();
     const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
     dirs.push(workspaceRoot);
@@ -1850,25 +2892,26 @@ describe("createHttpServeApp", () => {
       projectBindingWorkspaceStore: workspaces,
     });
     const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
-
     try {
-      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+      const session = await fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        body: JSON.stringify({
+          projectRoot: "/repo",
+          projectFingerprint: TEST_PROJECT_FINGERPRINT,
+        }),
       });
       const created = (await session.json()) as {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socketUrl =
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=` +
-        `${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`;
-      const heartbeatSocket = new WebSocket(socketUrl);
-      const peer = new WebSocket(socketUrl);
+      const heartbeatSocket = openProjectBindingSocket(server.origin, created);
+      const peer = openProjectBindingSocket(server.origin, created);
       try {
         await withTimeout(waitForSocketOpen(heartbeatSocket), "open heartbeat socket");
         await withTimeout(waitForSocketOpen(peer), "open peer socket");
+        expect(heartbeatSocket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+        expect(peer.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(heartbeatSocket), "receive heartbeat socket ready");
         await withTimeout(nextSocketJson(peer), "receive peer socket ready");
         workspaces.deferNextWrite();
@@ -1883,55 +2926,75 @@ describe("createHttpServeApp", () => {
         );
         await withTimeout(workspaces.nextWriteStarted, "start deferred heartbeat");
         const peerClosed = waitForSocketClose(peer);
-        peer.close();
-        await withTimeout(peerClosed, "close peer socket");
-        const firstIoTurn = Promise.withResolvers<void>();
-        setImmediate(firstIoTurn.resolve);
-        await firstIoTurn.promise;
-        const secondIoTurn = Promise.withResolvers<void>();
-        setImmediate(secondIoTurn.resolve);
-        await secondIoTurn.promise;
+        peer.terminate();
+        await withTimeout(peerClosed, "close peer socket unexpectedly");
         workspaces.releaseNextWrite();
-
         await withTimeout(
           waitFor(async () => {
             const status = await app.request(
-              `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+              `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
             );
             await expect(status.json()).resolves.toMatchObject({
               bindingId: created.binding.bindingId,
-              state: "not_attached",
+              state: "ready",
+              syncState: "idle",
             });
           }),
-          "observe peer close terminal cleanup",
+          "observe heartbeat retained after peer close",
         );
         await expect(
           workspaces.listLeases(
-            projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+            projectBindingWorkspaceFingerprintForTest(
+              "development_unauthenticated",
+              TEST_PROJECT_FINGERPRINT,
+            ),
           ),
         ).resolves.toContainEqual(
-          expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+          expect.objectContaining({
+            bindingId: created.binding.bindingId,
+            state: "ready",
+            active: true,
+          }),
         );
-        const staleClose = waitForSocketClose(heartbeatSocket);
         heartbeatSocket.send(
           JSON.stringify({
             type: "heartbeat",
             bindingId: created.binding.bindingId,
             sessionId: created.sessionId,
-            state: "ready",
-            syncState: "idle",
+            state: "degraded",
+            syncState: "failed",
           }),
         );
-        await expect(
-          withTimeout(staleClose, "close stale heartbeat socket"),
-        ).resolves.toMatchObject({
-          code: 1008,
+        await withTimeout(
+          waitFor(async () => {
+            const status = await app.request(
+              `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+            );
+            await expect(status.json()).resolves.toMatchObject({
+              state: "degraded",
+              syncState: "failed",
+            });
+          }),
+          "observe surviving socket heartbeat",
+        );
+        const ended = nextSocketJson(heartbeatSocket);
+        heartbeatSocket.send(
+          JSON.stringify({
+            type: "end",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            reason: { code: "completed", message: "Project Binding completed." },
+          }),
+        );
+        await expect(withTimeout(ended, "receive surviving socket end")).resolves.toMatchObject({
+          type: "ended",
         });
       } finally {
         heartbeatSocket.terminate();
         peer.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -1952,7 +3015,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await withTimeout(
-        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
           method: "POST",
           headers: {
             authorization: `Bearer ${credentials.accessToken}`,
@@ -1967,15 +3030,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open authenticated Project Binding socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await expect(
           withTimeout(nextSocketJson(socket), "receive authenticated Project Binding ready"),
         ).resolves.toMatchObject({
@@ -1987,6 +3047,83 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("rejects missing or wrong Project Binding versions and malformed strict messages", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+
+    try {
+      const session = await fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectRoot: "/repo",
+          projectFingerprint: TEST_PROJECT_FINGERPRINT,
+        }),
+      });
+      expect(session.status).toBe(201);
+      const created = (await session.json()) as ProjectBindingSocketSession;
+
+      for (const protocols of [[], ["caplets.project-binding.v2"]]) {
+        const rejected = openProjectBindingSocket(server.origin, created, { protocols });
+        await expect(
+          withTimeout(rejectedSocketUpgradeStatus(rejected), "reject Project Binding version"),
+        ).resolves.toBe(400);
+      }
+
+      const invalidMessages = [
+        "{",
+        JSON.stringify({
+          type: "heartbeat",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+          state: "ready",
+        }),
+        JSON.stringify({
+          type: "heartbeat",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+          state: "ready",
+          syncState: "idle",
+          unexpected: true,
+        }),
+        JSON.stringify({
+          type: "unknown",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+        }),
+      ];
+      for (const invalidMessage of invalidMessages) {
+        const socket = openProjectBindingSocket(server.origin, created);
+        try {
+          await withTimeout(waitForSocketOpen(socket), "open strict Project Binding socket");
+          expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
+          await withTimeout(nextSocketJson(socket), "receive strict Project Binding ready");
+          const closed = waitForSocketClose(socket);
+          socket.send(invalidMessage);
+          await expect(
+            withTimeout(closed, "reject malformed Project Binding message"),
+          ).resolves.toMatchObject({
+            code: 1008,
+            reason: "Project Binding message is invalid.",
+          });
+        } finally {
+          socket.terminate();
+        }
+      }
+    } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2008,7 +3145,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await withTimeout(
-        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
           method: "POST",
           headers: {
             authorization: `Bearer ${credentials.accessToken}`,
@@ -2022,15 +3159,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open authenticated Project Binding socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
 
         const rotated = store.refreshClientCredentials({
@@ -2049,7 +3183,7 @@ describe("createHttpServeApp", () => {
         await withTimeout(
           waitFor(async () => {
             const status = await fetch(
-              `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+              `${server.origin}/api/v1/attach/project-bindings/${created.binding.bindingId}/status`,
               { headers: { authorization: `Bearer ${rotated.accessToken}` } },
             );
             await expect(status.json()).resolves.toMatchObject({
@@ -2063,6 +3197,7 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2083,7 +3218,7 @@ describe("createHttpServeApp", () => {
     const credentials = pairedClient(store, `${server.origin}/`);
 
     try {
-      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+      const session = await fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${credentials.accessToken}`,
@@ -2095,15 +3230,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open queued authorization socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         workspaces.deferNextWrite();
         workspaces.runAfterNextWritePostCommit(() => {
@@ -2167,6 +3299,7 @@ describe("createHttpServeApp", () => {
         socket.terminate();
       }
     } finally {
+      await app.closeCapletsSessions();
       await withTimeout(server.close(), "close test HTTP server");
       await engine.close();
     }
@@ -2187,7 +3320,7 @@ describe("createHttpServeApp", () => {
     const credentials = pairedClient(store, `${server.origin}/`);
 
     try {
-      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+      const session = await fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${credentials.accessToken}`,
@@ -2199,15 +3332,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string; expiresAt: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open post-write authorization socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         workspaces.deferNextWrite();
         const closed = waitForSocketClose(socket);
@@ -2271,7 +3401,7 @@ describe("createHttpServeApp", () => {
 
     try {
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: {
@@ -2286,7 +3416,7 @@ describe("createHttpServeApp", () => {
       };
       workspaces.deferNextWrite();
       const ending = app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/session`,
         {
           method: "DELETE",
           headers: {
@@ -2337,7 +3467,7 @@ describe("createHttpServeApp", () => {
       };
 
       const session = await app.request(
-        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2349,7 +3479,7 @@ describe("createHttpServeApp", () => {
       };
       workspaces.deferNextWrite();
       const ending = app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+        `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/session`,
         { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
       );
       await workspaces.nextWriteStarted;
@@ -2393,7 +3523,7 @@ describe("createHttpServeApp", () => {
     const credentials = pairedClient(store, `${server.origin}/`);
 
     try {
-      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+      const session = await fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${credentials.accessToken}`,
@@ -2405,15 +3535,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open end authorization socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         const messages: unknown[] = [];
         socket.on("message", (data) => {
@@ -2463,7 +3590,7 @@ describe("createHttpServeApp", () => {
     const credentials = pairedClient(store, `${server.origin}/`);
 
     try {
-      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+      const session = await fetch(`${server.origin}/api/v1/attach/project-bindings/sessions`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${credentials.accessToken}`,
@@ -2475,15 +3602,12 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      const socket = new WebSocket(
-        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
-        [
-          "caplets.project-binding.v1",
-          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
-        ],
-      );
+      const socket = openProjectBindingSocket(server.origin, created, {
+        accessToken: credentials.accessToken,
+      });
       try {
         await withTimeout(waitForSocketOpen(socket), "open revocable Project Binding socket");
+        expect(socket.protocol).toBe(PROJECT_BINDING_SOCKET_PROTOCOL);
         await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
         store.revokeClient(credentials.clientId);
         const closed = waitForSocketClose(socket);
@@ -2531,21 +3655,24 @@ describe("createHttpServeApp", () => {
       projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
     });
 
-    const session = await app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${owner.accessToken}`,
+    const session = await app.request(
+      "http://127.0.0.1:5387/api/v1/attach/project-bindings/sessions",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${owner.accessToken}`,
+        },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
       },
-      body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
-    });
+    );
     const created = (await session.json()) as {
       binding: { bindingId: string };
       sessionId: string;
     };
 
     const heartbeat = await app.request(
-      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+      `http://127.0.0.1:5387/api/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
       {
         method: "POST",
         headers: {
@@ -2561,359 +3688,364 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("mounts service routes under a base path", async () => {
+  it("ignores configured-prefix aliases and serves only the fixed health path", async () => {
     const { engine } = testEngine();
-    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+    const app = createHttpServeApp(httpOptions(), engine, {
       writeErr: () => {},
     });
 
-    const rootHealth = await app.request("http://127.0.0.1:5387/healthz");
-    expect(rootHealth.status).toBe(404);
+    const prefixedHealth = await app.request("http://127.0.0.1:5387/caplets/v1/healthz");
+    expect(prefixedHealth.status).toBe(404);
 
-    const health = await app.request("http://127.0.0.1:5387/caplets/v1/healthz");
+    const health = await app.request("http://127.0.0.1:5387/api/v1/healthz");
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toEqual({ status: "ok", ready: true });
 
     await engine.close();
   });
 
-  it("mounts authenticated control dispatch under a base path", async () => {
-    const context = testContext();
-    const engine = new CapletsEngine({
+  it("completes durable backend OAuth through the unauthenticated canonical v2 callback", async () => {
+    const context = testContext({ oauth: true });
+    const firstStorage = await testAuthoritativeHostStorage(context.configPath);
+    const secondStorage = await testAuthoritativeHostStorage(context.configPath);
+    const firstEngine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: firstStorage,
     });
-    const store = remoteCredentialStore();
-    const credentials = pairedClient(store, "http://127.0.0.1:5387/caplets", "operator");
-    const app = createHttpServeApp(
-      httpOptions({ path: "/caplets", auth: { type: "remote_credentials" } }),
-      engine,
-      { writeErr: () => {}, control: context, remoteCredentialStore: store },
-    );
-
-    const rootControl = await app.request("http://127.0.0.1:5387/control", { method: "POST" });
-    expect(rootControl.status).toBe(404);
-
-    const missing = await app.request("http://127.0.0.1:5387/caplets/v1/admin", {
-      method: "POST",
-    });
-    expect(missing.status).toBe(401);
-
-    const listed = await app.request("http://127.0.0.1:5387/caplets/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${credentials.accessToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ command: "list", arguments: {} }),
-    });
-    expect(listed.status).toBe(200);
-    await expect(listed.json()).resolves.toMatchObject({ ok: true });
-
-    await engine.close();
-  });
-
-  it("returns a structured control error for malformed JSON", async () => {
-    const context = testContext();
-    const engine = new CapletsEngine({
+    const secondEngine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: secondStorage,
     });
-    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {}, control: context });
-
-    const response = await app.request("http://127.0.0.1:5387/v1/admin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "not-json",
-    });
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "REQUEST_INVALID", message: expect.stringContaining("JSON") },
-    });
-
-    await engine.close();
-  });
-
-  it("dispatches auth callback completion under the control path", async () => {
-    const context = testContext();
-    const engine = new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    });
-    const authFlowStore = new RemoteAuthFlowStore();
-    authFlowStore.create(
-      {
-        server: "remote",
-        authorizationUrl: "https://auth.example/authorize",
-        complete: async (_callbackUrl: string) => {},
-      },
-      "flow-1",
-    );
-    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+    const firstApp = createHttpServeApp(httpOptions(), firstEngine, {
       writeErr: () => {},
       control: context,
-      authFlowStore,
+    });
+    const secondApp = createHttpServeApp(httpOptions(), secondEngine, {
+      writeErr: () => {},
+      control: context,
+    });
+    const [firstServer, secondServer] = await Promise.all([
+      startTestHttpServer(firstApp),
+      startTestHttpServer(secondApp),
+    ]);
+    const networkFetch = globalThis.fetch;
+    let tokenExchanges = 0;
+    const atomicCompletion = vi.spyOn(secondStorage.backendAuthFlows, "completeClaim");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (fetchInputUrl(input) === "https://auth.example/token") {
+        tokenExchanges += 1;
+        return Promise.resolve(testOAuthTokenResponse());
+      }
+      return networkFetch(input, init);
     });
 
-    const response = await app.request(
-      "http://127.0.0.1:5387/caplets/v1/admin/auth/callback/flow-1?code=abc&state=xyz",
-    );
+    try {
+      const started = await startBackendOAuthV2OverHttp(firstServer.origin);
+      const authorizationUrl = new URL(started.authorizationUrl);
+      expect(new URL(authorizationUrl.searchParams.get("redirect_uri")!).pathname).toBe(
+        `/api/v2/admin/backend-auth-flows/${started.flowId}/callback`,
+      );
+      const state = authorizationUrl.searchParams.get("state");
+      if (!state) throw new Error("Expected OAuth authorization state.");
+      const callbackCode = "cross-node-provider-code";
+      const callbackUrl = backendOAuthCallbackUrl(secondServer.origin, authorizationUrl, {
+        code: callbackCode,
+        state,
+      });
 
-    expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toContain("authentication complete");
+      const completed = await fetch(callbackUrl);
 
-    await engine.close();
-  });
-
-  it("hides auth callback failure details from unauthenticated browsers", async () => {
-    const context = testContext();
-    const engine = new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    });
-    const authFlowStore = new RemoteAuthFlowStore();
-    authFlowStore.create(
-      {
+      expect(completed.status).toBe(200);
+      expect(completed.headers.get("cache-control")).toBe("no-store");
+      const completedText = await completed.text();
+      expect(JSON.parse(completedText)).toEqual({
         server: "remote",
-        authorizationUrl: "https://auth.example/authorize",
-        complete: async () => {
-          throw new Error("internal token exchange failure");
+        authenticated: true,
+      });
+      for (const secret of [callbackCode, state, "remote-access-token", "remote-refresh-token"]) {
+        expect(completedText).not.toContain(secret);
+      }
+      expect(tokenExchanges).toBe(1);
+      expect(atomicCompletion).toHaveBeenCalledTimes(1);
+      await expect(firstStorage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+        flowId: started.flowId,
+        server: "remote",
+        status: "completed",
+      });
+      await expect(firstStorage.backendAuth.readTokenBundle("remote")).resolves.toMatchObject({
+        generation: 1,
+        bundle: {
+          accessToken: "remote-access-token",
+          refreshToken: "remote-refresh-token",
         },
-      },
-      "flow-1",
-    );
-    const logs: string[] = [];
-    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
-      writeErr: (value) => logs.push(value),
-      control: context,
-      authFlowStore,
-    });
+      });
 
-    const response = await app.request(
-      "http://127.0.0.1:5387/caplets/v1/admin/auth/callback/flow-1?code=abc&state=xyz",
-    );
+      const replayUrl = new URL(callbackUrl.pathname, `${firstServer.origin}/`);
+      replayUrl.search = callbackUrl.search;
+      const replay = await fetch(replayUrl);
 
-    expect(response.status).toBe(400);
-    await expect(response.text()).resolves.toBe(
-      "Caplets authentication failed. Check server logs for details.",
-    );
-    expect(logs.join("")).toContain("internal token exchange failure");
-
-    await engine.close();
+      expect(replay.status).toBe(401);
+      expect(replay.headers.get("cache-control")).toBe("no-store");
+      const replayText = await replay.text();
+      expect(JSON.parse(replayText)).toMatchObject({
+        status: 401,
+        code: expect.any(String),
+      });
+      for (const secret of [callbackCode, state, "remote-access-token", "remote-refresh-token"]) {
+        expect(replayText).not.toContain(secret);
+      }
+      expect(tokenExchanges).toBe(1);
+      expect(atomicCompletion).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+      atomicCompletion.mockRestore();
+      await Promise.all([firstServer.close(), secondServer.close()]);
+      await Promise.all([firstEngine.close(), secondEngine.close()]);
+    }
   });
 
-  it("uses the mounted control path when auth login starts under a base path containing control", async () => {
+  it("keeps provider error, state mismatch, and expiry callback envelopes safe", async () => {
     const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
-    const app = createHttpServeApp(httpOptions({ path: "/control-api" }), engine, {
+    const app = createHttpServeApp(httpOptions(), engine, {
       writeErr: () => {},
-      backendAuthStore: testBackendAuthStore(),
       control: context,
     });
-
-    const response = await app.request("http://127.0.0.1:5387/control-api/v1/admin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
+    const server = await startTestHttpServer(app);
+    const networkFetch = globalThis.fetch;
+    let tokenExchanges = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (fetchInputUrl(input) === "https://auth.example/token") {
+        tokenExchanges += 1;
+        return Promise.resolve(testOAuthTokenResponse());
+      }
+      return networkFetch(input, init);
     });
+    const safeFailure = async (url: URL, secrets: string[]): Promise<void> => {
+      const response = await fetch(url);
+      expect(response.status).toBe(401);
+      const text = await response.text();
+      expect(JSON.parse(text)).toMatchObject({
+        status: 401,
+        code: "AUTH_FAILED",
+        detail: "Backend authentication callback failed.",
+      });
+      for (const secret of secrets) expect(text).not.toContain(secret);
+    };
 
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toEqual(expect.objectContaining({ ok: true }));
-    const result = (body as { result: { authorizationUrl: string } }).result;
-    const authorizationUrl = new URL(result.authorizationUrl);
-    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^http:\/\/127\.0\.0\.1:5387\/control-api\/v1\/admin\/auth\/callback\//u,
-    );
+    try {
+      const providerFlow = await startBackendOAuthV2OverHttp(server.origin);
+      const providerAuthorizationUrl = new URL(providerFlow.authorizationUrl);
+      const providerState = providerAuthorizationUrl.searchParams.get("state");
+      if (!providerState) throw new Error("Expected provider-error OAuth state.");
+      const providerDescription = "private provider denial detail";
+      await safeFailure(
+        backendOAuthCallbackUrl(server.origin, providerAuthorizationUrl, {
+          error: "access_denied",
+          error_description: providerDescription,
+          state: providerState,
+        }),
+        [providerDescription, providerState],
+      );
+      await expect(storage.backendAuthFlows.get(providerFlow.flowId)).resolves.toMatchObject({
+        status: "failed",
+      });
 
-    await engine.close();
+      const mismatchFlow = await startBackendOAuthV2OverHttp(server.origin);
+      const mismatchAuthorizationUrl = new URL(mismatchFlow.authorizationUrl);
+      const wrongState = "private-wrong-state";
+      await safeFailure(
+        backendOAuthCallbackUrl(server.origin, mismatchAuthorizationUrl, {
+          code: "private-mismatch-code",
+          state: wrongState,
+        }),
+        ["private-mismatch-code", wrongState],
+      );
+      await expect(storage.backendAuthFlows.get(mismatchFlow.flowId)).resolves.toMatchObject({
+        status: "failed",
+      });
+
+      const expiredFlow = await startBackendOAuthV2OverHttp(server.origin);
+      const expiredAuthorizationUrl = new URL(expiredFlow.authorizationUrl);
+      const expiredState = expiredAuthorizationUrl.searchParams.get("state");
+      if (!expiredState) throw new Error("Expected expiring OAuth state.");
+      const flow = await storage.backendAuthFlows.get(expiredFlow.flowId);
+      if (!flow) throw new Error("Expected a durable backend auth flow.");
+      await storage.backendAuthFlows.expire(expiredFlow.flowId, new Date(flow.expiresAt));
+      await safeFailure(
+        backendOAuthCallbackUrl(server.origin, expiredAuthorizationUrl, {
+          code: "private-expired-code",
+          state: expiredState,
+        }),
+        ["private-expired-code", expiredState],
+      );
+      await expect(storage.backendAuthFlows.get(expiredFlow.flowId)).resolves.toMatchObject({
+        status: "expired",
+      });
+      expect(tokenExchanges).toBe(0);
+    } finally {
+      fetchMock.mockRestore();
+      await server.close();
+      await engine.close();
+    }
   });
 
-  it("uses CAPLETS_SERVER_URL public scheme for remote auth callback URLs", async () => {
+  it("continues correlated OAuth persistence and finalization after callback disconnect", async () => {
     const context = testContext({ oauth: true });
+    const storage = await testAuthoritativeHostStorage(context.configPath);
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
+      hostStorage: storage,
     });
-    const app = createHttpServeApp(
-      httpOptions({ path: "/caplets", publicOrigin: "https://caplets.example.com" }),
-      engine,
-      {
-        writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
-        control: context,
-      },
-    );
-
-    const response = await app.request("http://127.0.0.1:5387/caplets/v1/admin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      control: context,
     });
-
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toEqual(expect.objectContaining({ ok: true }));
-    const result = (body as { result: { authorizationUrl: string } }).result;
-    const authorizationUrl = new URL(result.authorizationUrl);
-    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^https:\/\/caplets\.example\.com\/caplets\/v1\/admin\/auth\/callback\//u,
-    );
-
-    await engine.close();
-  });
-
-  it("ignores forwarded host and proto for remote auth callback URLs by default", async () => {
-    const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    });
-    const store = remoteCredentialStore();
-    const operator = pairedClient(store, "https://10.0.0.5:5387/caplets/", "operator");
-    const app = createHttpServeApp(
-      httpOptions({ path: "/caplets", auth: { type: "remote_credentials" } }),
-      engine,
-      {
-        writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
-        control: context,
-        remoteCredentialStore: store,
-      },
-    );
-
-    const response = await app.request("https://10.0.0.5:5387/caplets/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${operator.accessToken}`,
-        "content-type": "application/json",
-        "x-forwarded-proto": "http",
-        "x-forwarded-host": "caplets.example.com",
-      },
-      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
+    const server = await startTestHttpServer(app);
+    const networkFetch = globalThis.fetch;
+    const exchangeStarted = Promise.withResolvers<void>();
+    const tokenExchange = Promise.withResolvers<Response>();
+    let tokenExchanges = 0;
+    const atomicCompletion = vi.spyOn(storage.backendAuthFlows, "completeClaim");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (fetchInputUrl(input) === "https://auth.example/token") {
+        tokenExchanges += 1;
+        exchangeStarted.resolve();
+        return tokenExchange.promise;
+      }
+      return networkFetch(input, init);
     });
 
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toEqual(expect.objectContaining({ ok: true }));
-    const result = (body as { result: { authorizationUrl: string } }).result;
-    const authorizationUrl = new URL(result.authorizationUrl);
-    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^https:\/\/10\.0\.0\.5:5387\/caplets\/v1\/admin\/auth\/callback\//u,
-    );
+    try {
+      const started = await startBackendOAuthV2OverHttp(server.origin);
+      const authorizationUrl = new URL(started.authorizationUrl);
+      const state = authorizationUrl.searchParams.get("state");
+      if (!state) throw new Error("Expected OAuth authorization state.");
+      const callbackUrl = backendOAuthCallbackUrl(server.origin, authorizationUrl, {
+        code: "disconnect-provider-code",
+        state,
+      });
+      const controller = new AbortController();
+      const callback = fetch(callbackUrl, { signal: controller.signal });
+      await withTimeout(exchangeStarted.promise, "acquire durable OAuth completion");
 
-    await engine.close();
-  });
+      controller.abort();
+      await expect(callback).rejects.toMatchObject({ name: "AbortError" });
+      expect(atomicCompletion).not.toHaveBeenCalled();
+      tokenExchange.resolve(testOAuthTokenResponse());
 
-  it("ignores spoofed host headers for remote auth callback URLs by default", async () => {
-    const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    });
-    const store = remoteCredentialStore();
-    const operator = pairedClient(store, "https://10.0.0.5:5387/caplets/", "operator");
-    const app = createHttpServeApp(
-      httpOptions({ path: "/caplets", auth: { type: "remote_credentials" } }),
-      engine,
-      {
-        writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
-        control: context,
-        remoteCredentialStore: store,
-      },
-    );
-
-    const response = await app.request("https://10.0.0.5:5387/caplets/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${operator.accessToken}`,
-        "content-type": "application/json",
-        host: "attacker.example.com",
-      },
-      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
-    });
-
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toEqual(expect.objectContaining({ ok: true }));
-    const result = (body as { result: { authorizationUrl: string } }).result;
-    const authorizationUrl = new URL(result.authorizationUrl);
-    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^https:\/\/10\.0\.0\.5:5387\/caplets\/v1\/admin\/auth\/callback\//u,
-    );
-
-    await engine.close();
-  });
-
-  it("uses explicit public origin for auth callback URLs behind trusted proxies", async () => {
-    const context = testContext({ oauth: true });
-    const engine = new CapletsEngine({
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
-      watch: false,
-    });
-    const store = remoteCredentialStore();
-    const operator = pairedClient(store, "https://caplets.example.com/caplets/", "operator");
-    const app = createHttpServeApp(
-      httpOptions({
-        path: "/caplets",
-        auth: { type: "remote_credentials" },
-        trustProxy: true,
-        publicOrigin: "https://caplets.example.com",
-      }),
-      engine,
-      {
-        writeErr: () => {},
-        backendAuthStore: testBackendAuthStore(),
-        control: context,
-        remoteCredentialStore: store,
-      },
-    );
-
-    const response = await app.request("http://10.0.0.5:5387/caplets/v1/admin", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${operator.accessToken}`,
-        "content-type": "application/json",
-        "x-forwarded-proto": "https",
-        "x-forwarded-host": "attacker.example.net",
-      },
-      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
-    });
-
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toEqual(expect.objectContaining({ ok: true }));
-    const result = (body as { result: { authorizationUrl: string } }).result;
-    const authorizationUrl = new URL(result.authorizationUrl);
-    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^https:\/\/caplets\.example\.com\/caplets\/v1\/admin\/auth\/callback\//u,
-    );
-
-    await engine.close();
+      await withTimeout(
+        waitFor(async () => {
+          await expect(storage.backendAuthFlows.get(started.flowId)).resolves.toMatchObject({
+            status: "completed",
+          });
+        }),
+        "finalize disconnected OAuth completion",
+      );
+      const stored = await storage.backendAuth.readTokenBundle("remote");
+      if (!stored) throw new Error("Expected correlated OAuth credentials.");
+      const correlation = backendAuthCompletionCorrelation(stored.bundle);
+      if (!correlation) throw new Error("Expected backend auth completion correlation.");
+      expect(correlation).toMatchObject({ flowId: started.flowId });
+      expect(tokenExchanges).toBe(1);
+      expect(atomicCompletion).toHaveBeenCalledTimes(1);
+      expect(atomicCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          flowId: started.flowId,
+          completionCorrelation: correlation.completionCorrelation,
+          expectedGeneration: 0,
+        }),
+      );
+    } finally {
+      tokenExchange.resolve(testOAuthTokenResponse());
+      fetchMock.mockRestore();
+      atomicCompletion.mockRestore();
+      await server.close();
+      await engine.close();
+    }
   });
 
   it("returns 404 for nested MCP paths", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/mcp/extra");
+    const response = await app.request("http://127.0.0.1:5387/mcp/extra");
     expect(response.status).toBe(404);
 
+    await engine.close();
+  });
+  it("preserves exact MCP session errors and method contract at the fixed endpoint", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    for (const method of ["GET", "DELETE"] as const) {
+      const response = await app.request("http://127.0.0.1:5387/mcp", { method });
+      expect(response.status, method).toBe(400);
+      await expect(response.json(), method).resolves.toEqual({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Bad Request: Mcp-Session-Id header is required",
+        },
+        id: null,
+      });
+    }
+
+    const unknown = await app.request("http://127.0.0.1:5387/mcp", {
+      headers: { "mcp-session-id": "missing-session" },
+    });
+    expect(unknown.status).toBe(404);
+    await expect(unknown.json()).resolves.toEqual({
+      jsonrpc: "2.0",
+      error: { code: -32001, message: "Session not found" },
+      id: null,
+    });
+
+    const unsupported = await app.request("http://127.0.0.1:5387/mcp", { method: "PUT" });
+    expect(unsupported.status).toBe(405);
+    expect(unsupported.headers.get("allow")).toBe("POST, GET, DELETE");
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("does not retain a server for a non-initialize MCP POST without a session", async () => {
+    const { engine } = testEngine();
+    const close = vi.fn(async () => undefined);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      sessionFactory: () => ({
+        connect: async () => undefined,
+        close,
+      }),
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/mcp", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:5387",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(close).toHaveBeenCalledOnce();
+    await app.closeCapletsSessions();
+    expect(close).toHaveBeenCalledOnce();
     await engine.close();
   });
 
@@ -2921,7 +4053,7 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const tools = await listMcpTools(app, "/v1/mcp");
+    const tools = await listMcpTools(app, "/mcp");
 
     expect(tools.map((tool) => tool.name)).toEqual(["code_mode"]);
 
@@ -2932,7 +4064,7 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const manifestResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest");
     expect(manifestResponse.status).toBe(200);
     const manifest = await manifestResponse.json();
 
@@ -2973,13 +4105,13 @@ describe("createHttpServeApp", () => {
       watch: false,
     });
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
-    const initialResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const initialResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest");
     const initial = (await initialResponse.json()) as AttachManifest;
 
     writeFileSync(capletPath, httpReadmeCaplet("Updated troubleshooting notes."));
 
     await expect(engine.reload()).resolves.toBe(true);
-    const nextResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const nextResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest");
     const next = (await nextResponse.json()) as AttachManifest;
     expect(next.revision).toBe(initial.revision);
     expect({ ...next, generatedAt: initial.generatedAt }).toEqual(initial);
@@ -3001,7 +4133,7 @@ describe("createHttpServeApp", () => {
     };
     const { engine, configPath } = testEngine(config);
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
-    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const manifestResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest");
     const previous = (await manifestResponse.json()) as AttachManifest;
     const previousTool = previous.tools[0];
     expect(previousTool).toBeDefined();
@@ -3020,7 +4152,7 @@ describe("createHttpServeApp", () => {
     );
     await engine.reload();
 
-    const nextResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const nextResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest");
     const next = (await nextResponse.json()) as AttachManifest;
     expect(next.revision).not.toBe(previous.revision);
     expect(next.tools).toEqual([]);
@@ -3028,7 +4160,7 @@ describe("createHttpServeApp", () => {
       expect.objectContaining({ code: "ATTACH_CAPLET_DISABLED", capletId: "status" }),
     ]);
 
-    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+    const invoked = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3058,11 +4190,11 @@ describe("createHttpServeApp", () => {
       }),
     });
 
-    const discovery = (await (await app.request("http://127.0.0.1:5387/v1")).json()) as {
+    const discovery = (await (await app.request("http://127.0.0.1:5387/api/v1")).json()) as {
       links: Record<string, string>;
     };
     expect(discovery.links).not.toHaveProperty("attachManifest");
-    expect(await app.request("http://127.0.0.1:5387/v1/attach/manifest")).toHaveProperty(
+    expect(await app.request("http://127.0.0.1:5387/api/v1/attach/manifest")).toHaveProperty(
       "status",
       404,
     );
@@ -3075,14 +4207,14 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const discovery = (await (await app.request("http://127.0.0.1:5387/v1")).json()) as {
+    const discovery = (await (await app.request("http://127.0.0.1:5387/api/v1")).json()) as {
       links: Record<string, string>;
     };
 
     expect(discovery.links).toMatchObject({
-      attachManifest: "/v1/attach/manifest",
-      attachEvents: "/v1/attach/events",
-      attachInvoke: "/v1/attach/invoke",
+      attachManifest: "/api/v1/attach/manifest",
+      attachEvents: "/api/v1/attach/events",
+      attachInvoke: "/api/v1/attach/invoke",
     });
     expect(discovery.links).not.toHaveProperty("attachSessions");
 
@@ -3122,7 +4254,7 @@ describe("createHttpServeApp", () => {
       }),
     });
 
-    const created = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const created = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3134,7 +4266,7 @@ describe("createHttpServeApp", () => {
     const body = (await created.json()) as { sessionId: string };
 
     const sessionHeaders = { [CAPLETS_ATTACH_SESSION_HEADER]: body.sessionId };
-    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const manifestResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: sessionHeaders,
     });
     expect(manifestResponse.status).toBe(200);
@@ -3152,7 +4284,7 @@ describe("createHttpServeApp", () => {
       ],
     });
 
-    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+    const invoked = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
       method: "POST",
       headers: { ...sessionHeaders, "content-type": "application/json" },
       body: JSON.stringify({
@@ -3168,7 +4300,7 @@ describe("createHttpServeApp", () => {
       data: { invoked: "session-export" },
     });
 
-    const events = await app.request("http://127.0.0.1:5387/v1/attach/events", {
+    const events = await app.request("http://127.0.0.1:5387/api/v1/attach/events", {
       headers: sessionHeaders,
     });
     expect(events.status).toBe(200);
@@ -3176,7 +4308,19 @@ describe("createHttpServeApp", () => {
     await expect(reader.read()).resolves.toMatchObject({ done: false });
     eventListener?.();
     const changed = await reader.read();
-    expect(new TextDecoder().decode(changed.value)).toContain("session-rev");
+    const changedText = new TextDecoder().decode(changed.value);
+    expect(changedText).toContain("session-rev");
+    const dataLine = changedText.split("\n").find((line) => line.startsWith("data: "));
+    if (!dataLine) throw new Error("Expected Attach manifest event data.");
+    expect(attachManifestRevisionEventSchema.parse(JSON.parse(dataLine.slice(6)))).toEqual({
+      revision: "session-rev",
+    });
+    expect(
+      attachManifestRevisionEventSchema.safeParse({
+        revision: "session-rev",
+        unexpected: true,
+      }).success,
+    ).toBe(false);
     await reader.cancel();
 
     await app.closeCapletsSessions();
@@ -3196,12 +4340,12 @@ describe("createHttpServeApp", () => {
       }),
     });
 
-    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const manifestResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest");
     expect(manifestResponse.status).toBe(200);
     const manifest = (await manifestResponse.json()) as AttachManifest;
     expect(manifest.revision).toBe("default-rev");
 
-    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+    const invoked = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3264,8 +4408,8 @@ describe("createHttpServeApp", () => {
       const authDir = tempDir("caplets-stacked-auth-");
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
-      }).saveSelfHostedProfile({
-        hostUrl: upstream.origin,
+      }).saveRemoteProfile({
+        origin: upstream.origin,
         clientId: "stacked_test_client",
         clientLabel: "Stacked Test",
         credentials: {
@@ -3327,7 +4471,7 @@ describe("createHttpServeApp", () => {
 
         expectRemoteArtifactResult(await invokeAttachTool(wrapper.origin));
 
-        const created = await fetch(`${wrapper.origin}/v1/attach/sessions`, {
+        const created = await fetch(`${wrapper.origin}/api/v1/attach/sessions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: "{}",
@@ -3363,7 +4507,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { [CAPLETS_STACK_CHAIN_HEADER]: "http://127.0.0.1:5387/" },
     });
 
@@ -3398,7 +4542,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ projectRoot }),
@@ -3421,7 +4565,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ projectRoot, projectConfigPath: "/tmp/outside-config.json" }),
@@ -3455,7 +4599,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ projectRoot }),
@@ -3486,7 +4630,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ projectRoot: filePath }),
@@ -3515,7 +4659,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3547,7 +4691,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ projectRoot }),
@@ -3586,7 +4730,7 @@ describe("createHttpServeApp", () => {
       },
     );
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -3634,7 +4778,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3662,7 +4806,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { [CAPLETS_ATTACH_SESSION_HEADER]: "missing-session" },
     });
 
@@ -3693,14 +4837,14 @@ describe("createHttpServeApp", () => {
       }),
     });
     try {
-      const created = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      const created = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({}),
       });
       const body = (await created.json()) as { sessionId: string };
       const sessionHeaders = { [CAPLETS_ATTACH_SESSION_HEADER]: body.sessionId };
-      const events = await app.request("http://127.0.0.1:5387/v1/attach/events", {
+      const events = await app.request("http://127.0.0.1:5387/api/v1/attach/events", {
         headers: sessionHeaders,
       });
       const reader = events.body!.getReader();
@@ -3708,7 +4852,7 @@ describe("createHttpServeApp", () => {
 
       await vi.advanceTimersByTimeAsync(11 * 60_000);
 
-      const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      const manifestResponse = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
         headers: sessionHeaders,
       });
       expect(manifestResponse.status).toBe(200);
@@ -3734,7 +4878,7 @@ describe("createHttpServeApp", () => {
       }),
     });
     try {
-      const created = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      const created = await app.request("http://127.0.0.1:5387/api/v1/attach/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -3758,14 +4902,14 @@ describe("createHttpServeApp", () => {
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
     const manifest = (await (
-      await app.request("http://127.0.0.1:5387/v1/attach/manifest")
+      await app.request("http://127.0.0.1:5387/api/v1/attach/manifest")
     ).json()) as {
       revision: string;
       caplets: Array<{ exportId: string; kind: string; stableId: string; schemaHash: string }>;
     };
     expect(manifest.caplets).toHaveLength(1);
 
-    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+    const invoked = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3786,7 +4930,7 @@ describe("createHttpServeApp", () => {
       },
     });
 
-    const stale = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+    const stale = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3802,7 +4946,7 @@ describe("createHttpServeApp", () => {
       error: { code: "ATTACH_MANIFEST_STALE" },
     });
 
-    const malformed = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+    const malformed = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: '{"revision":',
@@ -3846,14 +4990,14 @@ describe("createHttpServeApp", () => {
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
     const manifest = (await (
-      await app.request("http://127.0.0.1:5387/v1/attach/manifest")
+      await app.request("http://127.0.0.1:5387/api/v1/attach/manifest")
     ).json()) as {
       revision: string;
       tools: Array<{ exportId: string; kind: string }>;
     };
     downstreamToolName = "search";
 
-    const stale = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+    const stale = await app.request("http://127.0.0.1:5387/api/v1/attach/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -3871,11 +5015,31 @@ describe("createHttpServeApp", () => {
     });
   });
 
+  it("returns Attach event headers for HEAD without subscribing to events", async () => {
+    const { engine } = testEngine();
+    const onReload = vi.spyOn(engine, "onReload");
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/events", {
+      method: "HEAD",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("connection")).toBe("keep-alive");
+    expect(response.headers.get("x-accel-buffering")).toBe("no");
+    expect(await response.text()).toBe("");
+    expect(onReload).not.toHaveBeenCalled();
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
   it("serves attach events as an unbuffered keep-alive SSE stream", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/events");
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/events");
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
@@ -3890,7 +5054,7 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/events");
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/events");
     const reader = response.body!.getReader();
     await expect(reader.read()).resolves.toMatchObject({ done: false });
 
@@ -3908,7 +5072,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { host: "caplets.tail7ff085.ts.net" },
     });
 
@@ -3928,7 +5092,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: { host: "secondary.example.com" },
     });
 
@@ -3949,7 +5113,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {}, remoteCredentialStore: store },
     );
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: {
         host: "caplets.tail7ff085.ts.net",
         authorization: `Bearer ${credentials.accessToken}`,
@@ -3964,7 +5128,7 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    for (const path of ["/mcp", "/control", "/attach", "/healthz"]) {
+    for (const path of ["/v1/mcp", "/control", "/attach", "/healthz"]) {
       const response = await app.request(`http://127.0.0.1:5387${path}`, { method: "POST" });
       expect(response.status).toBe(404);
     }
@@ -3986,7 +5150,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {}, remoteCredentialStore: store },
     );
 
-    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+    const response = await app.request("http://127.0.0.1:5387/api/v1/attach/manifest", {
       headers: {
         host: "secondary.example.com",
         authorization: `Bearer ${credentials.accessToken}`,
@@ -4005,7 +5169,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const init = await app.request("http://127.0.0.1:5387/v1/mcp", {
+    const init = await app.request("http://127.0.0.1:5387/mcp", {
       method: "POST",
       headers: {
         host: "caplets.tail7ff085.ts.net",
@@ -4042,7 +5206,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {}, remoteCredentialStore: store },
     );
 
-    const init = await app.request("http://127.0.0.1:5387/v1/mcp", {
+    const init = await app.request("http://127.0.0.1:5387/mcp", {
       method: "POST",
       headers: {
         host: "caplets.tail7ff085.ts.net",
@@ -4079,7 +5243,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const init = await app.request("http://127.0.0.1:5387/v1/mcp", {
+    const init = await app.request("http://127.0.0.1:5387/mcp", {
       method: "POST",
       headers: {
         host: "caplets.tail7ff085.ts.net",
@@ -4107,7 +5271,7 @@ describe("createHttpServeApp", () => {
 
 async function listMcpTools(
   app: ReturnType<typeof createHttpServeApp>,
-  path: "/v1/mcp",
+  path: "/mcp",
 ): Promise<Array<{ name: string; inputSchema?: unknown }>> {
   const init = await app.request(`http://127.0.0.1:5387${path}`, {
     method: "POST",
@@ -4172,15 +5336,40 @@ async function listMcpTools(
   return payload.result.tools;
 }
 
+async function requestRawHttp(
+  origin: string,
+  path: string,
+): Promise<{
+  status: number | undefined;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}> {
+  return await new Promise((resolve, reject) => {
+    const request = sendHttpRequest(origin, { method: "GET", path }, (response) => {
+      response.setEncoding("utf8");
+      let body = "";
+      response.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        resolve({ status: response.statusCode, headers: response.headers, body });
+      });
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 async function startTestHttpServer(app: ReturnType<typeof createHttpServeApp>): Promise<{
   origin: string;
   close: () => Promise<void>;
+  server: ServerType;
 }> {
   return await new Promise((resolve) => {
     const websocketServer = new WebSocketServer({ noServer: true });
     const server = serve(
       {
-        fetch: app.fetch,
+        fetch: createNodeServerFetch(app),
         hostname: "127.0.0.1",
         port: 0,
         websocket: {
@@ -4190,6 +5379,7 @@ async function startTestHttpServer(app: ReturnType<typeof createHttpServeApp>): 
       (info) => {
         resolve({
           origin: `http://127.0.0.1:${info.port}`,
+          server,
           close: async () => {
             for (const client of websocketServer.clients) {
               client.terminate();
@@ -4199,6 +5389,124 @@ async function startTestHttpServer(app: ReturnType<typeof createHttpServeApp>): 
         });
       },
     );
+  });
+}
+
+function fetchInputUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+async function startBackendOAuthV2OverHttp(
+  origin: string,
+): Promise<{ flowId: string; authorizationUrl: string }> {
+  const response = await fetch(`${origin}/api/v2/admin/backend-auth-flows`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": `backend-oauth-v2-${randomUUID()}`,
+      "if-none-match": "*",
+    },
+    body: JSON.stringify({ serverId: "remote" }),
+  });
+  const body = (await response.json()) as {
+    server: string;
+    flowId: string;
+    authorizationUrl: string;
+  };
+  expect(body).toEqual({
+    server: "remote",
+    flowId: expect.any(String),
+    authorizationUrl: expect.any(String),
+  });
+  return body;
+}
+
+function backendOAuthCallbackUrl(
+  origin: string,
+  authorizationUrl: URL,
+  parameters: Record<string, string>,
+): URL {
+  const redirectUri = authorizationUrl.searchParams.get("redirect_uri");
+  if (!redirectUri) throw new Error("Expected OAuth redirect URI.");
+  const redirectUrl = new URL(redirectUri);
+  const callbackUrl = new URL(redirectUrl.pathname, `${origin}/`);
+  callbackUrl.search = redirectUrl.search;
+  for (const [name, value] of Object.entries(parameters)) {
+    callbackUrl.searchParams.set(name, value);
+  }
+  return callbackUrl;
+}
+
+function testOAuthTokenResponse(): Response {
+  return Response.json({
+    access_token: "remote-access-token",
+    refresh_token: "remote-refresh-token",
+    token_type: "Bearer",
+    expires_in: 3600,
+  });
+}
+
+const TEST_PROJECT_FINGERPRINT = "sha256_repo";
+
+type ProjectBindingSocketSession = {
+  binding: { bindingId: string };
+  sessionId: string;
+};
+
+function projectBindingSocketUrl(
+  origin: string,
+  session: ProjectBindingSocketSession,
+  projectFingerprint = TEST_PROJECT_FINGERPRINT,
+): URL {
+  const url = new URL("/api/v1/attach/project-bindings/connect", origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("bindingId", session.binding.bindingId);
+  url.searchParams.set("sessionId", session.sessionId);
+  url.searchParams.set("projectFingerprint", projectFingerprint);
+  return url;
+}
+
+function openProjectBindingSocket(
+  origin: string,
+  session: ProjectBindingSocketSession,
+  options: {
+    projectFingerprint?: string;
+    accessToken?: string;
+    protocols?: string[];
+  } = {},
+): WebSocket {
+  const protocols = options.protocols ?? [
+    PROJECT_BINDING_SOCKET_PROTOCOL,
+    ...(options.accessToken
+      ? [`caplets.bearer.${Buffer.from(options.accessToken).toString("base64url")}`]
+      : []),
+  ];
+  const url = projectBindingSocketUrl(
+    origin,
+    session,
+    options.projectFingerprint ?? TEST_PROJECT_FINGERPRINT,
+  );
+  return protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+}
+
+async function rejectedSocketUpgradeStatus(socket: WebSocket): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    let rejected = false;
+    socket.on("error", (error) => {
+      if (!rejected) reject(error);
+    });
+    socket.once("open", () => reject(new Error("Project Binding socket unexpectedly opened.")));
+    socket.once("unexpected-response", (_request, response) => {
+      rejected = true;
+      const status = response.statusCode ?? 0;
+      response.resume();
+      response.once("end", () => {
+        socket.terminate();
+        resolve(status);
+      });
+    });
   });
 }
 
@@ -4280,13 +5588,17 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     publicOrigin: undefined,
     auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
     ...overrides,
   };
 }
@@ -4458,30 +5770,12 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-function testBackendAuthStore(): BackendAuthStateStore {
-  const sqlite = new BetterSqlite3(":memory:");
-  backendAuthDatabases.push(sqlite);
-  sqlite.exec(`
-    create table backend_auth_states (
-      server text primary key not null,
-      generation integer not null,
-      token_bundle text not null,
-      created_at text not null,
-      updated_at text not null
-    );
-    create table operator_activity (
-      activity_key text primary key not null,
-      operator_client_id text not null,
-      action text not null,
-      target_kind text not null,
-      target_key text not null,
-      outcome text not null,
-      metadata text not null,
-      created_at text not null
-    )
-  `);
-  const database = drizzle(sqlite, { schema: sqliteSchema });
-  return new BackendAuthStateStore({ dialect: "sqlite", db: database });
+async function testAuthoritativeHostStorage(configPath: string) {
+  const root = dirname(dirname(configPath));
+  return await createHostStorage(
+    { type: "sqlite", path: join(root, "host-state.sqlite3") },
+    { vaultRoot: join(root, "host-vault") },
+  );
 }
 
 function testEngine(config: Record<string, unknown> = {}): {
@@ -4588,7 +5882,7 @@ async function callMcpTool(
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
   };
-  const initialized = await fetch(`${origin}/v1/mcp`, {
+  const initialized = await fetch(`${origin}/mcp`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -4606,7 +5900,7 @@ async function callMcpTool(
   const sessionId = initialized.headers.get("mcp-session-id");
   if (!sessionId) throw new Error("expected MCP session ID");
   try {
-    await fetch(`${origin}/v1/mcp`, {
+    await fetch(`${origin}/mcp`, {
       method: "POST",
       headers: {
         ...headers,
@@ -4615,7 +5909,7 @@ async function callMcpTool(
       },
       body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
     });
-    const response = await fetch(`${origin}/v1/mcp`, {
+    const response = await fetch(`${origin}/mcp`, {
       method: "POST",
       headers: {
         ...headers,
@@ -4632,7 +5926,7 @@ async function callMcpTool(
     expect(response.status).toBe(200);
     return mcpToolCallResult(await response.text());
   } finally {
-    const deleted = await fetch(`${origin}/v1/mcp`, {
+    const deleted = await fetch(`${origin}/mcp`, {
       method: "DELETE",
       headers: {
         "mcp-session-id": sessionId,
@@ -4691,10 +5985,10 @@ async function invokeAttachTool(
   origin: string,
   headers: Record<string, string> = {},
 ): Promise<unknown> {
-  const manifestResponse = await fetch(`${origin}/v1/attach/manifest`, { headers });
+  const manifestResponse = await fetch(`${origin}/api/v1/attach/manifest`, { headers });
   expect(manifestResponse.status).toBe(200);
   const attachExport = attachToolInvocation(await manifestResponse.json(), "overlay__download");
-  const invokeResponse = await fetch(`${origin}/v1/attach/invoke`, {
+  const invokeResponse = await fetch(`${origin}/api/v1/attach/invoke`, {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify({

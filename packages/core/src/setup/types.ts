@@ -1,7 +1,7 @@
 import type { CapletSetupCommandConfig, CapletSetupConfig } from "../config";
 import type { RuntimeFeature } from "../config-runtime";
 
-export const setupTargetKinds = ["local_host", "remote_host", "hosted_sandbox"] as const;
+export const setupTargetKinds = ["local_host", "remote_host"] as const;
 
 export type SetupTargetKind = (typeof setupTargetKinds)[number];
 export type SetupActor = "cli-interactive" | "cli-yes" | "ui" | "automation";
@@ -57,5 +57,5 @@ export type SetupPlan = {
 };
 
 export function isSetupTargetKind(value: string): value is SetupTargetKind {
-  return setupTargetKinds.includes(value as SetupTargetKind);
+  return value === "local_host" || value === "remote_host";
 }

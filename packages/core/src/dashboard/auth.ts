@@ -1,12 +1,9 @@
 import { DASHBOARD_SESSION_COOKIE } from "./types";
 
-export function dashboardSessionCookie(
-  value: string,
-  options: { path: string; secure: boolean },
-): string {
+export function dashboardSessionCookie(value: string, options: { secure: boolean }): string {
   return [
     `${DASHBOARD_SESSION_COOKIE}=${value}`,
-    `Path=${options.path}`,
+    "Path=/",
     "HttpOnly",
     "SameSite=Lax",
     options.secure ? "Secure" : undefined,

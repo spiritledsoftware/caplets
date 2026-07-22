@@ -7,9 +7,8 @@ Caplets Vault stores secret-like string values in the runtime that uses them. Us
 a Caplet needs a token, API key, URL, or other private config value and you do not want to
 depend on the agent harness passing environment variables through to Caplets.
 
-Vault values are encrypted on disk. Config references stay in your Caplets config, while
-the raw value stays in the local, self-hosted remote, or Cloud runtime that executes the
-Caplet.
+Vault values are encrypted on disk. Config references stay in your Caplets config, while the raw
+value stays in the local runtime or generic remote Current Host that executes the Caplet.
 
 ## When to use Vault
 
@@ -123,8 +122,10 @@ To reveal a raw value, pass `--show` explicitly:
 caplets vault get GH_TOKEN --show
 ```
 
-Use raw reveal only in a human shell. Agent-facing Caplets surfaces resolve values into
-runtime config but do not expose Vault management or raw reveal handles to agents.
+Use CLI raw reveal only in a human shell. Agent-facing Caplets surfaces resolve values into runtime
+config but do not expose Vault management or raw reveal handles to agents. Remote Raw Vault Reveal
+is available only through `/dashboard/api/private/vault-reveals`; it requires the Dashboard Session
+Credential, current CSRF value, and exact confirmation, and returns `Cache-Control: no-store`.
 
 ## Revoke and delete
 
@@ -150,32 +151,25 @@ caplets vault delete GH_TOKEN
 Deleting a value does not delete retained grants. If you set the value again later, the
 existing grant can resolve again.
 
-## Remote and Cloud Vault
+## Remote Vault
 
-Use `--remote` when the Caplet executes in a self-hosted remote runtime or Caplets Cloud:
+Use `--remote` when the Caplet executes in a generic remote Current Host:
 
 ```sh
 caplets vault set GH_TOKEN --remote
 caplets vault access grant GH_TOKEN github --remote
 ```
 
-The selected remote target uses the same Remote Profile and environment selection as
+The selected remote target uses the same generic Remote Profile and origin-only selection as
 [Remote Attach](/remote-attach/). Log in first:
 
 ```sh
-caplets remote login https://caplets.example.com/caplets
-CAPLETS_REMOTE_URL=https://caplets.example.com/caplets caplets vault list --remote
+caplets remote login https://caplets.example.com
+CAPLETS_REMOTE_URL=https://caplets.example.com caplets vault list --remote
 ```
 
-For Caplets Cloud:
-
-```sh
-caplets remote login https://cloud.caplets.dev
-CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev caplets vault list --remote
-```
-
-Remote Vault values belong to the selected runtime. Local Caplets do not read, mirror, or
-forward remote or Cloud Vault values.
+Remote Vault values belong to the selected Current Host. Local Caplets do not read, mirror, or
+forward remote Vault values.
 
 ## Encryption and key storage
 

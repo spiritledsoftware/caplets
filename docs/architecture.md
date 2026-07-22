@@ -2,7 +2,7 @@
 
 Caplets is a Code Mode and capability gateway for coding agents. It turns configured backends into Caplet handles, optional progressive wrapper tools, and optional direct MCP surfaces.
 
-Source code is authoritative. This document summarizes the architecture, but implementation details in `packages/core`, generated schemas, tests, and package entrypoints win when docs drift.
+Source code is authoritative. This document summarizes the architecture, but implementation details in `packages/core`, public client details in `packages/sdk`, generated schemas, tests, and package entrypoints win when docs drift.
 
 ## Runtime Layers
 
@@ -50,19 +50,52 @@ The engine tags each projection with the config generation captured before disco
 - Progressive exposure registers one wrapper tool per Caplet.
 - Direct exposure registers discovered downstream MCP tools, resources, resource templates, and prompts.
 
-The HTTP server in `packages/core/src/serve/http.ts` exposes versioned MCP, attach, admin, and health endpoints for self-hosting and remote clients. Stdio remains the local MCP transport for ordinary client config.
+The HTTP server in `packages/core/src/serve/http.ts` exposes one fixed topology at the Current Host
+Origin. `GET /` redirects to `/dashboard`; `/.well-known/caplets` links the disjoint `/api`, `/mcp`,
+and `/dashboard` namespaces. `/api/openapi.json` serves the OpenAPI contract, surviving v1 public
+operations live beneath `/api/v1/*`, and Admin resources live beneath `/api/v2/admin/*`.
 
-`/v1/mcp` is the configured agent-facing MCP surface. It honors exposure policy, so a default `code_mode` server can expose only the `code_mode` tool to ordinary MCP clients.
+Exact `/mcp` is the agent-facing Streamable HTTP MCP endpoint. It honors exposure policy, so a
+default `code_mode` server can expose only the `code_mode` tool to ordinary MCP clients.
 
-`/v1/attach` is the Caplets runtime attach API. Attached clients read `/v1/attach/manifest`, subscribe to `/v1/attach/events`, and invoke revision-scoped exports through `/v1/attach/invoke` before merging remote projections with local/project overlays.
+`/api/v1/attach/*` is the Caplets runtime Attach API. Attached clients read
+`/api/v1/attach/manifest`, subscribe to `/api/v1/attach/events`, and invoke revision-scoped exports
+through `/api/v1/attach/invoke` before merging remote projections with local/project overlays.
+Protocol namespaces cannot be moved beneath a configured or reverse-proxy prefix.
 
 ### Current Host Administration
 
-`packages/core/src/current-host/operations.ts` is the Current Host administration Module. Its typed Interface accepts a trusted host-scoped Operator principal plus a semantic query or command, then owns safe read models, catalog and Caplet administration, Pending Remote Login and Remote Client mutations, safe Vault administration, Operator activity, redaction, and actor-specific `sessionEnded` outcomes.
+`packages/core/src/current-host/operations.ts` is the Current Host administration Module. Its typed Interface accepts a trusted host-scoped Operator principal plus a semantic operation, then owns safe read models, catalog and Caplet administration, Pending Remote Login and Remote Client mutations, backend authentication, safe Vault administration, Operator activity, redaction, conditional generations, and actor-specific `sessionEnded` outcomes. HTTP and CLI Adapters do not own Host Storage orchestration.
 
-The human dashboard and `/v1/admin` Operator bearer routes are separate Adapters over that Interface. The dashboard retains cookie, CSRF, session, and browser presentation ceremony; the bearer Adapter retains the existing `RemoteCliRequest` selection and safe response envelope. Access Clients remain limited to MCP, Attach, and Project Binding routes. Both Access and Operator Clients may revoke only their own credential through the role-neutral self-revoke route.
+One resource router mounts only under `/api/v2/admin/*`. Any `Authorization` header selects Remote
+Profile bearer validation exclusively; without one, a dashboard session cookie selects same-origin
+browser authentication and unsafe methods require the current `X-Caplets-CSRF`. Both modes produce
+the same trusted Operator principal for the route-local Zod/OpenAPI schemas and semantic handlers.
+Access Clients remain limited to MCP, Attach, Project Binding, and credential-owner self-revocation.
 
-Raw Vault Reveal is not a shared operation. It remains a dashboard-only human confirmation path with `no-store` responses and an ephemeral browser timer; generic bearer administration rejects it.
+The public, cacheable `/api/openapi.json` describes canonical `/api/v1/*` and
+`/api/v2/admin/*` HTTP resources. Route-local Zod/OpenAPI definitions generate
+`schemas/caplets-http.openapi.json`, and the pinned generator writes the public HTTP client into the
+independent `@caplets/sdk` package.
+
+The root `@caplets/sdk` entrypoint is the browser/Node Fetch client plus curated ordered and
+streaming Caplet Bundle helpers. `@caplets/sdk/project-binding` is the browser-safe
+`caplets.project-binding.v1` session coordinator, while `@caplets/sdk/project-binding/node`
+computes marker-aware filesystem fingerprints. Callers create isolated clients with an explicit
+Current Host Origin and optional static or async authentication. The coordinator separately
+requires the exact `/api/v1/attach/project-bindings/connect` `ws:` or `wss:` URL.
+
+Well-known discovery, MCP, dashboard login/session/logout routes, Raw Vault Reveal, and other
+browser-private routes are excluded from OpenAPI and the SDK. OpenAPI documents bearer and
+dashboard-session cookie alternatives only for `/api/v2/admin/*`; the generated SDK does not
+bootstrap browser sessions. Runtime discovery and invocation remain on Attach, and no v1 Admin
+Adapter exists. Remote `init` and `add` remain rejected as local filesystem operations.
+
+Raw Vault Reveal is not a shared Admin operation. It remains a dashboard-only human confirmation
+path at `/dashboard/api/private/vault-reveals`, with same-origin session and CSRF checks,
+`Cache-Control: no-store`, and an ephemeral browser timer; bearer administration and generated
+clients cannot invoke it. Dashboard session cookies use `Path=/`; restore migrates an existing
+`Path=/dashboard` cookie, while a cookie scoped to a removed custom prefix requires a fresh login.
 
 ### Caplets Daemon
 
@@ -112,15 +145,24 @@ The intended agent pattern is one compact script:
 
 ### Remote Control
 
-Remote control under `packages/core/src/remote-control/` lets CLI and native integrations operate against a self-hosted or Cloud Caplets service. Remote mode uses server-owned config, auth, and execution, with local/project overlays where supported.
+Remote control under `packages/core/src/remote-control/` lets CLI and native integrations operate
+against a generic Current Host. Remote mode uses server-owned config, auth, and execution, with
+local/project overlays where supported.
 
 ### Project Binding
 
 Project Binding under `packages/core/src/project-binding/` connects a local project root to a remote runtime. The foreground attach loop owns session state, heartbeat, reconnect behavior, sync preflight, and terminal recovery commands.
 
-Native Project Binding lifecycle ordering lives in `packages/core/src/native/project-binding-lifecycle.ts`. The owner retains the last accepted local allowed-Caplet set, serializes and coalesces remote updates, makes cleanup the final mutation, and commits remote replacement only after the previous Adapter cleans up. Cloud and self-hosted remain distinct Adapters: Cloud heartbeat failures report without re-registration, while self-hosted failures disconnect and permit a later registration attempt.
+Native Project Binding lifecycle ordering lives in
+`packages/core/src/native/project-binding-lifecycle.ts`. The owner retains the last accepted local
+allowed-Caplet set, serializes and coalesces remote updates, makes cleanup the final mutation, and
+commits remote replacement only after the previous Adapter cleans up. Generic Current Host failures
+disconnect safely and permit a later registration attempt.
 
-Self-hosted Binding Session records serialize heartbeat, end, expiry, prune, and shutdown mutations per record. Active socket work reauthorizes the durable Client ID at execution time, stages lease writes, and commits only after authorization, record generation, identity, and expiry remain current; terminal cleanup prevents stale or second-socket work from resurrecting a lease.
+Current Host Binding Session records serialize heartbeat, end, expiry, prune, and shutdown mutations
+per record. Active socket work reauthorizes the durable Client ID at execution time, stages lease
+writes, and commits only after authorization, record generation, identity, and expiry remain current;
+terminal cleanup prevents stale or second-socket work from resurrecting a lease.
 
 `docs/project-binding.md` is the living operational contract for Project Binding.
 
@@ -136,7 +178,11 @@ OpenAPI, Google Discovery, GraphQL, and HTTP backends expose explicit operation/
 
 Google Discovery backends load local or remote Google Discovery documents, infer request base URLs from the document unless overridden, expose filtered Discovery methods as tools, and infer OAuth scopes from the exposed operation set. Google media downloads and oversized or binary HTTP-like responses are written as Caplets media artifacts under the configured artifact root instead of being forced inline.
 
-HTTP-like backend results cross one internal Media contract. Small textual or JSON bodies use the `inline` variant. Non-inline results use `local-artifact` only when the host explicitly exposes its Caplets-managed artifact filesystem; remote and hosted boundaries use `remote-reference`, which carries an artifact URI and never filesystem path semantics. Backend managers produce this contract, while terminal, MCP, Attach, native, and browser Adapters own their local presentation.
+HTTP-like backend results cross one internal Media contract. Small textual or JSON bodies use the
+`inline` variant. Non-inline results use `local-artifact` only when the host explicitly exposes its
+Caplets-managed artifact filesystem; remote boundaries use `remote-reference`, which carries an
+artifact URI and never filesystem path semantics. Backend managers produce this contract, while
+terminal, MCP, Attach, native, and browser Adapters own their local presentation.
 
 Each configurable HTTP-like backend retains its configured maximum response size as a hard failure cap. The shared HTTP reader's default remains 1 MiB. GraphQL operation results use the same 1 MiB inline threshold and a separate 100 MiB artifact cap; GraphQL schema and introspection remain bounded-text control paths.
 
@@ -152,13 +198,19 @@ Caplet sets expose another Caplets collection as a nested backend. This lets a t
 
 Auth supports none, bearer, headers, OAuth2, and OIDC where the backend family supports them. OAuth/OIDC state is stored outside config. Errors and diagnostics redact configured secrets.
 
-Cloud Auth stores hosted credentials and a selected workspace. `caplets attach` refreshes expired hosted credentials before creating Binding Sessions and fails closed when refresh credentials are revoked.
+Remote Profiles store generic Current Host credentials. `caplets attach` refreshes expired remote
+credentials before creating Binding Sessions and fails closed when refresh credentials are revoked.
 
 ## Distribution And Deployment
 
 The public CLI package is `caplets`. The native packages are `@caplets/opencode` and `@caplets/pi`.
 
 The repo includes a source-build `Dockerfile` and three standalone Compose deployment descriptors for SQLite, convenient PostgreSQL, and hardened single-host PostgreSQL. Release workflows publish the service image and matching Compose files as GitHub Release assets.
+
+`CAPLETS_SERVER_URL`, Remote Profile URLs, CLI URL arguments, native remote URLs, and SDK `baseUrl`
+are Current Host Origins: scheme, host, and optional port only. A reverse proxy must expose
+`/.well-known/caplets`, `/api`, exact `/mcp`, and `/dashboard` at the origin root; prefix-only
+hosting is unsupported. Deployment readiness probes use `/api/v1/healthz`.
 
 ## Benchmark Architecture
 

@@ -2,7 +2,6 @@ packages:
   - "apps/*"
   - "packages/*"
   - "tools/*"
-
 allowBuilds:
   "@google/genai": true
   "@sentry/cli": true

@@ -9,34 +9,28 @@ describe("resolveCapletsMode", () => {
   });
 
   it("uses remote mode in auto when a server URL is configured", () => {
-    expect(resolveCapletsMode({}, { CAPLETS_SERVER_URL: "https://example.com/caplets" })).toEqual({
+    expect(resolveCapletsMode({}, { CAPLETS_SERVER_URL: "https://example.com" })).toEqual({
       mode: "remote",
     });
   });
 
   it("uses local mode from CAPLETS_MODE=local even with a server URL", () => {
     expect(
-      resolveCapletsMode(
-        {},
-        { CAPLETS_MODE: "local", CAPLETS_SERVER_URL: "https://example.com/caplets" },
-      ),
+      resolveCapletsMode({}, { CAPLETS_MODE: "local", CAPLETS_SERVER_URL: "https://example.com" }),
     ).toEqual({ mode: "local" });
   });
 
   it("uses remote mode from CAPLETS_MODE=remote with a server URL", () => {
     expect(
-      resolveCapletsMode(
-        {},
-        { CAPLETS_MODE: "remote", CAPLETS_SERVER_URL: "https://example.com/caplets" },
-      ),
+      resolveCapletsMode({}, { CAPLETS_MODE: "remote", CAPLETS_SERVER_URL: "https://example.com" }),
     ).toEqual({ mode: "remote" });
   });
 
   it("lets explicit local mode ignore server settings", () => {
     expect(
       resolveCapletsMode(
-        { mode: "local", serverUrl: "https://input.example.com/caplets" },
-        { CAPLETS_SERVER_URL: "https://env.example.com/caplets" },
+        { mode: "local", serverUrl: "https://input.example.com" },
+        { CAPLETS_SERVER_URL: "https://env.example.com" },
       ),
     ).toEqual({ mode: "local" });
   });
@@ -53,9 +47,9 @@ describe("resolveCapletsMode", () => {
 });
 
 describe("resolveCapletsServer", () => {
-  it("normalizes a base path URL and derives service URLs without legacy server auth", () => {
+  it("normalizes an origin and derives fixed protocol URLs without legacy server auth", () => {
     const resolved = resolveCapletsServer(
-      { url: "https://example.com/caplets/" } as never,
+      { url: "https://EXAMPLE.com:443/" } as never,
       {
         CAPLETS_SERVER_USER: "env-user",
         CAPLETS_SERVER_PASSWORD: ["server", "password"].join("-"),
@@ -63,11 +57,11 @@ describe("resolveCapletsServer", () => {
     );
 
     expect(resolved).toMatchObject({
-      baseUrl: new URL("https://example.com/caplets"),
-      mcpUrl: new URL("https://example.com/caplets/v1/mcp"),
-      attachUrl: new URL("https://example.com/caplets/v1/attach"),
-      controlUrl: new URL("https://example.com/caplets/v1/admin"),
-      healthUrl: new URL("https://example.com/caplets/v1/healthz"),
+      baseUrl: new URL("https://example.com"),
+      mcpUrl: new URL("https://example.com/mcp"),
+      attachUrl: new URL("https://example.com/api/v1/attach"),
+      adminUrl: new URL("https://example.com/api/v2/admin"),
+      healthUrl: new URL("https://example.com/api/v1/healthz"),
       auth: { type: "none" },
       requestInit: {},
     });
@@ -76,36 +70,34 @@ describe("resolveCapletsServer", () => {
   it("derives service URLs from a root URL", () => {
     expect(resolveCapletsServer({ url: "https://example.com" }, {})).toMatchObject({
       baseUrl: new URL("https://example.com/"),
-      mcpUrl: new URL("https://example.com/v1/mcp"),
-      attachUrl: new URL("https://example.com/v1/attach"),
-      controlUrl: new URL("https://example.com/v1/admin"),
-      healthUrl: new URL("https://example.com/v1/healthz"),
+      mcpUrl: new URL("https://example.com/mcp"),
+      attachUrl: new URL("https://example.com/api/v1/attach"),
+      adminUrl: new URL("https://example.com/api/v2/admin"),
+      healthUrl: new URL("https://example.com/api/v1/healthz"),
     });
   });
 
   it("accepts loopback http IPv6 bracket URLs", () => {
     expect(resolveCapletsServer({ url: "http://[::1]:5387" }, {})).toMatchObject({
       baseUrl: new URL("http://[::1]:5387/"),
-      mcpUrl: new URL("http://[::1]:5387/v1/mcp"),
-      attachUrl: new URL("http://[::1]:5387/v1/attach"),
-      controlUrl: new URL("http://[::1]:5387/v1/admin"),
-      healthUrl: new URL("http://[::1]:5387/v1/healthz"),
+      mcpUrl: new URL("http://[::1]:5387/mcp"),
+      attachUrl: new URL("http://[::1]:5387/api/v1/attach"),
+      adminUrl: new URL("http://[::1]:5387/api/v2/admin"),
+      healthUrl: new URL("http://[::1]:5387/api/v1/healthz"),
     });
   });
 
-  it("rejects non-loopback http URLs", () => {
-    expect(() => resolveCapletsServer({ url: "http://example.com/caplets" }, {})).toThrow(/https/u);
-  });
-
-  it("rejects URLs with username, password, query, or fragment", () => {
+  it("rejects non-loopback HTTP and every non-origin URL component", () => {
     for (const url of [
-      "https://caplets@example.com/caplets",
-      "https://caplets:secret@example.com/caplets",
-      "https://example.com/caplets?token=secret",
-      "https://example.com/caplets#token",
+      "http://example.com",
+      "https://caplets@example.com",
+      "https://caplets:secret@example.com",
+      "https://example.com/caplets",
+      "https://example.com?token=secret",
+      "https://example.com#token",
     ]) {
       expect(() => resolveCapletsServer({ url }, {})).toThrow(
-        /must not include username, password, query string, or fragment/u,
+        expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
       );
     }
   });
@@ -114,18 +106,18 @@ describe("resolveCapletsServer", () => {
     expect(
       resolveCapletsServer(
         {
-          url: "https://input.example.com/caplets",
+          url: "https://input.example.com",
           user: "input-user",
           password: "input-password",
         } as never,
         {
-          CAPLETS_SERVER_URL: "https://example.com/caplets",
+          CAPLETS_SERVER_URL: "https://example.com",
           CAPLETS_SERVER_USER: "env-user",
           CAPLETS_SERVER_PASSWORD: "env-password",
         } as Record<string, string>,
       ),
     ).toMatchObject({
-      baseUrl: new URL("https://input.example.com/caplets"),
+      baseUrl: new URL("https://input.example.com"),
       auth: { type: "none" },
       requestInit: {},
     });

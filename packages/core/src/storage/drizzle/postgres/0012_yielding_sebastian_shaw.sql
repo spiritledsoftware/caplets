@@ -1,0 +1,1 @@
+ALTER TABLE "backend_auth_states" ALTER COLUMN "token_bundle" DROP NOT NULL;

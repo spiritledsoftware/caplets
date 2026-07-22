@@ -6,6 +6,7 @@ const dashboardApiTarget = process.env.CAPLETS_DASHBOARD_API_TARGET;
 
 export default defineConfig({
   output: "static",
+  base: "/dashboard",
   integrations: [react()],
   vite: {
     plugins: [tailwindcss()],

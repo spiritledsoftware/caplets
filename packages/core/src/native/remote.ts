@@ -1,4 +1,5 @@
 import { CapletsError } from "../errors";
+import { currentHostAttachUrl } from "../current-host/topology";
 import {
   decodeDirectResourceUri,
   directResourceUriMatchesTemplate,
@@ -68,14 +69,14 @@ export type RemoteCapletsClient = {
   close(): Promise<void>;
 };
 
-export type RemoteCapletsClientOptions = ResolvedNativeCapletsServiceOptions & {
-  mode: "remote" | "cloud";
-};
+export type RemoteCapletsClientOptions = Extract<
+  ResolvedNativeCapletsServiceOptions,
+  { mode: "remote" }
+>;
 
 export type SdkRemoteCapletsClientOptions = RemoteCapletsClientOptions["remote"] & {
   resolveRuntimeOptions?: () => Promise<RemoteCapletsClientOptions["remote"]>;
   attachSessionMetadata?: AttachSessionMetadata | undefined;
-  authKind?: "self_hosted_remote" | "hosted_cloud";
   writeErr?: (value: string) => void;
 };
 
@@ -89,13 +90,13 @@ export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
   clientFactory?: () => RemoteCapletsClient;
   pollIntervalMs: number;
-  authKind?: "self_hosted_remote" | "hosted_cloud";
   writeErr?: (value: string) => void;
 };
 
 export function createSdkRemoteCapletsClient(
   options: SdkRemoteCapletsClientOptions,
 ): RemoteCapletsClient {
+  currentHostAttachUrl(options.origin);
   const listeners = new Set<() => void>();
   let manifest: AttachManifest | undefined;
   let exportByName = new Map<string, AttachManifestExport>();
@@ -114,10 +115,13 @@ export function createSdkRemoteCapletsClient(
   const fetchFor = (runtimeOptions: RemoteCapletsClientOptions["remote"]): typeof fetch =>
     runtimeOptions.fetch ?? fetch;
 
+  const attachUrlFor = (runtimeOptions: RemoteCapletsClientOptions["remote"]): URL =>
+    currentHostAttachUrl(runtimeOptions.origin);
+
   const fetchCurrentManifest = async (): Promise<AttachManifest> => {
     return await withAttachSessionRetry(async (runtimeOptions, sessionId) => {
       return await fetchAttachManifest(
-        runtimeOptions.url,
+        attachUrlFor(runtimeOptions),
         runtimeOptions.requestInit,
         sessionId,
         fetchFor(runtimeOptions),
@@ -133,7 +137,7 @@ export function createSdkRemoteCapletsClient(
   }): Promise<unknown> => {
     return await withAttachSessionRetry(async (runtimeOptions, sessionId) => {
       return await invokeAttachExport(
-        runtimeOptions.url,
+        attachUrlFor(runtimeOptions),
         runtimeOptions.requestInit,
         sessionId,
         fetchFor(runtimeOptions),
@@ -154,7 +158,7 @@ export function createSdkRemoteCapletsClient(
       return inFlightSessionId === ATTACH_SESSION_CREATE_TIMED_OUT ? undefined : inFlightSessionId;
     }
     attachSessionInFlight = createAttachSession(
-      runtimeOptions.url,
+      attachUrlFor(runtimeOptions),
       runtimeOptions.requestInit,
       fetchFor(runtimeOptions),
       options.attachSessionMetadata,
@@ -225,7 +229,7 @@ export function createSdkRemoteCapletsClient(
       const sessionId = await ensureAttachSession(runtimeOptions);
       if (closed || eventsAbort || listeners.size === 0) return;
       eventsAbort = startAttachEvents(
-        runtimeOptions.url,
+        attachUrlFor(runtimeOptions),
         runtimeOptions.requestInit,
         sessionId,
         fetchFor(runtimeOptions),
@@ -239,9 +243,7 @@ export function createSdkRemoteCapletsClient(
       );
     } catch (error) {
       if (isPermanentRemoteCredentialsError(error)) {
-        options.writeErr?.(
-          `${remoteAuthError(options.authKind ?? "self_hosted_remote").message}\n`,
-        );
+        options.writeErr?.(`${remoteAuthError().message}\n`);
         return;
       }
       scheduleEventsReconnect();
@@ -338,7 +340,7 @@ export function createSdkRemoteCapletsClient(
         await (async () => {
           const runtimeOptions = await resolveRuntimeOptions();
           await closeAttachSession(
-            runtimeOptions.url,
+            attachUrlFor(runtimeOptions),
             runtimeOptions.requestInit,
             fetchFor(runtimeOptions),
             sessionId,
@@ -384,7 +386,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
       return await this.client.callTool(remoteToolId, request);
     } catch (error) {
       if (isAuthFailure(error)) {
-        throw remoteAuthError(this.options.authKind ?? "self_hosted_remote");
+        throw remoteAuthError();
       }
       if (isSessionFailure(error)) {
         if (!(await this.resetClient()) || this.closed) {
@@ -394,7 +396,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
           return await this.client.callTool(remoteToolId, request);
         } catch (retryError) {
           if (isAuthFailure(retryError)) {
-            throw remoteAuthError(this.options.authKind ?? "self_hosted_remote");
+            throw remoteAuthError();
           }
           throw retryError;
         }
@@ -1238,7 +1240,7 @@ async function executeCodeModeRunRemote(
     service,
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
     ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
-    runtimeScope: process.env.CAPLETS_MODE?.trim() || "remote",
+    runtimeScope: "remote",
     journalStore: new CodeModeJournalStore(),
     ...(sessionManager === undefined ? {} : { sessionManager }),
   });
@@ -1296,12 +1298,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function remoteAuthError(kind: "self_hosted_remote" | "hosted_cloud"): CapletsError {
+function remoteAuthError(): CapletsError {
   return new CapletsError(
     "AUTH_FAILED",
-    kind === "hosted_cloud"
-      ? "Caplets Cloud authentication failed; run caplets remote login <cloud-url>."
-      : "Remote Caplets authentication failed; run caplets remote login <url>.",
+    "Remote Caplets authentication failed; run caplets remote login <url>.",
   );
 }
 

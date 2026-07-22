@@ -1,256 +1,152 @@
-import { Buffer } from "node:buffer";
-import { describe, expect, it } from "vitest";
-import { resolveCapletsRemote } from "../src/remote/options";
-import { runProjectBindingSession } from "../src/project-binding/session";
-import type {
-  ProjectBindingSocketEvent,
-  ProjectBindingWebSocket,
-} from "../src/project-binding/transport";
+import { describe, expect, it, vi } from "vitest";
+import { RemoteProjectBindingSessionManager } from "../src/project-binding/session";
 
-describe("runProjectBindingSession", () => {
-  it("creates a session, opens WebSocket, sends heartbeats, and ends remotely on abort", async () => {
-    const controller = new AbortController();
-    const requests: { method: string; url: string; body?: unknown }[] = [];
-    const events: unknown[] = [];
-    let socketUrl = "";
-    let socketProtocols: string | string[] | undefined;
-    const socket = new FakeProjectBindingSocket([
-      { type: "state", state: "syncing", syncState: "syncing" },
-      { type: "ready", bindingId: "binding_1", sessionId: "binding_session_1", syncState: "idle" },
+function sessionResponse() {
+  return Response.json({
+    binding: { bindingId: "binding_1" },
+    sessionId: "session_1",
+  });
+}
+
+describe("RemoteProjectBindingSessionManager", () => {
+  it("starts, heartbeats, and closes a Current Host Project Binding session", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      requests.push({
+        url: input.toString(),
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      return String(input).endsWith("/sessions") ? sessionResponse() : Response.json({ ok: true });
+    });
+    const manager = new RemoteProjectBindingSessionManager({
+      origin: new URL("https://host.example"),
+      requestInit: { headers: { Authorization: "Bearer access" } },
+      fetch,
+      projectRoot: "/repo",
+      heartbeatIntervalMs: 30_000,
+    });
+
+    await expect(manager.start()).resolves.toBe(true);
+    await manager.updateAllowedCapletIds();
+    await manager.close();
+
+    expect(requests.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      "POST https://host.example/api/v1/attach/project-bindings/sessions",
+      "POST https://host.example/api/v1/attach/project-bindings/binding_1/heartbeat",
+      "DELETE https://host.example/api/v1/attach/project-bindings/binding_1/session",
     ]);
-
-    const result = await runProjectBindingSession({
-      projectRoot: "/repo",
-      remote: resolveCapletsRemote({
-        url: "https://cloud.caplets.dev",
-        token: "cap_access_secret",
-        workspace: "personal",
-      }),
-      fetch: async (url, init) => {
-        const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-        requests.push({ method: init?.method ?? "GET", url: String(url), body });
-        if (String(url).endsWith("/v1/attach/project-bindings/sessions")) {
-          return Response.json(
-            {
-              binding: { bindingId: "binding_1", state: "attaching", syncState: "pending" },
-              sessionId: "binding_session_1",
-            },
-            { status: 201 },
-          );
-        }
-        return Response.json({ ok: true, binding: { bindingId: "binding_1" } });
-      },
-      webSocketFactory: (url, protocols) => {
-        socketUrl = url;
-        socketProtocols = protocols;
-        return socket;
-      },
-      signal: controller.signal,
-      heartbeatIntervalMs: 1,
-      onEvent: (event) => {
-        events.push(event);
-        if (event.type === "ready") controller.abort();
-      },
+    expect(requests.at(-1)?.body).toEqual({
+      sessionId: "session_1",
+      terminalReason: { code: "completed", message: "Binding Session completed." },
     });
-
-    expect(result).toMatchObject({ bindingId: "binding_1", sessionId: "binding_session_1" });
-    expect(socketUrl).toContain("bindingId=binding_1");
-    expect(socketUrl).toContain("sessionId=binding_session_1");
-    expect(socketUrl).not.toContain("accessToken=");
-    expect(socketProtocols).toEqual([
-      "caplets.project-binding.v1",
-      `caplets.bearer.${Buffer.from("cap_access_secret").toString("base64url")}`,
-    ]);
-    expect(socket.sent.map((item) => item.type)).toContain("heartbeat");
-    expect(requests.some((request) => request.url.endsWith("/heartbeat"))).toBe(true);
-    expect(
-      requests.some((request) => request.method === "DELETE" && request.url.endsWith("/session")),
-    ).toBe(true);
-    expect(events).toContainEqual(expect.objectContaining({ type: "ready" }));
-    expect(events).toContainEqual(expect.objectContaining({ type: "ended" }));
   });
 
-  it("emits a reconnecting event after one reconnectable socket close", async () => {
-    const controller = new AbortController();
-    const events: unknown[] = [];
-    const sockets = [
-      new FakeProjectBindingSocket([], { closeImmediately: true }),
-      new FakeProjectBindingSocket([
-        {
-          type: "ready",
-          bindingId: "binding_1",
-          sessionId: "binding_session_1",
-          syncState: "idle",
-        },
-      ]),
-    ];
+  it("aborts a timed-out registration and ignores its late response", async () => {
+    vi.useFakeTimers();
+    try {
+      const started = Promise.withResolvers<void>();
+      const lateResponse = Promise.withResolvers<Response>();
+      let signal: AbortSignal | undefined;
+      const manager = new RemoteProjectBindingSessionManager({
+        origin: new URL("https://host.example"),
+        requestInit: {},
+        fetch: (async (_input, init) => {
+          signal = init?.signal ?? undefined;
+          started.resolve();
+          return await lateResponse.promise;
+        }) as typeof globalThis.fetch,
+        projectRoot: "/repo",
+        heartbeatIntervalMs: 30_000,
+        mutationTimeoutMs: 100,
+      });
 
-    await runProjectBindingSession({
-      projectRoot: "/repo",
-      remote: resolveCapletsRemote({ url: "https://cloud.caplets.dev", token: "token" }),
-      fetch: async (url) => {
-        if (String(url).endsWith("/sessions")) {
-          return Response.json(
-            { binding: { bindingId: "binding_1" }, sessionId: "binding_session_1" },
-            { status: 201 },
-          );
-        }
-        return Response.json({ ok: true });
-      },
-      webSocketFactory: () => sockets.shift() ?? new FakeProjectBindingSocket([]),
-      signal: controller.signal,
-      heartbeatIntervalMs: 1,
-      onEvent: (event) => {
-        events.push(event);
-        if (event.type === "ready") controller.abort();
-      },
-    });
+      const starting = manager.start();
+      const rejected = expect(starting).rejects.toThrow(/timed out/u);
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+      expect(signal?.aborted).toBe(true);
 
-    expect(events).toContainEqual(expect.objectContaining({ type: "reconnecting", attempt: 1 }));
+      lateResponse.resolve(sessionResponse());
+      await Promise.resolve();
+      await manager.close();
+      expect(manager.hasActiveSession()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("resolves fresh remote credentials for heartbeats", async () => {
-    const controller = new AbortController();
-    const authorizationByPath: Array<{ path: string; authorization: string | null }> = [];
-    let token = "token-session";
-
-    await runProjectBindingSession({
-      projectRoot: "/repo",
-      remote: resolveCapletsRemote({ url: "https://cloud.caplets.dev", token: "token-start" }),
-      remoteResolver: async () => resolveCapletsRemote({ url: "https://cloud.caplets.dev", token }),
-      fetch: async (url, init) => {
-        authorizationByPath.push({
-          path: new URL(String(url)).pathname,
-          authorization: new Headers(init?.headers).get("authorization"),
-        });
-        if (String(url).endsWith("/sessions")) {
-          token = "token-heartbeat";
-          return Response.json(
-            { binding: { bindingId: "binding_1" }, sessionId: "binding_session_1" },
-            { status: 201 },
-          );
-        }
+  it("serializes an in-flight heartbeat before terminal cleanup", async () => {
+    const heartbeatStarted = Promise.withResolvers<void>();
+    const releaseHeartbeat = Promise.withResolvers<void>();
+    const events: string[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/sessions")) return sessionResponse();
+      if (url.endsWith("/heartbeat")) {
+        events.push("heartbeat");
+        heartbeatStarted.resolve();
+        await releaseHeartbeat.promise;
         return Response.json({ ok: true });
-      },
-      webSocketFactory: () => new FakeProjectBindingSocket([]),
-      signal: controller.signal,
-      heartbeatIntervalMs: 60_000,
-      onEvent: (event) => {
-        if (event.type === "heartbeat") controller.abort();
-      },
+      }
+      if (init?.method === "DELETE") events.push("close");
+      return Response.json({ ok: true });
     });
+    const manager = new RemoteProjectBindingSessionManager({
+      origin: new URL("https://host.example"),
+      requestInit: {},
+      fetch,
+      projectRoot: "/repo",
+      heartbeatIntervalMs: 30_000,
+    });
+    await manager.start();
 
-    expect(authorizationByPath).toEqual(
-      expect.arrayContaining([
-        {
-          path: "/v1/attach/project-bindings/sessions",
-          authorization: "Bearer token-session",
-        },
-        {
-          path: "/v1/attach/project-bindings/binding_1/heartbeat",
-          authorization: "Bearer token-heartbeat",
-        },
-      ]),
-    );
+    const heartbeat = manager.updateAllowedCapletIds();
+    await heartbeatStarted.promise;
+    const closing = manager.close();
+    expect(events).toEqual(["heartbeat"]);
+    releaseHeartbeat.resolve();
+    await Promise.all([heartbeat, closing]);
+
+    expect(events).toEqual(["heartbeat", "close"]);
   });
 
-  it("cleans up once listeners in the on-event WebSocket fallback path", async () => {
-    const controller = new AbortController();
-    const socket = new FallbackProjectBindingSocket();
-
-    await runProjectBindingSession({
-      projectRoot: "/repo",
-      remote: resolveCapletsRemote({ url: "https://cloud.caplets.dev", token: "token" }),
-      fetch: async (url) => {
-        if (String(url).endsWith("/sessions")) {
-          return Response.json(
-            { binding: { bindingId: "binding_1" }, sessionId: "binding_session_1" },
-            { status: 201 },
-          );
+  it("coalesces timer heartbeats and prevents any heartbeat after close begins", async () => {
+    vi.useFakeTimers();
+    try {
+      const heartbeatStarted = Promise.withResolvers<void>();
+      const releaseHeartbeat = Promise.withResolvers<void>();
+      let heartbeatCalls = 0;
+      const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/sessions")) return sessionResponse();
+        if (url.endsWith("/heartbeat")) {
+          heartbeatCalls += 1;
+          heartbeatStarted.resolve();
+          await releaseHeartbeat.promise;
         }
         return Response.json({ ok: true });
-      },
-      webSocketFactory: () => socket,
-      signal: controller.signal,
-      heartbeatIntervalMs: 1,
-      onEvent: (event) => {
-        if (event.type === "ready") controller.abort();
-      },
-    });
+      });
+      const manager = new RemoteProjectBindingSessionManager({
+        origin: new URL("https://host.example"),
+        requestInit: {},
+        fetch,
+        projectRoot: "/repo",
+        heartbeatIntervalMs: 1_000,
+      });
+      await manager.start();
 
-    expect(socket.onopen).toBeNull();
+      vi.advanceTimersByTime(3_000);
+      await heartbeatStarted.promise;
+      const closing = manager.close();
+      releaseHeartbeat.resolve();
+      await closing;
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(heartbeatCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
-
-class FakeProjectBindingSocket implements ProjectBindingWebSocket {
-  readonly readyState = 1;
-  readonly sent: { type: string }[] = [];
-  private readonly listeners = new Map<
-    string,
-    ((event: { data?: unknown; reason?: string }) => void)[]
-  >();
-
-  constructor(
-    private readonly messages: unknown[],
-    options: { closeImmediately?: boolean } = {},
-  ) {
-    setTimeout(() => {
-      if (options.closeImmediately) {
-        this.dispatch("close", { reason: "network reset" });
-        return;
-      }
-      for (const message of this.messages) {
-        this.dispatch("message", { data: JSON.stringify(message) });
-      }
-    }, 0);
-  }
-
-  send(data: string): void {
-    this.sent.push(JSON.parse(data) as { type: string });
-  }
-
-  close(): void {}
-
-  addEventListener(
-    type: "open" | "message" | "close" | "error",
-    listener: (event: { data?: unknown; reason?: string }) => void,
-  ): void {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-  }
-
-  private dispatch(type: string, event: { data?: unknown; reason?: string }): void {
-    for (const listener of this.listeners.get(type) ?? []) listener(event);
-  }
-}
-
-class FallbackProjectBindingSocket implements ProjectBindingWebSocket {
-  readyState = 0;
-  readonly sent: { type: string }[] = [];
-  onopen: ((event: ProjectBindingSocketEvent) => void) | null = null;
-  onmessage: ((event: ProjectBindingSocketEvent) => void) | null = null;
-  onclose: ((event: ProjectBindingSocketEvent) => void) | null = null;
-  onerror: ((event: ProjectBindingSocketEvent) => void) | null = null;
-
-  constructor() {
-    setTimeout(() => {
-      this.readyState = 1;
-      this.onopen?.({});
-      setTimeout(() => {
-        this.onmessage?.({
-          data: JSON.stringify({
-            type: "ready",
-            bindingId: "binding_1",
-            sessionId: "binding_session_1",
-            syncState: "idle",
-          }),
-        });
-      }, 0);
-    }, 0);
-  }
-
-  send(data: string): void {
-    this.sent.push(JSON.parse(data) as { type: string });
-  }
-
-  close(): void {}
-}

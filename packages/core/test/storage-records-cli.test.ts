@@ -295,7 +295,7 @@ describe("stored Caplet Record CLI", () => {
       authDir,
     );
     const remoteDir = join(authDir, "remote-server");
-    const hostUrl = "https://host.example.test/caplets";
+    const hostUrl = "https://host.example.test";
     const remoteNow = new Date();
     const remote = new RemoteServerCredentialStore({ dir: remoteDir });
     const usedPairing = remote.createPairingCode({

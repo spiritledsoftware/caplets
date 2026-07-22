@@ -3,15 +3,15 @@ import type { CapletConfig } from "../src/config";
 import { planCapletRuntimeRoutes } from "../src/runtime-plan/planner";
 
 describe("runtime route planning", () => {
-  it("plans route and setup target rules for neutral Caplet configs", () => {
+  it("plans routes without an implicit deployment target", () => {
     expect(routes([caplet("cli", { backend: "cli" })])).toEqual([
-      { id: "cli", route: "process", setupTarget: "hosted_sandbox" },
+      { id: "cli", route: "process", setupTarget: undefined },
     ]);
     expect(
       routes([caplet("stdio", { backend: "mcp", transport: "stdio", command: "uvx" })]),
-    ).toEqual([{ id: "stdio", route: "process", setupTarget: "hosted_sandbox" }]);
+    ).toEqual([{ id: "stdio", route: "process", setupTarget: undefined }]);
     expect(routes([caplet("command", { backend: "mcp", command: "node" })])).toEqual([
-      { id: "command", route: "process", setupTarget: "hosted_sandbox" },
+      { id: "command", route: "process", setupTarget: undefined },
     ]);
     expect(
       routes([
@@ -21,15 +21,15 @@ describe("runtime route planning", () => {
     expect(routes([caplet("http-api", { backend: "http" })])).toEqual([
       { id: "http-api", route: "worker_safe", setupTarget: undefined },
     ]);
-    expect(routes([caplet("setup", { backend: "openapi", setup: setup() })], "hosted")).toEqual([
-      { id: "setup", route: "process", setupTarget: "hosted_sandbox" },
+    expect(routes([caplet("setup", { backend: "openapi", setup: setup() })], "local")).toEqual([
+      { id: "setup", route: "process", setupTarget: "local_host" },
+    ]);
+    expect(routes([caplet("setup", { backend: "openapi", setup: setup() })], "remote")).toEqual([
+      { id: "setup", route: "process", setupTarget: "remote_host" },
     ]);
     expect(
-      routes([caplet("setup", { backend: "openapi", setup: setup() })], "self_hosted"),
-    ).toEqual([{ id: "setup", route: "process", setupTarget: "remote_host" }]);
-    expect(
       routes([caplet("project", { backend: "cli", projectBinding: { required: true } })]),
-    ).toEqual([{ id: "project", route: "project_bound_process", setupTarget: "hosted_sandbox" }]);
+    ).toEqual([{ id: "project", route: "project_bound_process", setupTarget: undefined }]);
     expect(routes([caplet("unknown", { backend: "native" })])).toEqual([
       { id: "unknown", route: "local_only", setupTarget: undefined },
     ]);
@@ -80,12 +80,14 @@ describe("runtime route planning", () => {
   });
 });
 
-function routes(caplets: CapletConfig[], deployment: "hosted" | "self_hosted" = "hosted") {
-  return planCapletRuntimeRoutes(caplets, { deployment }).map((plan) => ({
-    id: plan.id,
-    route: plan.route,
-    setupTarget: plan.setupTarget,
-  }));
+function routes(caplets: CapletConfig[], deployment?: "local" | "remote") {
+  return planCapletRuntimeRoutes(caplets, deployment === undefined ? {} : { deployment }).map(
+    (plan) => ({
+      id: plan.id,
+      route: plan.route,
+      setupTarget: plan.setupTarget,
+    }),
+  );
 }
 
 function caplet(id: string, overrides: Record<string, unknown>): CapletConfig {

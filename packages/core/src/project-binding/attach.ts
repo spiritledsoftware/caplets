@@ -1,3 +1,10 @@
+import { createClient } from "@caplets/sdk";
+import {
+  runProjectBindingSession,
+  type ProjectBindingSessionEvent,
+  type ProjectBindingWebSocketFactory,
+} from "@caplets/sdk/project-binding";
+import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
 import { existsSync } from "node:fs";
 import { CapletsError } from "../errors";
 import type { ResolvedCapletsRemote } from "../remote/options";
@@ -5,14 +12,11 @@ import { resolveRemoteSelection } from "../remote/selection";
 import { ProjectBindingError } from "./errors";
 import { bootstrapProjectBindingGitignore } from "./gitignore";
 import { buildMutagenSyncPolicy, type MutagenSyncPolicy } from "./mutagen";
-import { runProjectBindingSession, type ProjectBindingSessionEvent } from "./session";
 import { buildProjectSyncManifest } from "./sync-filter";
-import { enforceProjectSyncSizeLimits, type ProjectSyncTier } from "./sync-size";
-import type { ProjectBindingWebSocketFactory } from "./transport";
+import { enforceProjectSyncSizeLimits } from "./sync-size";
 
 export type RawAttachOptions = {
   remoteUrl?: string;
-  workspace?: string;
   json?: boolean;
   verbose?: boolean;
   once?: boolean;
@@ -27,9 +31,8 @@ export type ResolvedAttachOptions = {
   verbose: boolean;
   once: boolean;
   remote: ResolvedCapletsRemote;
-  authMode: "local_daemon" | "self_hosted_remote" | "hosted_cloud";
+  authMode: "local_daemon" | "remote";
   syncPolicy: MutagenSyncPolicy;
-  selectedWorkspace?: string | undefined;
 };
 
 export async function resolveAttachOptions(
@@ -45,7 +48,6 @@ export async function resolveAttachOptionsForRun(
 ): Promise<ResolvedAttachOptions> {
   const remoteInput = {
     ...(raw.remoteUrl !== undefined ? { remoteUrl: raw.remoteUrl } : {}),
-    ...(raw.workspace !== undefined ? { workspace: raw.workspace } : {}),
     ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
     ...(raw.authDir !== undefined ? { authDir: raw.authDir } : {}),
   };
@@ -57,13 +59,8 @@ export async function resolveAttachOptionsForRun(
     verbose: raw.verbose === true,
     once: raw.once === true,
     remote: selection.remote,
-    authMode: selection.kind,
-    syncPolicy: preflightProjectSync(projectRoot, hostedTier(env)),
-    ...(selection.kind === "hosted_cloud"
-      ? { selectedWorkspace: selection.selectedWorkspace }
-      : raw.workspace
-        ? { selectedWorkspace: raw.workspace }
-        : {}),
+    authMode: selection.kind === "local_daemon" ? "local_daemon" : "remote",
+    syncPolicy: preflightProjectSync(projectRoot),
   };
 }
 
@@ -97,32 +94,41 @@ export async function attachProjectSession(
   raw: RawAttachOptions = {},
   env: Record<string, string | undefined> = process.env,
   options: {
-    heartbeatIntervalMs?: number | undefined;
     signal?: AbortSignal | undefined;
     webSocketFactory?: ProjectBindingWebSocketFactory | undefined;
     onEvent?: (event: AttachSessionEvent) => void;
   } = {},
 ) {
   const resolved = await resolveAttachOptionsForRun(raw, env);
-  const pinnedRaw = resolved.selectedWorkspace
-    ? { ...raw, workspace: resolved.selectedWorkspace }
-    : raw;
-  const remoteResolver =
+  const resolveSessionRemote = async (): Promise<ResolvedCapletsRemote> =>
     resolved.authMode === "local_daemon"
-      ? undefined
-      : async () => (await resolveAttachOptionsForRun(pinnedRaw, env)).remote;
+      ? resolved.remote
+      : (await resolveAttachOptionsForRun(raw, env)).remote;
+  const headers = new Headers(resolved.remote.requestInit.headers);
+  headers.delete("authorization");
+  const client = createClient({
+    baseUrl: resolved.remote.baseUrl.toString(),
+    auth: async () => {
+      const remote = await resolveSessionRemote();
+      return remote.auth.type === "bearer" ? remote.auth.token : undefined;
+    },
+    fetch: resolved.remote.fetch ?? globalThis.fetch,
+    headers,
+  });
+
   bootstrapProjectBindingGitignore(resolved.projectRoot);
   assertSyncPolicy(resolved.syncPolicy);
-  return await runProjectBindingSession({
+  const session = await runProjectBindingSession({
+    client,
+    webSocketUrl: resolved.remote.projectBindingWebSocketUrl.toString(),
     projectRoot: resolved.projectRoot,
-    remote: resolved.remote,
-    ...(remoteResolver ? { remoteResolver } : {}),
-    fetch: resolved.remote.fetch,
-    signal: options.signal,
-    heartbeatIntervalMs: options.heartbeatIntervalMs,
-    webSocketFactory: options.webSocketFactory,
-    onEvent: options.onEvent,
+    projectFingerprint: fingerprintProjectRoot(resolved.projectRoot),
+    throwOnError: true,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
+    ...(options.onEvent ? { onEvent: options.onEvent } : {}),
   });
+  return { ok: true as const, ...session };
 }
 
 function projectBindingProbeUrl(remote: ResolvedCapletsRemote): URL {
@@ -140,7 +146,7 @@ async function isWebSocketUpgradeRequired(response: Response): Promise<boolean> 
   return body?.error === "websocket_upgrade_required";
 }
 
-function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): MutagenSyncPolicy {
+function preflightProjectSync(projectRoot: string): MutagenSyncPolicy {
   if (!existsSync(projectRoot)) {
     return {
       ok: true,
@@ -152,7 +158,7 @@ function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): Mutag
     };
   }
   const manifest = buildProjectSyncManifest({ projectRoot });
-  const size = enforceProjectSyncSizeLimits({ tier, files: manifest.files });
+  const size = enforceProjectSyncSizeLimits({ files: manifest.files });
   return buildMutagenSyncPolicy({ manifest, size });
 }
 
@@ -164,9 +170,4 @@ function assertSyncPolicy(policy: MutagenSyncPolicy): void {
       recoveryCommand: policy.recoveryCommand,
     });
   }
-}
-
-function hostedTier(env: Record<string, string | undefined>): ProjectSyncTier {
-  const value = env.CAPLETS_CLOUD_TIER?.toLowerCase();
-  return value === "plus" || value === "pro" || value === "enterprise" ? value : "free";
 }

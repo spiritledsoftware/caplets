@@ -2,10 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { dirname, join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { CloudAuthStore } from "../src/cloud-auth/store";
 import { runCli } from "../src/cli";
 import { doctorJsonReport } from "../src/cli/doctor";
-import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import * as configModule from "../src/config";
 import type { VaultQuarantineOutcome } from "../src/config";
@@ -31,70 +29,26 @@ describe("caplets doctor", () => {
     expect(report).not.toContain("local presence");
   });
 
-  it("shows remote client derived URLs without env-token auth", async () => {
+  it("shows fixed Current Host protocol URLs without env-token auth", async () => {
     const out: string[] = [];
 
     await runCli(["doctor"], {
       env: {
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev/ws/ian",
-        CAPLETS_REMOTE_WORKSPACE: "ws_1",
+        CAPLETS_MODE: "remote",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
       },
       writeOut: (value) => out.push(value),
     });
 
     const report = out.join("");
-    expect(report).toContain("MCP URL: https://cloud.caplets.dev/v1/ws/ian/mcp");
-    expect(report).toContain("Control URL: https://cloud.caplets.dev/v1/admin");
-    expect(report).toContain("Health URL: https://cloud.caplets.dev/v1/healthz");
+    expect(report).toContain("MCP URL: https://cloud.caplets.dev/mcp");
+    expect(report).toContain("Admin URL: https://cloud.caplets.dev/api/v2/admin");
+    expect(report).toContain("Health URL: https://cloud.caplets.dev/api/v1/healthz");
     expect(report).toContain(
-      "WebSocket URL: wss://cloud.caplets.dev/v1/ws/ian/attach/project-bindings/connect",
+      "WebSocket URL: wss://cloud.caplets.dev/api/v1/attach/project-bindings/connect",
     );
     expect(report).toContain("Auth: none");
     expect(report).toContain("Remote Login");
-  });
-
-  it("uses saved Cloud Auth workspace for bare hosted Cloud remote URLs", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(
-      hostedCredentials({
-        accessToken: "cloud-access",
-        workspaceSlug: "personal-c9b49d",
-      }),
-    );
-    const out: string[] = [];
-
-    await runCli(["doctor", "--json"], {
-      env: {
-        CAPLETS_MODE: "cloud",
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        CAPLETS_CLOUD_AUTH_PATH: path,
-      },
-      writeOut: (value) => out.push(value),
-    });
-
-    expect(JSON.parse(out.join(""))).toMatchObject({
-      remote: {
-        configured: true,
-        mcpUrl: "https://cloud.caplets.dev/v1/ws/personal-c9b49d/mcp",
-        webSocketUrl:
-          "wss://cloud.caplets.dev/v1/ws/personal-c9b49d/attach/project-bindings/connect",
-        auth: "bearer",
-        tokenPresent: true,
-        workspace: "personal-c9b49d",
-      },
-      remoteLogin: {
-        configured: true,
-        authenticated: true,
-        kind: "cloud",
-        hostUrl: "https://cloud.caplets.dev/",
-        workspaceSlug: "personal-c9b49d",
-      },
-      projectBinding: {
-        authMode: "hosted_cloud",
-        sessionSupport: "unknown",
-        recoveryCommand: "caplets attach --once",
-      },
-    });
   });
 
   it("supports shared format aliases", async () => {
@@ -123,46 +77,6 @@ describe("caplets doctor", () => {
     expect(plainOut.join("")).toContain("Server hosting");
   });
 
-  it("reports ambiguous Cloud Remote Profiles instead of throwing", async () => {
-    const path = tempCloudAuthPath();
-    const authDir = dirname(path);
-    const store = new FileRemoteProfileStore({ root: `${authDir}/remote-profiles` });
-    await store.saveCloudProfile({
-      hostUrl: "https://cloud.caplets.dev",
-      workspaceId: "workspace_team",
-      workspaceSlug: "team",
-      credentials: {
-        accessToken: "cloud-access",
-        refreshToken: "cloud-refresh",
-        expiresAt: "2999-01-01T00:00:00.000Z",
-      },
-    });
-    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
-    const out: string[] = [];
-
-    await runCli(["doctor", "--json"], {
-      env: {
-        CAPLETS_MODE: "cloud",
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
-        CAPLETS_CLOUD_AUTH_PATH: path,
-      },
-      writeOut: (value) => out.push(value),
-    });
-
-    expect(JSON.parse(out.join(""))).toMatchObject({
-      remoteLogin: {
-        configured: true,
-        authenticated: false,
-        kind: "cloud",
-        hostUrl: "https://cloud.caplets.dev/",
-        error: "Cloud Remote Profile requires a selected or explicit workspace.",
-      },
-      projectBinding: {
-        authMode: "remote_login_required",
-      },
-    });
-  });
-
   it("reports malformed Remote Login URLs instead of throwing", async () => {
     const out: string[] = [];
 
@@ -178,22 +92,21 @@ describe("caplets doctor", () => {
       remoteLogin: {
         configured: true,
         authenticated: false,
-        kind: "self-hosted",
         error: expect.any(String),
       },
     });
   });
 
-  it("reports supported Project Binding sessions for authenticated self-hosted remotes", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+  it("reports supported Project Binding sessions for an authenticated Current Host", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-current-host-"));
     const authDir = join(dir, "auth");
     const out: string[] = [];
     const requests: Array<{ method: string; path: string }> = [];
     try {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
-      }).saveSelfHostedProfile({
-        hostUrl: "http://127.0.0.1:5387",
+      }).saveRemoteProfile({
+        origin: "http://127.0.0.1:5387",
         clientId: "rcli_test",
         credentials: {
           accessToken: "remote-access",
@@ -214,7 +127,7 @@ describe("caplets doctor", () => {
             method: init?.method ?? "GET",
             path: new URL(String(url)).pathname,
           });
-          if (String(url).endsWith("/v1/attach/project-bindings/sessions")) {
+          if (String(url).endsWith("/api/v1/attach/project-bindings/sessions")) {
             return Response.json(
               { ok: false, error: { code: "REQUEST_INVALID" } },
               { status: 400 },
@@ -226,22 +139,23 @@ describe("caplets doctor", () => {
       });
 
       const report = out.join("");
-      expect(report).toContain("Auth mode: self_hosted_remote");
+      expect(report).toContain("Auth mode: remote");
       expect(report).toContain("Session support: supported");
       expect(report).toContain("Recovery: caplets attach --once");
-      expect(report).not.toContain("Self-hosted Project Binding sessions are not implemented");
-      expect(requests).toEqual([{ method: "POST", path: "/v1/attach/project-bindings/sessions" }]);
+      expect(requests).toEqual([
+        { method: "POST", path: "/api/v1/attach/project-bindings/sessions" },
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("treats non-201 2xx self-hosted Project Binding probe responses as supported", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+  it("treats non-201 2xx Current Host Project Binding probe responses as supported", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-current-host-"));
     const authDir = join(dir, "auth");
     const out: string[] = [];
     try {
-      await saveSelfHostedProfile(authDir);
+      await saveRemoteProfileFixture(authDir);
 
       await runCli(["doctor", "--json"], {
         authDir,
@@ -256,7 +170,7 @@ describe("caplets doctor", () => {
 
       expect(JSON.parse(out.join(""))).toMatchObject({
         projectBinding: {
-          authMode: "self_hosted_remote",
+          authMode: "remote",
           sessionSupport: "supported",
           lastUpgradeError: null,
           recoveryCommand: "caplets attach --once",
@@ -268,11 +182,11 @@ describe("caplets doctor", () => {
   });
 
   it("surfaces malformed Project Binding diagnostic session responses", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-current-host-"));
     const authDir = join(dir, "auth");
     const out: string[] = [];
     try {
-      await saveSelfHostedProfile(authDir);
+      await saveRemoteProfileFixture(authDir);
 
       await runCli(["doctor", "--json"], {
         authDir,
@@ -287,7 +201,7 @@ describe("caplets doctor", () => {
 
       expect(JSON.parse(out.join(""))).toMatchObject({
         projectBinding: {
-          authMode: "self_hosted_remote",
+          authMode: "remote",
           sessionSupport: "unknown",
           lastUpgradeError:
             "Project Binding diagnostic session response was missing bindingId or sessionId; cleanup was not attempted.",
@@ -300,11 +214,11 @@ describe("caplets doctor", () => {
   });
 
   it("surfaces Project Binding diagnostic session cleanup failures", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-current-host-"));
     const authDir = join(dir, "auth");
     const out: string[] = [];
     try {
-      await saveSelfHostedProfile(authDir);
+      await saveRemoteProfileFixture(authDir);
 
       await runCli(["doctor", "--json"], {
         authDir,
@@ -315,7 +229,7 @@ describe("caplets doctor", () => {
         },
         fetch: async (url, init) => {
           if (init?.method === "DELETE") return Response.json({ ok: false }, { status: 503 });
-          if (String(url).endsWith("/v1/attach/project-bindings/sessions")) {
+          if (String(url).endsWith("/api/v1/attach/project-bindings/sessions")) {
             return Response.json(
               { binding: { bindingId: "binding_1" }, sessionId: "session_1" },
               { status: 201 },
@@ -328,7 +242,7 @@ describe("caplets doctor", () => {
 
       expect(JSON.parse(out.join(""))).toMatchObject({
         projectBinding: {
-          authMode: "self_hosted_remote",
+          authMode: "remote",
           sessionSupport: "unknown",
           lastUpgradeError: "Project Binding diagnostic cleanup returned 503.",
           recoveryCommand: "caplets doctor",
@@ -339,11 +253,11 @@ describe("caplets doctor", () => {
     }
   });
 
-  it("bounds self-hosted Project Binding doctor probes", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+  it("bounds Current Host Project Binding doctor probes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-current-host-"));
     const authDir = join(dir, "auth");
     try {
-      await saveSelfHostedProfile(authDir);
+      await saveRemoteProfileFixture(authDir);
 
       const report = await doctorJsonReport({
         authDir,
@@ -360,7 +274,7 @@ describe("caplets doctor", () => {
       });
 
       expect(report.projectBinding).toMatchObject({
-        authMode: "self_hosted_remote",
+        authMode: "remote",
         sessionSupport: "unknown",
         lastUpgradeError: "Project Binding session probe timed out after 1ms.",
         recoveryCommand: "caplets doctor",
@@ -370,8 +284,8 @@ describe("caplets doctor", () => {
     }
   });
 
-  it("requires Remote Login before probing self-hosted Project Binding sessions", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+  it("requires Remote Login before probing Current Host Project Binding sessions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-current-host-"));
     const configPath = join(dir, "config.json");
     const out: string[] = [];
     try {
@@ -391,28 +305,28 @@ describe("caplets doctor", () => {
 
       const report = JSON.parse(out.join(""));
       expect(report.remoteLogin).toMatchObject({
-        kind: "self-hosted",
+        origin: "http://127.0.0.1:5387",
         authenticated: false,
       });
       expect(report.projectBinding).toMatchObject({
         authMode: "remote_login_required",
         sessionSupport: "unknown",
-        recoveryCommand: "caplets remote login http://127.0.0.1:5387/",
+        recoveryCommand: "caplets remote login http://127.0.0.1:5387",
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("reports unsupported Project Binding sessions when an authenticated self-hosted remote lacks the route", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+  it("reports unsupported Project Binding sessions when a Current Host lacks the route", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-current-host-"));
     const authDir = join(dir, "auth");
     const out: string[] = [];
     try {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
-      }).saveSelfHostedProfile({
-        hostUrl: "http://127.0.0.1:5387",
+      }).saveRemoteProfile({
+        origin: "http://127.0.0.1:5387",
         clientId: "rcli_test",
         credentials: {
           accessToken: "remote-access",
@@ -434,7 +348,7 @@ describe("caplets doctor", () => {
 
       expect(JSON.parse(out.join(""))).toMatchObject({
         projectBinding: {
-          authMode: "self_hosted_remote",
+          authMode: "remote",
           sessionSupport: "unsupported",
           lastUpgradeError: "Project Binding session endpoint returned 404.",
           recoveryCommand: "Upgrade the remote Caplets service and rerun caplets doctor.",
@@ -852,9 +766,8 @@ describe("caplets doctor", () => {
 
     await runCli(["doctor", "--json"], {
       env: {
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
-        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev/ws/ian",
-        CAPLETS_CLOUD_AUTH_PATH: "/tmp/caplets-doctor-missing-auth.json",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
       },
       writeOut: (value) => out.push(value),
     });
@@ -880,11 +793,11 @@ describe("caplets doctor", () => {
   });
 });
 
-async function saveSelfHostedProfile(authDir: string): Promise<void> {
+async function saveRemoteProfileFixture(authDir: string): Promise<void> {
   await new FileRemoteProfileStore({
     root: join(authDir, "remote-profiles"),
-  }).saveSelfHostedProfile({
-    hostUrl: "http://127.0.0.1:5387",
+  }).saveRemoteProfile({
+    origin: "http://127.0.0.1:5387",
     clientId: "rcli_test",
     credentials: {
       accessToken: "remote-access",

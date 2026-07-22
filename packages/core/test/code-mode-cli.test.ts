@@ -56,6 +56,32 @@ describe("Code Mode CLI", () => {
     }
   });
 
+  it("rejects timeout requests above the absolute execution ceiling", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
+    const out: string[] = [];
+    let exitCode = 0;
+    try {
+      process.env.CAPLETS_CONFIG = writeConfig(dir, {});
+
+      await runCli(["code-mode", "return true;", "--timeout-ms", "120001", "--json"], {
+        writeOut: (value) => out.push(value),
+        setExitCode: (code) => {
+          exitCode = code;
+        },
+      });
+
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        ok: false,
+        error: { code: "diagnostic_blocked" },
+        diagnostics: [{ code: "TIMEOUT_POLICY_EXCEEDED", severity: "error" }],
+        meta: { timeoutMs: 120_001, maxTimeoutMs: 120_000 },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects session ids for one-shot code-mode runs before executing code", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
     const out: string[] = [];

@@ -175,7 +175,7 @@ describe("native Caplets service", () => {
     const remoteOptions: unknown[] = [];
     const service = createNativeCapletsService({
       mode: "daemon",
-      daemon: { url: "http://127.0.0.1:5387/caplets" },
+      daemon: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: (options) => {
         remoteOptions.push(options);
         return {
@@ -190,7 +190,7 @@ describe("native Caplets service", () => {
     try {
       await expect(service.reload()).resolves.toBe(true);
       expect(remoteOptions[0]).toMatchObject({
-        url: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        origin: new URL("http://127.0.0.1:5387"),
         auth: { enabled: false, user: "caplets" },
       });
     } finally {
@@ -1002,6 +1002,19 @@ describe("native Caplets service", () => {
 
     try {
       await expect(service.execute("code_mode", { timeoutMs: 1_000 })).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "REQUEST_INVALID",
+          message: "Code Mode run input is invalid.",
+        },
+        diagnostics: [],
+      });
+      await expect(
+        service.execute("code_mode", {
+          code: "return true;",
+          timeoutMs: 120_001,
+        }),
+      ).resolves.toMatchObject({
         ok: false,
         error: {
           code: "REQUEST_INVALID",

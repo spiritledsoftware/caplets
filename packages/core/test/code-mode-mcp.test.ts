@@ -120,6 +120,37 @@ describe("Code Mode MCP tool", () => {
     await session.close();
     await engine.close();
   });
+  it("accepts the public timeout ceiling and rejects values above it", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: { name: "GitHub", description: "GitHub repo operations.", command: "node" },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+    await session.refreshExposure();
+    const callback = server.callbacks.get("code_mode");
+
+    const accepted = await callback?.({ code: "return true;", timeoutMs: 120_000 });
+    const rejected = await callback?.({ code: "return true;", timeoutMs: 120_001 });
+
+    expect(accepted?.structuredContent).toMatchObject({
+      ok: true,
+      meta: { timeoutMs: 120_000, maxTimeoutMs: 120_000 },
+    });
+    expect(rejected?.structuredContent).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+      },
+    });
+
+    await session.close();
+    await engine.close();
+  });
 
   it("reuses issued session ids and rejects unknown session ids", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({

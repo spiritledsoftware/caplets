@@ -13,7 +13,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { DashboardApiError, dashboardApi } from "@/lib/api";
+import {
+  DashboardApiError,
+  adminV2GetCatalogEntry,
+  adminV2InstallCatalogCaplets,
+  adminV2ListCatalogEntries,
+  createDashboardMutationIntent,
+} from "@/lib/api";
 import {
   CatalogDetailPage,
   installableDetail,
@@ -31,7 +37,6 @@ import {
   parseCatalogState,
   updateCatalogUrl,
   type CatalogCompactEntry,
-  type CatalogCompactResponse,
   type CatalogDiscoveryState,
 } from "./catalog-state";
 
@@ -41,7 +46,6 @@ export type CatalogPageProps = {
   confirmTyped?: (title: string, description: string, expectedPhrase: string) => Promise<boolean>;
 };
 
-const endpoint = "catalog/search?source=official";
 const DETAIL_TIMEOUT_MS = 10_000;
 const SCOPE_OPTIONS = ["all", "official", "community"];
 const SETUP_OPTIONS = ["all", "ready", "required", "unknown"];
@@ -53,6 +57,9 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   const [location, setLocation] = useState<CatalogLocation>({ mode: "list" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [nextCursor, setNextCursor] = useState<string>();
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [paginationError, setPaginationError] = useState<string>();
   const [detailState, setDetailState] = useState<CatalogDetailState>({ status: "loading" });
   const [installingKey, setInstallingKey] = useState<string>();
   const requestSequence = useRef(0);
@@ -60,6 +67,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   const activeRequestController = useRef<AbortController | undefined>(undefined);
   const activeDetailController = useRef<AbortController | undefined>(undefined);
   const installLock = useRef(false);
+  const seenCursors = useRef(new Set<string>());
   const searchRef = useRef<HTMLInputElement>(null);
   const tags = useMemo(() => catalogTags(entries), [entries]);
   const visible = useMemo(() => filterCatalogEntries(entries, discovery), [entries, discovery]);
@@ -70,19 +78,26 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
     const request = ++requestSequence.current;
     const controller = new AbortController();
     activeRequestController.current = controller;
+    seenCursors.current = new Set();
     setLoading(true);
+    setLoadingMore(false);
     setError(undefined);
+    setPaginationError(undefined);
+    setNextCursor(undefined);
 
-    void dashboardApi<CatalogCompactResponse>(endpoint, { signal: controller.signal })
+    void adminV2ListCatalogEntries({ signal: controller.signal })
       .then((response) => {
         if (request !== requestSequence.current) return;
 
-        const nextEntries = response.entries ?? [];
+        if (response.nextCursor !== undefined) {
+          seenCursors.current.add(response.nextCursor);
+        }
+        setEntries(response.items);
+        setNextCursor(response.nextCursor);
         const normalized = parseCatalogState(
           new URLSearchParams(window.location.search),
-          catalogTags(nextEntries),
+          catalogTags(response.items),
         );
-        setEntries(nextEntries);
         setDiscovery(normalized);
 
         if (catalogLocationFromPath(window.location.pathname).mode !== "list") return;
@@ -107,6 +122,39 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
     return controller;
   }, []);
 
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    activeRequestController.current?.abort();
+    const cursor = nextCursor;
+    const request = ++requestSequence.current;
+    const controller = new AbortController();
+    activeRequestController.current = controller;
+    setLoadingMore(true);
+    setPaginationError(undefined);
+
+    try {
+      const response = await adminV2ListCatalogEntries({ cursor, signal: controller.signal });
+      if (request !== requestSequence.current) return;
+      if (response.nextCursor !== undefined && seenCursors.current.has(response.nextCursor)) {
+        throw new Error("Catalog pagination returned a repeated cursor.");
+      }
+      if (response.nextCursor !== undefined) {
+        seenCursors.current.add(response.nextCursor);
+      }
+      setEntries((current) => [...current, ...response.items]);
+      setNextCursor(response.nextCursor);
+    } catch (reason) {
+      if (request === requestSequence.current) {
+        setPaginationError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (request === requestSequence.current) setLoadingMore(false);
+      if (activeRequestController.current === controller) {
+        activeRequestController.current = undefined;
+      }
+    }
+  }
+
   const fetchDetail = useCallback(async (entryKey: string): Promise<CatalogDetail | undefined> => {
     activeDetailController.current?.abort();
     const request = ++detailSequence.current;
@@ -116,10 +164,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
     setDetailState({ status: "loading" });
 
     try {
-      const detail = await dashboardApi<CatalogDetail>(
-        `catalog/detail?source=official&entryKey=${encodeURIComponent(entryKey)}`,
-        { signal: controller.signal },
-      );
+      const detail = await adminV2GetCatalogEntry(entryKey, { signal: controller.signal });
       if (request !== detailSequence.current) return;
 
       if (!installableDetail(detail)) {
@@ -233,7 +278,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   function listHrefFromHistory(): string {
     const candidate = (window.history.state as Partial<CatalogHistoryState> | null)
       ?.catalogListHref;
-    return typeof candidate === "string" ? candidate : catalogListHref(window.location.pathname);
+    return typeof candidate === "string" ? candidate : catalogListHref();
   }
 
   function returnToList() {
@@ -261,7 +306,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
     window.history.pushState(
       { catalogListHref: origin } satisfies CatalogHistoryState,
       "",
-      catalogDetailHref(entry.entryKey, window.location.pathname),
+      catalogDetailHref(entry.entryKey),
     );
     setLocation({ mode: "detail", entryKey: entry.entryKey });
   }
@@ -274,6 +319,7 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
       updateCatalogUrl(window.location.href, next),
     );
     setDiscovery(next);
+    load();
   }
 
   async function copy(command: string, name?: string) {
@@ -299,12 +345,13 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
       );
       if (!confirmed) return;
 
+      const intent = createDashboardMutationIntent();
       setInstallingKey(detail.entry.entryKey);
       await action(`Installed ${detail.entry.name}`, async () =>
-        dashboardApi("catalog/install", {
-          method: "POST",
-          body: JSON.stringify({ source: "official", entryKey: detail.entry.entryKey }),
-        }),
+        adminV2InstallCatalogCaplets(
+          { source: "official", entryKey: detail.entry.entryKey },
+          intent,
+        ),
       );
     } catch (reason) {
       toast.error(reason instanceof Error ? `Install failed: ${reason.message}` : "Install failed");
@@ -455,7 +502,34 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
             />
           </div>
         </CardHeader>
-        <CardContent className="p-0">{results}</CardContent>
+        <CardContent className="p-0">
+          {results}
+          {!loading && !error && (nextCursor || paginationError) ? (
+            <div className="flex flex-col gap-2 border-t p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm text-muted-foreground" aria-live="polite">
+                {entries.length} catalog entries loaded
+                {paginationError ? (
+                  <p className="mt-1 text-destructive" role="alert">
+                    {paginationError}
+                  </p>
+                ) : null}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={loadingMore}
+                aria-busy={loadingMore}
+                onClick={() => void loadMore()}
+              >
+                <RefreshCwIcon
+                  data-icon="inline-start"
+                  className={loadingMore ? "animate-spin motion-reduce:animate-none" : undefined}
+                />
+                {paginationError ? "Retry loading more" : "Load more catalog entries"}
+              </Button>
+            </div>
+          ) : null}
+        </CardContent>
       </Card>
     </main>
   );

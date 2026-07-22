@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { CapletsError } from "../errors";
 import { projectBindingError } from "../project-binding/errors";
 import {
@@ -161,6 +161,35 @@ export class ProjectBindingStore {
         ? this.database.db.select().from(sqlite.projectBindings).all()
         : await this.database.db.select().from(postgres.projectBindings);
     return rows.map(bindingView);
+  }
+  async existsActive(now: Date): Promise<boolean> {
+    const expiresAfter = now.toISOString();
+    const row =
+      this.database.dialect === "sqlite"
+        ? this.database.db
+            .select({ bindingId: sqlite.projectBindings.bindingId })
+            .from(sqlite.projectBindings)
+            .where(
+              and(
+                eq(sqlite.projectBindings.active, true),
+                gt(sqlite.projectBindings.expiresAt, expiresAfter),
+              ),
+            )
+            .limit(1)
+            .get()
+        : (
+            await this.database.db
+              .select({ bindingId: postgres.projectBindings.bindingId })
+              .from(postgres.projectBindings)
+              .where(
+                and(
+                  eq(postgres.projectBindings.active, true),
+                  gt(postgres.projectBindings.expiresAt, expiresAfter),
+                ),
+              )
+              .limit(1)
+          )[0];
+    return row !== undefined;
   }
 
   async heartbeat(input: HeartbeatProjectBindingInput): Promise<ProjectBindingAuthoritativeView> {

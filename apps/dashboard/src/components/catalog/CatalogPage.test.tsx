@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { dashboardApi, DashboardApiError } = vi.hoisted(() => {
+const { adminClient, DashboardApiError } = vi.hoisted(() => {
   class MockDashboardApiError extends Error {
     status: number;
     body: unknown;
@@ -14,9 +14,20 @@ const { dashboardApi, DashboardApiError } = vi.hoisted(() => {
       this.body = options.body;
     }
   }
-  return { dashboardApi: vi.fn(), DashboardApiError: MockDashboardApiError };
+  return {
+    adminClient: {
+      adminV2GetCatalogEntry: vi.fn(),
+      adminV2InstallCatalogCaplets: vi.fn(),
+      adminV2ListCatalogEntries: vi.fn(),
+    },
+    DashboardApiError: MockDashboardApiError,
+  };
 });
-vi.mock("@/lib/api", () => ({ dashboardApi, DashboardApiError }));
+vi.mock("@/lib/api", () => ({
+  DashboardApiError,
+  ...adminClient,
+  createDashboardMutationIntent: () => ({ idempotencyKey: "test-intent" }),
+}));
 
 import { CatalogPage } from "./CatalogPage";
 import type { CatalogCompactEntry } from "./catalog-state";
@@ -67,7 +78,7 @@ function setValue(element: HTMLInputElement | HTMLSelectElement, value: string) 
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  dashboardApi.mockReset();
+  for (const operation of Object.values(adminClient)) operation.mockReset();
   window.history.replaceState({}, "", "/dashboard/catalog");
 });
 afterEach(async () => {
@@ -85,23 +96,60 @@ describe("CatalogPage", () => {
     expect(markup).not.toContain("Loading Caplet details");
   });
 
-  it("fetches one complete snapshot without q/limit and finds entries beyond 100", async () => {
-    dashboardApi.mockResolvedValue({
-      entries: Array.from({ length: 150 }, (_, index) =>
-        entry(index, index === 149 ? { name: "Deep Match" } : {}),
-      ),
-    });
+  it("loads one catalog page initially and reaches entries beyond 100 after an explicit action", async () => {
+    adminClient.adminV2ListCatalogEntries.mockImplementation(
+      async ({ cursor }: { cursor?: string }) =>
+        cursor === "page-2"
+          ? {
+              items: Array.from({ length: 50 }, (_, index) =>
+                entry(index + 100, index === 49 ? { name: "Deep Match" } : {}),
+              ),
+            }
+          : {
+              items: Array.from({ length: 100 }, (_, index) => entry(index)),
+              nextCursor: "page-2",
+            },
+    );
     await mount();
     await flush();
-    expect(dashboardApi).toHaveBeenCalledTimes(1);
-    expect(dashboardApi).toHaveBeenCalledWith(
-      "catalog/search?source=official",
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+
+    expect(adminClient.adminV2ListCatalogEntries).toHaveBeenCalledOnce();
+    expect(document.body.textContent).toContain("100 Caplets");
+    expect(document.body.textContent).not.toContain("Deep Match");
+
+    const loadMore = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent?.trim() === "Load more catalog entries",
     );
-    const search = document.querySelector<HTMLInputElement>('[aria-label="Search Caplets"]')!;
-    await act(async () => setValue(search, "Deep Match"));
-    expect(document.body.textContent).toContain("1 Caplet");
-    expect(document.body.textContent).toContain("Deep Match");
+    expect(loadMore).toBeDefined();
+    await act(async () => loadMore?.click());
+    await flush();
+
+    const signal = adminClient.adminV2ListCatalogEntries.mock.calls[1]?.[0]?.signal as AbortSignal;
+    expect(adminClient.adminV2ListCatalogEntries).toHaveBeenNthCalledWith(2, {
+      cursor: "page-2",
+      signal,
+    });
+    expect(document.body.textContent).toContain("150 Caplets");
+  });
+
+  it("reports a repeated catalog cursor after one explicit next-page request", async () => {
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({
+      items: [],
+      nextCursor: "repeated",
+    });
+
+    await mount();
+    await flush();
+    expect(adminClient.adminV2ListCatalogEntries).toHaveBeenCalledOnce();
+
+    const loadMore = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent?.trim() === "Load more catalog entries",
+    );
+    await act(async () => loadMore?.click());
+    await flush();
+
+    expect(adminClient.adminV2ListCatalogEntries).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("Catalog pagination returned a repeated cursor.");
   });
 
   it("hydrates all controls, preserves unrelated params, uses replaceState, and replays popstate without rewriting", async () => {
@@ -110,7 +158,7 @@ describe("CatalogPage", () => {
       "",
       "/dashboard/catalog?keep=1&q=entry&scope=official&setup=ready&tag=even&sort=name",
     );
-    dashboardApi.mockResolvedValue({ entries: [entry(2)] });
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [entry(2)] });
     const replace = vi.spyOn(window.history, "replaceState");
     await mount();
     await flush();
@@ -147,7 +195,7 @@ describe("CatalogPage", () => {
       "",
       "/dashboard/catalog?keep=1&scope=x&setup=x&tag=x&sort=x&q=none",
     );
-    dashboardApi.mockResolvedValue({ entries: [entry(1)] });
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [entry(1)] });
     await mount();
     await flush();
     expect(document.body.textContent).toContain("No Caplets found");
@@ -164,9 +212,9 @@ describe("CatalogPage", () => {
   });
 
   it("offers Retry after first-load failure", async () => {
-    dashboardApi
+    adminClient.adminV2ListCatalogEntries
       .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce({ entries: [entry(1)] });
+      .mockResolvedValueOnce({ items: [entry(1)] });
     await mount();
     await flush();
     expect(document.body.textContent).toContain("offline");
@@ -178,35 +226,41 @@ describe("CatalogPage", () => {
       ).click(),
     );
     await flush();
-    expect(dashboardApi).toHaveBeenCalledTimes(2);
+    expect(adminClient.adminV2ListCatalogEntries).toHaveBeenCalledTimes(2);
     expect(document.body.textContent).toContain("Entry 001");
   });
 
   it("suppresses stale requests after retry", async () => {
-    const first = deferred<{ entries: CatalogCompactEntry[] }>();
-    const second = deferred<{ entries: CatalogCompactEntry[] }>();
-    dashboardApi.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const first = deferred<{ items: CatalogCompactEntry[] }>();
+    const second = deferred<{ items: CatalogCompactEntry[] }>();
+    adminClient.adminV2ListCatalogEntries
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
     await mount();
-    const firstSignal = dashboardApi.mock.calls[0]?.[1]?.signal as AbortSignal;
+    const firstSignal = adminClient.adminV2ListCatalogEntries.mock.calls[0]?.[0]
+      ?.signal as AbortSignal;
     await act(async () =>
       (document.querySelector('[aria-label="Retry loading catalog"]') as HTMLButtonElement).click(),
     );
     expect(firstSignal.aborted).toBe(true);
-    await act(async () => second.resolve({ entries: [entry(2, { name: "Current" })] }));
-    await act(async () => first.resolve({ entries: [entry(1, { name: "Stale" })] }));
+    await act(async () => second.resolve({ items: [entry(2, { name: "Current" })] }));
+    await act(async () => first.resolve({ items: [entry(1, { name: "Stale" })] }));
     expect(document.body.textContent).toContain("Current");
     expect(document.body.textContent).not.toContain("Stale");
   });
 
   it("aborts a retry-created catalog request on unmount", async () => {
-    const first = deferred<{ entries: CatalogCompactEntry[] }>();
-    const retry = deferred<{ entries: CatalogCompactEntry[] }>();
-    dashboardApi.mockReturnValueOnce(first.promise).mockReturnValueOnce(retry.promise);
+    const first = deferred<{ items: CatalogCompactEntry[] }>();
+    const retry = deferred<{ items: CatalogCompactEntry[] }>();
+    adminClient.adminV2ListCatalogEntries
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(retry.promise);
     await mount();
     await act(async () =>
       (document.querySelector('[aria-label="Retry loading catalog"]') as HTMLButtonElement).click(),
     );
-    const retrySignal = dashboardApi.mock.calls[1]?.[1]?.signal as AbortSignal;
+    const retrySignal = adminClient.adminV2ListCatalogEntries.mock.calls[1]?.[0]
+      ?.signal as AbortSignal;
     await act(async () => root.unmount());
     expect(retrySignal.aborted).toBe(true);
     host.remove();
@@ -222,18 +276,15 @@ describe("CatalogPage", () => {
       },
       setupActions: [],
     };
-    dashboardApi.mockImplementation((path: string) =>
-      path.startsWith("catalog/detail?")
-        ? Promise.resolve(complete)
-        : Promise.resolve({ entries: [] }),
-    );
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [] });
+    adminClient.adminV2GetCatalogEntry.mockResolvedValue(complete);
     await mount();
     await flush();
     expect(host.textContent).toContain("Entry 007");
     expect(host.textContent).toContain("abc123");
     expect(document.title).toBe("Entry 007 · Catalog · Caplets Dashboard");
-    expect(dashboardApi).toHaveBeenCalledWith(
-      "catalog/detail?source=official&entryKey=stable%3Akey",
+    expect(adminClient.adminV2GetCatalogEntry).toHaveBeenCalledWith(
+      "stable:key",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -241,14 +292,11 @@ describe("CatalogPage", () => {
   it("aborts active detail work on unmount", async () => {
     window.history.replaceState({}, "", "/dashboard/catalog/pending");
     const detail = deferred<unknown>();
-    dashboardApi.mockImplementation((path: string) =>
-      path.startsWith("catalog/detail?") ? detail.promise : Promise.resolve({ entries: [] }),
-    );
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [] });
+    adminClient.adminV2GetCatalogEntry.mockReturnValue(detail.promise);
     await mount();
     await flush();
-    const signal = dashboardApi.mock.calls.find(([path]) =>
-      String(path).startsWith("catalog/detail?"),
-    )?.[1]?.signal as AbortSignal;
+    const signal = adminClient.adminV2GetCatalogEntry.mock.calls[0]?.[1]?.signal as AbortSignal;
     await act(async () => root.unmount());
     expect(signal.aborted).toBe(true);
     host.remove();
@@ -256,10 +304,9 @@ describe("CatalogPage", () => {
 
   it("distinguishes missing and unreadable detail responses", async () => {
     window.history.replaceState({}, "", "/dashboard/catalog/missing");
-    dashboardApi.mockImplementation((path: string) =>
-      path.startsWith("catalog/detail?")
-        ? Promise.reject(new DashboardApiError("missing", { status: 404, body: {} }))
-        : Promise.resolve({ entries: [] }),
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [] });
+    adminClient.adminV2GetCatalogEntry.mockRejectedValue(
+      new DashboardApiError("missing", { status: 404, body: {} }),
     );
     await mount();
     await flush();
@@ -268,11 +315,10 @@ describe("CatalogPage", () => {
     host.remove();
 
     window.history.replaceState({}, "", "/dashboard/catalog/unreadable");
-    dashboardApi.mockImplementation((path: string) =>
-      path.startsWith("catalog/detail?")
-        ? Promise.resolve({ entry: { ...entry(8), contentMarkdown: "" }, setupActions: [] })
-        : Promise.resolve({ entries: [] }),
-    );
+    adminClient.adminV2GetCatalogEntry.mockResolvedValue({
+      entry: { ...entry(8), contentMarkdown: "" },
+      setupActions: [],
+    });
     await mount();
     await flush();
     expect(host.textContent).toContain("Entry 008");
@@ -290,12 +336,9 @@ describe("CatalogPage", () => {
         await callback();
       },
     );
-    dashboardApi.mockImplementation((path: string) => {
-      if (path === "catalog/search?source=official") return Promise.resolve({ entries: [compact] });
-      if (path.startsWith("catalog/detail?")) return Promise.resolve(complete);
-      if (path === "catalog/install") return Promise.resolve({ installed: [] });
-      return Promise.resolve({});
-    });
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [compact] });
+    adminClient.adminV2GetCatalogEntry.mockResolvedValue(complete);
+    adminClient.adminV2InstallCatalogCaplets.mockResolvedValue({ installed: [] });
     host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);
@@ -312,18 +355,17 @@ describe("CatalogPage", () => {
       expect.any(String),
       "install three",
     );
-    expect(dashboardApi).toHaveBeenCalledWith("catalog/install", {
-      method: "POST",
-      body: JSON.stringify({ source: "official", entryKey: "stable:three" }),
-    });
+    expect(adminClient.adminV2InstallCatalogCaplets).toHaveBeenCalledWith(
+      { source: "official", entryKey: "stable:three" },
+      { idempotencyKey: "test-intent" },
+    );
   });
 
   it("keeps transient server failures non-installable and exposes Retry", async () => {
     window.history.replaceState({}, "", "/dashboard/catalog/server-error");
-    dashboardApi.mockImplementation((path: string) =>
-      path.startsWith("catalog/detail?")
-        ? Promise.reject(new DashboardApiError("upstream failed", { status: 500, body: {} }))
-        : Promise.resolve({ entries: [] }),
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [] });
+    adminClient.adminV2GetCatalogEntry.mockRejectedValue(
+      new DashboardApiError("upstream failed", { status: 500, body: {} }),
     );
     await mount();
     await flush();
@@ -350,11 +392,8 @@ describe("CatalogPage", () => {
       .fn()
       .mockRejectedValueOnce(new Error("rejected"))
       .mockResolvedValue(undefined);
-    dashboardApi.mockImplementation((path: string) =>
-      path.startsWith("catalog/detail?")
-        ? Promise.resolve(complete)
-        : Promise.resolve({ entries: [] }),
-    );
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [] });
+    adminClient.adminV2GetCatalogEntry.mockResolvedValue(complete);
     host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);
@@ -384,18 +423,15 @@ describe("CatalogPage", () => {
       entry(1, { entryKey: "A", name: "Alpha" }),
       entry(2, { entryKey: "B", name: "Beta" }),
     ];
-    dashboardApi.mockImplementation((path: string) =>
-      path.includes("entryKey=A")
-        ? a.promise
-        : path.includes("entryKey=B")
-          ? b.promise
-          : Promise.resolve({ entries }),
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: entries });
+    adminClient.adminV2GetCatalogEntry.mockImplementation((entryKey: string) =>
+      entryKey === "A" ? a.promise : b.promise,
     );
     await mount();
     await flush();
     await act(async () => host.querySelector<HTMLAnchorElement>('a[href$="/A"]')?.click());
-    const aSignal = dashboardApi.mock.calls.find(([path]) =>
-      String(path).includes("entryKey=A"),
+    const aSignal = adminClient.adminV2GetCatalogEntry.mock.calls.find(
+      ([entryKey]) => entryKey === "A",
     )?.[1]?.signal as AbortSignal;
     window.history.pushState({ catalogListHref: "/dashboard/catalog" }, "", "/dashboard/catalog/B");
     await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
@@ -415,9 +451,11 @@ describe("CatalogPage", () => {
 
   it("preserves list query across breadcrumb and focuses the originating row or heading fallback", async () => {
     window.history.replaceState({}, "", "/dashboard/catalog?q=Entry");
-    dashboardApi
-      .mockResolvedValueOnce({ entries: [entry(1)] })
-      .mockResolvedValue({ entry: { ...entry(1), contentMarkdown: "# One" }, setupActions: [] });
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({ items: [entry(1)] });
+    adminClient.adminV2GetCatalogEntry.mockResolvedValue({
+      entry: { ...entry(1), contentMarkdown: "# One" },
+      setupActions: [],
+    });
     await mount();
     await flush();
     await act(async () => host.querySelector<HTMLAnchorElement>('a[href$="/entry-1"]')?.click());
@@ -444,7 +482,9 @@ describe("CatalogPage", () => {
   });
   it("offers unknown setup readiness and restores the list title", async () => {
     document.title = "Operator";
-    dashboardApi.mockResolvedValue({ entries: [entry(1, { setupReadiness: "unknown" })] });
+    adminClient.adminV2ListCatalogEntries.mockResolvedValue({
+      items: [entry(1, { setupReadiness: "unknown" })],
+    });
     await mount();
     await flush();
     expect(document.title).toBe("Catalog · Caplets Dashboard");

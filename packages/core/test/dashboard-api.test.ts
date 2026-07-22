@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,13 +23,13 @@ describe("dashboard API read model", () => {
       clientLabel: "Waiting Browser",
     });
 
-    const response = await dashboardGet(setup, "/dashboard/api/summary");
+    const response = await dashboardGet(setup, "/api/v2/admin/host");
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       host: {
         current: true,
-        baseUrl: "http://127.0.0.1:5387/",
+        baseUrl: "http://127.0.0.1:5387",
         dashboardUrl: "http://127.0.0.1:5387/dashboard",
         version: expect.any(String),
       },
@@ -41,7 +42,7 @@ describe("dashboard API read model", () => {
       }),
     });
     expect(
-      JSON.stringify(await (await dashboardGet(setup, "/dashboard/api/summary")).json()),
+      JSON.stringify(await (await dashboardGet(setup, "/api/v2/admin/host")).json()),
     ).not.toContain(setup.context.configPath);
 
     await setup.engine.close();
@@ -57,24 +58,25 @@ describe("dashboard API read model", () => {
       clientFingerprint: "fp_waiting",
     });
 
-    const clients = await dashboardGet(setup, "/dashboard/api/access/clients");
+    const clients = await dashboardGet(setup, "/api/v2/admin/remote-clients");
     expect(clients.status).toBe(200);
     const clientsText = await clients.text();
     expect(clientsText).toContain('"role":"operator"');
     expect(clientsText).not.toContain("cap_remote_access_");
     expect(clientsText).not.toContain("cap_remote_refresh_");
 
-    const pending = await dashboardGet(setup, "/dashboard/api/access/pending-logins");
+    const pending = await dashboardGet(setup, "/api/v2/admin/remote-login-requests");
     expect(pending.status).toBe(200);
-    await expect(pending.json()).resolves.toMatchObject({
-      pendingLogins: [
-        expect.objectContaining({ requestedRole: "operator", clientFingerprint: "fp_waiting" }),
-      ],
-    });
+    const pendingBody = (await pending.json()) as { items: Array<Record<string, unknown>> };
+    expect(pendingBody.items).toContainEqual(
+      expect.objectContaining({ requestedRole: "operator", clientFingerprint: "fp_waiting" }),
+    );
 
-    const vault = await dashboardGet(setup, "/dashboard/api/vault");
-    expect(vault.status).toBe(200);
-    const vaultText = await vault.text();
+    const vaultValues = await dashboardGet(setup, "/api/v2/admin/vault-values");
+    const vaultGrants = await dashboardGet(setup, "/api/v2/admin/vault-grants");
+    expect(vaultValues.status).toBe(200);
+    expect(vaultGrants.status).toBe(200);
+    const vaultText = `${await vaultValues.text()}${await vaultGrants.text()}`;
     expect(vaultText).toContain('"key":"GH_TOKEN"');
     expect(vaultText).toContain('"capletId":"status"');
     expect(vaultText).not.toContain("super-secret-token");
@@ -86,25 +88,23 @@ describe("dashboard API read model", () => {
   it("returns Project Binding and runtime placeholders as mobile-friendly objects", async () => {
     const setup = await authenticatedDashboard();
 
-    const runtime = await dashboardGet(setup, "/dashboard/api/runtime");
+    const runtime = await dashboardGet(setup, "/api/v2/admin/runtime");
     expect(runtime.status).toBe(200);
     await expect(runtime.json()).resolves.toMatchObject({
       runtime: {
         status: "ok",
         bind: "127.0.0.1:5387",
-        baseUrl: "http://127.0.0.1:5387/",
+        baseUrl: "http://127.0.0.1:5387",
       },
       daemon: { restartAvailable: false, stopAvailable: false },
     });
 
-    const binding = await dashboardGet(setup, "/dashboard/api/project-binding");
+    const binding = await dashboardGet(setup, "/api/v2/admin/project-binding");
     expect(binding.status).toBe(200);
     await expect(binding.json()).resolves.toMatchObject({
-      projectBinding: {
-        state: "disconnected",
-        affectedCaplets: [],
-        actions: expect.any(Array),
-      },
+      state: "disconnected",
+      affectedCaplets: [],
+      actions: expect.any(Array),
     });
 
     await setup.engine.close();
@@ -113,44 +113,53 @@ describe("dashboard API read model", () => {
   it("administers stored Caplet records through authenticated SQL-backed routes", async () => {
     const setup = await authenticatedStoredDashboard();
     const firstDocument = storedDocument("first-command");
-    const imported = await dashboardMutation(setup, "/dashboard/api/stored-caplets", "POST", {
-      id: "stored",
-      document: firstDocument,
-      historyLimit: 3,
-    });
+    const imported = await dashboardCreateCapletRecord(setup, "stored", firstDocument, 3);
     expect(imported.status).toBe(201);
-    const importedBody = (await imported.json()) as {
-      record: { headGeneration: number };
-    };
-    expect(importedBody.record.headGeneration).toBe(1);
+    const importedBody = (await imported.json()) as { headGeneration: number };
+    expect(importedBody.headGeneration).toBe(1);
 
-    const listed = await dashboardGet(setup, "/dashboard/api/stored-caplets");
+    const listed = await dashboardGet(setup, "/api/v2/admin/caplet-records");
     await expect(listed.json()).resolves.toMatchObject({
-      records: [{ id: "stored", headGeneration: 1 }],
+      items: [{ id: "stored", headGeneration: 1 }],
     });
-    const updated = await dashboardMutation(setup, "/dashboard/api/stored-caplets/stored", "PUT", {
-      document: storedDocument("second-command"),
-      expectedGeneration: 1,
-    });
+    const detailPath = "/api/v2/admin/caplet-records/stored";
+    const initialDetail = await dashboardGet(setup, detailPath);
+    const initialEtag = initialDetail.headers.get("etag");
+    if (!initialEtag) throw new Error("Missing initial Caplet Record ETag");
+    const updated = await dashboardConditionalMutation(
+      setup,
+      detailPath,
+      "PATCH",
+      { document: storedDocument("second-command") },
+      initialEtag,
+    );
     expect(updated.status).toBe(200);
     await expect(updated.json()).resolves.toMatchObject({
-      record: { id: "stored", headGeneration: 2 },
+      id: "stored",
+      headGeneration: 2,
     });
-    const revisions = await dashboardGet(setup, "/dashboard/api/stored-caplets/stored/revisions");
+    const revisions = await dashboardGet(setup, "/api/v2/admin/caplet-records/stored/revisions");
     await expect(revisions.json()).resolves.toMatchObject({
-      revisions: [{ sequence: 2 }, { sequence: 1 }],
+      items: [{ sequence: 1 }, { sequence: 2 }],
     });
-    const stale = await dashboardMutation(setup, "/dashboard/api/stored-caplets/stored", "PUT", {
-      document: storedDocument("stale-secret-command"),
-      expectedGeneration: 1,
-    });
-    expect(stale.status).toBe(400);
-    expect(await stale.text()).not.toContain("stale-secret-command");
-    const deleted = await dashboardMutation(
+    const stale = await dashboardConditionalMutation(
       setup,
-      "/dashboard/api/stored-caplets/stored",
+      detailPath,
+      "PATCH",
+      { document: storedDocument("stale-secret-command") },
+      initialEtag,
+    );
+    expect(stale.status).toBe(412);
+    expect(await stale.text()).not.toContain("stale-secret-command");
+    const currentDetail = await dashboardGet(setup, detailPath);
+    const currentEtag = currentDetail.headers.get("etag");
+    if (!currentEtag) throw new Error("Missing updated Caplet Record ETag");
+    const deleted = await dashboardConditionalMutation(
+      setup,
+      detailPath,
       "DELETE",
-      { expectedGeneration: 2 },
+      undefined,
+      currentEtag,
     );
     expect(deleted.status).toBe(200);
     await expect(deleted.json()).resolves.toEqual({ deleted: true, id: "stored" });
@@ -169,13 +178,13 @@ describe("dashboard API read model", () => {
       throw new Error("collaborator failed with cap_remote_access_sensitive_value");
     });
 
-    const response = await dashboardGet(setup, "/dashboard/api/caplets");
+    const response = await dashboardGet(setup, "/api/v2/admin/caplets");
 
     expect(response.status).toBe(500);
     const body = await response.text();
     expect(JSON.parse(body)).toMatchObject({
-      ok: false,
-      error: { code: "INTERNAL_ERROR" },
+      status: 500,
+      code: "INTERNAL_ERROR",
     });
     expect(body).not.toContain("collaborator failed");
     expect(body).not.toContain("cap_remote_access_sensitive_value");
@@ -269,24 +278,67 @@ async function authenticatedStoredDashboard() {
   };
 }
 
-async function dashboardMutation(
+async function dashboardCreateCapletRecord(
+  setup: {
+    app: ReturnType<typeof createHttpServeApp>;
+    cookie: string;
+    csrfToken: string;
+  },
+  id: string,
+  document: string,
+  historyLimit: number,
+) {
+  const bytes = new TextEncoder().encode(document);
+  const manifest = JSON.stringify({
+    version: 1,
+    historyLimit,
+    files: [
+      {
+        path: "CAPLET.md",
+        size: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        executable: false,
+      },
+    ],
+  });
+  const body = new FormData();
+  body.append("manifest", manifest);
+  body.append("file", new Blob([bytes], { type: "text/markdown" }), "CAPLET.md");
+  return await setup.app.request(`http://127.0.0.1:5387/api/v2/admin/caplet-records/${id}/bundle`, {
+    method: "PUT",
+    headers: {
+      cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
+      "x-caplets-csrf": setup.csrfToken,
+      "idempotency-key": crypto.randomUUID(),
+      "if-none-match": "*",
+    },
+    body,
+  });
+}
+
+async function dashboardConditionalMutation(
   setup: {
     app: ReturnType<typeof createHttpServeApp>;
     cookie: string;
     csrfToken: string;
   },
   path: string,
-  method: "POST" | "PUT" | "DELETE",
+  method: "PATCH" | "DELETE",
   body: unknown,
+  etag: string,
 ) {
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
     method,
     headers: {
       cookie: setup.cookie,
+      "sec-fetch-site": "same-origin",
       "x-caplets-csrf": setup.csrfToken,
-      "content-type": "application/json",
+      "content-type": method === "PATCH" ? "application/merge-patch+json" : "application/json",
+      "idempotency-key": crypto.randomUUID(),
+      "if-match": etag,
     },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
 
@@ -295,7 +347,7 @@ async function dashboardGet(
   path: string,
 ) {
   return await setup.app.request(`http://127.0.0.1:5387${path}`, {
-    headers: { cookie: setup.cookie },
+    headers: { cookie: setup.cookie, "sec-fetch-site": "same-origin" },
   });
 }
 
@@ -346,13 +398,17 @@ function httpOptions(stateDir: string): HttpServeOptions {
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/",
     auth: { type: "remote_credentials" },
     remoteCredentialStateDir: stateDir,
     allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,
+    adminUploads: {
+      stagingDir: join(tmpdir(), "caplets-uploads"),
+      maxConcurrent: 1,
+      maxStagedBytes: 400_000_000,
+    },
   };
 }
 

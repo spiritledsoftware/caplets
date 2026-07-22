@@ -4,21 +4,26 @@ import { dirname, join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
 import { drizzle as drizzlePostgres } from "drizzle-orm/node-postgres";
+import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { defaultStateBaseDir } from "../config/paths";
 import { CapletsError } from "../errors";
+import { ensureVaultKey, loadVaultKey } from "../vault/keys";
 import { createAssetObjectStore, type AssetObjectStore } from "./asset-store";
 import { CapletRecordStore, type AssetGarbageCollectionResult } from "./caplet-records";
 import { CapletInstallationStore } from "./installations";
 import { HostCoordinationStore } from "./coordination";
 import { VaultGrantStore } from "./vault-grants";
 import { BackendAuthStateStore } from "./backend-auth";
+import { BackendAuthFlowRepository } from "./backend-auth-flows";
 import { DashboardSessionRepository } from "./dashboard-sessions";
 import { ProjectBindingStore } from "./project-bindings";
 import { RemoteSecurityStore } from "./remote-security";
 import { SetupStateStore } from "./setup-state";
 import { OperatorActivityStore } from "./operator-activity";
 import { VaultValueStore } from "./vault-values";
+import { VaultStateStore } from "./vault-state";
+import { IdempotencyStore, type IdempotencyStoreOptions } from "./idempotency";
 import { inspectHostDatabase, migrateHostDatabase } from "./migrations";
 import { postgresSchema } from "./schema/postgres";
 import { sqliteSchema } from "./schema/sqlite";
@@ -31,9 +36,12 @@ import type {
 } from "./types";
 
 const POSTGRES_SCHEMA_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/u;
+const SQLITE_BUSY_RETRY_DELAYS_MS = [50, 100] as const;
 
 export type HostStorageOptions = {
   vaultRoot?: string | undefined;
+  idempotency?: IdempotencyStoreOptions | undefined;
+  env?: Record<string, string | undefined> | undefined;
 };
 
 export class HostStorage {
@@ -43,12 +51,15 @@ export class HostStorage {
   readonly coordination: HostCoordinationStore;
   readonly vaultGrants: VaultGrantStore;
   readonly backendAuth: BackendAuthStateStore;
+  readonly backendAuthFlows: BackendAuthFlowRepository;
   readonly dashboardSessions: DashboardSessionRepository;
   readonly projectBindings: ProjectBindingStore;
   readonly remoteSecurity: RemoteSecurityStore;
   readonly setupState: SetupStateStore;
   readonly operatorActivity: OperatorActivityStore;
   readonly vaultValues: VaultValueStore;
+  readonly vaultState: VaultStateStore;
+  readonly idempotency: IdempotencyStore;
   private readonly assetObjectStore: AssetObjectStore | undefined;
   private closed = false;
 
@@ -69,14 +80,31 @@ export class HostStorage {
     this.vaultGrants = new VaultGrantStore(database);
     this.coordination = new HostCoordinationStore(database, postgresListenerPool);
     this.backendAuth = new BackendAuthStateStore(database);
+    const vaultOptions = {
+      ...(options.vaultRoot === undefined ? {} : { root: options.vaultRoot }),
+      ...(options.env === undefined ? {} : { env: options.env }),
+    };
+    this.backendAuthFlows = new BackendAuthFlowRepository(database, vaultOptions);
     this.dashboardSessions = new DashboardSessionRepository(database);
     this.projectBindings = new ProjectBindingStore(database);
     this.remoteSecurity = new RemoteSecurityStore(database);
     this.setupState = new SetupStateStore(database);
     this.operatorActivity = new OperatorActivityStore(database);
-    this.vaultValues = new VaultValueStore(
+    this.vaultValues = new VaultValueStore(database, vaultOptions);
+    this.vaultState = new VaultStateStore(database, vaultOptions);
+    const responseEncryptionKey = (create: boolean): Buffer => {
+      assertSharedPostgresEncryptionKeySource(database, this.vaultValues.env);
+      const input = { keyFile: this.vaultValues.keyFile, env: this.vaultValues.env };
+      return create ? ensureVaultKey(input) : loadVaultKey(input);
+    };
+    this.idempotency = new IdempotencyStore(
       database,
-      options.vaultRoot === undefined ? {} : { root: options.vaultRoot },
+      (canonicalRequest) => {
+        assertSharedPostgresEncryptionKeySource(database, this.vaultValues.env);
+        return this.vaultValues.idempotencyRequestFingerprint(canonicalRequest);
+      },
+      responseEncryptionKey,
+      options.idempotency,
     );
   }
 
@@ -192,14 +220,12 @@ export async function createHostStorage(
   config: HostStorageConfig = { type: "sqlite" },
   options: HostStorageOptions = {},
 ): Promise<HostStorage> {
-  const storage = openHostStorage(config, options);
+  if (config.type === "sqlite") return await openMigratedSqliteStorage(config, options);
+
+  const storage = openPostgresStorage(config, options);
   try {
-    if (config.type === "sqlite") {
-      await migrateHostDatabase(storage.database);
-    } else {
-      const health = await storage.health();
-      if (!health.ready) throw schemaHealthError(health);
-    }
+    const health = await storage.health();
+    if (!health.ready) throw schemaHealthError(health);
     return storage;
   } catch (error) {
     await storage.close().catch(() => undefined);
@@ -208,17 +234,21 @@ export async function createHostStorage(
 }
 
 export async function migrateHostStorage(config: HostStorageConfig): Promise<void> {
-  if (config.type === "postgres") {
-    const schema = validatedPostgresSchema(config);
-    const migrator = new Pool({ connectionString: config.connectionString });
-    try {
-      await migrator.query(`create schema if not exists "${schema}"`);
-    } finally {
-      await migrator.end();
-    }
+  if (config.type === "sqlite") {
+    const storage = await openMigratedSqliteStorage(config);
+    await storage.close();
+    return;
   }
 
-  const storage = openHostStorage(config);
+  const schema = validatedPostgresSchema(config);
+  const migrator = new Pool({ connectionString: config.connectionString });
+  try {
+    await migrator.query(`create schema if not exists "${schema}"`);
+  } finally {
+    await migrator.end();
+  }
+
+  const storage = openPostgresStorage(config, {});
   try {
     await migrateHostDatabase(storage.database);
   } finally {
@@ -234,9 +264,39 @@ export function defaultSqliteStoragePath(
   return join(defaultStateBaseDir(env, home, platform), "caplets.sqlite3");
 }
 
-function openHostStorage(config: HostStorageConfig, options: HostStorageOptions = {}): HostStorage {
-  if (config.type === "sqlite") return openSqliteStorage(config, options);
-  return openPostgresStorage(config, options);
+async function openMigratedSqliteStorage(
+  config: SqliteHostStorageConfig,
+  options: HostStorageOptions = {},
+): Promise<HostStorage> {
+  return await retrySqliteBusy(async () => {
+    const storage = openSqliteStorage(config, options);
+    try {
+      await migrateHostDatabase(storage.database);
+      return storage;
+    } catch (error) {
+      await storage.close().catch(() => undefined);
+      throw error;
+    }
+  });
+}
+
+async function retrySqliteBusy<T>(operation: () => Promise<T>): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await operation();
+    } catch (error) {
+      const retryDelayMs = SQLITE_BUSY_RETRY_DELAYS_MS[attempt];
+      if (retryDelayMs === undefined || !isSqliteBusy(error)) throw error;
+      attempt += 1;
+      await delay(retryDelayMs);
+    }
+  }
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return error.code === "SQLITE_BUSY";
 }
 
 function openSqliteStorage(
@@ -246,24 +306,34 @@ function openSqliteStorage(
   const path = config.path ?? defaultSqliteStoragePath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const client = new BetterSqlite3(path);
-  client.pragma("busy_timeout = 5000");
-  client.pragma("foreign_keys = ON");
-  client.pragma("journal_mode = WAL");
-  client.pragma("synchronous = FULL");
   try {
-    chmodSync(path, 0o600);
-  } catch {
-    // Best effort on platforms without POSIX permissions.
-  }
-  const db = drizzleSqlite(client, { schema: sqliteSchema });
-  return new HostStorage(
-    { dialect: "sqlite", db },
-    async () => {
+    client.pragma("busy_timeout = 5000");
+    client.pragma("foreign_keys = ON");
+    if (client.pragma("journal_mode", { simple: true }) !== "wal")
+      client.pragma("journal_mode = WAL");
+    client.pragma("synchronous = FULL");
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      // Best effort on platforms without POSIX permissions.
+    }
+    const db = drizzleSqlite(client, { schema: sqliteSchema });
+    return new HostStorage(
+      { dialect: "sqlite", db },
+      async () => {
+        client.close();
+      },
+      config,
+      options,
+    );
+  } catch (error) {
+    try {
       client.close();
-    },
-    config,
-    options,
-  );
+    } catch {
+      // Preserve the startup error.
+    }
+    throw error;
+  }
 }
 
 function openPostgresStorage(
@@ -283,6 +353,22 @@ function openPostgresStorage(
     options,
     client,
   );
+}
+
+function assertSharedPostgresEncryptionKeySource(
+  database: HostDatabase,
+  env: Record<string, string | undefined>,
+): void {
+  if (
+    database.dialect === "postgres" &&
+    env.CAPLETS_ENCRYPTION_KEY === undefined &&
+    env.CAPLETS_ENCRYPTION_KEY_FILE === undefined
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "PostgreSQL Host Storage requires CAPLETS_ENCRYPTION_KEY or CAPLETS_ENCRYPTION_KEY_FILE.",
+    );
+  }
 }
 
 function validatedPostgresSchema(config: PostgresHostStorageConfig): string {

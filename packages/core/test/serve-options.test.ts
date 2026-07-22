@@ -1,22 +1,138 @@
 import { describe, expect, it } from "vitest";
 import { resolveDaemonHttpServeOptions } from "../src/daemon";
 import { resolveServeOptions } from "../src/serve/options";
+import { DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES } from "../src/admin-api/bundle-contract";
 
 describe("resolveServeOptions", () => {
   it("defaults serve to stdio", () => {
     expect(resolveServeOptions({}, {})).toEqual({ transport: "stdio" });
   });
 
-  it("defaults HTTP serving to localhost port 5387 and root base path", () => {
+  it("defaults HTTP serving to localhost port 5387 at the fixed origin topology", () => {
     expect(resolveServeOptions({ transport: "http" }, {})).toMatchObject({
       transport: "http",
       host: "127.0.0.1",
       port: 5387,
-      path: "/",
       auth: { type: "remote_credentials" },
       remoteCredentialStateDir: expect.stringContaining("remote-server"),
       trustProxy: false,
     });
+  });
+
+  it("defaults HTTP admin upload deployment limits", () => {
+    expect(resolveServeOptions({ transport: "http" }, {})).toMatchObject({
+      adminUploads: {
+        stagingDir: expect.stringMatching(/caplets-uploads$/u),
+        maxConcurrent: 1,
+        maxStagedBytes: DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES,
+      },
+    });
+  });
+
+  it("resolves admin upload settings with CLI, environment, config, then built-in precedence", () => {
+    const configured = {
+      adminUploadStagingDir: "/config/uploads",
+      adminUploadMaxConcurrent: 2,
+      adminUploadMaxStagedBytes: 400_000_000,
+    };
+    expect(resolveServeOptions({ transport: "http" }, {}, configured)).toMatchObject({
+      adminUploads: {
+        stagingDir: "/config/uploads",
+        maxConcurrent: 2,
+        maxStagedBytes: 400_000_000,
+      },
+    });
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        {
+          CAPLETS_ADMIN_UPLOAD_STAGING_DIR: "/env/uploads",
+          CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT: "3",
+          CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES: "410000000",
+        },
+        configured,
+      ),
+    ).toMatchObject({
+      adminUploads: {
+        stagingDir: "/env/uploads",
+        maxConcurrent: 3,
+        maxStagedBytes: 410_000_000,
+      },
+    });
+    expect(
+      resolveServeOptions(
+        {
+          transport: "http",
+          adminUploadStagingDir: "/cli/uploads",
+          adminUploadMaxConcurrent: "4",
+          adminUploadMaxStagedBytes: "420000000",
+        },
+        {
+          CAPLETS_ADMIN_UPLOAD_STAGING_DIR: "/env/uploads",
+          CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT: "3",
+          CAPLETS_ADMIN_UPLOAD_MAX_STAGED_BYTES: "410000000",
+        },
+        configured,
+      ),
+    ).toMatchObject({
+      adminUploads: {
+        stagingDir: "/cli/uploads",
+        maxConcurrent: 4,
+        maxStagedBytes: 420_000_000,
+      },
+    });
+  });
+
+  it.each([
+    [
+      "CLI",
+      {
+        raw: { adminUploadMaxConcurrent: "1.5" },
+        env: {},
+        defaults: undefined,
+        message: "--admin-upload-max-concurrent",
+      },
+    ],
+    [
+      "environment",
+      {
+        raw: {},
+        env: { CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT: "NaN" },
+        defaults: undefined,
+        message: "CAPLETS_ADMIN_UPLOAD_MAX_CONCURRENT",
+      },
+    ],
+    [
+      "config",
+      {
+        raw: {},
+        env: {},
+        defaults: { adminUploadMaxConcurrent: Number.MAX_SAFE_INTEGER + 1 },
+        message: "serve.adminUploadMaxConcurrent",
+      },
+    ],
+    [
+      "staged byte minimum",
+      {
+        raw: { adminUploadMaxStagedBytes: String(DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES - 1) },
+        env: {},
+        defaults: undefined,
+        message: `at least ${DEFAULT_ADMIN_BUNDLE_REQUEST_BYTES}`,
+      },
+    ],
+    [
+      "empty staging directory",
+      {
+        raw: {},
+        env: { CAPLETS_ADMIN_UPLOAD_STAGING_DIR: "  " },
+        defaults: undefined,
+        message: "CAPLETS_ADMIN_UPLOAD_STAGING_DIR must not be empty",
+      },
+    ],
+  ])("rejects invalid %s admin upload settings", (_source, input) => {
+    expect(() =>
+      resolveServeOptions({ transport: "http", ...input.raw }, input.env, input.defaults),
+    ).toThrow(input.message);
   });
 
   it("uses CAPLETS_SERVER_URL as HTTP serve defaults", () => {
@@ -24,14 +140,13 @@ describe("resolveServeOptions", () => {
       resolveServeOptions(
         { transport: "http" },
         {
-          CAPLETS_SERVER_URL: "http://localhost:7890/caplets/",
+          CAPLETS_SERVER_URL: "http://localhost:7890/",
         },
       ),
     ).toMatchObject({
       transport: "http",
       host: "localhost",
       port: 7890,
-      path: "/caplets",
       auth: { type: "remote_credentials" },
       publicOrigin: "http://localhost:7890",
     });
@@ -44,9 +159,8 @@ describe("resolveServeOptions", () => {
       {
         host: "0.0.0.0",
         port: 5480,
-        path: "/caplets",
         remoteStatePath: "/configured/remote-auth",
-        upstreamUrl: "https://upstream.example.com/caplets",
+        upstreamUrl: "https://upstream.example.com",
         allowUnauthenticatedHttp: true,
         trustProxy: true,
         publicOrigins: ["https://caplets.example.com"],
@@ -56,10 +170,9 @@ describe("resolveServeOptions", () => {
       transport: "http",
       host: "0.0.0.0",
       port: 5480,
-      path: "/caplets",
       auth: { type: "development_unauthenticated" },
       allowUnauthenticatedHttp: true,
-      upstreamUrl: "https://upstream.example.com/caplets",
+      upstreamUrl: "https://upstream.example.com",
       trustProxy: true,
       publicOrigin: "https://caplets.example.com",
     });
@@ -92,14 +205,13 @@ describe("resolveServeOptions", () => {
     expect(
       resolveServeOptions(
         { transport: "http", port: 6000 },
-        { CAPLETS_SERVER_URL: "http://localhost:7000/env" },
-        { host: "0.0.0.0", port: 5480, path: "/configured" },
+        { CAPLETS_SERVER_URL: "http://localhost:7000/" },
+        { host: "0.0.0.0", port: 5480 },
       ),
     ).toMatchObject({
       transport: "http",
       host: "localhost",
       port: 6000,
-      path: "/env",
       publicOrigin: "http://localhost:7000",
     });
   });
@@ -108,7 +220,7 @@ describe("resolveServeOptions", () => {
     expect(
       resolveServeOptions(
         { transport: "http" },
-        { CAPLETS_SERVER_URL: "https://primary.example.com/caplets" },
+        { CAPLETS_SERVER_URL: "https://primary.example.com/" },
         {
           publicOrigins: ["https://primary.example.com", "https://secondary.example.com"],
         },
@@ -151,75 +263,61 @@ describe("resolveServeOptions", () => {
     expect(
       resolveServeOptions(
         { transport: "http", allowUnauthenticatedHttp: true },
-        { CAPLETS_SERVER_URL: "https://caplets.example.com/caplets" },
+        { CAPLETS_SERVER_URL: "https://caplets.example.com/" },
       ),
     ).toMatchObject({
       transport: "http",
       host: "caplets.example.com",
       port: 5387,
-      path: "/caplets",
       publicOrigin: "https://caplets.example.com",
     });
   });
 
   it("uses the default HTTP port when CAPLETS_SERVER_URL has no explicit port", () => {
     expect(
-      resolveServeOptions(
-        { transport: "http" },
-        { CAPLETS_SERVER_URL: "http://127.0.0.1/caplets" },
-      ),
+      resolveServeOptions({ transport: "http" }, { CAPLETS_SERVER_URL: "http://127.0.0.1/" }),
     ).toMatchObject({
       transport: "http",
       host: "127.0.0.1",
       port: 5387,
-      path: "/caplets",
     });
   });
 
   it("uses IPv6 loopback server URLs without requiring HTTP auth opt-in", () => {
     expect(
-      resolveServeOptions(
-        { transport: "http" },
-        { CAPLETS_SERVER_URL: "http://[::1]:5387/caplets" },
-      ),
+      resolveServeOptions({ transport: "http" }, { CAPLETS_SERVER_URL: "http://[::1]:5387/" }),
     ).toMatchObject({
       transport: "http",
       host: "::1",
       port: 5387,
-      path: "/caplets",
       auth: { type: "remote_credentials" },
       loopback: true,
       warnUnauthenticatedNetwork: false,
     });
   });
 
-  it("clarifies non-loopback HTTP server URL bind configuration", () => {
+  it("rejects non-loopback HTTP and path-bearing CAPLETS_SERVER_URL values", () => {
+    expect(() =>
+      resolveServeOptions({ transport: "http" }, { CAPLETS_SERVER_URL: "http://0.0.0.0:5387" }),
+    ).toThrow(/use --host and --port separately/u);
     expect(() =>
       resolveServeOptions(
         { transport: "http" },
-        { CAPLETS_SERVER_URL: "http://0.0.0.0:5387/caplets" },
+        { CAPLETS_SERVER_URL: "https://caplets.example.com/prefix" },
       ),
-    ).toThrow(/use --host, --port, and --path separately/u);
+    ).toThrow(/origin/u);
   });
 
-  it("lets explicit HTTP flags override CAPLETS_SERVER_URL defaults", () => {
+  it("lets explicit HTTP bind flags override CAPLETS_SERVER_URL defaults", () => {
     expect(
       resolveServeOptions(
-        { transport: "http", host: "127.0.0.1", port: "6000", path: "/local" },
-        { CAPLETS_SERVER_URL: "http://localhost:7890/caplets" },
+        { transport: "http", host: "127.0.0.1", port: "6000" },
+        { CAPLETS_SERVER_URL: "http://localhost:7890/" },
       ),
     ).toMatchObject({
       transport: "http",
       host: "127.0.0.1",
       port: 6000,
-      path: "/local",
-    });
-  });
-
-  it("normalizes trailing slashes in HTTP path", () => {
-    expect(resolveServeOptions({ transport: "http", path: "/custom/" }, {})).toMatchObject({
-      transport: "http",
-      path: "/custom",
     });
   });
 
@@ -293,24 +391,34 @@ describe("resolveServeOptions", () => {
     );
   });
 
-  it("resolves upstream URL for HTTP serving", () => {
-    expect(
+  it("rejects admin upload options for stdio", () => {
+    expect(() =>
       resolveServeOptions(
-        { transport: "http", upstreamUrl: "https://caplets.example.com/caplets" },
+        {
+          transport: "stdio",
+          adminUploadStagingDir: "/tmp/uploads",
+          adminUploadMaxConcurrent: "2",
+          adminUploadMaxStagedBytes: "400000000",
+        },
         {},
       ),
+    ).toThrow(
+      "--admin-upload-staging-dir, --admin-upload-max-concurrent, --admin-upload-max-staged-bytes are only valid with --transport http",
+    );
+  });
+
+  it("resolves upstream URL for HTTP serving", () => {
+    expect(
+      resolveServeOptions({ transport: "http", upstreamUrl: "https://upstream.example.com" }, {}),
     ).toMatchObject({
       transport: "http",
-      upstreamUrl: "https://caplets.example.com/caplets",
+      upstreamUrl: "https://upstream.example.com",
     });
   });
 
   it("rejects upstream URL for stdio serving", () => {
     expect(() =>
-      resolveServeOptions(
-        { transport: "stdio", upstreamUrl: "https://caplets.example.com/caplets" },
-        {},
-      ),
+      resolveServeOptions({ transport: "stdio", upstreamUrl: "https://upstream.example.com" }, {}),
     ).toThrow(/--upstream-url is only valid with --transport http/u);
   });
 
@@ -343,8 +451,8 @@ describe("resolveServeOptions", () => {
 
     expect(() =>
       resolveServeOptions(
-        { transport: "http", upstreamUrl: "https://caplets.example.com/caplets" },
-        { CAPLETS_SERVER_URL: "https://caplets.example.com/caplets/" },
+        { transport: "http", upstreamUrl: "https://caplets.example.com" },
+        { CAPLETS_SERVER_URL: "https://caplets.example.com/" },
       ),
     ).toThrow(/must not point back to this runtime/u);
   });
@@ -354,7 +462,6 @@ describe("resolveServeOptions", () => {
       transport: "http",
       host: "127.0.0.1",
       port: 5387,
-      path: "/",
     });
   });
 
@@ -364,15 +471,15 @@ describe("resolveServeOptions", () => {
     );
   });
 
-  it("rejects invalid port and path", () => {
+  it("rejects invalid ports and path-bearing upstream origins", () => {
     expect(() => resolveServeOptions({ transport: "http", port: "0" }, {})).toThrow(
       /valid TCP port/u,
     );
-    expect(() => resolveServeOptions({ transport: "http", path: "mcp" }, {})).toThrow(
-      /must start with/u,
-    );
-    expect(() => resolveServeOptions({ transport: "http", path: "/mcp?x=1" }, {})).toThrow(
-      /query string/u,
-    );
+    expect(() =>
+      resolveServeOptions(
+        { transport: "http", upstreamUrl: "https://upstream.example.com/prefix" },
+        {},
+      ),
+    ).toThrow(/origin/u);
   });
 });
