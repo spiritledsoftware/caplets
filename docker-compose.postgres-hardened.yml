@@ -32,7 +32,7 @@ services:
     logging: *bounded-logging
 
   caplets-postgres-secrets:
-    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.26.2}
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.27.0}
     user: root
     restart: "no"
     read_only: true
@@ -75,7 +75,7 @@ services:
     logging: *bounded-logging
 
   caplets-postgres-migrate:
-    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.26.2}
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.27.0}
     user: node
     restart: "no"
     read_only: true
@@ -117,7 +117,7 @@ services:
     logging: *bounded-logging
 
   caplets:
-    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.26.2}
+    image: ${CAPLETS_IMAGE:-ghcr.io/spiritledsoftware/caplets:0.27.0}
     user: node
     restart: unless-stopped
     read_only: true

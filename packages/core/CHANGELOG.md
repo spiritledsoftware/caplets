@@ -1,5 +1,21 @@
 # @caplets/core
 
+## 0.37.0
+
+### Minor Changes
+
+- 99396ff: Add the resource-oriented Current Host Admin API, public OpenAPI 3.1 document, and generated Fetch client. Launch `@caplets/sdk` 0.1.0 with ordered streaming bundle helpers and the browser-safe Project Binding coordinator. Model each Current Host as an HTTP(S) origin with fixed `/.well-known/caplets`, `/api`, `/mcp`, and `/dashboard` namespaces; require origin-only configuration; move public HTTP and Admin resources under `/api`; and remove path-prefix serving, the v1 Admin transport, legacy Caplets Cloud/hosted modes, route fallbacks, and JSON/base64 bundle transfer. Preserve exclusive bearer-or-dashboard-session authorization, CSRF protection, root-path dashboard cookie migration, durable backend OAuth flows, and atomic SQL-backed administration across Host Nodes.
+
+### Patch Changes
+
+- 99396ff: Commit SQL Vault value writes, optional access grants, one intent activity record, and one config generation atomically before activating the updated Host configuration.
+- 99396ff: Bound non-MCP HTTP JSON request bodies and return `REQUEST_INVALID` for oversized input. MCP request parsing remains owned by the MCP SDK transport.
+- 99396ff: Fix dashboard mutation refresh ordering so rejected work cannot suppress successful state, pending revokes cannot expose stale client data, and the latest successful completion controls the rendered Current Host data.
+- 99396ff: Persist encrypted backend OAuth completion state in Authoritative Host Storage so callbacks can complete safely across Host Nodes.
+- 99396ff: Cap Code Mode execution timeout requests at 120 seconds across MCP, native, CLI, remote, and direct library calls. Split longer work into bounded Code Mode calls.
+- Updated dependencies [99396ff]
+  - @caplets/sdk@0.1.0
+
 ## 0.36.2
 
 ### Patch Changes
