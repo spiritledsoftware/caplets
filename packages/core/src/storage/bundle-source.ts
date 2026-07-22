@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { Readable } from "node:stream";
+import { createReadStream, createWriteStream } from "node:fs";
+import { Readable, Transform, type TransformCallback } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { CapletsError } from "../errors";
 
@@ -66,16 +67,58 @@ export async function readVerifiedBundleFile(
   source: ReopenableBundleFileSource,
   options: { maxBytes: number },
 ): Promise<Buffer> {
-  const metadata = bundleFileMetadata(source);
-  if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0) {
-    throw new CapletsError("REQUEST_INVALID", "The bundle file byte limit is invalid.");
-  }
-  if (metadata.size > options.maxBytes) {
+  const metadata = validatedBundleFileRead(source, options.maxBytes);
+  return await readVerifiedBundleFileContent(source, metadata, Buffer.allocUnsafe(metadata.size));
+}
+
+export async function readVerifiedBundleFileIntoBuffer(
+  source: ReopenableBundleFileSource,
+  options: { maxBytes: number; target: Buffer },
+): Promise<Buffer> {
+  const metadata = validatedBundleFileRead(source, options.maxBytes);
+  if (!Buffer.isBuffer(options.target) || options.target.byteLength < metadata.size) {
     throw invalidBundlePayload();
   }
+  return await readVerifiedBundleFileContent(source, metadata, options.target);
+}
+export async function writeVerifiedBundleFile(
+  source: ReopenableBundleFileSource,
+  options: { maxBytes: number; destination: string },
+): Promise<void> {
+  const metadata = validatedBundleFileRead(source, options.maxBytes);
+  const hash = createHash("sha256");
+  let bytes = 0;
+  const verifier = new Transform({
+    transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
+      bytes += chunk.byteLength;
+      if (bytes > metadata.size) {
+        callback(invalidBundlePayload());
+        return;
+      }
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  await pipeline(
+    source.open(),
+    verifier,
+    createWriteStream(options.destination, {
+      flags: "wx",
+      mode: metadata.executable ? 0o700 : 0o600,
+    }),
+  );
+  if (bytes !== metadata.size || hash.digest("hex") !== metadata.sha256) {
+    throw invalidBundlePayload();
+  }
+}
 
+async function readVerifiedBundleFileContent(
+  source: ReopenableBundleFileSource,
+  metadata: Omit<ReopenableBundleFileSource, "open">,
+  target: Buffer,
+): Promise<Buffer> {
+  const content = target.subarray(0, metadata.size);
   const reader = source.open().getReader();
-  const chunks: Buffer[] = [];
   const hash = createHash("sha256");
   let bytes = 0;
   let complete = false;
@@ -89,17 +132,13 @@ export async function readVerifiedBundleFile(
       if (!(chunk.value instanceof Uint8Array)) {
         throw invalidBundlePayload();
       }
-      bytes += chunk.value.byteLength;
-      if (bytes > options.maxBytes || bytes > metadata.size) {
+      const nextBytes = bytes + chunk.value.byteLength;
+      if (nextBytes > metadata.size) {
         throw invalidBundlePayload();
       }
-      const buffer = Buffer.from(
-        chunk.value.buffer,
-        chunk.value.byteOffset,
-        chunk.value.byteLength,
-      );
-      hash.update(buffer);
-      chunks.push(buffer);
+      hash.update(chunk.value);
+      content.set(chunk.value, bytes);
+      bytes = nextBytes;
     }
   } finally {
     if (!complete) await reader.cancel().catch(() => undefined);
@@ -109,7 +148,21 @@ export async function readVerifiedBundleFile(
   if (bytes !== metadata.size || hash.digest("hex") !== metadata.sha256) {
     throw invalidBundlePayload();
   }
-  return chunks.length === 1 ? Buffer.from(chunks[0]!) : Buffer.concat(chunks, bytes);
+  return content;
+}
+
+function validatedBundleFileRead(
+  source: ReopenableBundleFileSource,
+  maxBytes: number,
+): Omit<ReopenableBundleFileSource, "open"> {
+  const metadata = bundleFileMetadata(source);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new CapletsError("REQUEST_INVALID", "The bundle file byte limit is invalid.");
+  }
+  if (metadata.size > maxBytes) {
+    throw invalidBundlePayload();
+  }
+  return metadata;
 }
 
 function bundleFileMetadata(

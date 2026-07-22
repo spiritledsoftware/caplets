@@ -351,7 +351,8 @@ class MultipartRequestLimitTransform extends Transform {
   readonly #maxHeaderBytes: number;
   readonly #maxHeaderPairs: number;
   #requestBytes = 0;
-  #scanBuffer = Buffer.alloc(0);
+  readonly #scanStorage: Buffer;
+  #scanBuffer: Buffer = Buffer.alloc(0);
   #state: "first-boundary" | "headers" | "body" | "done" = "first-boundary";
   #parts = 0;
   get parts(): number {
@@ -370,6 +371,10 @@ class MultipartRequestLimitTransform extends Transform {
     this.#maxRequestBytes = maxRequestBytes;
     this.#maxHeaderBytes = maxHeaderBytes;
     this.#maxHeaderPairs = maxHeaderPairs;
+    this.#scanStorage = Buffer.allocUnsafe(
+      Math.max(maxHeaderBytes, this.#boundary.byteLength + 2, this.#bodyBoundary.byteLength + 2) +
+        MULTIPART_SCAN_CHUNK_BYTES,
+    );
   }
 
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
@@ -392,7 +397,13 @@ class MultipartRequestLimitTransform extends Transform {
 
   #scan(chunk: Buffer): void {
     if (this.#state === "done") return;
-    this.#scanBuffer = Buffer.concat([this.#scanBuffer, chunk]);
+    const retainedBytes = this.#scanBuffer.byteLength;
+    if (retainedBytes + chunk.byteLength > this.#scanStorage.byteLength) {
+      throw invalidUpload("The multipart framing exceeds its scanner buffer.");
+    }
+    if (retainedBytes > 0) this.#scanBuffer.copy(this.#scanStorage, 0);
+    chunk.copy(this.#scanStorage, retainedBytes);
+    this.#scanBuffer = this.#scanStorage.subarray(0, retainedBytes + chunk.byteLength);
     while (true) {
       if (this.#state === "first-boundary") {
         const boundaryIndex = this.#scanBuffer.indexOf(this.#boundary);

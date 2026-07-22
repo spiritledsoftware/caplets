@@ -1,6 +1,7 @@
 import { fingerprintProjectRoot } from "@caplets/sdk/project-binding/node";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
+import { rm } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
 import {
   createBackendOperationRuntime,
@@ -149,6 +150,7 @@ export class CapletsEngine {
   private readonly parityConfigLoader: CapletsEngineOptions["parityConfigLoader"];
   private readonly hostStorage: HostStorage | undefined;
   private readonly hostNodeId: string | undefined;
+  private readonly recordCacheRoot: string | undefined;
   private hostConfigGeneration: number;
   private hostRuntimeFingerprint: string;
   private coordinationTimer: NodeJS.Timeout | undefined;
@@ -179,7 +181,8 @@ export class CapletsEngine {
     const storage = await createHostStorage(loadHostStorageConfig(configPath), {
       vaultRoot: options.authDir ? join(options.authDir, "vault") : undefined,
     });
-    const recordCacheRoot = join(defaultStateBaseDir(), "record-caplets");
+    const hostNodeId = randomUUID();
+    const recordCacheRoot = join(defaultStateBaseDir(), "record-caplets", hostNodeId);
     const load = async (
       path: string,
       projectPath: string,
@@ -205,7 +208,6 @@ export class CapletsEngine {
       const hostRuntimeFingerprint = storage.vaultValues.hostRuntimeFingerprint(
         clusterHostConfigurationFingerprint(parityConfig),
       );
-      const hostNodeId = randomUUID();
       const registration = await storage.coordination.registerNode({
         nodeId: hostNodeId,
         globalFileManifest: globalFileManifest(configPath),
@@ -234,6 +236,7 @@ export class CapletsEngine {
       });
     } catch (error) {
       await storage.close();
+      await rm(recordCacheRoot, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
   }
@@ -254,6 +257,9 @@ export class CapletsEngine {
       options.configLoader !== undefined || options.asyncConfigLoader !== undefined;
     const config = options.initialConfig ?? this.loadConfigWithWarnings();
     this.hostNodeId = options.hostNodeId;
+    this.recordCacheRoot = this.hostNodeId
+      ? join(defaultStateBaseDir(), "record-caplets", this.hostNodeId)
+      : undefined;
     this.hostConfigGeneration = options.hostConfigGeneration ?? 0;
     this.stableHostConfigurationFingerprint =
       runtimeFingerprintForConfig(config).hostConfigurationFingerprint;
@@ -667,6 +673,7 @@ export class CapletsEngine {
       await this.capletSets.close();
       await this.telemetry.dispatcher.shutdown();
       await this.hostStorage?.close();
+      if (this.recordCacheRoot) await rm(this.recordCacheRoot, { recursive: true, force: true });
       this.reloadListeners.clear();
     }
   }

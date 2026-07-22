@@ -177,12 +177,12 @@ function smokeMigrationGates() {
   });
   const convenienceResult = composeResult(convenience, ["up", "-d", "--wait"]);
   assert.notEqual(convenienceResult.status, 0);
-  assert.equal(containerState(`${convenience.name}-caplets-1`), "created");
+  assert.match(containerStateOrMissing(`${convenience.name}-caplets-1`), /^(?:created|missing)$/u);
 
   const hardened = hardenedFixture("hardened-gate", { CAPLETS_POSTGRES_SCHEMA: "Invalid" });
   const hardenedResult = composeResult(hardened, ["up", "-d", "--wait"]);
   assert.notEqual(hardenedResult.status, 0);
-  assert.equal(containerState(`${hardened.name}-caplets-1`), "created");
+  assert.match(containerStateOrMissing(`${hardened.name}-caplets-1`), /^(?:created|missing)$/u);
 }
 
 async function smokeLegacyCompatibility() {
@@ -357,8 +357,13 @@ function inspectNetwork(network) {
   return JSON.parse(docker(["network", "inspect", network]))[0];
 }
 
-function containerState(container) {
-  return docker(["inspect", "--format", "{{.State.Status}}", container]).trim();
+function containerStateOrMissing(container) {
+  const result = dockerResult(["inspect", "--format", "{{.State.Status}}", container]);
+  if (result.status === 0) return result.stdout.trim();
+  if (/no such object:/iu.test(result.stderr)) return "missing";
+  throw new Error(
+    `docker inspect ${container} failed with status ${result.status}: ${result.stderr.trim() || result.stdout.trim()}`,
+  );
 }
 
 function phase(name) {

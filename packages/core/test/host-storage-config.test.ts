@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -320,12 +320,14 @@ describe("stored Caplet source", () => {
       else process.env.CAPLETS_ENCRYPTION_KEY = previousEncryptionKey;
     }
   });
-  it("converges peer engine snapshots after a committed record generation", async () => {
+  it("isolates peer runtime materializations while converging committed records", async () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-sql-convergence-"));
     directories.push(root);
     const databasePath = join(root, "caplets.sqlite3");
     const configPath = join(root, "config.json");
     const projectConfigPath = join(root, "project", ".caplets", "config.json");
+    const stateHome = join(root, "state");
+    const previousStateHome = process.env.XDG_STATE_HOME;
     writeFileSync(configPath, JSON.stringify({ storage: { type: "sqlite", path: databasePath } }));
     const seed = await createHostStorage({ type: "sqlite", path: databasePath });
     await seed.caplets.importBundle({
@@ -340,10 +342,25 @@ describe("stored Caplet source", () => {
       ],
     });
     await seed.close();
-    const first = await CapletsEngine.create({ configPath, projectConfigPath, watch: false });
-    const second = await CapletsEngine.create({ configPath, projectConfigPath, watch: false });
-    const writer = await createHostStorage({ type: "sqlite", path: databasePath });
+
+    process.env.XDG_STATE_HOME = stateHome;
+    const engines: CapletsEngine[] = [];
+    let writer: Awaited<ReturnType<typeof createHostStorage>> | undefined;
     try {
+      const first = await CapletsEngine.create({ configPath, projectConfigPath, watch: false });
+      engines.push(first);
+      const second = await CapletsEngine.create({ configPath, projectConfigPath, watch: false });
+      engines.push(second);
+      const cacheRoot = join(stateHome, "record-caplets");
+      const runtimeCaches = readdirSync(cacheRoot, { withFileTypes: true }).filter((entry) =>
+        entry.isDirectory(),
+      );
+      expect(runtimeCaches).toHaveLength(2);
+      for (const cache of runtimeCaches) {
+        expect(existsSync(join(cacheRoot, cache.name, "github", "CAPLET.md"))).toBe(true);
+      }
+
+      writer = await createHostStorage({ type: "sqlite", path: databasePath });
       await writer.caplets.updateBundle({
         id: "github",
         operator: { clientId: "operator_update", role: "operator" },
@@ -364,9 +381,10 @@ describe("stored Caplet source", () => {
         .toBe("stored-v2");
       expect(first.currentConfig().mcpServers.github?.command).toBe("stored-v2");
     } finally {
-      await writer.close();
-      await first.close();
-      await second.close();
+      await writer?.close();
+      for (const engine of engines.reverse()) await engine.close();
+      if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousStateHome;
     }
   }, 8_000);
 });

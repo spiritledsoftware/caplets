@@ -274,7 +274,8 @@ function openSqliteStorage(
   const client = new BetterSqlite3(path);
   client.pragma("busy_timeout = 5000");
   client.pragma("foreign_keys = ON");
-  client.pragma("journal_mode = WAL");
+  if (client.pragma("journal_mode", { simple: true }) !== "wal")
+    client.pragma("journal_mode = WAL");
   client.pragma("synchronous = FULL");
   try {
     chmodSync(path, 0o600);

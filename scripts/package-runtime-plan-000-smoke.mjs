@@ -15,7 +15,8 @@ const RSS_ASSET_COUNT = 47;
 const RSS_ASSET_BYTES = 4 * MiB;
 const RSS_CHUNK_BYTES = 64 * 1024;
 const RSS_PARSER_ALLOWANCE_BYTES = 24 * MiB;
-const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 96 * MiB;
+// Leaves a 48 MiB gap below the payload while accommodating Node and SQLite native churn.
+const RSS_FIXED_RUNTIME_ALLOWANCE_BYTES = 112 * MiB;
 
 export async function verifyPlan000BuiltScenarios({
   repoRoot,
@@ -131,6 +132,22 @@ export async function verifyPlan000BuiltScenarios({
       "PASS PUT /api/v2/admin/vault-values/{key}: bearer/dashboard conditional idempotent 201 replay, 403/412/428 Problem, direct DTO, ETag, and CSRF.",
     );
 
+    await verifyCrossNodeOAuth({
+      nodeOneOrigin,
+      nodeTwoOrigin,
+      operatorClient,
+      provider,
+      sdk,
+    });
+    reports.push(
+      "PASS POST /api/v2/admin/backend-auth-flows on Host Node 1 + public /api/v2/admin/backend-auth-flows/{flowId}/callback on Host Node 2: Operator bearer start, one deterministic token exchange, completed durable state, replay -> 401 Problem.",
+    );
+
+    await verifyAttachRuntimeOperation({ accessClient, provider, sdk });
+    reports.push(
+      "PASS GET /api/v1/attach/manifest + POST /api/v1/attach/invoke: Access bearer invoked deterministic remote__check runtime tool through the built Attach adapter.",
+    );
+
     const rss = await verifyLargeBundle({
       operatorClient,
       sdk,
@@ -150,27 +167,15 @@ export async function verifyPlan000BuiltScenarios({
       stagingDir: stagingOne,
     });
     reports.push(
-      `PASS PUT/GET /api/v2/admin/caplet-records/runtime-rss/bundle: Operator bearer streamed ${rss.totalPayloadBytes} payload bytes; upload RSS ${rss.uploadBaselineRss}->${rss.uploadPeakRss} (ceiling ${rss.uploadThresholdRss}), download RSS ${rss.downloadBaselineRss}->${rss.downloadPeakRss} (streaming ceiling ${rss.downloadThresholdRss}); staged payload entries=${rss.stagingEntries}.`,
-    );
-
-    await verifyCrossNodeOAuth({
-      nodeOneOrigin,
-      nodeTwoOrigin,
-      operatorClient,
-      provider,
-      sdk,
-    });
-    reports.push(
-      "PASS POST /api/v2/admin/backend-auth-flows on Host Node 1 + public /api/v2/admin/backend-auth-flows/{flowId}/callback on Host Node 2: Operator bearer start, one deterministic token exchange, completed durable state, replay -> 401 Problem.",
-    );
-
-    await verifyAttachRuntimeOperation({ accessClient, provider, sdk });
-    reports.push(
-      "PASS GET /api/v1/attach/manifest + POST /api/v1/attach/invoke: Access bearer invoked deterministic remote__check runtime tool through the built Attach adapter.",
+      `PASS PUT/GET /api/v2/admin/caplet-records/runtime-rss/bundle: Operator bearer streamed ${rss.totalPayloadBytes} payload bytes; rejected-upload RSS ${rss.rejectedUploadBaselineRss}->${rss.rejectedUploadPeakRss} (streaming ceiling ${rss.rejectedUploadThresholdRss}), import RSS ${rss.uploadBaselineRss}->${rss.uploadPeakRss} (streaming ceiling ${rss.uploadThresholdRss}), download RSS ${rss.downloadBaselineRss}->${rss.downloadPeakRss} (streaming ceiling ${rss.downloadThresholdRss}); staged payload entries=${rss.stagingEntries}.`,
     );
     scenarioOutcome = { ok: true };
   } catch (error) {
-    scenarioOutcome = { ok: false, error };
+    const diagnostics = [...children].map((entry) => `${entry.stdout}${entry.stderr}`).join("\n");
+    scenarioOutcome = {
+      ok: false,
+      error: new Error(`${error instanceof Error ? error.message : String(error)}\n${diagnostics}`),
+    };
   }
   const terminated = await Promise.allSettled(
     [...children].map(async (entry) => {
@@ -504,41 +509,87 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     executable,
   }));
   const totalPayloadBytes = manifestFiles.reduce((sum, file) => sum + file.size, 0);
-  const body = sdk.createOrderedBundleMultipartBody(
-    JSON.stringify({ version: 1, files: manifestFiles }),
-    files.map((file) => ({
-      open: async function* () {
-        if (file.value === undefined) {
-          yield document;
-          return;
-        }
-        const chunk = Buffer.alloc(RSS_CHUNK_BYTES, file.value);
-        for (let offset = 0; offset < file.size; offset += chunk.byteLength) {
-          yield chunk.subarray(0, Math.min(chunk.byteLength, file.size - offset));
-        }
-      },
-    })),
-    "caplets-built-runtime-rss-boundary",
-  );
+  const createBody = (manifest) =>
+    sdk.createOrderedBundleMultipartBody(
+      JSON.stringify({ version: 1, files: manifest }),
+      files.map((file) => ({
+        open: async function* () {
+          if (file.value === undefined) {
+            yield document;
+            return;
+          }
+          const chunk = Buffer.alloc(RSS_CHUNK_BYTES, file.value);
+          for (let offset = 0; offset < file.size; offset += chunk.byteLength) {
+            yield chunk.subarray(0, Math.min(chunk.byteLength, file.size - offset));
+          }
+        },
+      })),
+      "caplets-built-runtime-rss-boundary",
+    );
 
+  const invalidManifestFiles = manifestFiles.map((file, index) =>
+    index === manifestFiles.length - 1 ? { ...file, sha256: "0".repeat(64) } : file,
+  );
   await delay(100);
-  const baselineRss = sampleRss(serverPid);
-  let uploadPeakRss = baselineRss;
-  let uploadSampleError;
-  const uploadSampler = setInterval(() => {
+  const rejectedUploadBaselineRss = sampleRss(serverPid);
+  let rejectedUploadPeakRss = rejectedUploadBaselineRss;
+  let rejectedUploadSampleError;
+  const rejectedUploadSampler = setInterval(() => {
     try {
-      uploadPeakRss = Math.max(uploadPeakRss, sampleRss(serverPid));
+      rejectedUploadPeakRss = Math.max(rejectedUploadPeakRss, sampleRss(serverPid));
     } catch (error) {
-      uploadSampleError ??= error;
+      rejectedUploadSampleError ??= error;
     }
   }, 20);
 
+  let uploadBaselineRss = 0;
+  let uploadPeakRss = 0;
+  let uploadSampleError;
+  let uploadSampler;
   let stagingEntries = -1;
   let downloadBaselineRss = 0;
   let downloadPeakRss = 0;
   let downloadSampleError;
   let downloadSampler;
   try {
+    const invalidBody = createBody(invalidManifestFiles);
+    const rejected = await sdk.adminV2PutCapletRecordBundleStream({
+      body: invalidBody.body,
+      client: operatorClient,
+      contentType: invalidBody.contentType,
+      headers: {
+        "Idempotency-Key": "built-runtime-large-bundle-invalid",
+        "If-None-Match": "*",
+      },
+      path: { id: "runtime-rss" },
+      signal: AbortSignal.timeout(LARGE_REQUEST_TIMEOUT_MS),
+    });
+    assert(
+      rejected.error !== undefined && rejected.response?.status === 400,
+      `Malformed large bundle returned ${rejected.response?.status}; expected 400.`,
+    );
+    await waitForNoStagedPayloads(stagingDir);
+    assert(
+      stagedPayloadEntries(stagingDir).length === 0,
+      "Rejected large bundle retained staged payloads.",
+    );
+    rejectedUploadPeakRss = Math.max(rejectedUploadPeakRss, sampleRss(serverPid));
+    clearInterval(rejectedUploadSampler);
+    if (rejectedUploadSampleError) throw rejectedUploadSampleError;
+
+    serverPid = await restartServer();
+    await delay(100);
+    uploadBaselineRss = sampleRss(serverPid);
+    uploadPeakRss = uploadBaselineRss;
+    uploadSampler = setInterval(() => {
+      try {
+        uploadPeakRss = Math.max(uploadPeakRss, sampleRss(serverPid));
+      } catch (error) {
+        uploadSampleError ??= error;
+      }
+    }, 20);
+
+    const body = createBody(manifestFiles);
     const uploaded = await sdk.adminV2PutCapletRecordBundleStream({
       body: body.body,
       client: operatorClient,
@@ -562,11 +613,11 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
       uploaded.data?.id === "runtime-rss" && uploaded.data.ok === undefined,
       "Large bundle upload did not return a direct Caplet Record DTO.",
     );
-    uploadPeakRss = Math.max(uploadPeakRss, sampleRss(serverPid));
 
     await waitForNoStagedPayloads(stagingDir);
     stagingEntries = stagedPayloadEntries(stagingDir).length;
     assert(stagingEntries === 0, `Large bundle upload retained ${stagingEntries} payload entries.`);
+    uploadPeakRss = Math.max(uploadPeakRss, sampleRss(serverPid));
     clearInterval(uploadSampler);
     if (uploadSampleError) throw uploadSampleError;
 
@@ -613,21 +664,34 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     downloadPeakRss = Math.max(downloadPeakRss, sampleRss(serverPid));
     if (downloadSampleError) throw downloadSampleError;
   } finally {
+    clearInterval(rejectedUploadSampler);
     clearInterval(uploadSampler);
     clearInterval(downloadSampler);
   }
 
-  const uploadThresholdRss = baselineRss + totalPayloadBytes + RSS_FIXED_RUNTIME_ALLOWANCE_BYTES;
+  const boundedDelta =
+    RSS_PARSER_ALLOWANCE_BYTES + RSS_ASSET_BYTES + RSS_FIXED_RUNTIME_ALLOWANCE_BYTES;
+  const rejectedUploadThresholdRss = rejectedUploadBaselineRss + boundedDelta;
   assert(
-    uploadPeakRss <= uploadThresholdRss,
-    `Large bundle upload RSS grew from ${baselineRss} to ${uploadPeakRss}, above ${uploadThresholdRss}.`,
+    rejectedUploadThresholdRss < rejectedUploadBaselineRss + totalPayloadBytes,
+    "Rejected-upload RSS ceiling does not distinguish streaming from whole-bundle buffering.",
+  );
+  assert(
+    rejectedUploadPeakRss <= rejectedUploadThresholdRss,
+    `Rejected large bundle upload RSS grew from ${rejectedUploadBaselineRss} to ${rejectedUploadPeakRss}, above ${rejectedUploadThresholdRss}.`,
   );
 
-  const downloadThresholdRss =
-    downloadBaselineRss +
-    RSS_PARSER_ALLOWANCE_BYTES +
-    RSS_ASSET_BYTES +
-    RSS_FIXED_RUNTIME_ALLOWANCE_BYTES;
+  const uploadThresholdRss = uploadBaselineRss + boundedDelta;
+  assert(
+    uploadThresholdRss < uploadBaselineRss + totalPayloadBytes,
+    "Successful-upload RSS ceiling does not distinguish streaming from whole-bundle buffering.",
+  );
+  assert(
+    uploadPeakRss <= uploadThresholdRss,
+    `Large bundle upload RSS grew from ${uploadBaselineRss} to ${uploadPeakRss}, above ${uploadThresholdRss}.`,
+  );
+
+  const downloadThresholdRss = downloadBaselineRss + boundedDelta;
   assert(
     downloadThresholdRss < downloadBaselineRss + totalPayloadBytes,
     "Download RSS ceiling does not distinguish streaming from whole-bundle buffering.",
@@ -637,7 +701,10 @@ async function verifyLargeBundle({ operatorClient, restartServer, sdk, serverPid
     `Large bundle download RSS grew from ${downloadBaselineRss} to ${downloadPeakRss}, above ${downloadThresholdRss}.`,
   );
   return {
-    uploadBaselineRss: baselineRss,
+    rejectedUploadBaselineRss,
+    rejectedUploadPeakRss,
+    rejectedUploadThresholdRss,
+    uploadBaselineRss,
     uploadPeakRss,
     uploadThresholdRss,
     downloadBaselineRss,
@@ -870,9 +937,10 @@ async function verifyAttachRuntimeOperation({ accessClient, provider, sdk }) {
     `Attach runtime invoke failed with status ${invoked.response?.status}.`,
   );
   assert(invoked.data?.ok === true, "Attach runtime invoke did not return success.");
+  const after = provider.checkRequests;
   assert(
-    provider.checkRequests === before + 1,
-    "Attach runtime invoke did not reach the provider once.",
+    after === before + 1,
+    `Attach runtime invoke reached the provider ${after - before} times; expected once.`,
   );
   assert(
     JSON.stringify(invoked.data).includes("runtime-smoke-provider"),

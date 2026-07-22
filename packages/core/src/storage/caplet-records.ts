@@ -10,6 +10,8 @@ import type { AssetObjectStore } from "./asset-store";
 import {
   bufferBundleFileSource,
   readVerifiedBundleFile,
+  readVerifiedBundleFileIntoBuffer,
+  writeVerifiedBundleFile,
   type ReopenableBundleFileSource,
 } from "./bundle-source";
 import { normalizeBundlePath, validateBundlePathSet } from "./bundle-path";
@@ -792,15 +794,10 @@ export class CapletRecordStore {
       );
     }
     const bundle = await this.resolveBundleSources(id, options.revisionKey);
-    const files: CapletBundleInputFile[] = [];
-    for (const source of bundle.sources) {
-      files.push({
-        path: source.path,
-        content: await readVerifiedBundleFile(source, { maxBytes: this.limits.maxFileBytes }),
-        executable: source.executable,
-      });
-    }
-    materializeCapletBundleFiles(files, destination, options);
+    await materializeCapletBundleSources(bundle.sources, destination, {
+      ...options,
+      maxFileBytes: this.limits.maxFileBytes,
+    });
   }
 
   private async appendOperatorActivity(
@@ -823,6 +820,10 @@ export class CapletRecordStore {
   ): Promise<PreparedBundle[]> {
     for (const input of inputs) requireOperator(input.operator);
     const validated = inputs.map((input) => validateBundleSources(input, this.limits));
+    const sqliteAssetWriter =
+      this.database.dialect === "sqlite" && !this.objectStore
+        ? createSqliteAssetBlobWriter(this.database.db, validated)
+        : undefined;
     const bundles: PreparedBundle[] = [];
     const pendingHashes: string[] = [];
     try {
@@ -832,7 +833,7 @@ export class CapletRecordStore {
           candidate,
           preparedHashes,
           async (source, now) => {
-            if (await this.prepareAssetSource(source, now)) {
+            if (await this.prepareAssetSource(source, now, sqliteAssetWriter)) {
               preparedHashes.push(source.sha256);
               pendingHashes.push(source.sha256);
             }
@@ -850,6 +851,7 @@ export class CapletRecordStore {
   private async prepareAssetSource(
     source: ReopenableBundleFileSource,
     createdAt: string,
+    sqliteAssetWriter: SqliteAssetBlobWriter | undefined,
   ): Promise<boolean> {
     const existing = await this.assetMetadata(source.sha256);
     if (existing) {
@@ -858,43 +860,47 @@ export class CapletRecordStore {
       return false;
     }
 
-    let payload: Buffer | null = null;
     let objectKey: string | null = null;
     try {
-      if (this.objectStore) {
-        objectKey = await this.objectStore.putVerifiedStream(
-          source.sha256,
-          source.size,
-          source.open(),
-        );
-      } else {
-        payload = await readVerifiedBundleFile(source, { maxBytes: this.limits.maxFileBytes });
-      }
-      const values = {
-        hash: source.sha256,
-        size: source.size,
-        payload,
-        objectKey,
-        verificationStatus: "verified" as const,
-        createdAt,
-      };
       let inserted: boolean;
-      if (this.database.dialect === "sqlite") {
-        inserted =
-          this.database.db
-            .insert(sqlite.capletAssetBlobs)
-            .values(values)
-            .onConflictDoNothing()
-            .run().changes === 1;
+      if (sqliteAssetWriter) {
+        inserted = await sqliteAssetWriter.insert(source, createdAt);
       } else {
-        inserted =
-          (
-            await this.database.db
-              .insert(postgres.capletAssetBlobs)
+        let payload: Buffer | null = null;
+        if (this.objectStore) {
+          objectKey = await this.objectStore.putVerifiedStream(
+            source.sha256,
+            source.size,
+            source.open(),
+          );
+        } else {
+          payload = await readVerifiedBundleFile(source, { maxBytes: this.limits.maxFileBytes });
+        }
+        const values = {
+          hash: source.sha256,
+          size: source.size,
+          payload,
+          objectKey,
+          verificationStatus: "verified" as const,
+          createdAt,
+        };
+        if (this.database.dialect === "sqlite") {
+          inserted =
+            this.database.db
+              .insert(sqlite.capletAssetBlobs)
               .values(values)
               .onConflictDoNothing()
-              .returning({ hash: postgres.capletAssetBlobs.hash })
-          ).length === 1;
+              .run().changes === 1;
+        } else {
+          inserted =
+            (
+              await this.database.db
+                .insert(postgres.capletAssetBlobs)
+                .values(values)
+                .onConflictDoNothing()
+                .returning({ hash: postgres.capletAssetBlobs.hash })
+            ).length === 1;
+        }
       }
       if (inserted) return true;
       if (objectKey && this.objectStore) {
@@ -1041,6 +1047,45 @@ export class CapletRecordStore {
   }
 }
 
+async function materializeCapletBundleSources(
+  sources: ReopenableBundleFileSource[],
+  destination: string,
+  options: { maxFileBytes: number; replace?: boolean | undefined },
+): Promise<void> {
+  if (existsSync(destination) && !options.replace) {
+    throw new CapletsError("REQUEST_INVALID", `Export destination ${destination} already exists.`);
+  }
+  const normalizedPaths = validateBundlePathSet(sources.map((source) => source.path));
+  if (!normalizedPaths.includes("CAPLET.md")) {
+    throw new CapletsError("REQUEST_INVALID", "Caplet bundle must contain CAPLET.md.");
+  }
+
+  const parent = dirname(destination);
+  const staging = join(parent, `.${basename(destination)}.tmp-${randomUUID()}`);
+  const backup = join(parent, `.${basename(destination)}.backup-${randomUUID()}`);
+  mkdirSync(parent, { recursive: true });
+  try {
+    mkdirSync(staging, { mode: 0o700 });
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index]!;
+      const path = join(staging, ...normalizedPaths[index]!.split("/"));
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      await writeVerifiedBundleFile(source, {
+        destination: path,
+        maxBytes: options.maxFileBytes,
+      });
+      if (source.executable) chmodSync(path, 0o700);
+    }
+    if (existsSync(destination)) renameSync(destination, backup);
+    renameSync(staging, destination);
+    rmSync(backup, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    if (!existsSync(destination) && existsSync(backup)) renameSync(backup, destination);
+    throw error;
+  }
+}
+
 export function materializeCapletBundleFiles(
   files: CapletBundleInputFile[],
   destination: string,
@@ -1095,6 +1140,46 @@ type ValidatedBundleSources = {
   document: ReopenableBundleFileSource;
   assets: ReopenableBundleFileSource[];
 };
+
+type SqliteAssetBlobWriter = {
+  insert(source: ReopenableBundleFileSource, createdAt: string): Promise<boolean>;
+};
+
+function createSqliteAssetBlobWriter(
+  database: SqliteHostDatabase,
+  bundles: ValidatedBundleSources[],
+): SqliteAssetBlobWriter {
+  type InsertStatement = {
+    run(hash: string, size: number, payload: Buffer, createdAt: string): { changes: number };
+  };
+  type Client = {
+    prepare(source: string): InsertStatement;
+  };
+
+  let maxAssetBytes = 0;
+  for (const bundle of bundles) {
+    for (const asset of bundle.assets) {
+      maxAssetBytes = Math.max(maxAssetBytes, asset.size);
+    }
+  }
+  const target = Buffer.allocUnsafe(maxAssetBytes);
+  const client = (database as SqliteHostDatabase & { $client: Client }).$client;
+  const insert = client.prepare(
+    "INSERT INTO caplet_asset_blobs " +
+      "(hash, size, payload, object_key, verification_status, created_at) " +
+      "VALUES (?, ?, ?, NULL, 'verified', ?) ON CONFLICT(hash) DO NOTHING",
+  );
+
+  return {
+    async insert(source, createdAt) {
+      const payload = await readVerifiedBundleFileIntoBuffer(source, {
+        maxBytes: target.byteLength,
+        target,
+      });
+      return insert.run(source.sha256, source.size, payload, createdAt).changes === 1;
+    },
+  };
+}
 
 type StoredAssetMetadata = {
   hash: string;

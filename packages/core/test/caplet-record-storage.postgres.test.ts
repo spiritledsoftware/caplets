@@ -68,6 +68,12 @@ mcpServer:
         bundle: [{ path: "run.sh", executable: true }],
       },
     });
+    const bundle = await storage.caplets.readBundle("postgres-record", {
+      operator: { clientId: "operator_read", role: "operator" },
+    });
+    expect(bundle.files.find((file) => file.path === "run.sh")?.content.toString("utf8")).toBe(
+      "#!/bin/sh\n",
+    );
   } finally {
     await storage.close();
   }
