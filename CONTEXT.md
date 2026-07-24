@@ -52,6 +52,18 @@ _Avoid_: All runtime files, shared cache
 A running server instance participating in one logical Caplets host. Host Nodes share Authoritative Host State but own their live Code Mode heap, bound workspace copy, and any node-local artifacts.
 _Avoid_: Independent host, tenant
 
+**Caplets Process**:
+A command-line or server process launched through the Caplets executable. Native agent integrations run inside their own extension hosts, and Caplets SDK consumers are outside this boundary.
+_Avoid_: Caplets runtime, all Caplets packages
+
+**Native Agent Integration**:
+A Caplets adapter loaded into a coding agent's extension host. Its runtime compatibility follows that host's supported environments rather than the Caplets Process contract.
+_Avoid_: Caplets subprocess, standalone Caplets runtime
+
+**Target Project Package Manager**:
+The package command selected for repository-specific actions authored into a Caplet. It is independent of the environment that runs the Caplets Process.
+_Avoid_: Caplets package manager, Caplets runtime
+
 **Caplets exposure projection**:
 A shared adapter-neutral runtime view of which local and remote Caplets are exposed as Code Mode handles, progressive tools, direct downstream operations, or direct MCP surfaces, including non-callable diagnostic breadcrumbs for hidden Caplets. MCP, native, and attach host adapters render it differently; they do not own exposure policy or execution behavior.
 _Avoid_: Tool registration list, exposure wrapper map, transport-specific surface
@@ -105,8 +117,8 @@ The canonical `/api/v2/admin/*` HTTP resource interface through which Operator b
 _Avoid_: Remote CLI RPC, dashboard backend, mixed-auth endpoint, dashboard Admin alias
 
 **Caplets SDK**:
-The typed client Module for the canonical public Caplets HTTP API and the versioned Attach Project Binding WebSocket session protocol. It excludes MCP and dashboard-private authentication ceremonies.
-_Avoid_: Admin client, core client, dashboard session client
+The typed, web-platform client Module for the canonical public Caplets HTTP API and the versioned Attach Project Binding WebSocket session protocol. Platform-specific host capabilities are separate exports; MCP and dashboard-private authentication ceremonies are excluded.
+_Avoid_: Node-only client, Admin client, core client, dashboard session client
 
 **Operator Activity Log**:
 A host-owned record of sensitive Operator Client actions performed through the dashboard or operator admin surfaces.

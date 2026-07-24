@@ -8,7 +8,41 @@ import {
   createTelemetryDispatcher,
   readTelemetryDeliveryHealth,
   resolveTelemetryState,
+  runtimeDescriptor,
 } from "../src/telemetry";
+
+const sentrySdkMocks = vi.hoisted(() => ({
+  bunClient: vi.fn(),
+  captureEvent: vi.fn(),
+  flush: vi.fn(),
+  nodeClient: vi.fn(),
+}));
+
+vi.mock("@sentry/bun", () => ({
+  BunClient: class {
+    constructor(options: unknown) {
+      sentrySdkMocks.bunClient(options);
+    }
+
+    captureEvent = sentrySdkMocks.captureEvent;
+    flush = sentrySdkMocks.flush;
+  },
+  defaultStackParser: vi.fn(),
+  makeFetchTransport: vi.fn(),
+}));
+
+vi.mock("@sentry/node", () => ({
+  NodeClient: class {
+    constructor(options: unknown) {
+      sentrySdkMocks.nodeClient(options);
+    }
+
+    captureEvent = sentrySdkMocks.captureEvent;
+    flush = sentrySdkMocks.flush;
+  },
+  defaultStackParser: vi.fn(),
+  makeNodeTransport: vi.fn(),
+}));
 
 const roots: string[] = [];
 
@@ -20,6 +54,7 @@ function tempRoot(): string {
 
 describe("telemetry providers", () => {
   afterEach(() => {
+    vi.clearAllMocks();
     for (const root of roots.splice(0)) {
       rmSync(root, { recursive: true, force: true });
     }
@@ -106,6 +141,44 @@ describe("telemetry providers", () => {
         execution_context: "ci",
       },
     });
+  });
+
+  it("constructs the runtime-native default Sentry client", async () => {
+    const stateDir = tempRoot();
+    const dispatcher = createTelemetryDispatcher({
+      posthogToken: "",
+      sentryDsn: "https://public@sentry.example/1",
+    });
+    const state = resolveTelemetryState({
+      stateDir,
+      env: { CI: "true" },
+      surface: "cli",
+      visibility: "hidden",
+    });
+
+    await dispatcher.capture(
+      state,
+      buildReliabilityTelemetryEvent({
+        name: "caplets_reliability_error",
+        properties: {
+          package: "@caplets/core",
+          surface: "cli",
+          command_family: "serve",
+          runtime_mode: "local",
+          error_code: "CONFIG_INVALID",
+          diagnostic_category: "config",
+        },
+        error: new Error("invalid config"),
+      }),
+    );
+
+    const selected =
+      runtimeDescriptor().name === "bun" ? sentrySdkMocks.bunClient : sentrySdkMocks.nodeClient;
+    const unselected =
+      runtimeDescriptor().name === "bun" ? sentrySdkMocks.nodeClient : sentrySdkMocks.bunClient;
+    expect(selected).toHaveBeenCalledOnce();
+    expect(unselected).not.toHaveBeenCalled();
+    expect(sentrySdkMocks.captureEvent).toHaveBeenCalledOnce();
   });
 
   it("captures Sentry reliability events with categorical tags and fingerprint", async () => {

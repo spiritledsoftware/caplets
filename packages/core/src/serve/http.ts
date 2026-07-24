@@ -4,13 +4,19 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import {
   serve,
-  upgradeWebSocket,
+  upgradeWebSocket as upgradeNodeWebSocket,
   type Http2Bindings,
   type HttpBindings,
-  type ServerType,
   type WebSocketServerLike,
 } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
+import {
+  createWSMessageEvent,
+  defineWebSocketHelper,
+  WSContext,
+  type UpgradeWebSocket,
+  type WSEvents,
+} from "hono/ws";
 import { logger } from "hono/logger";
 import { WebSocketServer } from "ws";
 import { defaultCapletsLockfilePath, resolveCapletsRoot, vaultStoreForAuthDir } from "../config";
@@ -104,6 +110,116 @@ import { CapletsMcpSession } from "./session";
 import { readLimitedJsonObject } from "./request-body";
 
 type RemoteCredentialStore = RemoteServerCredentialStore | RemoteSecurityStore;
+type HttpServer = {
+  close(callback: (error?: Error) => void): void;
+  closeAllConnections?(): void;
+};
+type BunRuntimeServer = {
+  stop(closeActiveConnections?: boolean): Promise<void>;
+};
+
+type BunServeOptions = {
+  fetch: CapletsHttpApp["fetch"];
+  hostname: string;
+  port: number;
+  websocket: BunWebSocketHandler;
+};
+
+type BunRuntime = {
+  serve(options: BunServeOptions): BunRuntimeServer;
+};
+type BunWebSocketData = {
+  events: WSEvents;
+  protocol: string;
+  url: URL;
+};
+
+type BunServerWebSocket = {
+  close(code?: number, reason?: string): void;
+  data: BunWebSocketData;
+  readyState: 0 | 1 | 2 | 3;
+  send(data: string | ArrayBuffer | Uint8Array, compress?: boolean): void;
+};
+
+type BunWebSocketHandler = {
+  close(socket: BunServerWebSocket, code?: number, reason?: string): void;
+  message(
+    socket: BunServerWebSocket,
+    message: string | { buffer: ArrayBufferLike; byteLength: number; byteOffset: number },
+  ): void;
+  open(socket: BunServerWebSocket): void;
+};
+
+type BunWebSocketUpgradeServer = {
+  upgrade(request: Request, options: { data: BunWebSocketData }): boolean;
+};
+
+const upgradeBunWebSocket = defineWebSocketHelper((context, events) => {
+  const server = bunWebSocketUpgradeServer(context.env);
+  if (!server) throw new Error("Bun WebSocket upgrade API is unavailable.");
+  const upgraded = server.upgrade(context.req.raw, {
+    data: {
+      events,
+      protocol: context.req.header("sec-websocket-protocol")?.split(",")[0]?.trim() ?? "",
+      url: new URL(context.req.url),
+    },
+  });
+  return upgraded ? new Response(null) : undefined;
+});
+
+const bunWebSocket: BunWebSocketHandler = {
+  open(socket) {
+    socket.data.events.onOpen?.(new Event("open"), bunWebSocketContext(socket));
+  },
+  close(socket, code, reason) {
+    socket.data.events.onClose?.(
+      new CloseEvent("close", {
+        ...(code === undefined ? {} : { code }),
+        ...(reason === undefined ? {} : { reason }),
+      }),
+      bunWebSocketContext(socket),
+    );
+  },
+  message(socket, message) {
+    socket.data.events.onMessage?.(
+      createWSMessageEvent(
+        typeof message === "string"
+          ? message
+          : message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength),
+      ),
+      bunWebSocketContext(socket),
+    );
+  },
+};
+function bunWebSocketUpgradeServer(env: unknown): BunWebSocketUpgradeServer | undefined {
+  let candidate = env;
+  if (candidate !== null && typeof candidate === "object" && "server" in candidate) {
+    candidate = Reflect.get(candidate, "server");
+  }
+  if (
+    candidate === null ||
+    typeof candidate !== "object" ||
+    typeof Reflect.get(candidate, "upgrade") !== "function"
+  ) {
+    return undefined;
+  }
+  return candidate as BunWebSocketUpgradeServer;
+}
+
+function bunWebSocketContext(socket: BunServerWebSocket): WSContext<BunServerWebSocket> {
+  return new WSContext({
+    close: (code, reason) => socket.close(code, reason),
+    protocol: socket.data.protocol,
+    raw: socket,
+    readyState: socket.readyState,
+    send: (source, options) => socket.send(source, options.compress),
+    url: socket.data.url,
+  });
+}
+
+const upgradeProjectBindingWebSocket = (
+  process.versions.bun ? upgradeBunWebSocket : upgradeNodeWebSocket
+) as UpgradeWebSocket;
 
 type HttpServeIo = {
   writeErr?: (value: string) => void;
@@ -1119,7 +1235,10 @@ export function createHttpServeApp(
           404,
         );
       }
-      return existing.transport.handleRequest(c);
+      const response = await existing.transport.handleRequest(c);
+      return process.versions.bun && c.req.method === "GET"
+        ? prependEventStreamPreamble(response)
+        : response;
     }
 
     if (c.req.method !== "POST") {
@@ -1427,7 +1546,7 @@ export function createHttpServeApp(
       if (!validation.ok) return validation.response;
       return next();
     },
-    upgradeWebSocket((c) => {
+    upgradeProjectBindingWebSocket((c) => {
       const validation = projectBindingSocketRecordForRequest(c);
       let socketAttached = false;
       return {
@@ -2805,22 +2924,14 @@ export async function serveHttp(
   });
   const origin = `http://${formatHost(options.host)}:${options.port}`;
   const baseUrl = origin;
-  const server = serve(
-    {
-      fetch: createNodeServerFetch(app),
-      hostname: options.host,
-      port: options.port,
-      websocket: { server: createProjectBindingWebSocketServer() },
-    },
-    () => {
-      writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
-      writeErr(`MCP endpoint: ${origin}${CURRENT_HOST_NAMESPACES.mcp}\n`);
-      writeErr(`Attach manifest: ${origin}${currentHostV1Path("attachManifest")}\n`);
-      writeErr(`Admin endpoint: ${origin}${CURRENT_HOST_PATHS.admin}\n`);
-      writeErr(`Health check: ${origin}${CURRENT_HOST_PATHS.health}\n`);
-      writeErr(`Auth: ${authDescription(options)}\n`);
-    },
-  );
+  const server = startHttpRuntimeServer(options, app, () => {
+    writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
+    writeErr(`MCP endpoint: ${origin}${CURRENT_HOST_NAMESPACES.mcp}\n`);
+    writeErr(`Attach manifest: ${origin}${currentHostV1Path("attachManifest")}\n`);
+    writeErr(`Admin endpoint: ${origin}${CURRENT_HOST_PATHS.admin}\n`);
+    writeErr(`Health check: ${origin}${CURRENT_HOST_PATHS.health}\n`);
+    writeErr(`Auth: ${authDescription(options)}\n`);
+  });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
@@ -2853,21 +2964,13 @@ export async function serveHttpWithSessionFactory(
   });
   const origin = `http://${formatHost(options.host)}:${options.port}`;
   const baseUrl = origin;
-  const server = serve(
-    {
-      fetch: createNodeServerFetch(app),
-      hostname: options.host,
-      port: options.port,
-      websocket: { server: createProjectBindingWebSocketServer() },
-    },
-    () => {
-      writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
-      writeErr(`MCP endpoint: ${origin}${CURRENT_HOST_NAMESPACES.mcp}\n`);
-      writeErr(`Admin endpoint: ${origin}${CURRENT_HOST_PATHS.admin}\n`);
-      writeErr(`Health check: ${origin}${CURRENT_HOST_PATHS.health}\n`);
-      writeErr(`Auth: ${authDescription(options)}\n`);
-    },
-  );
+  const server = startHttpRuntimeServer(options, app, () => {
+    writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
+    writeErr(`MCP endpoint: ${origin}${CURRENT_HOST_NAMESPACES.mcp}\n`);
+    writeErr(`Admin endpoint: ${origin}${CURRENT_HOST_PATHS.admin}\n`);
+    writeErr(`Health check: ${origin}${CURRENT_HOST_PATHS.health}\n`);
+    writeErr(`Auth: ${authDescription(options)}\n`);
+  });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
@@ -2879,6 +2982,125 @@ export function sanitizeRemoteEngineOptions(
     ...engineOptions,
     exposeLocalArtifactPaths: false,
     vaultRecoveryTarget: "remote" as const,
+  };
+}
+
+function prependEventStreamPreamble(response: Response | undefined): Response | undefined {
+  const body = response?.body;
+  if (!body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+    return response;
+  }
+  const reader = body.getReader();
+  let preamblePending = true;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (preamblePending) {
+        preamblePending = false;
+        controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+        return;
+      }
+      const chunk = await reader.read();
+      if (chunk.done) {
+        controller.close();
+      } else {
+        controller.enqueue(chunk.value);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(stream, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function startHttpRuntimeServer(
+  options: HttpServeOptions,
+  app: CapletsHttpApp,
+  onListen: () => void,
+): HttpServer {
+  if (process.versions.bun) {
+    const server = resolveBunRuntime().serve({
+      fetch: app.fetch,
+      hostname: options.host,
+      port: options.port,
+      websocket: bunWebSocket,
+    });
+    onListen();
+    return bunHttpServer(server);
+  }
+  return serve(
+    {
+      fetch: createNodeServerFetch(app),
+      hostname: options.host,
+      port: options.port,
+      websocket: { server: createProjectBindingWebSocketServer() },
+    },
+    onListen,
+  );
+}
+
+function bunHttpServer(server: BunRuntimeServer): HttpServer {
+  let callback: ((error?: Error) => void) | undefined;
+  let stopped = false;
+  const finish = (error?: unknown) => {
+    if (stopped) return;
+    stopped = true;
+    if (error === undefined) {
+      callback?.();
+    } else {
+      callback?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+  const stop = (closeActiveConnections: boolean) => {
+    if (stopped) return;
+    void server.stop(closeActiveConnections).then(
+      () => finish(),
+      (error: unknown) => finish(error),
+    );
+  };
+  return {
+    close(onStopped) {
+      callback = onStopped;
+      stop(false);
+    },
+    // Escalate the pending graceful stop only after application sessions have closed.
+    closeAllConnections() {
+      stop(true);
+    },
+  };
+}
+
+function resolveBunRuntime(): BunRuntime {
+  const runtime: unknown = Reflect.get(globalThis, "Bun");
+  if (runtime === null || typeof runtime !== "object") {
+    throw new Error("Bun runtime API is unavailable.");
+  }
+  const serve: unknown = Reflect.get(runtime, "serve");
+  if (typeof serve !== "function") {
+    throw new Error("Bun serve API is unavailable.");
+  }
+  return {
+    serve(options) {
+      const server: unknown = Reflect.apply(serve, runtime, [options]);
+      if (server === null || typeof server !== "object") {
+        throw new Error("Bun serve API returned an invalid server.");
+      }
+      const stop: unknown = Reflect.get(server, "stop");
+      if (typeof stop !== "function") {
+        throw new Error("Bun server stop API is unavailable.");
+      }
+      return {
+        stop(closeActiveConnections) {
+          return Promise.resolve()
+            .then(() => Reflect.apply(stop, server, [closeActiveConnections]))
+            .then(() => undefined);
+        },
+      };
+    },
   };
 }
 
@@ -3164,7 +3386,7 @@ function checkedActiveRequestGraceMs(value: number): number {
 }
 
 export async function shutdownHttpServer(
-  server: ServerType,
+  server: HttpServer,
   app: CapletsHttpApp,
   engine: CapletsEngine,
   options: CloseCapletsSessionsOptions = {},
@@ -3182,7 +3404,7 @@ export async function shutdownHttpServer(
 }
 
 function installHttpSignalHandlers(
-  server: ServerType,
+  server: HttpServer,
   app: CapletsHttpApp,
   engine: CapletsEngine,
   writeErr: (value: string) => void,
@@ -3208,9 +3430,8 @@ function installHttpSignalHandlers(
   );
 }
 
-function closeAllServerConnections(server: ServerType): void {
-  const closeAllConnections = (server as { closeAllConnections?: () => void }).closeAllConnections;
-  closeAllConnections?.call(server);
+function closeAllServerConnections(server: HttpServer): void {
+  server.closeAllConnections?.();
 }
 
 function formatHost(host: string): string {

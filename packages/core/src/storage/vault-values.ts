@@ -213,7 +213,7 @@ export class VaultValueStore implements VaultValueRepository {
     });
     if (this.database.dialect === "sqlite") {
       return this.database.db.transaction(
-        (transaction) => setPreparedVaultValueSqlite(transaction, prepared),
+        async (transaction) => await setPreparedVaultValueSqlite(transaction, prepared),
         { behavior: "immediate" },
       );
     }
@@ -226,7 +226,7 @@ export class VaultValueStore implements VaultValueRepository {
     const normalizedKey = validateVaultKeyName(key);
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.vaultValues)
             .where(eq(sqlite.vaultValues.vaultKey, normalizedKey))
@@ -250,7 +250,7 @@ export class VaultValueStore implements VaultValueRepository {
     if (after !== undefined) validateVaultKeyName(after);
     const rows =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.vaultValues)
             .where(
@@ -290,7 +290,10 @@ export class VaultValueStore implements VaultValueRepository {
 
   async countValues(): Promise<number> {
     if (this.database.dialect === "sqlite") {
-      return this.database.db.select({ value: count() }).from(sqlite.vaultValues).get()?.value ?? 0;
+      return (
+        (await this.database.db.select({ value: count() }).from(sqlite.vaultValues).get())?.value ??
+        0
+      );
     }
     const [row] = await this.database.db.select({ value: count() }).from(postgres.vaultValues);
     return row?.value ?? 0;
@@ -311,7 +314,7 @@ export class VaultValueStore implements VaultValueRepository {
     const normalizedKey = validateVaultKeyName(key);
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.vaultValues)
             .where(eq(sqlite.vaultValues.vaultKey, normalizedKey))
@@ -335,7 +338,7 @@ export class VaultValueStore implements VaultValueRepository {
   async assertLegacyValuesImportable(values: LegacyVaultValueMigrationRecord[]): Promise<void> {
     const validated = validateLegacyValueImports(values);
     if (this.database.dialect === "sqlite") {
-      assertLegacyValuesMatchSqlite(this.database.db, validated, () =>
+      await assertLegacyValuesMatchSqlite(this.database.db, validated, () =>
         loadVaultKey({ keyFile: this.keyFile, env: this.env }),
       );
     } else {
@@ -349,8 +352,9 @@ export class VaultValueStore implements VaultValueRepository {
     const validated = validateLegacyValueImports(values);
     if (validated.length === 0) return;
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) =>
-        importLegacyValuesSqlite(transaction, validated, this.keyFile, this.env),
+      await this.database.db.transaction(
+        async (transaction) =>
+          await importLegacyValuesSqlite(transaction, validated, this.keyFile, this.env),
       );
       return;
     }
@@ -360,14 +364,14 @@ export class VaultValueStore implements VaultValueRepository {
     );
   }
 
-  importLegacyValuesInTransaction(
+  async importLegacyValuesInTransaction(
     values: LegacyVaultValueMigrationRecord[],
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void | Promise<void>> {
     const validated = validateLegacyValueImports(values);
     if (validated.length === 0) return;
     return transaction.dialect === "sqlite"
-      ? importLegacyValuesSqlite(transaction.db, validated, this.keyFile, this.env)
+      ? await importLegacyValuesSqlite(transaction.db, validated, this.keyFile, this.env)
       : importLegacyValuesPostgres(transaction.db, validated, this.keyFile, this.env);
   }
 
@@ -391,14 +395,14 @@ export class VaultValueStore implements VaultValueRepository {
       }
     }
   }
-  verifyLegacyValuesInTransaction(
+  async verifyLegacyValuesInTransaction(
     values: LegacyVaultValueMigrationRecord[],
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void | Promise<void>> {
     const validated = validateLegacyValueImports(values);
     const encryptionKey = () => loadVaultKey({ keyFile: this.keyFile, env: this.env });
     return transaction.dialect === "sqlite"
-      ? verifyLegacyValuesSqlite(transaction.db, validated, encryptionKey)
+      ? await verifyLegacyValuesSqlite(transaction.db, validated, encryptionKey)
       : verifyLegacyValuesPostgres(transaction.db, validated, encryptionKey);
   }
 
@@ -409,7 +413,7 @@ export class VaultValueStore implements VaultValueRepository {
     const normalizedKey = validateVaultKeyName(key);
     validateDeleteOptions(options);
     return this.database.dialect === "sqlite"
-      ? deleteSqlite(this.database.db, normalizedKey, options)
+      ? await deleteSqlite(this.database.db, normalizedKey, options)
       : await deletePostgres(this.database.db, normalizedKey, options);
   }
 
@@ -424,24 +428,25 @@ type PostgresVaultValueTransaction = Parameters<
   Parameters<PostgresHostDatabase["transaction"]>[0]
 >[0];
 type PostgresVaultValueDatabase = PostgresHostDatabase | PostgresVaultValueTransaction;
-function importLegacyValuesSqlite(
+async function importLegacyValuesSqlite(
   database: SqliteVaultValueDatabase,
   values: LegacyVaultValueMigrationRecord[],
   keyFile: string,
   env: Record<string, string | undefined>,
-): void {
-  assertLegacyValuesMatchSqlite(database, values, () => loadVaultKey({ keyFile, env }));
-  const pending = values.filter(
-    (value) =>
-      !database
-        .select({ key: sqlite.vaultValues.vaultKey })
-        .from(sqlite.vaultValues)
-        .where(eq(sqlite.vaultValues.vaultKey, value.key))
-        .get(),
-  );
+): Promise<void> {
+  await assertLegacyValuesMatchSqlite(database, values, () => loadVaultKey({ keyFile, env }));
+  const pending: LegacyVaultValueMigrationRecord[] = [];
+  for (const value of values) {
+    const existing = await database
+      .select({ key: sqlite.vaultValues.vaultKey })
+      .from(sqlite.vaultValues)
+      .where(eq(sqlite.vaultValues.vaultKey, value.key))
+      .get();
+    if (!existing) pending.push(value);
+  }
   if (pending.length === 0) return;
   const key = ensureVaultKey({ keyFile, env });
-  database
+  await database
     .insert(sqlite.vaultValues)
     .values(pending.map((value) => legacyValueRow(value, key)))
     .run();
@@ -474,13 +479,13 @@ async function importLegacyValuesPostgres(
     .values(pending.map((value) => legacyValueRow(value, key)));
 }
 
-function verifyLegacyValuesSqlite(
+async function verifyLegacyValuesSqlite(
   database: SqliteVaultValueDatabase,
   values: LegacyVaultValueMigrationRecord[],
   encryptionKey: () => Buffer,
-): void {
+): Promise<void> {
   for (const value of values) {
-    const row = database
+    const row = await database
       .select()
       .from(sqlite.vaultValues)
       .where(eq(sqlite.vaultValues.vaultKey, value.key))
@@ -535,13 +540,13 @@ function validateLegacyValueImports(
   return validated.sort((left, right) => left.key.localeCompare(right.key));
 }
 
-function assertLegacyValuesMatchSqlite(
+async function assertLegacyValuesMatchSqlite(
   database: SqliteVaultValueDatabase,
   values: LegacyVaultValueMigrationRecord[],
   encryptionKey: () => Buffer,
-): void {
+): Promise<void> {
   for (const value of values) {
-    const row = database
+    const row = await database
       .select()
       .from(sqlite.vaultValues)
       .where(eq(sqlite.vaultValues.vaultKey, value.key))
@@ -601,11 +606,11 @@ function legacyValueRow(value: LegacyVaultValueMigrationRecord, key: Buffer) {
   return rowValues(value.key, 1, encrypted);
 }
 
-export function setPreparedVaultValueSqlite(
+export async function setPreparedVaultValueSqlite(
   db: SqliteVaultValueTransaction,
   prepared: PreparedVaultValueSet,
   recordActivity = true,
-): PresentVaultValueStatus {
+): Promise<PresentVaultValueStatus> {
   let generation: number;
   let mutationCreatedAt: string;
   let encrypted: VaultEncryptedRecord;
@@ -613,14 +618,14 @@ export function setPreparedVaultValueSqlite(
     generation = 1;
     mutationCreatedAt = new Date().toISOString();
     encrypted = encryptPreparedVaultValue(prepared, mutationCreatedAt, undefined);
-    const inserted = db
+    const inserted = await db
       .insert(sqlite.vaultValues)
       .values(rowValues(prepared.key, generation, encrypted))
       .onConflictDoNothing()
       .run();
-    if (inserted.changes !== 1) throw vaultValueExists(prepared.key);
+    if (inserted.rowsAffected !== 1) throw vaultValueExists(prepared.key);
   } else {
-    const current = db
+    const current = await db
       .select()
       .from(sqlite.vaultValues)
       .where(eq(sqlite.vaultValues.vaultKey, prepared.key))
@@ -631,7 +636,7 @@ export function setPreparedVaultValueSqlite(
     encrypted = encryptPreparedVaultValue(prepared, mutationCreatedAt, existing);
     generation = (current?.generation ?? 0) + 1;
     if (prepared.expectedGeneration !== undefined) {
-      const updated = db
+      const updated = await db
         .update(sqlite.vaultValues)
         .set(rowValues(prepared.key, generation, encrypted))
         .where(
@@ -641,11 +646,12 @@ export function setPreparedVaultValueSqlite(
           ),
         )
         .run();
-      if (updated.changes !== 1) {
+      if (updated.rowsAffected !== 1) {
         throw staleVaultValue(prepared.expectedGeneration, current?.generation);
       }
     } else {
-      db.insert(sqlite.vaultValues)
+      await db
+        .insert(sqlite.vaultValues)
         .values(rowValues(prepared.key, generation, encrypted))
         .onConflictDoUpdate({
           target: sqlite.vaultValues.vaultKey,
@@ -655,7 +661,8 @@ export function setPreparedVaultValueSqlite(
     }
   }
   if (recordActivity && prepared.operatorClientId) {
-    db.insert(sqlite.operatorActivity)
+    await db
+      .insert(sqlite.operatorActivity)
       .values(
         activity(
           prepared.operatorClientId,
@@ -743,13 +750,13 @@ export async function setPreparedVaultValuePostgres(
   return statusForEncryptedRecord(prepared.key, generation, encrypted);
 }
 
-function deleteSqlite(
+async function deleteSqlite(
   db: SqliteHostDatabase,
   key: string,
   options: VaultValueDeleteOptions,
-): VaultValueDeleteResult {
-  return db.transaction((transaction) => {
-    const current = transaction
+): Promise<VaultValueDeleteResult> {
+  return await db.transaction(async (transaction) => {
+    const current = await transaction
       .select()
       .from(sqlite.vaultValues)
       .where(eq(sqlite.vaultValues.vaultKey, key))
@@ -760,9 +767,9 @@ function deleteSqlite(
     }
     encryptedRecordForRow(current, key);
     assertExpectedGeneration(current.generation, options.expectedGeneration);
-    transaction.delete(sqlite.vaultValues).where(eq(sqlite.vaultValues.vaultKey, key)).run();
+    await transaction.delete(sqlite.vaultValues).where(eq(sqlite.vaultValues.vaultKey, key)).run();
     if (options.operatorClientId) {
-      transaction
+      await transaction
         .insert(sqlite.operatorActivity)
         .values(activity(options.operatorClientId, "vault_value_deleted", key, current.generation))
         .run();

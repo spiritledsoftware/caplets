@@ -177,7 +177,9 @@ describe("SQL Project Binding metadata", () => {
       if (firstStorage.database.dialect !== "sqlite") {
         throw new Error("Expected SQLite storage.");
       }
-      expect(firstStorage.database.db.select().from(sqlite.projectBindings).all()).toHaveLength(2);
+      expect(
+        await firstStorage.database.db.select().from(sqlite.projectBindings).all(),
+      ).toHaveLength(2);
     } finally {
       await firstStorage.close();
     }

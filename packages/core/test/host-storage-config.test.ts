@@ -304,7 +304,7 @@ describe("stored Caplet source", () => {
     try {
       const first = await CapletsEngine.create(firstNode);
       engines.push(first);
-      const [firstPersisted] = persistedNodes();
+      const [firstPersisted] = await persistedNodes();
       expect(firstPersisted?.runtimeFingerprint).toMatch(/^hmac-sha256:[a-f0-9]{64}$/u);
       expect(firstPersisted?.runtimeFingerprint).not.toBe(
         loadConfigWithSources(firstNode.configPath, firstNode.projectConfigPath).runtimeFingerprint
@@ -313,9 +313,9 @@ describe("stored Caplet source", () => {
 
       const sameKeyAndConfig = await CapletsEngine.create(firstNode);
       engines.push(sameKeyAndConfig);
-      expect(persistedNodes()).toHaveLength(2);
+      expect(await persistedNodes()).toHaveLength(2);
       expect(
-        persistedNodes().every(
+        (await persistedNodes()).every(
           (node) =>
             node.globalFileManifest === firstPersisted?.globalFileManifest &&
             node.runtimeFingerprint === firstPersisted?.runtimeFingerprint,
@@ -324,7 +324,7 @@ describe("stored Caplet source", () => {
 
       const nodeWithLocalConfigChange = await CapletsEngine.create(localConfigChanged);
       engines.push(nodeWithLocalConfigChange);
-      const afterLocalConfigChange = persistedNodes();
+      const afterLocalConfigChange = await persistedNodes();
       expect(afterLocalConfigChange).toHaveLength(3);
       expect(
         afterLocalConfigChange.every(
@@ -337,13 +337,15 @@ describe("stored Caplet source", () => {
       await expect(CapletsEngine.create(runtimeConfigChanged)).rejects.toMatchObject({
         details: { conflict: "runtime_fingerprint" },
       });
-      expect(new Set(persistedNodes().map((node) => node.runtimeFingerprint))).toHaveLength(2);
+      expect(new Set((await persistedNodes()).map((node) => node.runtimeFingerprint))).toHaveLength(
+        2,
+      );
 
       process.env.CAPLETS_ENCRYPTION_KEY = Buffer.alloc(32, 2).toString("base64url");
       await expect(CapletsEngine.create(firstNode)).rejects.toMatchObject({
         details: { conflict: "runtime_fingerprint" },
       });
-      const sameManifest = persistedNodes().filter(
+      const sameManifest = (await persistedNodes()).filter(
         (node) => node.globalFileManifest === firstPersisted?.globalFileManifest,
       );
       expect(sameManifest).toHaveLength(5);
@@ -353,7 +355,9 @@ describe("stored Caplet source", () => {
       await expect(CapletsEngine.create(capletFileChanged)).rejects.toMatchObject({
         details: { conflict: "global_file_manifest" },
       });
-      expect(new Set(persistedNodes().map((node) => node.globalFileManifest))).toHaveLength(2);
+      expect(new Set((await persistedNodes()).map((node) => node.globalFileManifest))).toHaveLength(
+        2,
+      );
     } finally {
       await inspector.close();
       await Promise.all(engines.map(async (engine) => await engine.close()));
@@ -386,22 +390,22 @@ describe("stored Caplet source", () => {
     const sqliteDatabase = inspector.database;
 
     try {
-      const initial = sqliteDatabase.db.select().from(hostNodes).get();
+      const initial = await sqliteDatabase.db.select().from(hostNodes).get();
       expect(initial?.runtimeFingerprint).toMatch(/^hmac-sha256:[a-f0-9]{64}$/u);
       await expect
-        .poll(() => sqliteDatabase.db.select().from(hostNodes).get()?.heartbeatAt, {
+        .poll(async () => (await sqliteDatabase.db.select().from(hostNodes).get())?.heartbeatAt, {
           timeout: 2_500,
           interval: 50,
         })
         .not.toBe(initial?.heartbeatAt);
-      expect(sqliteDatabase.db.select().from(hostNodes).get()?.runtimeFingerprint).toBe(
+      expect((await sqliteDatabase.db.select().from(hostNodes).get())?.runtimeFingerprint).toBe(
         initial?.runtimeFingerprint,
       );
 
       writeFileSync(projectFilePath, caplet("project-v2"));
       await expect(engine.reload()).resolves.toBe(true);
       expect(engine.currentConfig().mcpServers.github?.command).toBe("project-v2");
-      expect(sqliteDatabase.db.select().from(hostNodes).get()).toMatchObject({
+      expect(await sqliteDatabase.db.select().from(hostNodes).get()).toMatchObject({
         globalFileManifest: initial?.globalFileManifest,
         runtimeFingerprint: initial?.runtimeFingerprint,
       });
@@ -415,7 +419,7 @@ describe("stored Caplet source", () => {
       );
       await expect(engine.reload()).resolves.toBe(true);
       expect(engine.currentConfig().mcpServers.github?.command).toBe("project-v2");
-      const afterGlobalReload = sqliteDatabase.db.select().from(hostNodes).get();
+      const afterGlobalReload = await sqliteDatabase.db.select().from(hostNodes).get();
       expect(afterGlobalReload?.globalFileManifest).toBe(initial?.globalFileManifest);
       expect(afterGlobalReload?.runtimeFingerprint).not.toBe(initial?.runtimeFingerprint);
     } finally {

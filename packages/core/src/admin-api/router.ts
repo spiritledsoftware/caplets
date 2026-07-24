@@ -654,7 +654,7 @@ async function validateBundleUploadRequest(
     throw new CapletsError("REQUEST_INVALID", "The Caplet Bundle upload body is required.");
   }
   const parsed = await parseAdminBundleUpload({
-    input: Readable.fromWeb(context.req.raw.body as never),
+    input: requestBodyReadable(context.req.raw.body),
     contentType: context.req.header("Content-Type"),
     contentLength: context.req.header("Content-Length"),
     admission: options.bundleUploadAdmission,
@@ -667,6 +667,38 @@ async function validateBundleUploadRequest(
     bundleUpload: parsed,
     creating: context.req.header("If-None-Match") === "*",
   };
+}
+
+function requestBodyReadable(body: ReadableStream<Uint8Array>): Readable {
+  const reader = body.getReader();
+  const input = Readable.from(requestBodyChunks(reader), {
+    highWaterMark: 64 * 1024,
+    objectMode: false,
+  });
+  const destroy = input.destroy.bind(input);
+  let cancelStarted = false;
+  input.destroy = (error?: Error) => {
+    if (!input.destroyed && !input.readableEnded && !cancelStarted) {
+      cancelStarted = true;
+      void reader.cancel(error).catch(() => undefined);
+    }
+    return destroy(error);
+  };
+  return input;
+}
+
+async function* requestBodyChunks(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncGenerator<Buffer> {
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) return;
+      yield Buffer.from(chunk.value.buffer, chunk.value.byteOffset, chunk.value.byteLength);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function validateRouteHeaders(context: Context, definition: AdminV2RouteDefinition): void {

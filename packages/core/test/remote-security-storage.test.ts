@@ -48,7 +48,7 @@ describe("RemoteSecurityStore", () => {
     if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite test storage.");
     const createdAt = "2026-07-20T00:00:00.000Z";
     const clientIds = ["rcli_Z", "rcli_a", "rcli_zz"];
-    storage.database.db
+    await storage.database.db
       .insert(sqlite.remoteClients)
       .values(
         clientIds.map((clientId, index) => ({
@@ -64,7 +64,7 @@ describe("RemoteSecurityStore", () => {
       )
       .run();
     const flowIds = ["rlogin_Z", "rlogin_a", "rlogin_zz"];
-    storage.database.db
+    await storage.database.db
       .insert(sqlite.remotePendingLogins)
       .values(
         flowIds.map((flowId, index) => ({
@@ -335,10 +335,10 @@ describe("RemoteSecurityStore", () => {
     expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(1);
     expect(await security.listClients()).toHaveLength(1);
     if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite test storage.");
-    expect(storage.database.db.select().from(sqlite.remoteClients).all()).toHaveLength(1);
-    expect(storage.database.db.select().from(sqlite.remotePairingCodes).all()[0]?.usedAt).toEqual(
-      expect.any(String),
-    );
+    expect(await storage.database.db.select().from(sqlite.remoteClients).all()).toHaveLength(1);
+    expect(
+      (await storage.database.db.select().from(sqlite.remotePairingCodes).all())[0]?.usedAt,
+    ).toEqual(expect.any(String));
   });
 
   it("rotates refresh material and revokes the family after replay outside the grace window", async () => {
@@ -598,7 +598,7 @@ describe("RemoteSecurityStore", () => {
     });
 
     if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite test storage.");
-    const activities = storage.database.db
+    const activities = await storage.database.db
       .select()
       .from(sqlite.operatorActivity)
       .where(eq(sqlite.operatorActivity.operatorClientId, "rcli_admin"))

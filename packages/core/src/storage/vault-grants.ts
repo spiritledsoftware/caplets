@@ -149,8 +149,9 @@ export class VaultGrantStore {
     const prepared = prepareVaultGrant(input);
     const createdAt = new Date().toISOString();
     if (this.database.dialect === "sqlite") {
-      return this.database.db.transaction((transaction) =>
-        grantPreparedVaultSqlite(transaction, prepared, createdAt),
+      return await this.database.db.transaction(
+        async (transaction) => await grantPreparedVaultSqlite(transaction, prepared, createdAt),
+        { behavior: "immediate" },
       );
     }
     return await this.database.db.transaction(
@@ -162,7 +163,7 @@ export class VaultGrantStore {
     const operatorId = requireOperator(input.operator);
     const normalized = normalizeRevokeInput(input);
     return this.database.dialect === "sqlite"
-      ? revokeSqlite(this.database.db, normalized, operatorId)
+      ? await revokeSqlite(this.database.db, normalized, operatorId)
       : await revokePostgres(this.database.db, normalized, operatorId);
   }
 
@@ -173,7 +174,7 @@ export class VaultGrantStore {
     const operatorId = requireOperator(operator);
     const validated = validateLegacyGrantImports(grants);
     if (this.database.dialect === "sqlite") {
-      assertLegacyGrantsMatchSqlite(this.database.db, validated, operatorId);
+      await assertLegacyGrantsMatchSqlite(this.database.db, validated, operatorId);
     } else {
       await assertLegacyGrantsMatchPostgres(this.database.db, validated, operatorId);
     }
@@ -187,8 +188,8 @@ export class VaultGrantStore {
     const validated = validateLegacyGrantImports(grants);
     if (validated.length === 0) return;
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) =>
-        importLegacyGrantsSqlite(transaction, validated, operatorId),
+      await this.database.db.transaction(
+        async (transaction) => await importLegacyGrantsSqlite(transaction, validated, operatorId),
       );
       return;
     }
@@ -197,17 +198,17 @@ export class VaultGrantStore {
     );
   }
 
-  importLegacyGrantsInTransaction(
+  async importLegacyGrantsInTransaction(
     grants: LegacyVaultGrantImport[],
     operator: OperatorPrincipal,
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void> {
     const operatorId = requireOperator(operator);
     const validated = validateLegacyGrantImports(grants);
     if (validated.length === 0) return;
     return transaction.dialect === "sqlite"
-      ? importLegacyGrantsSqlite(transaction.db, validated, operatorId)
-      : importLegacyGrantsPostgres(transaction.db, validated, operatorId);
+      ? await importLegacyGrantsSqlite(transaction.db, validated, operatorId)
+      : await importLegacyGrantsPostgres(transaction.db, validated, operatorId);
   }
 
   async verifyLegacyGrants(
@@ -235,24 +236,24 @@ export class VaultGrantStore {
       }
     }
   }
-  verifyLegacyGrantsInTransaction(
+  async verifyLegacyGrantsInTransaction(
     grants: LegacyVaultGrantImport[],
     operator: OperatorPrincipal,
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void> {
     const operatorId = requireOperator(operator);
     const validated = validateLegacyGrantImports(grants);
     return transaction.dialect === "sqlite"
-      ? verifyLegacyGrantsSqlite(transaction.db, validated, operatorId)
-      : verifyLegacyGrantsPostgres(transaction.db, validated, operatorId);
+      ? await verifyLegacyGrantsSqlite(transaction.db, validated, operatorId)
+      : await verifyLegacyGrantsPostgres(transaction.db, validated, operatorId);
   }
 
   async get(input: VaultGrantLookupInput): Promise<StoredVaultGrant | undefined> {
     const normalized = normalizeVaultGrantLookupInput(input);
     if (this.database.dialect === "sqlite") {
-      const subject = lookupSubjectSqlite(this.database.db, normalized);
+      const subject = await lookupSubjectSqlite(this.database.db, normalized);
       if (!subject) return undefined;
-      const row = this.database.db
+      const row = await this.database.db
         .select({
           grant: sqlite.vaultAccessGrants,
           recordCapletId: sqlite.capletRecords.capletId,
@@ -299,11 +300,13 @@ export class VaultGrantStore {
     const normalizedVaultKey = validateGrantName(vaultKey);
     if (this.database.dialect === "sqlite") {
       return (
-        this.database.db
-          .select({ value: count() })
-          .from(sqlite.vaultAccessGrants)
-          .where(eq(sqlite.vaultAccessGrants.vaultKey, normalizedVaultKey))
-          .get()?.value ?? 0
+        (
+          await this.database.db
+            .select({ value: count() })
+            .from(sqlite.vaultAccessGrants)
+            .where(eq(sqlite.vaultAccessGrants.vaultKey, normalizedVaultKey))
+            .get()
+        )?.value ?? 0
       );
     }
     const [row] = await this.database.db
@@ -335,7 +338,7 @@ export class VaultGrantStore {
     const normalized = normalizeGrantPageOptions(options);
     if (this.database.dialect === "sqlite") {
       const after = normalized.after;
-      const rows = this.database.db
+      const rows = await this.database.db
         .select({
           grant: sqlite.vaultAccessGrants,
           recordCapletId: sqlite.capletRecords.capletId,
@@ -687,15 +690,15 @@ type SqliteVaultGrantDatabase =
 type PostgresVaultGrantDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
-function importLegacyGrantsSqlite(
+async function importLegacyGrantsSqlite(
   database: SqliteVaultGrantDatabase,
   grants: LegacyVaultGrantImport[],
   operatorId: string,
-): void {
-  const rows = assertLegacyGrantsMatchSqlite(database, grants, operatorId);
+): Promise<void> {
+  const rows = await assertLegacyGrantsMatchSqlite(database, grants, operatorId);
   const pending = rows.filter((row) => row.existing === undefined);
   if (pending.length > 0) {
-    database
+    await database
       .insert(sqlite.vaultAccessGrants)
       .values(pending.map((row) => row.values))
       .run();
@@ -725,12 +728,12 @@ async function importLegacyGrantsPostgres(
   }
 }
 
-function verifyLegacyGrantsSqlite(
+async function verifyLegacyGrantsSqlite(
   database: SqliteVaultGrantDatabase,
   grants: LegacyVaultGrantImport[],
   operatorId: string,
-): void {
-  const rows = assertLegacyGrantsMatchSqlite(database, grants, operatorId);
+): Promise<void> {
+  const rows = await assertLegacyGrantsMatchSqlite(database, grants, operatorId);
   if (rows.some((row) => row.existing === undefined)) {
     throw new CapletsError("INTERNAL_ERROR", "A Vault grant failed post-migration verification.");
   }
@@ -784,15 +787,16 @@ function validateLegacyGrantImports(grants: LegacyVaultGrantImport[]): LegacyVau
   );
 }
 
-function assertLegacyGrantsMatchSqlite(
+async function assertLegacyGrantsMatchSqlite(
   database: SqliteVaultGrantDatabase,
   grants: LegacyVaultGrantImport[],
   operatorId: string,
 ) {
-  return grants.map((grant) => {
-    const subject = legacyGrantSubjectSqlite(database, grant);
+  const rows = [];
+  for (const grant of grants) {
+    const subject = await legacyGrantSubjectSqlite(database, grant);
     const values = legacyGrantValues(subject, grant, operatorId);
-    const existing = database
+    const existing = await database
       .select()
       .from(sqlite.vaultAccessGrants)
       .where(
@@ -809,8 +813,9 @@ function assertLegacyGrantsMatchSqlite(
         `Vault grant for ${grant.capletId} conflicts with the legacy snapshot.`,
       );
     }
-    return { existing, values };
-  });
+    rows.push({ existing, values });
+  }
+  return rows;
 }
 
 async function assertLegacyGrantsMatchPostgres(
@@ -844,18 +849,20 @@ async function assertLegacyGrantsMatchPostgres(
   return rows;
 }
 
-function legacyGrantSubjectSqlite(
+async function legacyGrantSubjectSqlite(
   database: SqliteVaultGrantDatabase,
   grant: LegacyVaultGrantImport,
-): VaultGrantSubject {
+): Promise<VaultGrantSubject> {
   if (grant.originKind !== "stored-record") {
     return fileSubject(grant.capletId, grant.originKind, grant.originPath as string);
   }
-  const recordKey = database
-    .select({ recordKey: sqlite.capletRecords.recordKey })
-    .from(sqlite.capletRecords)
-    .where(eq(sqlite.capletRecords.capletId, grant.capletId))
-    .get()?.recordKey;
+  const recordKey = (
+    await database
+      .select({ recordKey: sqlite.capletRecords.recordKey })
+      .from(sqlite.capletRecords)
+      .where(eq(sqlite.capletRecords.capletId, grant.capletId))
+      .get()
+  )?.recordKey;
   if (!recordKey) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -938,13 +945,13 @@ function legacyGrantMatches(
   );
 }
 
-export function grantPreparedVaultSqlite(
+export async function grantPreparedVaultSqlite(
   db: SqliteVaultGrantDatabase,
   prepared: PreparedVaultGrant,
   createdAt: string,
   recordActivity = true,
-): string {
-  const subject = sqliteSubject(db, prepared.input);
+): Promise<string> {
+  const subject = await sqliteSubject(db, prepared.input);
   const values = grantValues(
     subject,
     prepared.input,
@@ -954,16 +961,17 @@ export function grantPreparedVaultSqlite(
   );
   if (prepared.input.expectedResourceVersion === undefined) {
     if (prepared.input.createOnly === true) {
-      const inserted = db
+      const inserted = await db
         .insert(sqlite.vaultAccessGrants)
         .values(values)
         .onConflictDoNothing()
         .run();
-      if (inserted.changes !== 1) {
+      if (inserted.rowsAffected !== 1) {
         throw new CapletsError("CONFIG_EXISTS", "Vault grant already exists.");
       }
     } else {
-      db.insert(sqlite.vaultAccessGrants)
+      await db
+        .insert(sqlite.vaultAccessGrants)
         .values(values)
         .onConflictDoUpdate({
           target: [
@@ -976,7 +984,7 @@ export function grantPreparedVaultSqlite(
         .run();
     }
   } else {
-    const updated = db
+    const updated = await db
       .update(sqlite.vaultAccessGrants)
       .set(grantReplacementValues(values))
       .where(
@@ -986,12 +994,13 @@ export function grantPreparedVaultSqlite(
         ),
       )
       .run();
-    if (updated.changes !== 1) {
+    if (updated.rowsAffected !== 1) {
       throw staleVaultGrant(prepared.input.expectedResourceVersion);
     }
   }
   if (recordActivity) {
-    db.insert(sqlite.operatorActivity)
+    await db
+      .insert(sqlite.operatorActivity)
       .values(
         activity(
           prepared.operatorId,
@@ -1076,70 +1085,75 @@ export async function grantPreparedVaultPostgres(
   return prepared.resourceVersion;
 }
 
-function revokeSqlite(
+async function revokeSqlite(
   db: SqliteHostDatabase,
   input: NormalizedRevokeInput,
   operatorId: string,
-): boolean {
-  return db.transaction((transaction) => {
-    const subject = input.originKind
-      ? sqliteSubject(transaction, input as NormalizedGrantInput)
-      : undefined;
-    const recordKey = input.originKind
-      ? undefined
-      : sqliteRecordKey(transaction, input.capletId, false);
-    const subjectMatch = subject
-      ? and(
-          eq(sqlite.vaultAccessGrants.subjectKind, subject.kind),
-          eq(sqlite.vaultAccessGrants.subjectKey, subject.key),
-        )
-      : or(
-          recordKey
-            ? and(
-                eq(sqlite.vaultAccessGrants.subjectKind, "record"),
-                eq(sqlite.vaultAccessGrants.recordKey, recordKey),
-              )
-            : undefined,
-          and(
-            eq(sqlite.vaultAccessGrants.subjectKind, "file"),
-            eq(sqlite.vaultAccessGrants.capletId, input.capletId),
-          ),
-        );
-    const removed =
-      transaction
-        .delete(sqlite.vaultAccessGrants)
-        .where(
-          and(
-            subjectMatch,
-            eq(sqlite.vaultAccessGrants.referenceName, input.referenceName),
-            eq(sqlite.vaultAccessGrants.vaultKey, input.vaultKey),
-            input.expectedResourceVersion === undefined
-              ? undefined
-              : eq(sqlite.vaultAccessGrants.resourceVersion, input.expectedResourceVersion),
-          ),
-        )
-        .run().changes > 0;
-    if (!removed && input.expectedResourceVersion !== undefined) {
-      throw staleVaultGrant(input.expectedResourceVersion);
-    }
-    if (removed) {
-      const now = new Date().toISOString();
-      transaction
-        .insert(sqlite.operatorActivity)
-        .values(
-          activity(
-            operatorId,
-            "vault.revoke",
-            subject ?? fileSubject(input.capletId, "global-file", ""),
-            input.vaultKey,
-            input.referenceName,
-            now,
-          ),
-        )
-        .run();
-    }
-    return removed;
-  });
+): Promise<boolean> {
+  return await db.transaction(
+    async (transaction) => {
+      const subject = input.originKind
+        ? await sqliteSubject(transaction, input as NormalizedGrantInput)
+        : undefined;
+      const recordKey = input.originKind
+        ? undefined
+        : await sqliteRecordKey(transaction, input.capletId, false);
+      const subjectMatch = subject
+        ? and(
+            eq(sqlite.vaultAccessGrants.subjectKind, subject.kind),
+            eq(sqlite.vaultAccessGrants.subjectKey, subject.key),
+          )
+        : or(
+            recordKey
+              ? and(
+                  eq(sqlite.vaultAccessGrants.subjectKind, "record"),
+                  eq(sqlite.vaultAccessGrants.recordKey, recordKey),
+                )
+              : undefined,
+            and(
+              eq(sqlite.vaultAccessGrants.subjectKind, "file"),
+              eq(sqlite.vaultAccessGrants.capletId, input.capletId),
+            ),
+          );
+      const removed =
+        (
+          await transaction
+            .delete(sqlite.vaultAccessGrants)
+            .where(
+              and(
+                subjectMatch,
+                eq(sqlite.vaultAccessGrants.referenceName, input.referenceName),
+                eq(sqlite.vaultAccessGrants.vaultKey, input.vaultKey),
+                input.expectedResourceVersion === undefined
+                  ? undefined
+                  : eq(sqlite.vaultAccessGrants.resourceVersion, input.expectedResourceVersion),
+              ),
+            )
+            .run()
+        ).rowsAffected > 0;
+      if (!removed && input.expectedResourceVersion !== undefined) {
+        throw staleVaultGrant(input.expectedResourceVersion);
+      }
+      if (removed) {
+        const now = new Date().toISOString();
+        await transaction
+          .insert(sqlite.operatorActivity)
+          .values(
+            activity(
+              operatorId,
+              "vault.revoke",
+              subject ?? fileSubject(input.capletId, "global-file", ""),
+              input.vaultKey,
+              input.referenceName,
+              now,
+            ),
+          )
+          .run();
+      }
+      return removed;
+    },
+    { behavior: "immediate" },
+  );
 }
 
 async function revokePostgres(
@@ -1269,14 +1283,14 @@ function grantReplacementValues(values: VaultGrantValues) {
     createdBy: values.createdBy,
   };
 }
-function sqliteSubject(
+async function sqliteSubject(
   db: SqliteVaultGrantDatabase,
   input: NormalizedGrantInput,
-): VaultGrantSubject {
+): Promise<VaultGrantSubject> {
   if (input.originKind !== "stored-record") {
     return fileSubject(input.capletId, input.originKind, input.originPath as string);
   }
-  const recordKey = sqliteRecordKey(db, input.capletId, true) as string;
+  const recordKey = (await sqliteRecordKey(db, input.capletId, true)) as string;
   return { kind: "record", key: recordKey, recordKey, capletId: null };
 }
 
@@ -1290,14 +1304,14 @@ async function postgresSubject(
   const recordKey = (await postgresRecordKey(db, input.capletId, true)) as string;
   return { kind: "record", key: recordKey, recordKey, capletId: null };
 }
-function lookupSubjectSqlite(
+async function lookupSubjectSqlite(
   db: SqliteVaultGrantDatabase,
   input: NormalizedVaultGrantLookupInput,
-): VaultGrantSubject | undefined {
+): Promise<VaultGrantSubject | undefined> {
   if (input.originKind !== "stored-record") {
     return fileSubject(input.capletId, input.originKind, input.originPath as string);
   }
-  const recordKey = sqliteRecordKey(db, input.capletId, false);
+  const recordKey = await sqliteRecordKey(db, input.capletId, false);
   return recordKey ? { kind: "record", key: recordKey, recordKey, capletId: null } : undefined;
 }
 
@@ -1325,16 +1339,18 @@ function fileSubject(
   };
 }
 
-function sqliteRecordKey(
+async function sqliteRecordKey(
   db: SqliteVaultGrantDatabase,
   capletId: string,
   required: boolean,
-): string | undefined {
-  const recordKey = db
-    .select({ recordKey: sqlite.capletRecords.recordKey })
-    .from(sqlite.capletRecords)
-    .where(eq(sqlite.capletRecords.capletId, capletId))
-    .get()?.recordKey;
+): Promise<string | undefined> {
+  const recordKey = (
+    await db
+      .select({ recordKey: sqlite.capletRecords.recordKey })
+      .from(sqlite.capletRecords)
+      .where(eq(sqlite.capletRecords.capletId, capletId))
+      .get()
+  )?.recordKey;
   if (!recordKey && required) {
     throw new CapletsError("REQUEST_INVALID", `Caplet Record ${capletId} was not found.`);
   }

@@ -1,7 +1,8 @@
-import BetterSqlite3 from "better-sqlite3";
+import { createClient } from "@libsql/client";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../src/dashboard/auth";
 import { CapletsEngine } from "../src/engine";
@@ -665,21 +666,29 @@ mcpServer:
     if (setup.storage.database.dialect !== "sqlite") {
       throw new Error("Expected SQLite HostStorage.");
     }
-    const sqlite = setup.storage.database.db as unknown as {
-      $client: { pragma(source: string): unknown };
-    };
-    sqlite.$client.pragma("busy_timeout = 1");
-    const lock = new BetterSqlite3(setup.databasePath);
+    const sqliteDatabase = setup.storage.database.db;
+    if (!("$client" in sqliteDatabase)) throw new Error("Expected a libSQL client.");
+    const sqliteClient = sqliteDatabase.$client;
+    if (
+      !sqliteClient ||
+      typeof sqliteClient !== "object" ||
+      !("execute" in sqliteClient) ||
+      typeof sqliteClient.execute !== "function"
+    ) {
+      throw new Error("Expected an executable libSQL client.");
+    }
+    await sqliteClient.execute("PRAGMA busy_timeout = 1");
+    const lockClient = createClient({ url: pathToFileURL(setup.databasePath).href });
+    const lock = await lockClient.transaction("write");
     try {
-      lock.exec("BEGIN IMMEDIATE");
       const response = await setup.app.request("http://127.0.0.1:5387/dashboard/api/session", {
         headers: { cookie, ...sameOriginHeaders },
       });
 
       expect(response.status).toBe(503);
     } finally {
-      lock.exec("ROLLBACK");
-      lock.close();
+      await lock.rollback();
+      lockClient.close();
     }
     await setup.engine.close();
   });

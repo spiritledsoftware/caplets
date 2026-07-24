@@ -212,15 +212,16 @@ export async function migrateLegacyHostState(
     const transactionStorage = storage;
 
     if (storage.database.dialect === "sqlite") {
-      storage.database.db.transaction((transaction) => {
-        importAndVerifyLegacySqlite(
-          transactionStorage,
-          transaction,
-          pendingBundles,
-          plan,
-          operator,
-        );
-      });
+      await storage.database.db.transaction(
+        async (transaction) =>
+          await importAndVerifyLegacySqlite(
+            transactionStorage,
+            transaction,
+            pendingBundles,
+            plan,
+            operator,
+          ),
+      );
     } else {
       await storage.database.db.transaction(
         async (transaction) =>
@@ -243,45 +244,29 @@ export async function migrateLegacyHostState(
   }
 }
 
-function importAndVerifyLegacySqlite(
+async function importAndVerifyLegacySqlite(
   storage: HostStorage,
   transaction: SqliteHostTransaction,
   pendingBundles: ImportCapletBundleInput[],
   plan: PlannedLegacyState,
   operator: OperatorPrincipal,
-): void {
+): Promise<void> {
   const adapter = { dialect: "sqlite", db: transaction } as const;
-  runSynchronous(storage.caplets.importBundlesInTransaction(pendingBundles, adapter));
-  runSynchronous(
-    storage.backendAuth.importLegacyBundlesInTransaction(plan.backendAuth.bundles, adapter),
-  );
-  runSynchronous(storage.vaultValues.importLegacyValuesInTransaction(plan.vault.values, adapter));
-  runSynchronous(
-    storage.vaultGrants.importLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter),
-  );
-  runSynchronous(
-    storage.remoteSecurity.importLegacySnapshotInTransaction(plan.remoteSecurity, adapter),
-  );
-  runSynchronous(storage.setupState.importLegacySnapshotInTransaction(plan.setup, adapter));
-  runSynchronous(
-    storage.operatorActivity.importLegacyEntriesInTransaction(plan.operatorActivity, adapter),
-  );
+  await storage.caplets.importBundlesInTransaction(pendingBundles, adapter);
+  await storage.backendAuth.importLegacyBundlesInTransaction(plan.backendAuth.bundles, adapter);
+  await storage.vaultValues.importLegacyValuesInTransaction(plan.vault.values, adapter);
+  await storage.vaultGrants.importLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter);
+  await storage.remoteSecurity.importLegacySnapshotInTransaction(plan.remoteSecurity, adapter);
+  await storage.setupState.importLegacySnapshotInTransaction(plan.setup, adapter);
+  await storage.operatorActivity.importLegacyEntriesInTransaction(plan.operatorActivity, adapter);
 
-  verifyImportedArtifactsSqlite(storage, plan.artifacts, adapter);
-  runSynchronous(
-    storage.backendAuth.verifyLegacyBundlesInTransaction(plan.backendAuth.bundles, adapter),
-  );
-  runSynchronous(storage.vaultValues.verifyLegacyValuesInTransaction(plan.vault.values, adapter));
-  runSynchronous(
-    storage.vaultGrants.verifyLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter),
-  );
-  runSynchronous(
-    storage.remoteSecurity.verifyLegacySnapshotInTransaction(plan.remoteSecurity, adapter),
-  );
-  runSynchronous(storage.setupState.verifyLegacySnapshotInTransaction(plan.setup, adapter));
-  runSynchronous(
-    storage.operatorActivity.verifyLegacyEntriesInTransaction(plan.operatorActivity, adapter),
-  );
+  await verifyImportedArtifactsSqlite(storage, plan.artifacts, adapter);
+  await storage.backendAuth.verifyLegacyBundlesInTransaction(plan.backendAuth.bundles, adapter);
+  await storage.vaultValues.verifyLegacyValuesInTransaction(plan.vault.values, adapter);
+  await storage.vaultGrants.verifyLegacyGrantsInTransaction(plan.vaultGrants, operator, adapter);
+  await storage.remoteSecurity.verifyLegacySnapshotInTransaction(plan.remoteSecurity, adapter);
+  await storage.setupState.verifyLegacySnapshotInTransaction(plan.setup, adapter);
+  await storage.operatorActivity.verifyLegacyEntriesInTransaction(plan.operatorActivity, adapter);
 }
 
 async function importAndVerifyLegacyPostgres(
@@ -307,16 +292,6 @@ async function importAndVerifyLegacyPostgres(
   await storage.remoteSecurity.verifyLegacySnapshotInTransaction(plan.remoteSecurity, adapter);
   await storage.setupState.verifyLegacySnapshotInTransaction(plan.setup, adapter);
   await storage.operatorActivity.verifyLegacyEntriesInTransaction(plan.operatorActivity, adapter);
-}
-
-function runSynchronous<T>(result: T | Promise<T>): T {
-  if (result instanceof Promise) {
-    throw new CapletsError(
-      "INTERNAL_ERROR",
-      "SQLite legacy migration attempted an asynchronous transaction operation.",
-    );
-  }
-  return result;
 }
 
 function planLegacyState(options: LegacyMigrationOptions, backupPath: string): PlannedLegacyState {
@@ -677,21 +652,22 @@ function hashPath(path: string, relativePath: string, hash: Hash): void {
   hash.update("\0");
 }
 
-function verifyImportedArtifactsSqlite(
+async function verifyImportedArtifactsSqlite(
   storage: HostStorage,
   artifacts: PlannedArtifact[],
   transaction: Extract<HostDatabaseTransaction, { dialect: "sqlite" }>,
-): void {
+): Promise<void> {
   for (const artifact of artifacts) {
-    const record = runSynchronous(storage.caplets.getInTransaction(artifact.id, transaction));
+    const record = await storage.caplets.getInTransaction(artifact.id, transaction);
     if (record?.currentRevision.sourceContentHash !== artifact.installedHash) {
       throw new CapletsError(
         "INTERNAL_ERROR",
         `Caplet Record ${artifact.id} failed post-migration verification.`,
       );
     }
-    const installation = runSynchronous(
-      storage.installations.getActiveInTransaction(artifact.id, transaction),
+    const installation = await storage.installations.getActiveInTransaction(
+      artifact.id,
+      transaction,
     );
     if (!installation || installation.sourceIdentity !== artifact.sourceIdentity) {
       throw new CapletsError(

@@ -60,7 +60,7 @@ describe("VaultValueStore", () => {
       });
       expect(firstStatus.createdAt).toBe(firstStatus.updatedAt);
 
-      const persisted = firstStorage.database.db.select().from(vaultValues).get();
+      const persisted = await firstStorage.database.db.select().from(vaultValues).get();
       expect(persisted).toMatchObject({ vaultKey: "API_TOKEN", generation: 1 });
       expect(JSON.stringify(persisted)).not.toContain(plaintext);
       expect(persisted).not.toHaveProperty("value");
@@ -144,7 +144,7 @@ describe("VaultValueStore", () => {
         code: "CONFIG_INVALID",
       });
 
-      firstStorage.database.db
+      await firstStorage.database.db
         .insert(vaultValues)
         .values({
           vaultKey: "BROKEN_TOKEN",
@@ -167,7 +167,7 @@ describe("VaultValueStore", () => {
       });
       await expect(second.listValues()).rejects.toMatchObject({ code: "CONFIG_INVALID" });
 
-      const activity = firstStorage.database.db.select().from(operatorActivity).all();
+      const activity = await firstStorage.database.db.select().from(operatorActivity).all();
       expect(activity.map(({ action, metadata }) => ({ action, metadata }))).toEqual([
         { action: "vault_value_written", metadata: { generation: 1 } },
         { action: "vault_value_written", metadata: { generation: 2 } },
@@ -276,30 +276,43 @@ describe("VaultValueStore", () => {
       );
 
       vi.setSystemTime(new Date("2026-07-18T10:02:00.000Z"));
+      const firstWrite = Promise.withResolvers<void>();
+      const releaseFirst = Promise.withResolvers<void>();
       const serializedFirst = storage.database.db.transaction(
-        (transaction) => setPreparedVaultValueSqlite(transaction, preparedSecond),
+        async (transaction) => {
+          const result = await setPreparedVaultValueSqlite(transaction, preparedSecond);
+          firstWrite.resolve();
+          await releaseFirst.promise;
+          return result;
+        },
         { behavior: "immediate" },
       );
+      await firstWrite.promise;
       vi.setSystemTime(new Date("2026-07-18T10:03:00.000Z"));
       const serializedSecond = storage.database.db.transaction(
         (transaction) => setPreparedVaultValueSqlite(transaction, preparedFirst),
         { behavior: "immediate" },
       );
+      releaseFirst.resolve();
+      const [serializedFirstResult, serializedSecondResult] = await Promise.all([
+        serializedFirst,
+        serializedSecond,
+      ]);
 
-      expect(serializedFirst).toMatchObject({
+      expect(serializedFirstResult).toMatchObject({
         generation: 1,
         createdAt: "2026-07-18T10:02:00.000Z",
         updatedAt: "2026-07-18T10:02:00.000Z",
       });
-      expect(serializedSecond).toMatchObject({
+      expect(serializedSecondResult).toMatchObject({
         generation: 2,
         createdAt: "2026-07-18T10:02:00.000Z",
         updatedAt: "2026-07-18T10:03:00.000Z",
       });
-      await expect(values.getStatus("ORDERED_SECRET")).resolves.toEqual(serializedSecond);
+      await expect(values.getStatus("ORDERED_SECRET")).resolves.toEqual(serializedSecondResult);
       await expect(values.resolveValue("ORDERED_SECRET")).resolves.toBe("prepared-first");
 
-      const activity = storage.database.db.select().from(operatorActivity).all();
+      const activity = await storage.database.db.select().from(operatorActivity).all();
       expect(
         activity
           .map((entry) => ({

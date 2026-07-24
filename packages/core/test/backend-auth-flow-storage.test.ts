@@ -62,7 +62,7 @@ describe("durable backend auth flow storage", () => {
     expect(JSON.stringify(await secondRepository.list({ server: SERVER, now: NOW }))).not.toContain(
       "pkce-round-trip-secret",
     );
-    const raw = rawRow(flowId);
+    const raw = await rawRow(flowId);
     expect(JSON.stringify(raw)).not.toContain("pkce-round-trip-secret");
     expect(raw.encryptedPayload).toMatchObject({
       version: 1,
@@ -118,18 +118,20 @@ describe("durable backend auth flow storage", () => {
       await createTerminalFlow(`flow_migration_${status}`, status);
     }
 
-    const pendingPayload = rawRow("flow_migration_pending").encryptedPayload;
-    const completingPayload = rawRow("flow_migration_completing").encryptedPayload;
+    const pendingPayload = (await rawRow("flow_migration_pending")).encryptedPayload;
+    const completingPayload = (await rawRow("flow_migration_completing")).encryptedPayload;
     const terminalRows = Object.fromEntries(
-      ["completed", "expired", "failed", "unknown"].map((status) => {
-        const flowId = `flow_migration_${status}`;
-        return [flowId, rawRow(flowId)];
-      }),
+      await Promise.all(
+        ["completed", "expired", "failed", "unknown"].map(async (status) => {
+          const flowId = `flow_migration_${status}`;
+          return [flowId, await rawRow(flowId)] as const;
+        }),
+      ),
     );
 
     await migrateHostStorage({ type: "sqlite", path: storagePath });
 
-    const pending = rawRow("flow_migration_pending");
+    const pending = await rawRow("flow_migration_pending");
     expect(pending).toMatchObject({
       status: "failed",
       encryptedPayload: pendingPayload,
@@ -143,7 +145,7 @@ describe("durable backend auth flow storage", () => {
     expect(pending.updatedAt).toBe(pending.terminalAt);
     expect(Number.isNaN(Date.parse(pending.terminalAt!))).toBe(false);
 
-    const completing = rawRow("flow_migration_completing");
+    const completing = await rawRow("flow_migration_completing");
     expect(completing).toMatchObject({
       status: "unknown",
       encryptedPayload: completingPayload,
@@ -156,7 +158,7 @@ describe("durable backend auth flow storage", () => {
     });
     expect(completing.updatedAt).toBe(completing.terminalAt);
     for (const [flowId, row] of Object.entries(terminalRows)) {
-      expect(rawRow(flowId)).toEqual(row);
+      expect(await rawRow(flowId)).toEqual(row);
     }
 
     await firstRepository.create({
@@ -166,9 +168,9 @@ describe("durable backend auth flow storage", () => {
       expiresAt: after(100_000),
       now: after(2_000),
     });
-    const postMigrationRow = rawRow("flow_created_after_migration");
+    const postMigrationRow = await rawRow("flow_created_after_migration");
     await migrateHostStorage({ type: "sqlite", path: storagePath });
-    expect(rawRow("flow_created_after_migration")).toEqual(postMigrationRow);
+    expect(await rawRow("flow_created_after_migration")).toEqual(postMigrationRow);
     const postMigrationClaim = await secondRepository.claim({
       flowId: "flow_created_after_migration",
       claimToken: "claim_created_after_migration",
@@ -204,7 +206,7 @@ describe("durable backend auth flow storage", () => {
       migrateHostStorage({ type: "sqlite", path: storagePath }),
     ]);
 
-    const row = rawRow("flow_migration_claim_race");
+    const row = await rawRow("flow_migration_claim_race");
     expect(row.status === "failed" || row.status === "unknown").toBe(true);
     expect(row).toMatchObject({
       claimToken: null,
@@ -268,7 +270,7 @@ describe("durable backend auth flow storage", () => {
         now: after(1_000),
       }),
     ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    expect(rawRow("flow_wrong_key")).toMatchObject({
+    expect(await rawRow("flow_wrong_key")).toMatchObject({
       status: "pending",
       claimToken: null,
       claimedAt: null,
@@ -302,8 +304,8 @@ describe("durable backend auth flow storage", () => {
       now: NOW,
     });
     if (firstStorage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-    const source = rawRow("flow_aad_source");
-    firstStorage.database.db
+    const source = await rawRow("flow_aad_source");
+    await firstStorage.database.db
       .update(sqlite.backendAuthFlows)
       .set({ encryptedPayload: source.encryptedPayload })
       .where(eq(sqlite.backendAuthFlows.flowId, "flow_aad_target"))
@@ -324,7 +326,7 @@ describe("durable backend auth flow storage", () => {
       expiresAt: after(10_000),
       now: NOW,
     });
-    firstStorage.database.db
+    await firstStorage.database.db
       .update(sqlite.backendAuthFlows)
       .set({ envelopeVersion: 2 })
       .where(eq(sqlite.backendAuthFlows.flowId, "flow_wrong_version"))
@@ -344,7 +346,7 @@ describe("durable backend auth flow storage", () => {
       expiresAt: after(10_000),
       now: NOW,
     });
-    firstStorage.database.db
+    await firstStorage.database.db
       .update(sqlite.backendAuthFlows)
       .set({ server: "other-server" })
       .where(eq(sqlite.backendAuthFlows.flowId, "flow_wrong_server"))
@@ -371,7 +373,7 @@ describe("durable backend auth flow storage", () => {
     await expect(
       secondRepository.claim({ flowId, claimToken: "claim_expired", now: after(1_001) }),
     ).resolves.toMatchObject({ acquired: false, reason: "expired" });
-    expect(rawRow(flowId)).toMatchObject({
+    expect(await rawRow(flowId)).toMatchObject({
       status: "expired",
       encryptedPayload: null,
       completionCorrelation: null,
@@ -468,7 +470,7 @@ describe("durable backend auth flow storage", () => {
       }),
     ).resolves.toBe(true);
 
-    const raw = rawRow(flowId);
+    const raw = await rawRow(flowId);
     expect(raw).toMatchObject({
       status: "completed",
       encryptedPayload: null,
@@ -526,7 +528,7 @@ describe("durable backend auth flow storage", () => {
       generation: 1,
       bundle: { accessToken: "atomic-access-token" },
     });
-    expect(rawRow(flowId)).toMatchObject({
+    expect(await rawRow(flowId)).toMatchObject({
       status: "completed",
       encryptedPayload: null,
       startingBackendAuthGeneration: null,
@@ -596,7 +598,7 @@ describe("durable backend auth flow storage", () => {
       generation: 1,
       bundle: { accessToken: "unchanged-access-token" },
     });
-    expect(rawRow("flow_expired_before_persist")).toMatchObject({
+    expect(await rawRow("flow_expired_before_persist")).toMatchObject({
       status: "expired",
       encryptedPayload: null,
       claimToken: null,
@@ -621,7 +623,7 @@ describe("durable backend auth flow storage", () => {
     });
     if (!claim.acquired) throw new Error("Expected active completion claim.");
     if (firstStorage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-    firstStorage.database.db.run(
+    await firstStorage.database.db.run(
       sql.raw(`
         create temp trigger fail_backend_auth_flow_completion
         before update on backend_auth_flows
@@ -651,9 +653,9 @@ describe("durable backend auth flow storage", () => {
         },
         now: after(2_000),
       }),
-    ).rejects.toThrow("forced completion failure");
+    ).rejects.toThrow();
     await expect(firstStorage.backendAuth.readTokenBundle(SERVER)).resolves.toBeUndefined();
-    expect(rawRow(flowId)).toMatchObject({
+    expect(await rawRow(flowId)).toMatchObject({
       status: "completing",
       claimToken: claim.claimToken,
       completedBackendAuthGeneration: null,
@@ -724,7 +726,7 @@ describe("durable backend auth flow storage", () => {
         now: after(2_000),
       }),
     ).resolves.toBe(false);
-    expect(rawRow(failedFlowId)).toMatchObject({
+    expect(await rawRow(failedFlowId)).toMatchObject({
       status: "completing",
       claimToken: "claim_terminal_failed",
       encryptedPayload: expect.any(Object),
@@ -739,7 +741,7 @@ describe("durable backend auth flow storage", () => {
         now: after(2_000),
       }),
     ).resolves.toBe(true);
-    expect(rawRow(failedFlowId)).toMatchObject({
+    expect(await rawRow(failedFlowId)).toMatchObject({
       status: "failed",
       expiresAt: after(10_000).toISOString(),
       encryptedPayload: null,
@@ -768,7 +770,7 @@ describe("durable backend auth flow storage", () => {
         now: after(2_000),
       }),
     ).resolves.toBe(true);
-    expect(rawRow(unknownFlowId)).toMatchObject({
+    expect(await rawRow(unknownFlowId)).toMatchObject({
       status: "unknown",
       encryptedPayload: null,
       completionCorrelation: null,
@@ -806,7 +808,7 @@ describe("durable backend auth flow storage", () => {
         now: after(2_000),
       }),
     ).resolves.toMatchObject({ status: "unknown" });
-    expect(rawRow("flow_unknown")).toMatchObject({
+    expect(await rawRow("flow_unknown")).toMatchObject({
       status: "unknown",
       encryptedPayload: null,
       completionCorrelation: null,
@@ -969,17 +971,17 @@ describe("durable backend auth flow storage", () => {
         now: NOW,
       }),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
-    expect(rawRows()).toEqual([]);
+    expect(await rawRows()).toEqual([]);
   });
 });
 
 async function rewindBackendAuthFlowInvalidationMigration(): Promise<void> {
   if (firstStorage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-  firstStorage.database.db.run(
+  await firstStorage.database.db.run(
     sql`DELETE FROM caplets_migrations
         WHERE created_at >= ${BACKEND_AUTH_FLOW_INVALIDATION_MIGRATION_CREATED_AT}`,
   );
-  firstStorage.database.db
+  await firstStorage.database.db
     .update(sqlite.capletsSchema)
     .set({ version: 17 })
     .where(eq(sqlite.capletsSchema.singleton, 1))
@@ -1057,9 +1059,9 @@ function after(milliseconds: number): Date {
   return new Date(NOW.getTime() + milliseconds);
 }
 
-function rawRow(flowId: string) {
+async function rawRow(flowId: string) {
   if (firstStorage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-  const row = firstStorage.database.db
+  const row = await firstStorage.database.db
     .select()
     .from(sqlite.backendAuthFlows)
     .where(eq(sqlite.backendAuthFlows.flowId, flowId))

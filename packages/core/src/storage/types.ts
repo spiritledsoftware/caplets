@@ -1,4 +1,4 @@
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { HostStorageConfig } from "../config";
 import type { postgresSchema } from "./schema/postgres";
@@ -31,7 +31,7 @@ export type HostStorageHealth = {
     | undefined;
 };
 
-export type SqliteHostDatabase = BetterSQLite3Database<typeof sqliteSchema>;
+export type SqliteHostDatabase = LibSQLDatabase<typeof sqliteSchema>;
 export type PostgresHostDatabase = NodePgDatabase<typeof postgresSchema>;
 export type SqliteHostTransaction = Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0];
 export type PostgresHostTransaction = Parameters<

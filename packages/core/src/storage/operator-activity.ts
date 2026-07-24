@@ -107,7 +107,7 @@ export class OperatorActivityStore {
     };
 
     if (this.database.dialect === "sqlite") {
-      this.database.db.insert(sqlite.operatorActivity).values(row).run();
+      await this.database.db.insert(sqlite.operatorActivity).values(row).run();
     } else {
       await this.database.db.insert(postgres.operatorActivity).values(row);
     }
@@ -117,7 +117,7 @@ export class OperatorActivityStore {
   async assertLegacyEntriesImportable(entries: OperatorActivityEntry[]): Promise<void> {
     const rows = validateLegacyActivityEntries(entries);
     if (this.database.dialect === "sqlite") {
-      inspectLegacyActivitySqlite(this.database.db, rows);
+      await inspectLegacyActivitySqlite(this.database.db, rows);
     } else {
       await inspectLegacyActivityPostgres(this.database.db, rows);
     }
@@ -127,10 +127,10 @@ export class OperatorActivityStore {
     const rows = validateLegacyActivityEntries(entries);
     if (rows.length === 0) return;
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) => {
-        const pending = inspectLegacyActivitySqlite(transaction, rows);
+      await this.database.db.transaction(async (transaction) => {
+        const pending = await inspectLegacyActivitySqlite(transaction, rows);
         if (pending.length > 0) {
-          transaction.insert(sqlite.operatorActivity).values(pending).run();
+          await transaction.insert(sqlite.operatorActivity).values(pending).run();
         }
       });
       return;
@@ -142,22 +142,22 @@ export class OperatorActivityStore {
       }
     });
   }
-  importLegacyEntriesInTransaction(
+  async importLegacyEntriesInTransaction(
     entries: OperatorActivityEntry[],
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void> {
     const rows = validateLegacyActivityEntries(entries);
     if (rows.length === 0) return;
     return transaction.dialect === "sqlite"
-      ? importLegacyActivitySqlite(transaction.db, rows)
-      : importLegacyActivityPostgres(transaction.db, rows);
+      ? await importLegacyActivitySqlite(transaction.db, rows)
+      : await importLegacyActivityPostgres(transaction.db, rows);
   }
 
   async verifyLegacyEntries(entries: OperatorActivityEntry[]): Promise<void> {
     const rows = validateLegacyActivityEntries(entries);
     const pending =
       this.database.dialect === "sqlite"
-        ? inspectLegacyActivitySqlite(this.database.db, rows)
+        ? await inspectLegacyActivitySqlite(this.database.db, rows)
         : await inspectLegacyActivityPostgres(this.database.db, rows);
     if (pending.length > 0) {
       throw new CapletsError(
@@ -166,16 +166,16 @@ export class OperatorActivityStore {
       );
     }
   }
-  verifyLegacyEntriesInTransaction(
+  async verifyLegacyEntriesInTransaction(
     entries: OperatorActivityEntry[],
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void> {
     const rows = validateLegacyActivityEntries(entries);
-    if (transaction.dialect === "sqlite") {
-      verifyLegacyActivityPending(inspectLegacyActivitySqlite(transaction.db, rows));
-      return;
-    }
-    return inspectLegacyActivityPostgres(transaction.db, rows).then(verifyLegacyActivityPending);
+    const pending =
+      transaction.dialect === "sqlite"
+        ? await inspectLegacyActivitySqlite(transaction.db, rows)
+        : await inspectLegacyActivityPostgres(transaction.db, rows);
+    verifyLegacyActivityPending(pending);
   }
 
   async listPage(
@@ -186,7 +186,7 @@ export class OperatorActivityStore {
     if (input.after !== undefined) validateActivityPageKey(input.after);
     const rows =
       this.database.dialect === "sqlite"
-        ? this.listSqlite(limit + 1, input.after, input.action, sort)
+        ? await this.listSqlite(limit + 1, input.after, input.action, sort)
         : await this.listPostgres(limit + 1, input.after, input.action, sort);
     const hasMore = rows.length > limit;
     const pageRows = hasMore ? rows.slice(0, limit) : rows;
@@ -214,7 +214,7 @@ export class OperatorActivityStore {
 
   private async findCursor(activityKey: string): Promise<ActivityCursor | undefined> {
     if (this.database.dialect === "sqlite") {
-      return this.database.db
+      return await this.database.db
         .select({
           activityKey: sqlite.operatorActivity.activityKey,
           createdAt: sqlite.operatorActivity.createdAt,
@@ -234,12 +234,12 @@ export class OperatorActivityStore {
     return cursor;
   }
 
-  private listSqlite(
+  private async listSqlite(
     limit: number,
     cursor: ActivityCursor | undefined,
     action: string | undefined,
     sort: KeysetSortDirection,
-  ): ActivityRow[] {
+  ): Promise<ActivityRow[]> {
     const conditions: SQL[] = [];
     if (action !== undefined) conditions.push(eq(sqlite.operatorActivity.action, action));
     if (cursor) {
@@ -262,7 +262,7 @@ export class OperatorActivityStore {
       );
     }
     return this.database.dialect === "sqlite"
-      ? this.database.db
+      ? await this.database.db
           .select()
           .from(sqlite.operatorActivity)
           .where(and(...conditions))
@@ -330,9 +330,12 @@ type SqliteActivityDatabase =
 type PostgresActivityDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
-function importLegacyActivitySqlite(database: SqliteActivityDatabase, rows: ActivityRow[]): void {
-  const pending = inspectLegacyActivitySqlite(database, rows);
-  if (pending.length > 0) database.insert(sqlite.operatorActivity).values(pending).run();
+async function importLegacyActivitySqlite(
+  database: SqliteActivityDatabase,
+  rows: ActivityRow[],
+): Promise<void> {
+  const pending = await inspectLegacyActivitySqlite(database, rows);
+  if (pending.length > 0) await database.insert(sqlite.operatorActivity).values(pending).run();
 }
 
 async function importLegacyActivityPostgres(
@@ -388,12 +391,13 @@ function legacyActivityRow(entry: OperatorActivityEntry): ActivityRow {
   };
 }
 
-function inspectLegacyActivitySqlite(
+async function inspectLegacyActivitySqlite(
   database: SqliteActivityDatabase,
   rows: ActivityRow[],
-): ActivityRow[] {
-  return rows.filter((row) => {
-    const existing = database
+): Promise<ActivityRow[]> {
+  const pending: ActivityRow[] = [];
+  for (const row of rows) {
+    const existing = await database
       .select()
       .from(sqlite.operatorActivity)
       .where(eq(sqlite.operatorActivity.activityKey, row.activityKey))
@@ -407,8 +411,9 @@ function inspectLegacyActivitySqlite(
         "Operator Activity conflicts with the legacy snapshot.",
       );
     }
-    return existing === undefined;
-  });
+    if (!existing) pending.push(row);
+  }
+  return pending;
 }
 
 async function inspectLegacyActivityPostgres(

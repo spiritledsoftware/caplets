@@ -207,11 +207,9 @@ describe("VaultGrantStore", () => {
       ]);
 
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
-      const activities = storage.database.db
-        .select()
-        .from(operatorActivity)
-        .all()
-        .filter((entry) => entry.targetKind === "vault_grant");
+      const activities = (await storage.database.db.select().from(operatorActivity).all()).filter(
+        (entry) => entry.targetKind === "vault_grant",
+      );
       expect(activities).toHaveLength(5);
       const activityPayload = JSON.stringify(activities);
       expect(activityPayload).not.toContain(firstPath);

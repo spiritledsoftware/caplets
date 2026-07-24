@@ -75,12 +75,12 @@ export class VaultStateStore {
 
     if (this.database.dialect === "sqlite") {
       return this.database.db.transaction(
-        (transaction) => {
-          const status = setPreparedVaultValueSqlite(transaction, preparedValue, false);
+        async (transaction) => {
+          const status = await setPreparedVaultValueSqlite(transaction, preparedValue, false);
           const grantResourceVersion = preparedGrant
-            ? grantPreparedVaultSqlite(transaction, preparedGrant, status.updatedAt, false)
+            ? await grantPreparedVaultSqlite(transaction, preparedGrant, status.updatedAt, false)
             : undefined;
-          transaction
+          await transaction
             .insert(sqlite.operatorActivity)
             .values(
               vaultSetActivity(
@@ -92,7 +92,7 @@ export class VaultStateStore {
               ),
             )
             .run();
-          advanceSqliteConfigGeneration(
+          await advanceSqliteConfigGeneration(
             transaction,
             vaultConfigHash(preparedValue.key, status.generation, grantResourceVersion),
             input.operatorClientId,

@@ -97,7 +97,9 @@ describe("SQL setup state", () => {
       if (firstStorage.database.dialect !== "sqlite") {
         throw new Error("Expected SQLite storage.");
       }
-      expect(firstStorage.database.db.select().from(sqlite.setupApprovals).all()).toHaveLength(1);
+      expect(
+        await firstStorage.database.db.select().from(sqlite.setupApprovals).all(),
+      ).toHaveLength(1);
     } finally {
       await firstStorage.close();
     }
@@ -124,12 +126,17 @@ describe("SQL setup state", () => {
         approvedAt: now,
         actor: "automation",
       };
-      storage.database.db
+      await storage.database.db
         .insert(sqlite.setupApprovals)
         .values({
-          ...hostedPayload,
-          generation: 0,
+          projectFingerprint: "project-a",
+          capletId: "legacy-hosted",
+          contentHash: "sha256:legacy",
+          targetKind: "hosted_sandbox" as never,
+          generation: 1,
           payload: hostedPayload,
+          approvedAt: now,
+          actor: "rcli_operator",
           createdAt: now,
           updatedAt: now,
         })
@@ -143,11 +150,9 @@ describe("SQL setup state", () => {
         store.getApproval("project-a", "legacy-hosted", "sha256:legacy", "remote_host"),
       ).resolves.toBeUndefined();
 
-      const hostedRow = storage.database.db
-        .select()
-        .from(sqlite.setupApprovals)
-        .all()
-        .find((row) => row.targetKind === "hosted_sandbox");
+      const hostedRow = (await storage.database.db.select().from(sqlite.setupApprovals).all()).find(
+        (row) => row.targetKind === "hosted_sandbox",
+      );
       expect(hostedRow?.payload).toEqual(hostedPayload);
     } finally {
       await storage.close();

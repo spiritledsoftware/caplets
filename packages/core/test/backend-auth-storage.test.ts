@@ -124,13 +124,13 @@ describe("BackendAuthStateStore", () => {
       });
 
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
-      expect(storage.database.db.select().from(backendAuthStates).all()).toEqual(
+      expect(await storage.database.db.select().from(backendAuthStates).all()).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ server: "alpha", generation: 3 }),
           expect.objectContaining({ server: "beta", generation: 2, tokenBundle: updatedBundle }),
         ]),
       );
-      const activity = storage.database.db.select().from(operatorActivity).all();
+      const activity = await storage.database.db.select().from(operatorActivity).all();
       expect(activity.map(({ action, metadata }) => ({ action, metadata }))).toEqual([
         { action: "backend_auth_written", metadata: { generation: 1 } },
         { action: "backend_auth_written", metadata: { generation: 2 } },
@@ -319,7 +319,7 @@ describe("BackendAuthStateStore", () => {
     const store = new BackendAuthStateStore(storage.database);
     try {
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
-      storage.database.db
+      await storage.database.db
         .insert(backendAuthStates)
         .values({
           server: "invalid",

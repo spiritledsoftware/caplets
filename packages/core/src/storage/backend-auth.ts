@@ -57,7 +57,7 @@ export class BackendAuthStateStore {
     validateServer(server);
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.backendAuthStates)
             .where(eq(sqlite.backendAuthStates.server, server))
@@ -85,7 +85,7 @@ export class BackendAuthStateStore {
     if (input.after !== undefined) validateConnectionPageKey(input.after);
     const rows =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.backendAuthStates)
             .where(
@@ -165,14 +165,14 @@ export class BackendAuthStateStore {
     }
     validateMutationOptions(options);
     return this.database.dialect === "sqlite"
-      ? writeSqlite(this.database.db, validatedBundle, options)
+      ? await writeSqlite(this.database.db, validatedBundle, options)
       : await writePostgres(this.database.db, validatedBundle, options);
   }
 
   async assertLegacyBundlesImportable(bundles: StoredOAuthTokenBundle[]): Promise<void> {
     const validated = validateLegacyBundles(bundles);
     if (this.database.dialect === "sqlite") {
-      assertLegacyBundlesMatchSqlite(this.database.db, validated);
+      await assertLegacyBundlesMatchSqlite(this.database.db, validated);
     } else {
       await assertLegacyBundlesMatchPostgres(this.database.db, validated);
     }
@@ -183,8 +183,8 @@ export class BackendAuthStateStore {
     if (validated.length === 0) return;
     const timestamp = new Date().toISOString();
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) =>
-        importLegacyBundlesSqlite(transaction, validated, timestamp),
+      await this.database.db.transaction(
+        async (transaction) => await importLegacyBundlesSqlite(transaction, validated, timestamp),
       );
       return;
     }
@@ -193,16 +193,16 @@ export class BackendAuthStateStore {
     );
   }
 
-  importLegacyBundlesInTransaction(
+  async importLegacyBundlesInTransaction(
     bundles: StoredOAuthTokenBundle[],
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void> {
     const validated = validateLegacyBundles(bundles);
     if (validated.length === 0) return;
     const timestamp = new Date().toISOString();
     return transaction.dialect === "sqlite"
-      ? importLegacyBundlesSqlite(transaction.db, validated, timestamp)
-      : importLegacyBundlesPostgres(transaction.db, validated, timestamp);
+      ? await importLegacyBundlesSqlite(transaction.db, validated, timestamp)
+      : await importLegacyBundlesPostgres(transaction.db, validated, timestamp);
   }
 
   async verifyLegacyBundles(bundles: StoredOAuthTokenBundle[]): Promise<void> {
@@ -216,14 +216,14 @@ export class BackendAuthStateStore {
       }
     }
   }
-  verifyLegacyBundlesInTransaction(
+  async verifyLegacyBundlesInTransaction(
     bundles: StoredOAuthTokenBundle[],
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void> {
     const validated = validateLegacyBundles(bundles);
     return transaction.dialect === "sqlite"
-      ? verifyLegacyBundlesSqlite(transaction.db, validated)
-      : verifyLegacyBundlesPostgres(transaction.db, validated);
+      ? await verifyLegacyBundlesSqlite(transaction.db, validated)
+      : await verifyLegacyBundlesPostgres(transaction.db, validated);
   }
 
   async deleteTokenBundle(
@@ -233,7 +233,7 @@ export class BackendAuthStateStore {
     validateServer(server);
     validateMutationOptions(options);
     return this.database.dialect === "sqlite"
-      ? deleteSqlite(this.database.db, server, options)
+      ? await deleteSqlite(this.database.db, server, options)
       : await deletePostgres(this.database.db, server, options);
   }
 }
@@ -242,17 +242,17 @@ export function writeBackendAuthTokenBundleInTransaction(
   bundle: StoredOAuthTokenBundle,
   options: BackendAuthMutationOptions,
   transaction: Extract<HostDatabaseTransaction, { dialect: "sqlite" }>,
-): StoredOAuthTokenBundleView;
+): Promise<StoredOAuthTokenBundleView>;
 export function writeBackendAuthTokenBundleInTransaction(
   bundle: StoredOAuthTokenBundle,
   options: BackendAuthMutationOptions,
   transaction: Extract<HostDatabaseTransaction, { dialect: "postgres" }>,
 ): Promise<StoredOAuthTokenBundleView>;
-export function writeBackendAuthTokenBundleInTransaction(
+export async function writeBackendAuthTokenBundleInTransaction(
   bundle: StoredOAuthTokenBundle,
   options: BackendAuthMutationOptions,
   transaction: HostDatabaseTransaction,
-): StoredOAuthTokenBundleView | Promise<StoredOAuthTokenBundleView> {
+): Promise<StoredOAuthTokenBundleView> {
   validateServer(bundle.server);
   const candidate: unknown = bundle;
   if (!isStoredOAuthTokenBundle(candidate)) {
@@ -260,8 +260,8 @@ export function writeBackendAuthTokenBundleInTransaction(
   }
   validateMutationOptions(options);
   return transaction.dialect === "sqlite"
-    ? writeSqliteTransaction(transaction.db, candidate, options)
-    : writePostgresTransaction(transaction.db, candidate, options);
+    ? await writeSqliteTransaction(transaction.db, candidate, options)
+    : await writePostgresTransaction(transaction.db, candidate, options);
 }
 
 type SqliteBackendAuthDatabase =
@@ -270,21 +270,19 @@ type SqliteBackendAuthDatabase =
 type PostgresBackendAuthDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
-function importLegacyBundlesSqlite(
+async function importLegacyBundlesSqlite(
   database: SqliteBackendAuthDatabase,
   bundles: StoredOAuthTokenBundle[],
   timestamp: string,
-): void {
-  assertLegacyBundlesMatchSqlite(database, bundles);
+): Promise<void> {
+  await assertLegacyBundlesMatchSqlite(database, bundles);
+  const existing = await database
+    .select({ server: sqlite.backendAuthStates.server })
+    .from(sqlite.backendAuthStates)
+    .all();
+  const existingServers = new Set(existing.map((row) => row.server));
   const values = bundles
-    .filter(
-      (bundle) =>
-        !database
-          .select({ server: sqlite.backendAuthStates.server })
-          .from(sqlite.backendAuthStates)
-          .where(eq(sqlite.backendAuthStates.server, bundle.server))
-          .get(),
-    )
+    .filter((bundle) => !existingServers.has(bundle.server))
     .map((bundle) => ({
       server: bundle.server,
       generation: 1,
@@ -292,7 +290,7 @@ function importLegacyBundlesSqlite(
       createdAt: timestamp,
       updatedAt: timestamp,
     }));
-  if (values.length > 0) database.insert(sqlite.backendAuthStates).values(values).run();
+  if (values.length > 0) await database.insert(sqlite.backendAuthStates).values(values).run();
 }
 
 async function importLegacyBundlesPostgres(
@@ -318,12 +316,12 @@ async function importLegacyBundlesPostgres(
   if (values.length > 0) await database.insert(postgres.backendAuthStates).values(values);
 }
 
-function verifyLegacyBundlesSqlite(
+async function verifyLegacyBundlesSqlite(
   database: SqliteBackendAuthDatabase,
   bundles: StoredOAuthTokenBundle[],
-): void {
+): Promise<void> {
   for (const bundle of bundles) {
-    const row = database
+    const row = await database
       .select()
       .from(sqlite.backendAuthStates)
       .where(eq(sqlite.backendAuthStates.server, bundle.server))
@@ -374,12 +372,12 @@ function validateLegacyBundles(bundles: StoredOAuthTokenBundle[]): StoredOAuthTo
   return validated.sort((left, right) => left.server.localeCompare(right.server));
 }
 
-function assertLegacyBundlesMatchSqlite(
+async function assertLegacyBundlesMatchSqlite(
   database: SqliteBackendAuthDatabase,
   bundles: StoredOAuthTokenBundle[],
-): void {
+): Promise<void> {
   for (const bundle of bundles) {
-    const row = database
+    const row = await database
       .select()
       .from(sqlite.backendAuthStates)
       .where(eq(sqlite.backendAuthStates.server, bundle.server))
@@ -412,20 +410,22 @@ async function assertLegacyBundlesMatchPostgres(
   }
 }
 
-function writeSqlite(
+async function writeSqlite(
   db: SqliteHostDatabase,
   bundle: StoredOAuthTokenBundle,
   options: BackendAuthMutationOptions,
-): StoredOAuthTokenBundleView {
-  return db.transaction((transaction) => writeSqliteTransaction(transaction, bundle, options));
+): Promise<StoredOAuthTokenBundleView> {
+  return await db.transaction(
+    async (transaction) => await writeSqliteTransaction(transaction, bundle, options),
+  );
 }
 
-function writeSqliteTransaction(
+async function writeSqliteTransaction(
   transaction: SqliteBackendAuthDatabase,
   bundle: StoredOAuthTokenBundle,
   options: BackendAuthMutationOptions,
-): StoredOAuthTokenBundleView {
-  const current = transaction
+): Promise<StoredOAuthTokenBundleView> {
+  const current = await transaction
     .select()
     .from(sqlite.backendAuthStates)
     .where(eq(sqlite.backendAuthStates.server, bundle.server))
@@ -434,7 +434,7 @@ function writeSqliteTransaction(
   assertExpectedGeneration(current, options.expectedGeneration);
   const generation = (current?.generation ?? 0) + 1;
   const now = new Date().toISOString();
-  transaction
+  await transaction
     .insert(sqlite.backendAuthStates)
     .values({
       server: bundle.server,
@@ -449,7 +449,7 @@ function writeSqliteTransaction(
     })
     .run();
   if (options.operatorClientId) {
-    transaction
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(
         activityValues(
@@ -520,13 +520,13 @@ async function writePostgresTransaction(
   return { bundle, generation };
 }
 
-function deleteSqlite(
+async function deleteSqlite(
   db: SqliteHostDatabase,
   server: string,
   options: BackendAuthMutationOptions,
-): boolean {
-  return db.transaction((transaction) => {
-    const current = transaction
+): Promise<boolean> {
+  return await db.transaction(async (transaction) => {
+    const current = await transaction
       .select()
       .from(sqlite.backendAuthStates)
       .where(eq(sqlite.backendAuthStates.server, server))
@@ -536,13 +536,13 @@ function deleteSqlite(
     if (!current || !state?.bundle) return false;
     const generation = current.generation + 1;
     const now = new Date().toISOString();
-    transaction
+    await transaction
       .update(sqlite.backendAuthStates)
       .set({ generation, tokenBundle: null, updatedAt: now })
       .where(eq(sqlite.backendAuthStates.server, server))
       .run();
     if (options.operatorClientId) {
-      transaction
+      await transaction
         .insert(sqlite.operatorActivity)
         .values(
           activityValues(options.operatorClientId, "backend_auth_deleted", server, generation, now),

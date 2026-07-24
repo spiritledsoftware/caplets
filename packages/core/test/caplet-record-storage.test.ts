@@ -46,13 +46,13 @@ describe("Caplet Record storage", () => {
     });
     try {
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-      expect(storage.database.db.all(sql.raw(`PRAGMA index_info("${indexName}")`))).toEqual([
+      expect(await storage.database.db.all(sql.raw(`PRAGMA index_info("${indexName}")`))).toEqual([
         expect.objectContaining({ seqno: 0, name: "updated_at" }),
         expect.objectContaining({ seqno: 1, name: "record_key" }),
       ]);
       for (const direction of ["ASC", "DESC"]) {
         expect(
-          storage.database.db.all(
+          await storage.database.db.all(
             sql.raw(
               `EXPLAIN QUERY PLAN SELECT record_key FROM caplet_records ORDER BY updated_at ${direction}, record_key ${direction} LIMIT 50`,
             ),

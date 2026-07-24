@@ -69,7 +69,7 @@ export class SetupStateStore {
     const identity = approvalIdentity(args);
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select({ payload: sqlite.setupApprovals.payload })
             .from(sqlite.setupApprovals)
             .where(sqliteApprovalWhere(identity))
@@ -91,7 +91,7 @@ export class SetupStateStore {
     const approval = parseSetupApproval(input);
     const timestamp = this.now().toISOString();
     if (this.database.dialect === "sqlite") {
-      mutateApprovalSqlite(this.database.db, approval, options, timestamp);
+      await mutateApprovalSqlite(this.database.db, approval, options, timestamp);
     } else {
       await mutateApprovalPostgres(this.database.db, approval, options, timestamp);
     }
@@ -113,7 +113,7 @@ export class SetupStateStore {
       return { attempts: this.prunedAttempts([...attempts, attempt]) };
     };
     if (this.database.dialect === "sqlite") {
-      mutateAttemptsSqlite(this.database.db, attempt, options, timestamp, transition);
+      await mutateAttemptsSqlite(this.database.db, attempt, options, timestamp, transition);
     } else {
       await mutateAttemptsPostgres(this.database.db, attempt, options, timestamp, transition);
     }
@@ -139,7 +139,7 @@ export class SetupStateStore {
       args.length === 1 ? [DEFAULT_PROJECT_FINGERPRINT, args[0]] : args;
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select({ payload: sqlite.setupAttemptSets.payload })
             .from(sqlite.setupAttemptSets)
             .where(
@@ -179,7 +179,13 @@ export class SetupStateStore {
         : [DEFAULT_PROJECT_FINGERPRINT, args[0], args[1] ?? {}];
     const timestamp = this.now().toISOString();
     return this.database.dialect === "sqlite"
-      ? clearAttemptsSqlite(this.database.db, projectFingerprint, capletId, options, timestamp)
+      ? await clearAttemptsSqlite(
+          this.database.db,
+          projectFingerprint,
+          capletId,
+          options,
+          timestamp,
+        )
       : await clearAttemptsPostgres(
           this.database.db,
           projectFingerprint,
@@ -192,7 +198,7 @@ export class SetupStateStore {
   async assertLegacySnapshotImportable(snapshot: LegacySetupMigrationSnapshot): Promise<void> {
     const validated = validateLegacySetupSnapshot(snapshot);
     if (this.database.dialect === "sqlite") {
-      inspectLegacySetupSqlite(this.database.db, validated);
+      await inspectLegacySetupSqlite(this.database.db, validated);
     } else {
       await inspectLegacySetupPostgres(this.database.db, validated);
     }
@@ -202,13 +208,13 @@ export class SetupStateStore {
     const validated = validateLegacySetupSnapshot(snapshot);
     if (validated.approvals.length === 0 && validated.attemptSets.length === 0) return;
     if (this.database.dialect === "sqlite") {
-      this.database.db.transaction((transaction) => {
-        const pending = inspectLegacySetupSqlite(transaction, validated);
+      await this.database.db.transaction(async (transaction) => {
+        const pending = await inspectLegacySetupSqlite(transaction, validated);
         if (pending.approvals.length > 0) {
-          transaction.insert(sqlite.setupApprovals).values(pending.approvals).run();
+          await transaction.insert(sqlite.setupApprovals).values(pending.approvals).run();
         }
         if (pending.attemptSets.length > 0) {
-          transaction.insert(sqlite.setupAttemptSets).values(pending.attemptSets).run();
+          await transaction.insert(sqlite.setupAttemptSets).values(pending.attemptSets).run();
         }
       });
       return;
@@ -233,14 +239,14 @@ export class SetupStateStore {
       }
     });
   }
-  importLegacySnapshotInTransaction(
+  async importLegacySnapshotInTransaction(
     snapshot: LegacySetupMigrationSnapshot,
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void | Promise<void>> {
     const validated = validateLegacySetupSnapshot(snapshot);
     if (validated.approvals.length === 0 && validated.attemptSets.length === 0) return;
     return transaction.dialect === "sqlite"
-      ? importLegacySetupSqlite(transaction.db, validated)
+      ? await importLegacySetupSqlite(transaction.db, validated)
       : importLegacySetupPostgres(transaction.db, validated);
   }
 
@@ -248,19 +254,19 @@ export class SetupStateStore {
     const validated = validateLegacySetupSnapshot(snapshot);
     const pending =
       this.database.dialect === "sqlite"
-        ? inspectLegacySetupSqlite(this.database.db, validated)
+        ? await inspectLegacySetupSqlite(this.database.db, validated)
         : await inspectLegacySetupPostgres(this.database.db, validated);
     if (pending.approvals.length > 0 || pending.attemptSets.length > 0) {
       throw new CapletsError("INTERNAL_ERROR", "Setup state failed post-migration verification.");
     }
   }
-  verifyLegacySnapshotInTransaction(
+  async verifyLegacySnapshotInTransaction(
     snapshot: LegacySetupMigrationSnapshot,
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void | Promise<void>> {
     const validated = validateLegacySetupSnapshot(snapshot);
     if (transaction.dialect === "sqlite") {
-      verifyLegacySetupPending(inspectLegacySetupSqlite(transaction.db, validated));
+      verifyLegacySetupPending(await inspectLegacySetupSqlite(transaction.db, validated));
       return;
     }
     return inspectLegacySetupPostgres(transaction.db, validated).then(verifyLegacySetupPending);
@@ -322,16 +328,16 @@ type SqliteSetupDatabase =
 type PostgresSetupDatabase =
   | PostgresHostDatabase
   | Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
-function importLegacySetupSqlite(
+async function importLegacySetupSqlite(
   database: SqliteSetupDatabase,
   snapshot: ValidatedLegacySetupSnapshot,
-): void {
-  const pending = inspectLegacySetupSqlite(database, snapshot);
+): Promise<void> {
+  const pending = await inspectLegacySetupSqlite(database, snapshot);
   if (pending.approvals.length > 0) {
-    database.insert(sqlite.setupApprovals).values(pending.approvals).run();
+    await database.insert(sqlite.setupApprovals).values(pending.approvals).run();
   }
   if (pending.attemptSets.length > 0) {
-    database.insert(sqlite.setupAttemptSets).values(pending.attemptSets).run();
+    await database.insert(sqlite.setupAttemptSets).values(pending.attemptSets).run();
   }
 }
 
@@ -422,13 +428,13 @@ function validateLegacySetupSnapshot(
   };
 }
 
-function inspectLegacySetupSqlite(
+async function inspectLegacySetupSqlite(
   database: SqliteSetupDatabase,
   snapshot: ValidatedLegacySetupSnapshot,
-): LegacySetupPendingRows {
+): Promise<LegacySetupPendingRows> {
   const pending: LegacySetupPendingRows = { approvals: [], attemptSets: [] };
   for (const approval of snapshot.approvals) {
-    const existing = database
+    const existing = await database
       .select({ payload: sqlite.setupApprovals.payload })
       .from(sqlite.setupApprovals)
       .where(sqliteApprovalWhere(approval))
@@ -445,7 +451,7 @@ function inspectLegacySetupSqlite(
     if (!existing) pending.approvals.push(legacySetupApprovalRow(approval));
   }
   for (const set of snapshot.attemptSets) {
-    const existing = database
+    const existing = await database
       .select({ payload: sqlite.setupAttemptSets.payload })
       .from(sqlite.setupAttemptSets)
       .where(
@@ -583,20 +589,20 @@ function postgresApprovalWhere(identity: ApprovalIdentity) {
   );
 }
 
-function mutateApprovalSqlite(
+async function mutateApprovalSqlite(
   db: SqliteHostDatabase,
   approval: SetupApproval,
   options: SetupStateMutationOptions,
   timestamp: string,
-): void {
-  db.transaction((transaction) => {
-    const current = transaction
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const current = await transaction
       .select({ generation: sqlite.setupApprovals.generation })
       .from(sqlite.setupApprovals)
       .where(sqliteApprovalWhere(approval))
       .get();
     assertExpectedGeneration(current?.generation, options.expectedGeneration);
-    transaction
+    await transaction
       .insert(sqlite.setupApprovals)
       .values({
         ...approval,
@@ -621,7 +627,7 @@ function mutateApprovalSqlite(
         },
       })
       .run();
-    insertSqliteActivity(
+    await insertSqliteActivity(
       transaction,
       options,
       "setup.approve",
@@ -695,15 +701,15 @@ async function mutateApprovalPostgres(
   });
 }
 
-function mutateAttemptsSqlite(
+async function mutateAttemptsSqlite(
   db: SqliteHostDatabase,
   attempt: SetupAttempt,
   options: SetupStateMutationOptions,
   timestamp: string,
   transition: (payload: unknown | undefined) => SetupAttemptsPayload,
-): void {
-  db.transaction((transaction) => {
-    const current = transaction
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const current = await transaction
       .select({
         generation: sqlite.setupAttemptSets.generation,
         payload: sqlite.setupAttemptSets.payload,
@@ -718,7 +724,7 @@ function mutateAttemptsSqlite(
       .get();
     assertExpectedGeneration(current?.generation, options.expectedGeneration);
     const payload = transition(current?.payload);
-    transaction
+    await transaction
       .insert(sqlite.setupAttemptSets)
       .values({
         projectFingerprint: attempt.projectFingerprint,
@@ -738,7 +744,7 @@ function mutateAttemptsSqlite(
       })
       .run();
     const key = attemptsKey(attempt.projectFingerprint, attempt.capletId);
-    insertSqliteActivity(
+    await insertSqliteActivity(
       transaction,
       options,
       "setup.attempt.record",
@@ -816,28 +822,28 @@ async function mutateAttemptsPostgres(
   });
 }
 
-function clearAttemptsSqlite(
+async function clearAttemptsSqlite(
   db: SqliteHostDatabase,
   projectFingerprint: string,
   capletId: string,
   options: SetupStateMutationOptions,
   timestamp: string,
-): boolean {
-  return db.transaction((transaction) => {
+): Promise<boolean> {
+  return await db.transaction(async (transaction) => {
     const where = and(
       eq(sqlite.setupAttemptSets.projectFingerprint, projectFingerprint),
       eq(sqlite.setupAttemptSets.capletId, capletId),
     );
-    const current = transaction
+    const current = await transaction
       .select({ generation: sqlite.setupAttemptSets.generation })
       .from(sqlite.setupAttemptSets)
       .where(where)
       .get();
     assertExpectedGeneration(current?.generation, options.expectedGeneration);
     if (!current) return false;
-    transaction.delete(sqlite.setupAttemptSets).where(where).run();
+    await transaction.delete(sqlite.setupAttemptSets).where(where).run();
     const key = attemptsKey(projectFingerprint, capletId);
-    insertSqliteActivity(
+    await insertSqliteActivity(
       transaction,
       options,
       "setup.attempt.clear",
@@ -948,7 +954,7 @@ function activityValues(
   };
 }
 
-function insertSqliteActivity(
+async function insertSqliteActivity(
   transaction: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
   options: SetupStateMutationOptions,
   action: string,
@@ -956,10 +962,10 @@ function insertSqliteActivity(
   targetKey: string,
   timestamp: string,
   metadata: Record<string, unknown>,
-): void {
+): Promise<void> {
   const operatorClientId = options.operatorClientId?.trim();
   if (!operatorClientId) return;
-  transaction
+  await transaction
     .insert(sqlite.operatorActivity)
     .values(activityValues(operatorClientId, action, targetKind, targetKey, timestamp, metadata))
     .run();

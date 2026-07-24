@@ -132,7 +132,7 @@ describe("SQL-backed dashboard sessions", () => {
     await expect(firstStore.delete(cookieHeader(created.cookieValue))).resolves.toBe(false);
 
     if (firstStorage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-    firstStorage.database.db
+    await firstStorage.database.db
       .insert(sqlite.dashboardSessions)
       .values({
         sessionId: "dash_invalid",
@@ -152,7 +152,9 @@ describe("SQL-backed dashboard sessions", () => {
         now: NOW,
       }),
     ).rejects.toMatchObject({ code: "AUTH_FAILED" });
-    expect(firstStorage.database.db.select().from(sqlite.dashboardSessions).all()).toEqual([]);
+    expect(await firstStorage.database.db.select().from(sqlite.dashboardSessions).all()).toEqual(
+      [],
+    );
   });
 });
 

@@ -18,7 +18,7 @@ export default defineConfig([
     },
     plugins: runtimeSentryPlugins("core"),
     external: [
-      "better-sqlite3",
+      "@libsql/client",
       "jsonc-parser",
       "quickjs-emscripten",
       "typescript",

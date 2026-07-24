@@ -123,7 +123,7 @@ export class CapletInstallationStore {
     const operatorId = requireOperator(input.operator);
     const installationKey =
       this.database.dialect === "sqlite"
-        ? installSqlite(this.database.db, input, operatorId)
+        ? await installSqlite(this.database.db, input, operatorId)
         : await installPostgres(this.database.db, input, operatorId);
     const installed = await this.getByKey(installationKey);
     if (!installed)
@@ -134,7 +134,7 @@ export class CapletInstallationStore {
   async replaceDetached(input: ReplaceDetachedInstallationInput): Promise<CapletInstallationView> {
     const operatorId = requireOperator(input.operator);
     if (this.database.dialect === "sqlite")
-      replaceDetachedSqlite(this.database.db, input, operatorId);
+      await replaceDetachedSqlite(this.database.db, input, operatorId);
     else await replaceDetachedPostgres(this.database.db, input, operatorId);
     const installed = await this.getActive(input.capletId);
     if (!installed)
@@ -150,39 +150,39 @@ export class CapletInstallationStore {
   ): Promise<CapletInstallationObservationView> {
     const operatorId = requireOperator(input.operator);
     return this.database.dialect === "sqlite"
-      ? appendObservationSqlite(this.database.db, input, operatorId)
+      ? await appendObservationSqlite(this.database.db, input, operatorId)
       : await appendObservationPostgres(this.database.db, input, operatorId);
   }
 
   async detach(input: DetachInput): Promise<CapletInstallationView | undefined> {
     const operatorId = requireOperator(input.operator);
-    if (this.database.dialect === "sqlite") detachSqlite(this.database.db, input, operatorId);
+    if (this.database.dialect === "sqlite") await detachSqlite(this.database.db, input, operatorId);
     else await detachPostgres(this.database.db, input, operatorId);
     return await this.getByKey(input.installationKey);
   }
 
   async getActive(capletId: string): Promise<CapletInstallationView | undefined> {
     return this.database.dialect === "sqlite"
-      ? getSqlite(this.database.db, capletId, true)
+      ? await getSqlite(this.database.db, capletId, true)
       : await getPostgres(this.database.db, capletId, true);
   }
-  getActiveInTransaction(
+  async getActiveInTransaction(
     capletId: string,
     transaction: HostDatabaseTransaction,
-  ): CapletInstallationView | undefined | Promise<CapletInstallationView | undefined> {
+  ): Promise<CapletInstallationView | undefined> {
     return transaction.dialect === "sqlite"
-      ? getSqlite(transaction.db, capletId, true)
-      : getPostgres(transaction.db, capletId, true);
+      ? await getSqlite(transaction.db, capletId, true)
+      : await getPostgres(transaction.db, capletId, true);
   }
 
   async getLatest(capletId: string): Promise<CapletInstallationView | undefined> {
     return this.database.dialect === "sqlite"
-      ? getSqlite(this.database.db, capletId, false)
+      ? await getSqlite(this.database.db, capletId, false)
       : await getPostgres(this.database.db, capletId, false);
   }
   async getByKey(installationKey: string): Promise<CapletInstallationView | undefined> {
     return this.database.dialect === "sqlite"
-      ? getByKeySqlite(this.database.db, installationKey)
+      ? await getByKeySqlite(this.database.db, installationKey)
       : await getByKeyPostgres(this.database.db, installationKey);
   }
 
@@ -194,7 +194,7 @@ export class CapletInstallationStore {
     const limit = storagePageLimit(options.limit);
     const sort = options.sort ?? "desc";
     return this.database.dialect === "sqlite"
-      ? listPageSqlite(this.database.db, capletId, limit, options.after, sort)
+      ? await listPageSqlite(this.database.db, capletId, limit, options.after, sort)
       : await listPagePostgres(this.database.db, capletId, limit, options.after, sort);
   }
 
@@ -216,7 +216,7 @@ export class CapletInstallationStore {
     const installation = await this.getLatest(capletId);
     if (!installation) return undefined;
     return this.database.dialect === "sqlite"
-      ? latestObservationSqlite(this.database.db, installation.installationKey)
+      ? await latestObservationSqlite(this.database.db, installation.installationKey)
       : await latestObservationPostgres(this.database.db, installation.installationKey);
   }
 
@@ -230,7 +230,7 @@ export class CapletInstallationStore {
     const limit = storagePageLimit(options.limit);
     const sort = options.sort ?? "asc";
     return this.database.dialect === "sqlite"
-      ? listObservationsPageSqlite(this.database.db, capletId, limit, options.after, sort)
+      ? await listObservationsPageSqlite(this.database.db, capletId, limit, options.after, sort)
       : await listObservationsPagePostgres(this.database.db, capletId, limit, options.after, sort);
   }
 
@@ -250,7 +250,7 @@ export class CapletInstallationStore {
     const bounded = Math.max(1, Math.min(limit, 500));
     const rows =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.operatorActivity)
             .orderBy(desc(sqlite.operatorActivity.createdAt))
@@ -272,15 +272,19 @@ export function requireOperator(principal: OperatorPrincipal): string {
   return principal.clientId;
 }
 
-function installSqlite(db: SqliteHostDatabase, input: InstallInput, operatorId: string): string {
-  return db.transaction((transaction) => {
-    const record = transaction
+async function installSqlite(
+  db: SqliteHostDatabase,
+  input: InstallInput,
+  operatorId: string,
+): Promise<string> {
+  return await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.capletId))
       .get();
     if (!record) throw missingCapletRecord(input.capletId);
-    const latest = transaction
+    const latest = await transaction
       .select()
       .from(sqlite.capletInstallations)
       .where(eq(sqlite.capletInstallations.recordKey, record.recordKey))
@@ -293,7 +297,7 @@ function installSqlite(db: SqliteHostDatabase, input: InstallInput, operatorId: 
     assertFreshInstall(input.capletId, latest?.status);
     const now = new Date().toISOString();
     const installationKey = input.installationKey ?? randomUUID();
-    const inserted = transaction
+    const inserted = await transaction
       .insert(sqlite.capletInstallations)
       .values({
         installationKey,
@@ -308,8 +312,8 @@ function installSqlite(db: SqliteHostDatabase, input: InstallInput, operatorId: 
       })
       .onConflictDoNothing()
       .run();
-    if (inserted.changes !== 1) throw installationKeyExists(installationKey);
-    transaction
+    if (inserted.rowsAffected !== 1) throw installationKeyExists(installationKey);
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(
         activity(operatorId, "caplet.install", "installation", installationKey, now, {
@@ -317,7 +321,7 @@ function installSqlite(db: SqliteHostDatabase, input: InstallInput, operatorId: 
         }),
       )
       .run();
-    advanceSqliteConfigGeneration(
+    await advanceSqliteConfigGeneration(
       transaction,
       `install:${record.recordKey}:${installationKey}`,
       operatorId,
@@ -381,20 +385,20 @@ async function installPostgres(
   });
 }
 
-function replaceDetachedSqlite(
+async function replaceDetachedSqlite(
   db: SqliteHostDatabase,
   input: ReplaceDetachedInstallationInput,
   operatorId: string,
-): void {
-  db.transaction((transaction) => {
-    const record = transaction
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.capletId))
       .get();
     if (!record)
       throw new CapletsError("REQUEST_INVALID", `Caplet Record ${input.capletId} was not found.`);
-    const latest = transaction
+    const latest = await transaction
       .select()
       .from(sqlite.capletInstallations)
       .where(eq(sqlite.capletInstallations.recordKey, record.recordKey))
@@ -407,7 +411,7 @@ function replaceDetachedSqlite(
     assertDetachedReplacement(input, latest);
     const now = nextTimestamp(latest!.updatedAt);
     const installationKey = randomUUID();
-    transaction
+    await transaction
       .insert(sqlite.capletInstallations)
       .values({
         installationKey,
@@ -421,7 +425,7 @@ function replaceDetachedSqlite(
         updatedAt: now,
       })
       .run();
-    transaction
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(
         activity(operatorId, "caplet.replace_installation", "installation", installationKey, now, {
@@ -430,7 +434,7 @@ function replaceDetachedSqlite(
         }),
       )
       .run();
-    advanceSqliteConfigGeneration(
+    await advanceSqliteConfigGeneration(
       transaction,
       `install:${record.recordKey}:${installationKey}`,
       operatorId,
@@ -490,16 +494,16 @@ async function replaceDetachedPostgres(
   });
 }
 
-function appendObservationSqlite(
+async function appendObservationSqlite(
   db: SqliteHostDatabase,
   input: AppendInstallationObservationInput,
   operatorId: string,
-): CapletInstallationObservationView {
-  return db.transaction((transaction) => {
-    const current = activeSqlite(transaction, input.capletId);
+): Promise<CapletInstallationObservationView> {
+  return await db.transaction(async (transaction) => {
+    const current = await activeSqlite(transaction, input.capletId);
     if (!current) throw missingActiveInstallation(input.capletId);
     if (current.generation !== input.expectedGeneration) throw staleInstallation(input.capletId);
-    const latest = transaction
+    const latest = await transaction
       .select()
       .from(sqlite.capletInstallationObservations)
       .where(eq(sqlite.capletInstallationObservations.installationKey, current.installationKey))
@@ -511,7 +515,7 @@ function appendObservationSqlite(
       .get();
     const now = nextTimestamp(latest?.observedAt);
     const observation = observationValues(current.installationKey, input, now);
-    const updated = transaction
+    const updated = await transaction
       .update(sqlite.capletInstallations)
       .set({ generation: current.generation + 1, updatedAt: now })
       .where(
@@ -522,9 +526,9 @@ function appendObservationSqlite(
         ),
       )
       .run();
-    if (updated.changes !== 1) throw staleInstallation(input.capletId);
-    transaction.insert(sqlite.capletInstallationObservations).values(observation).run();
-    transaction
+    if (updated.rowsAffected !== 1) throw staleInstallation(input.capletId);
+    await transaction.insert(sqlite.capletInstallationObservations).values(observation).run();
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(
         activity(
@@ -590,9 +594,13 @@ async function appendObservationPostgres(
   });
 }
 
-function detachSqlite(db: SqliteHostDatabase, input: DetachInput, operatorId: string): void {
-  db.transaction((transaction) => {
-    const current = transaction
+async function detachSqlite(
+  db: SqliteHostDatabase,
+  input: DetachInput,
+  operatorId: string,
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const current = await transaction
       .select({
         installationKey: sqlite.capletInstallations.installationKey,
         generation: sqlite.capletInstallations.generation,
@@ -620,7 +628,7 @@ function detachSqlite(db: SqliteHostDatabase, input: DetachInput, operatorId: st
       );
     }
     const now = new Date().toISOString();
-    const updated = transaction
+    const updated = await transaction
       .update(sqlite.capletInstallations)
       .set({
         status: "detached",
@@ -637,8 +645,8 @@ function detachSqlite(db: SqliteHostDatabase, input: DetachInput, operatorId: st
         ),
       )
       .run();
-    if (updated.changes !== 1) throw staleInstallation(input.capletId);
-    transaction
+    if (updated.rowsAffected !== 1) throw staleInstallation(input.capletId);
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(
         activity(operatorId, "caplet.detach", "installation", current.installationKey, now, {
@@ -646,7 +654,7 @@ function detachSqlite(db: SqliteHostDatabase, input: DetachInput, operatorId: st
         }),
       )
       .run();
-    advanceSqliteConfigGeneration(
+    await advanceSqliteConfigGeneration(
       transaction,
       `detach:${current.installationKey}:${current.generation + 1}`,
       operatorId,
@@ -720,12 +728,12 @@ async function detachPostgres(
   });
 }
 
-function getSqlite(
+async function getSqlite(
   db: SqliteHostDatabase | SqliteHostTransaction,
   capletId: string,
   activeOnly: boolean,
-): CapletInstallationView | undefined {
-  const row = db
+): Promise<CapletInstallationView | undefined> {
+  const row = await db
     .select({ installation: sqlite.capletInstallations, capletId: sqlite.capletRecords.capletId })
     .from(sqlite.capletInstallations)
     .innerJoin(
@@ -780,11 +788,11 @@ async function getPostgres(
   return row ? installationView(row.capletId, row.installation) : undefined;
 }
 
-function getByKeySqlite(
+async function getByKeySqlite(
   db: SqliteHostDatabase,
   installationKey: string,
-): CapletInstallationView | undefined {
-  const row = db
+): Promise<CapletInstallationView | undefined> {
+  const row = await db
     .select({ installation: sqlite.capletInstallations, capletId: sqlite.capletRecords.capletId })
     .from(sqlite.capletInstallations)
     .innerJoin(
@@ -815,53 +823,54 @@ async function getByKeyPostgres(
   return row ? installationView(row.capletId, row.installation) : undefined;
 }
 
-function listPageSqlite(
+async function listPageSqlite(
   db: SqliteHostDatabase,
   capletId: string,
   limit: number,
   after: CapletInstallationPageKey | undefined,
   sort: KeysetSortDirection,
-): StorageKeysetPage<CapletInstallationView, CapletInstallationPageKey> {
-  const rows = db
-    .select({ installation: sqlite.capletInstallations, capletId: sqlite.capletRecords.capletId })
-    .from(sqlite.capletInstallations)
-    .innerJoin(
-      sqlite.capletRecords,
-      eq(sqlite.capletRecords.recordKey, sqlite.capletInstallations.recordKey),
-    )
-    .where(
-      and(
-        eq(sqlite.capletRecords.capletId, capletId),
-        after
-          ? sort === "asc"
-            ? or(
-                gt(sqlite.capletInstallations.updatedAt, after.updatedAt),
-                and(
-                  eq(sqlite.capletInstallations.updatedAt, after.updatedAt),
-                  gt(sqlite.capletInstallations.installationKey, after.installationKey),
-                ),
-              )
-            : or(
-                lt(sqlite.capletInstallations.updatedAt, after.updatedAt),
-                and(
-                  eq(sqlite.capletInstallations.updatedAt, after.updatedAt),
-                  lt(sqlite.capletInstallations.installationKey, after.installationKey),
-                ),
-              )
-          : undefined,
-      ),
-    )
-    .orderBy(
-      sort === "asc"
-        ? asc(sqlite.capletInstallations.updatedAt)
-        : desc(sqlite.capletInstallations.updatedAt),
-      sort === "asc"
-        ? asc(sqlite.capletInstallations.installationKey)
-        : desc(sqlite.capletInstallations.installationKey),
-    )
-    .limit(limit + 1)
-    .all()
-    .map((row) => installationView(row.capletId, row.installation));
+): Promise<StorageKeysetPage<CapletInstallationView, CapletInstallationPageKey>> {
+  const rows = (
+    await db
+      .select({ installation: sqlite.capletInstallations, capletId: sqlite.capletRecords.capletId })
+      .from(sqlite.capletInstallations)
+      .innerJoin(
+        sqlite.capletRecords,
+        eq(sqlite.capletRecords.recordKey, sqlite.capletInstallations.recordKey),
+      )
+      .where(
+        and(
+          eq(sqlite.capletRecords.capletId, capletId),
+          after
+            ? sort === "asc"
+              ? or(
+                  gt(sqlite.capletInstallations.updatedAt, after.updatedAt),
+                  and(
+                    eq(sqlite.capletInstallations.updatedAt, after.updatedAt),
+                    gt(sqlite.capletInstallations.installationKey, after.installationKey),
+                  ),
+                )
+              : or(
+                  lt(sqlite.capletInstallations.updatedAt, after.updatedAt),
+                  and(
+                    eq(sqlite.capletInstallations.updatedAt, after.updatedAt),
+                    lt(sqlite.capletInstallations.installationKey, after.installationKey),
+                  ),
+                )
+            : undefined,
+        ),
+      )
+      .orderBy(
+        sort === "asc"
+          ? asc(sqlite.capletInstallations.updatedAt)
+          : desc(sqlite.capletInstallations.updatedAt),
+        sort === "asc"
+          ? asc(sqlite.capletInstallations.installationKey)
+          : desc(sqlite.capletInstallations.installationKey),
+      )
+      .limit(limit + 1)
+      .all()
+  ).map((row) => installationView(row.capletId, row.installation));
   return keysetPage(rows, limit, (item) => ({
     updatedAt: item.updatedAt,
     installationKey: item.installationKey,
@@ -924,13 +933,15 @@ async function listPagePostgres(
   }));
 }
 
-function listObservationsPageSqlite(
+async function listObservationsPageSqlite(
   db: SqliteHostDatabase,
   capletId: string,
   limit: number,
   after: CapletInstallationObservationPageKey | undefined,
   sort: KeysetSortDirection,
-): StorageKeysetPage<CapletInstallationObservationView, CapletInstallationObservationPageKey> {
+): Promise<
+  StorageKeysetPage<CapletInstallationObservationView, CapletInstallationObservationPageKey>
+> {
   const latestInstallation = db
     .select({ installationKey: sqlite.capletInstallations.installationKey })
     .from(sqlite.capletInstallations)
@@ -944,42 +955,43 @@ function listObservationsPageSqlite(
       desc(sqlite.capletInstallations.installationKey),
     )
     .limit(1);
-  const rows = db
-    .select()
-    .from(sqlite.capletInstallationObservations)
-    .where(
-      and(
-        inArray(sqlite.capletInstallationObservations.installationKey, latestInstallation),
-        after
-          ? sort === "asc"
-            ? or(
-                gt(sqlite.capletInstallationObservations.observedAt, after.observedAt),
-                and(
-                  eq(sqlite.capletInstallationObservations.observedAt, after.observedAt),
-                  gt(sqlite.capletInstallationObservations.observationKey, after.observationKey),
-                ),
-              )
-            : or(
-                lt(sqlite.capletInstallationObservations.observedAt, after.observedAt),
-                and(
-                  eq(sqlite.capletInstallationObservations.observedAt, after.observedAt),
-                  lt(sqlite.capletInstallationObservations.observationKey, after.observationKey),
-                ),
-              )
-          : undefined,
-      ),
-    )
-    .orderBy(
-      sort === "asc"
-        ? asc(sqlite.capletInstallationObservations.observedAt)
-        : desc(sqlite.capletInstallationObservations.observedAt),
-      sort === "asc"
-        ? asc(sqlite.capletInstallationObservations.observationKey)
-        : desc(sqlite.capletInstallationObservations.observationKey),
-    )
-    .limit(limit + 1)
-    .all()
-    .map(observationView);
+  const rows = (
+    await db
+      .select()
+      .from(sqlite.capletInstallationObservations)
+      .where(
+        and(
+          inArray(sqlite.capletInstallationObservations.installationKey, latestInstallation),
+          after
+            ? sort === "asc"
+              ? or(
+                  gt(sqlite.capletInstallationObservations.observedAt, after.observedAt),
+                  and(
+                    eq(sqlite.capletInstallationObservations.observedAt, after.observedAt),
+                    gt(sqlite.capletInstallationObservations.observationKey, after.observationKey),
+                  ),
+                )
+              : or(
+                  lt(sqlite.capletInstallationObservations.observedAt, after.observedAt),
+                  and(
+                    eq(sqlite.capletInstallationObservations.observedAt, after.observedAt),
+                    lt(sqlite.capletInstallationObservations.observationKey, after.observationKey),
+                  ),
+                )
+            : undefined,
+        ),
+      )
+      .orderBy(
+        sort === "asc"
+          ? asc(sqlite.capletInstallationObservations.observedAt)
+          : desc(sqlite.capletInstallationObservations.observedAt),
+        sort === "asc"
+          ? asc(sqlite.capletInstallationObservations.observationKey)
+          : desc(sqlite.capletInstallationObservations.observationKey),
+      )
+      .limit(limit + 1)
+      .all()
+  ).map(observationView);
   return keysetPage(rows, limit, (item) => ({
     observedAt: item.observedAt,
     observationKey: item.observationKey,
@@ -1050,11 +1062,11 @@ async function listObservationsPagePostgres(
   }));
 }
 
-function activeSqlite(
+async function activeSqlite(
   db: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
   capletId: string,
 ) {
-  return db
+  return await db
     .select({
       installationKey: sqlite.capletInstallations.installationKey,
       generation: sqlite.capletInstallations.generation,
@@ -1099,11 +1111,11 @@ async function activePostgres(
   return row;
 }
 
-function latestObservationSqlite(
+async function latestObservationSqlite(
   db: SqliteHostDatabase,
   installationKey: string,
-): CapletInstallationObservationView | undefined {
-  const row = db
+): Promise<CapletInstallationObservationView | undefined> {
+  const row = await db
     .select()
     .from(sqlite.capletInstallationObservations)
     .where(eq(sqlite.capletInstallationObservations.installationKey, installationKey))
@@ -1300,11 +1312,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function capletRecordExists(database: HostDatabase, capletId: string): Promise<boolean> {
   if (database.dialect === "sqlite") {
     return (
-      database.db
+      (await database.db
         .select({ recordKey: sqlite.capletRecords.recordKey })
         .from(sqlite.capletRecords)
         .where(eq(sqlite.capletRecords.capletId, capletId))
-        .get() !== undefined
+        .get()) !== undefined
     );
   }
   const [record] = await database.db
