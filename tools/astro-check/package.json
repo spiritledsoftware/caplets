@@ -4,6 +4,6 @@
   "type": "module",
   "dependencies": {
     "@astrojs/language-server": "^2.16.12",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   }
 }
