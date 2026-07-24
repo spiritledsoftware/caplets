@@ -169,7 +169,7 @@ export class CapletInstallationStore {
   async getActiveInTransaction(
     capletId: string,
     transaction: HostDatabaseTransaction,
-  ): Promise<CapletInstallationView | undefined | Promise<CapletInstallationView | undefined>> {
+  ): Promise<CapletInstallationView | undefined> {
     return transaction.dialect === "sqlite"
       ? await getSqlite(transaction.db, capletId, true)
       : await getPostgres(transaction.db, capletId, true);

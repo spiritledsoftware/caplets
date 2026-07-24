@@ -670,14 +670,26 @@ async function validateBundleUploadRequest(
 }
 
 function requestBodyReadable(body: ReadableStream<Uint8Array>): Readable {
-  return Readable.from(requestBodyChunks(body), {
+  const reader = body.getReader();
+  const input = Readable.from(requestBodyChunks(reader), {
     highWaterMark: 64 * 1024,
     objectMode: false,
   });
+  const destroy = input.destroy.bind(input);
+  let cancelStarted = false;
+  input.destroy = (error?: Error) => {
+    if (!input.destroyed && !input.readableEnded && !cancelStarted) {
+      cancelStarted = true;
+      void reader.cancel(error).catch(() => undefined);
+    }
+    return destroy(error);
+  };
+  return input;
 }
 
-async function* requestBodyChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<Buffer> {
-  const reader = body.getReader();
+async function* requestBodyChunks(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncGenerator<Buffer> {
   try {
     while (true) {
       const chunk = await reader.read();

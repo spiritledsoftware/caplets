@@ -143,7 +143,10 @@ type BunServerWebSocket = {
 
 type BunWebSocketHandler = {
   close(socket: BunServerWebSocket, code?: number, reason?: string): void;
-  message(socket: BunServerWebSocket, message: string | { buffer: ArrayBufferLike }): void;
+  message(
+    socket: BunServerWebSocket,
+    message: string | { buffer: ArrayBufferLike; byteLength: number; byteOffset: number },
+  ): void;
   open(socket: BunServerWebSocket): void;
 };
 
@@ -179,7 +182,11 @@ const bunWebSocket: BunWebSocketHandler = {
   },
   message(socket, message) {
     socket.data.events.onMessage?.(
-      createWSMessageEvent(typeof message === "string" ? message : message.buffer),
+      createWSMessageEvent(
+        typeof message === "string"
+          ? message
+          : message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength),
+      ),
       bunWebSocketContext(socket),
     );
   },
@@ -3049,6 +3056,7 @@ function bunHttpServer(server: BunRuntimeServer): HttpServer {
     }
   };
   const stop = (closeActiveConnections: boolean) => {
+    if (stopped) return;
     void server.stop(closeActiveConnections).then(
       () => finish(),
       (error: unknown) => finish(error),
@@ -3059,6 +3067,7 @@ function bunHttpServer(server: BunRuntimeServer): HttpServer {
       callback = onStopped;
       stop(false);
     },
+    // Escalate the pending graceful stop only after application sessions have closed.
     closeAllConnections() {
       stop(true);
     },

@@ -2038,11 +2038,15 @@ describe("relative Admin v2 router", () => {
     });
     const activeLease = await admission.acquire();
     let bodyPulls = 0;
+    let bodyCancelled = false;
     const body = new ReadableStream<Uint8Array>(
       {
         pull() {
           bodyPulls += 1;
           throw new Error("Capacity-rejected request body must not be read.");
+        },
+        cancel() {
+          bodyCancelled = true;
         },
       },
       { highWaterMark: 0 },
@@ -2100,6 +2104,7 @@ describe("relative Admin v2 router", () => {
         type: "urn:caplets:problem:too-many-requests",
       });
       expect(bodyPulls).toBe(0);
+      expect(bodyCancelled).toBe(true);
       expect(execute).not.toHaveBeenCalled();
     } finally {
       await activeLease.cleanup();

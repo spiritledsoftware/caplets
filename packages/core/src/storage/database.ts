@@ -333,7 +333,10 @@ async function openSqliteStorage(
       async () => {
         await operationQueue.drain();
         rawClient.close();
-        if (ephemeralRoot) rmSync(ephemeralRoot, { recursive: true, force: true });
+        if (ephemeralRoot) {
+          SQLITE_OPERATION_QUEUES.delete(path);
+          rmSync(ephemeralRoot, { recursive: true, force: true });
+        }
       },
       config,
       options,
@@ -345,7 +348,10 @@ async function openSqliteStorage(
     } catch {
       // Preserve the startup error.
     }
-    if (ephemeralRoot) rmSync(ephemeralRoot, { recursive: true, force: true });
+    if (ephemeralRoot) {
+      SQLITE_OPERATION_QUEUES.delete(path);
+      rmSync(ephemeralRoot, { recursive: true, force: true });
+    }
     throw error;
   }
 }

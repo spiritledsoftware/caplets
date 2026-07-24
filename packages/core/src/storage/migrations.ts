@@ -105,7 +105,7 @@ async function migrateSqliteExclusively(
     });
     await transaction.commit();
   } catch (error) {
-    await transaction.rollback();
+    await transaction.rollback().catch(() => undefined);
     throw error;
   }
 }

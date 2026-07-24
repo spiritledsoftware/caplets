@@ -333,41 +333,44 @@ async function mutateBindingSqlite<R>(
   bindingId: string,
   transition: (current: ProjectBindingAuthoritativeView | undefined) => BindingMutation<R>,
 ): Promise<R> {
-  return await db.transaction(async (transaction) => {
-    const row = await transaction
-      .select()
-      .from(sqlite.projectBindings)
-      .where(eq(sqlite.projectBindings.bindingId, bindingId))
-      .get();
-    const current = row ? bindingView(row) : undefined;
-    const mutation = transition(current);
-    assertExpectedGeneration(current?.generation, mutation.expectedGeneration);
-    if (mutation.next) {
-      if (current) {
+  return await db.transaction(
+    async (transaction) => {
+      const row = await transaction
+        .select()
+        .from(sqlite.projectBindings)
+        .where(eq(sqlite.projectBindings.bindingId, bindingId))
+        .get();
+      const current = row ? bindingView(row) : undefined;
+      const mutation = transition(current);
+      assertExpectedGeneration(current?.generation, mutation.expectedGeneration);
+      if (mutation.next) {
+        if (current) {
+          await transaction
+            .update(sqlite.projectBindings)
+            .set(bindingRow(mutation.next))
+            .where(
+              and(
+                eq(sqlite.projectBindings.bindingId, bindingId),
+                eq(sqlite.projectBindings.generation, current.generation),
+              ),
+            )
+            .run();
+        } else {
+          await transaction.insert(sqlite.projectBindings).values(bindingRow(mutation.next)).run();
+        }
+      }
+      if (mutation.activity) {
         await transaction
-          .update(sqlite.projectBindings)
-          .set(bindingRow(mutation.next))
-          .where(
-            and(
-              eq(sqlite.projectBindings.bindingId, bindingId),
-              eq(sqlite.projectBindings.generation, current.generation),
-            ),
+          .insert(sqlite.operatorActivity)
+          .values(
+            activityValues(mutation.activity, mutation.next?.updatedAt ?? new Date().toISOString()),
           )
           .run();
-      } else {
-        await transaction.insert(sqlite.projectBindings).values(bindingRow(mutation.next)).run();
       }
-    }
-    if (mutation.activity) {
-      await transaction
-        .insert(sqlite.operatorActivity)
-        .values(
-          activityValues(mutation.activity, mutation.next?.updatedAt ?? new Date().toISOString()),
-        )
-        .run();
-    }
-    return mutation.value;
-  });
+      return mutation.value;
+    },
+    { behavior: "immediate" },
+  );
 }
 
 async function mutateBindingPostgres<R>(
