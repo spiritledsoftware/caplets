@@ -4,6 +4,7 @@ import type { ProductTelemetryEvent, ReliabilityTelemetryEvent, TelemetryEvent }
 import { BUNDLED_POSTHOG_TOKEN, BUNDLED_SENTRY_DSN } from "./intake.generated";
 import { stripSentryEvent } from "./privacy";
 import { recordTelemetryDrop, type TelemetryState } from "./state";
+import { runtimeDescriptor } from "./runtime-environment";
 
 export type PostHogClient = Pick<PostHog, "capture" | "shutdown">;
 export type SentryClient = Pick<NodeClient, "captureEvent" | "flush">;
@@ -127,6 +128,28 @@ async function defaultPostHogFactory(token: string): Promise<PostHogClient> {
 }
 
 async function defaultSentryFactory(dsn: string): Promise<SentryClient> {
+  const runtime = runtimeDescriptor();
+  // Runtime-selected provider SDKs keep each host on its native Sentry transport.
+  if (runtime.name === "bun") {
+    const sentry = await import("@sentry/bun");
+    const options = {
+      dsn,
+      release: process.env.CAPLETS_SENTRY_RELEASE,
+      environment: process.env.CAPLETS_SENTRY_ENVIRONMENT,
+      sendDefaultPii: false,
+      integrations: [],
+      tracesSampleRate: 0,
+      transport: sentry.makeFetchTransport,
+      stackParser: sentry.defaultStackParser,
+      beforeSend(event) {
+        return stripSentryEvent(
+          event as unknown as Record<string, unknown>,
+        ) as unknown as typeof event;
+      },
+    } satisfies ConstructorParameters<typeof sentry.NodeClient>[0];
+    return new sentry.NodeClient(options);
+  }
+
   const sentry = await import("@sentry/node");
   const options = {
     dsn,

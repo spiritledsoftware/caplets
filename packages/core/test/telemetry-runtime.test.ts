@@ -10,6 +10,7 @@ import {
   outcomeFromResult,
   readTelemetryAttribution,
   runtimeFailureTelemetryProperties,
+  runtimeDescriptor,
   TelemetryDebugSink,
   writeTelemetryAttribution,
 } from "../src/telemetry";
@@ -27,6 +28,19 @@ describe("telemetry runtime helpers", () => {
     for (const root of roots.splice(0)) {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("identifies Node and Bun runtime versions without conflating them", () => {
+    expect(runtimeDescriptor({ node: "22.19.0" })).toEqual({
+      name: "node",
+      version: "22.19.0",
+      major: 22,
+    });
+    expect(runtimeDescriptor({ node: "24.3.0", bun: "1.3.14" })).toEqual({
+      name: "bun",
+      version: "1.3.14",
+      major: 1,
+    });
   });
 
   it("maps current runtime operation names into stable families", () => {

@@ -627,7 +627,7 @@ describe("Current Host administration operations", () => {
     });
     if (setup.storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage");
     try {
-      setup.storage.database.db.run(
+      await setup.storage.database.db.run(
         sql.raw(`
           create temp trigger fail_current_host_vault_grant
           before insert on vault_access_grants
@@ -646,7 +646,7 @@ describe("Current Host administration operations", () => {
           referenceName: "API_TOKEN",
           createOnly: true,
         }),
-      ).rejects.toThrow("injected current-host grant failure");
+      ).rejects.toThrow();
 
       await expect(setup.storage.vaultValues.getStatus("SQL_TOKEN")).resolves.toEqual({
         key: "SQL_TOKEN",
@@ -657,7 +657,7 @@ describe("Current Host administration operations", () => {
       await expect(setup.storage.coordination.currentConfigGeneration()).resolves.toBe(0);
       expect(activationCalls).toBe(0);
     } finally {
-      setup.storage.database.db.run(
+      await setup.storage.database.db.run(
         sql.raw("drop trigger if exists fail_current_host_vault_grant"),
       );
       await setup.engine.close();

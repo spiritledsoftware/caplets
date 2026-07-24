@@ -64,6 +64,11 @@ export {
   type TelemetryProviderFactories,
 } from "./providers";
 export {
+  runtimeDescriptor,
+  type JavaScriptRuntime,
+  type RuntimeDescriptor,
+} from "./runtime-environment";
+export {
   backendFamilyCounts,
   captureRuntimeReliabilityEvent,
   captureRuntimeTelemetryEvent,

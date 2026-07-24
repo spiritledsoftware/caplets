@@ -269,7 +269,7 @@ export class CapletRecordStore {
     const [prepared] = await this.prepareBundlesFromSources([input]);
     try {
       if (this.database.dialect === "sqlite") {
-        importSqlite(this.database.db, prepared!);
+        await importSqlite(this.database.db, prepared!);
       } else {
         await importPostgres(this.database.db, prepared!);
       }
@@ -299,7 +299,7 @@ export class CapletRecordStore {
     const bundles = await this.prepareBundlesFromSources(inputs);
     try {
       if (this.database.dialect === "sqlite") {
-        importManySqlite(this.database.db, bundles);
+        await importManySqlite(this.database.db, bundles);
       } else {
         await importManyPostgres(this.database.db, bundles);
       }
@@ -328,30 +328,30 @@ export class CapletRecordStore {
     );
   }
 
-  importBundlesInTransaction(
+  async importBundlesInTransaction(
     inputs: ImportCapletBundleInput[],
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void | Promise<void>> {
     for (const input of inputs) requireOperator(input.operator);
     const bundles = inputs.map((input) => prepareBufferedBundle(input, this.limits));
     if (bundles.length === 0) return;
     return transaction.dialect === "sqlite"
-      ? importManySqliteTransaction(transaction.db, bundles)
+      ? await importManySqliteTransaction(transaction.db, bundles)
       : importManyPostgresTransaction(transaction.db, bundles);
   }
 
-  getInTransaction(
+  async getInTransaction(
     id: string,
     transaction: HostDatabaseTransaction,
-  ): CapletRecordView | undefined | Promise<CapletRecordView | undefined> {
+  ): Promise<CapletRecordView | undefined | Promise<CapletRecordView | undefined>> {
     return transaction.dialect === "sqlite"
-      ? getSqlite(transaction.db, id)
-      : getPostgres(transaction.db, id);
+      ? await getSqlite(transaction.db, id)
+      : await getPostgres(transaction.db, id);
   }
 
   async get(id: string): Promise<CapletRecordView | undefined> {
     return this.database.dialect === "sqlite"
-      ? getSqlite(this.database.db, id)
+      ? await getSqlite(this.database.db, id)
       : await getPostgres(this.database.db, id);
   }
 
@@ -360,7 +360,7 @@ export class CapletRecordStore {
   ): Promise<StorageKeysetPage<CapletRecordSummaryView, CapletRecordPageKey>> {
     const normalized = normalizeRecordPageOptions(options);
     return this.database.dialect === "sqlite"
-      ? listRecordsPageSqlite(this.database.db, normalized)
+      ? await listRecordsPageSqlite(this.database.db, normalized)
       : await listRecordsPagePostgres(this.database.db, normalized);
   }
 
@@ -387,7 +387,7 @@ export class CapletRecordStore {
     const cutoff = (input.now ?? new Date()).getTime() - input.graceMs;
     const blobs =
       this.database.dialect === "sqlite"
-        ? this.database.db.select().from(sqlite.capletAssetBlobs).all()
+        ? await this.database.db.select().from(sqlite.capletAssetBlobs).all()
         : await this.database.db.select().from(postgres.capletAssetBlobs);
     const candidates = blobs.filter((blob) => Date.parse(blob.createdAt) <= cutoff);
     const deletedKeys: string[] = [];
@@ -395,7 +395,7 @@ export class CapletRecordStore {
     for (const candidate of candidates) {
       const objectKey =
         this.database.dialect === "sqlite"
-          ? deleteUnreferencedSqliteBlob(this.database.db, candidate.hash)
+          ? await deleteUnreferencedSqliteBlob(this.database.db, candidate.hash)
           : await deleteUnreferencedPostgresBlob(this.database.db, candidate.hash);
       if (objectKey === undefined) continue;
       blobRowsDeleted += 1;
@@ -409,7 +409,7 @@ export class CapletRecordStore {
       }
       const remaining =
         this.database.dialect === "sqlite"
-          ? this.database.db
+          ? await this.database.db
               .select({ objectKey: sqlite.capletAssetBlobs.objectKey })
               .from(sqlite.capletAssetBlobs)
               .all()
@@ -429,8 +429,11 @@ export class CapletRecordStore {
   }
   async assetStats(): Promise<{ blobs: number; entries: number }> {
     if (this.database.dialect === "sqlite") {
-      const blobs = this.database.db.select({ count: count() }).from(sqlite.capletAssetBlobs).get();
-      const entries = this.database.db
+      const blobs = await this.database.db
+        .select({ count: count() })
+        .from(sqlite.capletAssetBlobs)
+        .get();
+      const entries = await this.database.db
         .select({ count: count() })
         .from(sqlite.capletBundleEntries)
         .get();
@@ -447,7 +450,7 @@ export class CapletRecordStore {
     if (!this.objectStore) return { ready: true, affectedRecordIds: [] };
     const references =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select({
               recordId: sqlite.capletRecords.capletId,
               entryHash: sqlite.capletBundleEntries.blobHash,
@@ -544,7 +547,7 @@ export class CapletRecordStore {
     const [prepared] = await this.prepareBundlesFromSources([input]);
     try {
       if (this.database.dialect === "sqlite") {
-        updateSqlite(
+        await updateSqlite(
           this.database.db,
           prepared!,
           input.expectedGeneration,
@@ -593,7 +596,7 @@ export class CapletRecordStore {
     const [prepared] = await this.prepareBundlesFromSources([input]);
     try {
       if (this.database.dialect === "sqlite") {
-        updateFromSourceSqlite(this.database.db, prepared!, input);
+        await updateFromSourceSqlite(this.database.db, prepared!, input);
       } else {
         await updateFromSourcePostgres(this.database.db, prepared!, input);
       }
@@ -640,7 +643,7 @@ export class CapletRecordStore {
     const normalized = normalizeRevisionPageOptions(options);
     const result =
       this.database.dialect === "sqlite"
-        ? listRevisionsPageSqlite(this.database.db, id, normalized)
+        ? await listRevisionsPageSqlite(this.database.db, id, normalized)
         : await listRevisionsPagePostgres(this.database.db, id, normalized);
     if (result.recordKey === undefined) throw missingCapletRecord(id);
     await this.appendOperatorActivity(actor, "caplet.revisions_list", result.recordKey, {
@@ -663,7 +666,7 @@ export class CapletRecordStore {
       const normalized = normalizeRevisionPageOptions({ after });
       const result =
         this.database.dialect === "sqlite"
-          ? listRevisionsPageSqlite(this.database.db, id, normalized)
+          ? await listRevisionsPageSqlite(this.database.db, id, normalized)
           : await listRevisionsPagePostgres(this.database.db, id, normalized);
       recordKey = result.recordKey;
       revisions.push(...result.page.items);
@@ -680,7 +683,7 @@ export class CapletRecordStore {
   async deleteRevision(input: DeleteCapletRevisionInput): Promise<CapletRecordView | undefined> {
     requireOperator(input.operator);
     if (this.database.dialect === "sqlite") {
-      deleteRevisionSqlite(this.database.db, input);
+      await deleteRevisionSqlite(this.database.db, input);
     } else {
       await deleteRevisionPostgres(this.database.db, input);
     }
@@ -690,7 +693,7 @@ export class CapletRecordStore {
   async restoreRevision(input: RestoreCapletRevisionInput): Promise<CapletRecordView> {
     requireOperator(input.operator);
     if (this.database.dialect === "sqlite") {
-      restoreRevisionSqlite(this.database.db, input);
+      await restoreRevisionSqlite(this.database.db, input);
     } else {
       await restoreRevisionPostgres(this.database.db, input);
     }
@@ -703,7 +706,7 @@ export class CapletRecordStore {
   async rename(input: RenameCapletRecordInput): Promise<CapletRecordView> {
     requireOperator(input.operator);
     validateCapletRecordId(input.newId);
-    if (this.database.dialect === "sqlite") renameSqlite(this.database.db, input);
+    if (this.database.dialect === "sqlite") await renameSqlite(this.database.db, input);
     else await renamePostgres(this.database.db, input);
     const record = await this.get(input.newId);
     if (!record)
@@ -714,7 +717,7 @@ export class CapletRecordStore {
   async setRetention(input: SetCapletRetentionInput): Promise<CapletRecordView> {
     requireOperator(input.operator);
     validateHistoryLimit(input.historyLimit);
-    if (this.database.dialect === "sqlite") setRetentionSqlite(this.database.db, input);
+    if (this.database.dialect === "sqlite") await setRetentionSqlite(this.database.db, input);
     else await setRetentionPostgres(this.database.db, input);
     const record = await this.get(input.id);
     if (!record) throw new CapletsError("INTERNAL_ERROR", `Caplet ${input.id} was not found.`);
@@ -723,7 +726,7 @@ export class CapletRecordStore {
 
   async hardDelete(input: HardDeleteCapletRecordInput): Promise<void> {
     requireOperator(input.operator);
-    if (this.database.dialect === "sqlite") hardDeleteSqlite(this.database.db, input);
+    if (this.database.dialect === "sqlite") await hardDeleteSqlite(this.database.db, input);
     else await hardDeletePostgres(this.database.db, input);
   }
 
@@ -886,11 +889,13 @@ export class CapletRecordStore {
         };
         if (this.database.dialect === "sqlite") {
           inserted =
-            this.database.db
-              .insert(sqlite.capletAssetBlobs)
-              .values(values)
-              .onConflictDoNothing()
-              .run().changes === 1;
+            (
+              await this.database.db
+                .insert(sqlite.capletAssetBlobs)
+                .values(values)
+                .onConflictDoNothing()
+                .run()
+            ).rowsAffected === 1;
         } else {
           inserted =
             (
@@ -926,7 +931,7 @@ export class CapletRecordStore {
 
   private async assetMetadata(hash: string): Promise<StoredAssetMetadata | undefined> {
     if (this.database.dialect === "sqlite") {
-      return this.database.db
+      return await this.database.db
         .select({
           hash: sqlite.capletAssetBlobs.hash,
           size: sqlite.capletAssetBlobs.size,
@@ -958,7 +963,7 @@ export class CapletRecordStore {
     for (const hash of new Set(hashes)) {
       const objectKey =
         this.database.dialect === "sqlite"
-          ? deleteUnreferencedSqliteBlob(this.database.db, hash)
+          ? await deleteUnreferencedSqliteBlob(this.database.db, hash)
           : await deleteUnreferencedPostgresBlob(this.database.db, hash);
       if (objectKey && this.objectStore) {
         await this.objectStore.delete(objectKey).catch(() => undefined);
@@ -1004,7 +1009,7 @@ export class CapletRecordStore {
   ): Promise<ReadableStream<Uint8Array>> {
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.capletAssetBlobs)
             .where(eq(sqlite.capletAssetBlobs.hash, expected.hash))
@@ -1149,12 +1154,19 @@ function createSqliteAssetBlobWriter(
   database: SqliteHostDatabase,
   bundles: ValidatedBundleSources[],
 ): SqliteAssetBlobWriter {
-  type InsertStatement = {
-    run(hash: string, size: number, payload: Buffer, createdAt: string): { changes: number };
-  };
-  type Client = {
-    prepare(source: string): InsertStatement;
-  };
+  const insert = (hash: string, size: number, payload: Buffer, createdAt: string) =>
+    database
+      .insert(sqlite.capletAssetBlobs)
+      .values({
+        hash,
+        size,
+        payload,
+        objectKey: null,
+        verificationStatus: "verified",
+        createdAt,
+      })
+      .onConflictDoNothing()
+      .run();
 
   let maxAssetBytes = 0;
   for (const bundle of bundles) {
@@ -1163,12 +1175,6 @@ function createSqliteAssetBlobWriter(
     }
   }
   const target = Buffer.allocUnsafe(maxAssetBytes);
-  const client = (database as SqliteHostDatabase & { $client: Client }).$client;
-  const insert = client.prepare(
-    "INSERT INTO caplet_asset_blobs " +
-      "(hash, size, payload, object_key, verification_status, created_at) " +
-      "VALUES (?, ?, ?, NULL, 'verified', ?) ON CONFLICT(hash) DO NOTHING",
-  );
 
   return {
     async insert(source, createdAt) {
@@ -1176,7 +1182,7 @@ function createSqliteAssetBlobWriter(
         maxBytes: target.byteLength,
         target,
       });
-      return insert.run(source.sha256, source.size, payload, createdAt).changes === 1;
+      return (await insert(source.sha256, source.size, payload, createdAt)).rowsAffected === 1;
     },
   };
 }
@@ -1537,45 +1543,47 @@ function projectFrontmatter(frontmatter: CapletFileFrontmatter): {
   return { content, backends };
 }
 
-function importSqlite(db: SqliteHostDatabase, bundle: PreparedBundle): void {
-  importManySqlite(db, [bundle]);
+async function importSqlite(db: SqliteHostDatabase, bundle: PreparedBundle): Promise<void> {
+  await importManySqlite(db, [bundle]);
 }
 
-function importManySqlite(db: SqliteHostDatabase, bundles: PreparedBundle[]): void {
-  db.transaction((transaction) => importManySqliteTransaction(transaction, bundles));
+async function importManySqlite(db: SqliteHostDatabase, bundles: PreparedBundle[]): Promise<void> {
+  await db.transaction(
+    async (transaction) => await importManySqliteTransaction(transaction, bundles),
+  );
 }
 
-function importManySqliteTransaction(
+async function importManySqliteTransaction(
   transaction: SqliteHostTransaction,
   bundles: PreparedBundle[],
-): void {
+): Promise<void> {
   for (const bundle of bundles) {
-    const inserted = transaction
+    const inserted = await transaction
       .insert(sqlite.capletRecords)
       .values(recordValues(bundle))
       .onConflictDoNothing()
       .run();
-    if (inserted.changes !== 1) {
+    if (inserted.rowsAffected !== 1) {
       throw new CapletsError("CONFIG_EXISTS", `Caplet Record ${bundle.id} already exists.`);
     }
-    transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle)).run();
+    await transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle)).run();
     if (bundle.tags.length > 0) {
-      transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
+      await transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
     }
     if (bundle.backends.length > 0) {
-      transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
+      await transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
     }
     for (const entry of bundle.entries) {
-      ensureSqliteBlob(transaction, bundle, entry);
-      transaction.insert(sqlite.capletBundleEntries).values(entryValues(bundle, entry)).run();
+      await ensureSqliteBlob(transaction, bundle, entry);
+      await transaction.insert(sqlite.capletBundleEntries).values(entryValues(bundle, entry)).run();
     }
-    transaction
+    await transaction
       .update(sqlite.capletRecords)
       .set({ currentRevisionKey: bundle.revisionKey })
       .where(eq(sqlite.capletRecords.recordKey, bundle.recordKey))
       .run();
-    insertSqliteInstallation(transaction, bundle);
-    transaction
+    await insertSqliteInstallation(transaction, bundle);
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(recordActivityValues(bundle, "caplet.import"))
       .run();
@@ -1583,7 +1591,7 @@ function importManySqliteTransaction(
   const generationHash = createHash("sha256")
     .update(bundles.map((bundle) => bundle.contentHash).join("\0"))
     .digest("hex");
-  advanceSqliteConfigGeneration(transaction, generationHash, bundles[0]!.actor);
+  await advanceSqliteConfigGeneration(transaction, generationHash, bundles[0]!.actor);
 }
 
 async function importPostgres(db: PostgresHostDatabase, bundle: PreparedBundle): Promise<void> {
@@ -1638,14 +1646,14 @@ async function importManyPostgresTransaction(
   await advancePostgresConfigGeneration(transaction, generationHash, bundles[0]!.actor);
 }
 
-function updateSqlite(
+async function updateSqlite(
   db: SqliteHostDatabase,
   bundle: PreparedBundle,
   expectedGeneration: number,
   detachInstallation: boolean,
-): void {
-  db.transaction((transaction) => {
-    const record = transaction
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, bundle.id))
@@ -1655,7 +1663,7 @@ function updateSqlite(
     if (record.headGeneration !== expectedGeneration) {
       throw staleGeneration(bundle.id, expectedGeneration, record.headGeneration);
     }
-    const activeInstallation = transaction
+    const activeInstallation = await transaction
       .select()
       .from(sqlite.capletInstallations)
       .where(
@@ -1667,7 +1675,7 @@ function updateSqlite(
       .get();
     if (activeInstallation && !detachInstallation) throw trackedInstallation(bundle.id);
     if (activeInstallation) {
-      transaction
+      await transaction
         .update(sqlite.capletInstallations)
         .set({
           status: "detached",
@@ -1678,7 +1686,7 @@ function updateSqlite(
         })
         .where(eq(sqlite.capletInstallations.installationKey, activeInstallation.installationKey))
         .run();
-      transaction
+      await transaction
         .insert(sqlite.operatorActivity)
         .values({
           activityKey: randomUUID(),
@@ -1694,18 +1702,18 @@ function updateSqlite(
     }
     const sequence = record.headGeneration + 1;
     bundle.recordKey = record.recordKey;
-    transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle, sequence)).run();
+    await transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle, sequence)).run();
     if (bundle.tags.length > 0) {
-      transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
+      await transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
     }
     if (bundle.backends.length > 0) {
-      transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
+      await transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
     }
     for (const entry of bundle.entries) {
-      ensureSqliteBlob(transaction, bundle, entry);
-      transaction.insert(sqlite.capletBundleEntries).values(entryValues(bundle, entry)).run();
+      await ensureSqliteBlob(transaction, bundle, entry);
+      await transaction.insert(sqlite.capletBundleEntries).values(entryValues(bundle, entry)).run();
     }
-    transaction
+    await transaction
       .update(sqlite.capletRecords)
       .set({
         currentRevisionKey: bundle.revisionKey,
@@ -1715,7 +1723,7 @@ function updateSqlite(
       .where(eq(sqlite.capletRecords.recordKey, record.recordKey))
       .run();
     const retained = Math.max(1, record.historyLimit ?? 1);
-    const revisions = transaction
+    const revisions = await transaction
       .select({ revisionKey: sqlite.capletRevisions.revisionKey })
       .from(sqlite.capletRevisions)
       .where(eq(sqlite.capletRevisions.recordKey, record.recordKey))
@@ -1723,17 +1731,17 @@ function updateSqlite(
       .all();
     const expired = revisions.slice(retained).map((revision) => revision.revisionKey);
     if (expired.length > 0) {
-      transaction
+      await transaction
         .delete(sqlite.capletRevisions)
         .where(inArray(sqlite.capletRevisions.revisionKey, expired))
         .run();
     }
-    insertSqliteInstallation(transaction, bundle);
-    transaction
+    await insertSqliteInstallation(transaction, bundle);
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(recordActivityValues(bundle, "caplet.update"))
       .run();
-    advanceSqliteConfigGeneration(transaction, bundle.contentHash, bundle.actor);
+    await advanceSqliteConfigGeneration(transaction, bundle.contentHash, bundle.actor);
   });
 }
 
@@ -1832,13 +1840,13 @@ async function updatePostgres(
   });
 }
 
-function updateFromSourceSqlite(
+async function updateFromSourceSqlite(
   db: SqliteHostDatabase,
   bundle: PreparedBundle,
   input: SourceUpdateMetadata,
-): void {
-  db.transaction((transaction) => {
-    const record = transaction
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, bundle.id))
@@ -1848,7 +1856,7 @@ function updateFromSourceSqlite(
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(bundle.id, input.expectedGeneration, record.headGeneration);
     }
-    const installation = transaction
+    const installation = await transaction
       .select()
       .from(sqlite.capletInstallations)
       .where(
@@ -1863,7 +1871,7 @@ function updateFromSourceSqlite(
       throw staleInstallationGeneration(bundle.id);
     }
     if (!record.currentRevisionKey) throw missingCurrentRevision(bundle.id);
-    const currentRevision = transaction
+    const currentRevision = await transaction
       .select({ contentHash: sqlite.capletRevisions.contentHash })
       .from(sqlite.capletRevisions)
       .where(eq(sqlite.capletRevisions.revisionKey, record.currentRevisionKey))
@@ -1876,18 +1884,24 @@ function updateFromSourceSqlite(
     const sequence = record.headGeneration + (createRevision ? 1 : 0);
     bundle.recordKey = record.recordKey;
     if (createRevision) {
-      transaction.insert(sqlite.capletRevisions).values(revisionValues(bundle, sequence)).run();
+      await transaction
+        .insert(sqlite.capletRevisions)
+        .values(revisionValues(bundle, sequence))
+        .run();
       if (bundle.tags.length > 0) {
-        transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
+        await transaction.insert(sqlite.capletRevisionTags).values(tagValues(bundle)).run();
       }
       if (bundle.backends.length > 0) {
-        transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
+        await transaction.insert(sqlite.capletRevisionBackends).values(backendValues(bundle)).run();
       }
       for (const entry of bundle.entries) {
-        ensureSqliteBlob(transaction, bundle, entry);
-        transaction.insert(sqlite.capletBundleEntries).values(entryValues(bundle, entry)).run();
+        await ensureSqliteBlob(transaction, bundle, entry);
+        await transaction
+          .insert(sqlite.capletBundleEntries)
+          .values(entryValues(bundle, entry))
+          .run();
       }
-      const updatedRecord = transaction
+      const updatedRecord = await transaction
         .update(sqlite.capletRecords)
         .set({
           currentRevisionKey: contentChanged ? bundle.revisionKey : record.currentRevisionKey,
@@ -1901,10 +1915,10 @@ function updateFromSourceSqlite(
           ),
         )
         .run();
-      if (updatedRecord.changes !== 1) {
+      if (updatedRecord.rowsAffected !== 1) {
         throw staleGeneration(bundle.id, input.expectedGeneration, record.headGeneration);
       }
-      pruneSourceRevisionsSqlite(
+      await pruneSourceRevisionsSqlite(
         transaction,
         record.recordKey,
         contentChanged ? bundle.revisionKey : record.currentRevisionKey,
@@ -1912,7 +1926,7 @@ function updateFromSourceSqlite(
       );
     }
 
-    const latestObservation = transaction
+    const latestObservation = await transaction
       .select({ observedAt: sqlite.capletInstallationObservations.observedAt })
       .from(sqlite.capletInstallationObservations)
       .where(
@@ -1922,7 +1936,7 @@ function updateFromSourceSqlite(
       .limit(1)
       .get();
     const observedAt = sourceObservationTime(bundle.now, latestObservation?.observedAt);
-    const updatedInstallation = transaction
+    const updatedInstallation = await transaction
       .update(sqlite.capletInstallations)
       .set({ generation: installation.generation + 1, updatedAt: observedAt })
       .where(
@@ -1933,12 +1947,12 @@ function updateFromSourceSqlite(
         ),
       )
       .run();
-    if (updatedInstallation.changes !== 1) throw staleInstallationGeneration(bundle.id);
-    transaction
+    if (updatedInstallation.rowsAffected !== 1) throw staleInstallationGeneration(bundle.id);
+    await transaction
       .insert(sqlite.capletInstallationObservations)
       .values(sourceObservationValues(installation.installationKey, input, observedAt))
       .run();
-    transaction
+    await transaction
       .insert(sqlite.operatorActivity)
       .values(
         sourceUpdateActivity(
@@ -1952,7 +1966,7 @@ function updateFromSourceSqlite(
       )
       .run();
     if (contentChanged)
-      advanceSqliteConfigGeneration(transaction, bundle.contentHash, bundle.actor);
+      await advanceSqliteConfigGeneration(transaction, bundle.contentHash, bundle.actor);
   });
 }
 
@@ -2079,9 +2093,12 @@ async function updateFromSourcePostgres(
     }
   });
 }
-function deleteRevisionSqlite(db: SqliteHostDatabase, input: DeleteCapletRevisionInput): void {
-  db.transaction((transaction) => {
-    const record = transaction
+async function deleteRevisionSqlite(
+  db: SqliteHostDatabase,
+  input: DeleteCapletRevisionInput,
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.id))
@@ -2090,7 +2107,7 @@ function deleteRevisionSqlite(db: SqliteHostDatabase, input: DeleteCapletRevisio
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
-    const revision = transaction
+    const revision = await transaction
       .select()
       .from(sqlite.capletRevisions)
       .where(eq(sqlite.capletRevisions.revisionKey, input.revisionKey))
@@ -2098,12 +2115,12 @@ function deleteRevisionSqlite(db: SqliteHostDatabase, input: DeleteCapletRevisio
     if (!revision || revision.recordKey !== record.recordKey) {
       throw missingCapletRevision(input.revisionKey);
     }
-    transaction
+    await transaction
       .delete(sqlite.capletRevisions)
       .where(eq(sqlite.capletRevisions.revisionKey, input.revisionKey))
       .run();
     const activityAt = new Date().toISOString();
-    transaction
+    await transaction
       .insert(sqlite.operatorActivity)
       .values({
         activityKey: randomUUID(),
@@ -2116,21 +2133,25 @@ function deleteRevisionSqlite(db: SqliteHostDatabase, input: DeleteCapletRevisio
         createdAt: activityAt,
       })
       .run();
-    advanceSqliteConfigGeneration(transaction, input.revisionKey, requireOperator(input.operator));
-    const remaining = transaction
+    await advanceSqliteConfigGeneration(
+      transaction,
+      input.revisionKey,
+      requireOperator(input.operator),
+    );
+    const remaining = await transaction
       .select({ revisionKey: sqlite.capletRevisions.revisionKey })
       .from(sqlite.capletRevisions)
       .where(eq(sqlite.capletRevisions.recordKey, record.recordKey))
       .orderBy(desc(sqlite.capletRevisions.sequence))
       .all();
     if (remaining.length === 0) {
-      transaction
+      await transaction
         .delete(sqlite.capletRecords)
         .where(eq(sqlite.capletRecords.recordKey, record.recordKey))
         .run();
       return;
     }
-    transaction
+    await transaction
       .update(sqlite.capletRecords)
       .set({
         currentRevisionKey:
@@ -2212,9 +2233,12 @@ async function deleteRevisionPostgres(
   });
 }
 
-function restoreRevisionSqlite(db: SqliteHostDatabase, input: RestoreCapletRevisionInput): void {
-  db.transaction((transaction) => {
-    const record = transaction
+async function restoreRevisionSqlite(
+  db: SqliteHostDatabase,
+  input: RestoreCapletRevisionInput,
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.id))
@@ -2223,7 +2247,7 @@ function restoreRevisionSqlite(db: SqliteHostDatabase, input: RestoreCapletRevis
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
-    const source = transaction
+    const source = await transaction
       .select()
       .from(sqlite.capletRevisions)
       .where(
@@ -2239,50 +2263,54 @@ function restoreRevisionSqlite(db: SqliteHostDatabase, input: RestoreCapletRevis
     const revisionKey = randomUUID();
     const sequence = record.headGeneration + 1;
     const now = new Date().toISOString();
-    transaction
+    await transaction
       .insert(sqlite.capletRevisions)
       .values({ ...source, revisionKey, sequence, createdAt: now, actor: input.operator.clientId })
       .run();
-    const tags = transaction
+    const tags = await transaction
       .select()
       .from(sqlite.capletRevisionTags)
       .where(eq(sqlite.capletRevisionTags.revisionKey, source.revisionKey))
       .all();
     if (tags.length > 0) {
-      transaction
+      await transaction
         .insert(sqlite.capletRevisionTags)
         .values(tags.map((tag) => ({ ...tag, revisionKey })))
         .run();
     }
-    const backends = transaction
+    const backends = await transaction
       .select()
       .from(sqlite.capletRevisionBackends)
       .where(eq(sqlite.capletRevisionBackends.revisionKey, source.revisionKey))
       .all();
     if (backends.length > 0) {
-      transaction
+      await transaction
         .insert(sqlite.capletRevisionBackends)
         .values(backends.map((backend) => ({ ...backend, revisionKey })))
         .run();
     }
-    const entries = transaction
+    const entries = await transaction
       .select()
       .from(sqlite.capletBundleEntries)
       .where(eq(sqlite.capletBundleEntries.revisionKey, source.revisionKey))
       .all();
     if (entries.length > 0) {
-      transaction
+      await transaction
         .insert(sqlite.capletBundleEntries)
         .values(entries.map((entry) => ({ ...entry, revisionKey })))
         .run();
     }
-    transaction
+    await transaction
       .update(sqlite.capletRecords)
       .set({ currentRevisionKey: revisionKey, headGeneration: sequence, updatedAt: now })
       .where(eq(sqlite.capletRecords.recordKey, record.recordKey))
       .run();
-    pruneSqliteRevisions(transaction, record.recordKey, Math.max(1, record.historyLimit ?? 1));
-    transaction
+    await pruneSqliteRevisions(
+      transaction,
+      record.recordKey,
+      Math.max(1, record.historyLimit ?? 1),
+    );
+    await transaction
       .insert(sqlite.operatorActivity)
       .values({
         activityKey: randomUUID(),
@@ -2295,7 +2323,7 @@ function restoreRevisionSqlite(db: SqliteHostDatabase, input: RestoreCapletRevis
         createdAt: now,
       })
       .run();
-    advanceSqliteConfigGeneration(transaction, source.contentHash, input.operator.clientId);
+    await advanceSqliteConfigGeneration(transaction, source.contentHash, input.operator.clientId);
   });
 }
 
@@ -2385,9 +2413,9 @@ async function restoreRevisionPostgres(
   });
 }
 
-function renameSqlite(db: SqliteHostDatabase, input: RenameCapletRecordInput): void {
-  db.transaction((transaction) => {
-    const record = transaction
+async function renameSqlite(db: SqliteHostDatabase, input: RenameCapletRecordInput): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.id))
@@ -2397,7 +2425,7 @@ function renameSqlite(db: SqliteHostDatabase, input: RenameCapletRecordInput): v
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
-    const collision = transaction
+    const collision = await transaction
       .select({ recordKey: sqlite.capletRecords.recordKey })
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.newId))
@@ -2405,12 +2433,12 @@ function renameSqlite(db: SqliteHostDatabase, input: RenameCapletRecordInput): v
     if (collision)
       throw new CapletsError("CONFIG_EXISTS", `Caplet Record ${input.newId} already exists.`);
     const now = new Date().toISOString();
-    transaction
+    await transaction
       .update(sqlite.capletRecords)
       .set({ capletId: input.newId, headGeneration: record.headGeneration + 1, updatedAt: now })
       .where(eq(sqlite.capletRecords.recordKey, record.recordKey))
       .run();
-    transaction
+    await transaction
       .insert(sqlite.operatorActivity)
       .values({
         activityKey: randomUUID(),
@@ -2423,7 +2451,7 @@ function renameSqlite(db: SqliteHostDatabase, input: RenameCapletRecordInput): v
         createdAt: now,
       })
       .run();
-    advanceSqliteConfigGeneration(
+    await advanceSqliteConfigGeneration(
       transaction,
       `rename:${record.recordKey}:${input.newId}`,
       input.operator.clientId,
@@ -2477,9 +2505,12 @@ async function renamePostgres(
   });
 }
 
-function setRetentionSqlite(db: SqliteHostDatabase, input: SetCapletRetentionInput): void {
-  db.transaction((transaction) => {
-    const record = transaction
+async function setRetentionSqlite(
+  db: SqliteHostDatabase,
+  input: SetCapletRetentionInput,
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.id))
@@ -2490,7 +2521,7 @@ function setRetentionSqlite(db: SqliteHostDatabase, input: SetCapletRetentionInp
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
     const now = new Date().toISOString();
-    transaction
+    await transaction
       .update(sqlite.capletRecords)
       .set({
         historyLimit: input.historyLimit,
@@ -2499,8 +2530,8 @@ function setRetentionSqlite(db: SqliteHostDatabase, input: SetCapletRetentionInp
       })
       .where(eq(sqlite.capletRecords.recordKey, record.recordKey))
       .run();
-    pruneSqliteRevisions(transaction, record.recordKey, Math.max(1, input.historyLimit ?? 1));
-    transaction
+    await pruneSqliteRevisions(transaction, record.recordKey, Math.max(1, input.historyLimit ?? 1));
+    await transaction
       .insert(sqlite.operatorActivity)
       .values({
         activityKey: randomUUID(),
@@ -2559,9 +2590,12 @@ async function setRetentionPostgres(
   });
 }
 
-function hardDeleteSqlite(db: SqliteHostDatabase, input: HardDeleteCapletRecordInput): void {
-  db.transaction((transaction) => {
-    const record = transaction
+async function hardDeleteSqlite(
+  db: SqliteHostDatabase,
+  input: HardDeleteCapletRecordInput,
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const record = await transaction
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.capletId, input.id))
@@ -2571,12 +2605,12 @@ function hardDeleteSqlite(db: SqliteHostDatabase, input: HardDeleteCapletRecordI
     if (record.headGeneration !== input.expectedGeneration) {
       throw staleGeneration(input.id, input.expectedGeneration, record.headGeneration);
     }
-    transaction
+    await transaction
       .delete(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.recordKey, record.recordKey))
       .run();
     const now = new Date().toISOString();
-    transaction
+    await transaction
       .insert(sqlite.operatorActivity)
       .values({
         activityKey: randomUUID(),
@@ -2589,7 +2623,7 @@ function hardDeleteSqlite(db: SqliteHostDatabase, input: HardDeleteCapletRecordI
         createdAt: now,
       })
       .run();
-    advanceSqliteConfigGeneration(
+    await advanceSqliteConfigGeneration(
       transaction,
       `delete:${record.recordKey}`,
       input.operator.clientId,
@@ -2635,12 +2669,12 @@ async function hardDeletePostgres(
   });
 }
 
-function pruneSqliteRevisions(
+async function pruneSqliteRevisions(
   transaction: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
   recordKey: string,
   retained: number,
-): void {
-  const revisions = transaction
+): Promise<void> {
+  const revisions = await transaction
     .select({ revisionKey: sqlite.capletRevisions.revisionKey })
     .from(sqlite.capletRevisions)
     .where(eq(sqlite.capletRevisions.recordKey, recordKey))
@@ -2648,7 +2682,7 @@ function pruneSqliteRevisions(
     .all();
   const expired = revisions.slice(retained).map((revision) => revision.revisionKey);
   if (expired.length > 0) {
-    transaction
+    await transaction
       .delete(sqlite.capletRevisions)
       .where(inArray(sqlite.capletRevisions.revisionKey, expired))
       .run();
@@ -2673,13 +2707,13 @@ async function prunePostgresRevisions(
   }
 }
 
-function pruneSourceRevisionsSqlite(
+async function pruneSourceRevisionsSqlite(
   transaction: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
   recordKey: string,
   currentRevisionKey: string,
   retained: number,
-): void {
-  const revisions = transaction
+): Promise<void> {
+  const revisions = await transaction
     .select({ revisionKey: sqlite.capletRevisions.revisionKey })
     .from(sqlite.capletRevisions)
     .where(eq(sqlite.capletRevisions.recordKey, recordKey))
@@ -2694,7 +2728,7 @@ function pruneSourceRevisionsSqlite(
     .filter((revision) => !retainedKeys.has(revision.revisionKey))
     .map((revision) => revision.revisionKey);
   if (expired.length > 0) {
-    transaction
+    await transaction
       .delete(sqlite.capletRevisions)
       .where(inArray(sqlite.capletRevisions.revisionKey, expired))
       .run();
@@ -2748,12 +2782,12 @@ async function getRevisionByKey(
   revisionKey: string,
 ): Promise<CapletRevisionView | undefined> {
   if (database.dialect === "sqlite") {
-    const record = database.db
+    const record = await database.db
       .select()
       .from(sqlite.capletRecords)
       .where(eq(sqlite.capletRecords.recordKey, recordKey))
       .get();
-    const revision = database.db
+    const revision = await database.db
       .select()
       .from(sqlite.capletRevisions)
       .where(
@@ -2764,19 +2798,19 @@ async function getRevisionByKey(
       )
       .get();
     if (!record || !revision) return undefined;
-    const tags = database.db
+    const tags = await database.db
       .select()
       .from(sqlite.capletRevisionTags)
       .where(eq(sqlite.capletRevisionTags.revisionKey, revisionKey))
       .orderBy(asc(sqlite.capletRevisionTags.position))
       .all();
-    const backends = database.db
+    const backends = await database.db
       .select()
       .from(sqlite.capletRevisionBackends)
       .where(eq(sqlite.capletRevisionBackends.revisionKey, revisionKey))
       .orderBy(asc(sqlite.capletRevisionBackends.position))
       .all();
-    const entries = database.db
+    const entries = await database.db
       .select()
       .from(sqlite.capletBundleEntries)
       .where(eq(sqlite.capletBundleEntries.revisionKey, revisionKey))
@@ -2837,7 +2871,7 @@ async function appendOperatorActivity(
     createdAt: new Date().toISOString(),
   };
   if (database.dialect === "sqlite") {
-    database.db.insert(sqlite.operatorActivity).values(values).run();
+    await database.db.insert(sqlite.operatorActivity).values(values).run();
   } else {
     await database.db.insert(postgres.operatorActivity).values(values);
   }
@@ -2932,18 +2966,18 @@ function normalizeRevisionPageOptions(
   };
 }
 
-function listRevisionsPageSqlite(
+async function listRevisionsPageSqlite(
   db: SqliteHostDatabase,
   id: string,
   options: NormalizedCapletRevisionPageOptions,
-): CapletRevisionPageQueryResult {
-  const record = db
+): Promise<CapletRevisionPageQueryResult> {
+  const record = await db
     .select({ recordKey: sqlite.capletRecords.recordKey })
     .from(sqlite.capletRecords)
     .where(eq(sqlite.capletRecords.capletId, id))
     .get();
   if (!record) return { page: { items: [] } };
-  const rows = db
+  const rows = await db
     .select({
       revisionKey: sqlite.capletRevisions.revisionKey,
       sequence: sqlite.capletRevisions.sequence,
@@ -3104,10 +3138,10 @@ function optionalPageFilter(value: string | undefined): string | undefined {
   return normalized ? normalized : undefined;
 }
 
-function listRecordsPageSqlite(
+async function listRecordsPageSqlite(
   db: SqliteHostDatabase,
   options: NormalizedCapletRecordPageOptions,
-): StorageKeysetPage<CapletRecordSummaryView, CapletRecordPageKey> {
+): Promise<StorageKeysetPage<CapletRecordSummaryView, CapletRecordPageKey>> {
   const latestInstallation = db
     .select({ installationKey: sqlite.capletInstallations.installationKey })
     .from(sqlite.capletInstallations)
@@ -3160,7 +3194,7 @@ function listRecordsPageSqlite(
         );
   const compare = options.sort === "asc" ? gt : lt;
   const order = options.sort === "asc" ? asc : desc;
-  const rows = db
+  const rows = await db
     .select({
       record: {
         recordKey: sqlite.capletRecords.recordKey,
@@ -3343,35 +3377,35 @@ function recordKeysetPage(
   };
 }
 
-function getSqlite(
+async function getSqlite(
   db: SqliteHostDatabase | SqliteHostTransaction,
   id: string,
-): CapletRecordView | undefined {
-  const row = db
+): Promise<CapletRecordView | undefined> {
+  const row = await db
     .select()
     .from(sqlite.capletRecords)
     .where(eq(sqlite.capletRecords.capletId, id))
     .get();
   if (!row?.currentRevisionKey) return undefined;
-  const revision = db
+  const revision = await db
     .select()
     .from(sqlite.capletRevisions)
     .where(eq(sqlite.capletRevisions.revisionKey, row.currentRevisionKey))
     .get();
   if (!revision) throw missingCurrentRevision(id);
-  const tags = db
+  const tags = await db
     .select()
     .from(sqlite.capletRevisionTags)
     .where(eq(sqlite.capletRevisionTags.revisionKey, revision.revisionKey))
     .orderBy(asc(sqlite.capletRevisionTags.position))
     .all();
-  const backends = db
+  const backends = await db
     .select()
     .from(sqlite.capletRevisionBackends)
     .where(eq(sqlite.capletRevisionBackends.revisionKey, revision.revisionKey))
     .orderBy(asc(sqlite.capletRevisionBackends.position))
     .all();
-  const entries = db
+  const entries = await db
     .select()
     .from(sqlite.capletBundleEntries)
     .where(eq(sqlite.capletBundleEntries.revisionKey, revision.revisionKey))
@@ -3520,25 +3554,28 @@ function staleGeneration(
   );
 }
 
-function deleteUnreferencedSqliteBlob(
+async function deleteUnreferencedSqliteBlob(
   db: SqliteHostDatabase,
   hash: string,
-): string | null | undefined {
-  return db.transaction((transaction) => {
-    const blob = transaction
+): Promise<string | null | undefined> {
+  return await db.transaction(async (transaction) => {
+    const blob = await transaction
       .select({ objectKey: sqlite.capletAssetBlobs.objectKey })
       .from(sqlite.capletAssetBlobs)
       .where(eq(sqlite.capletAssetBlobs.hash, hash))
       .get();
     if (!blob) return undefined;
-    const reference = transaction
+    const reference = await transaction
       .select({ path: sqlite.capletBundleEntries.path })
       .from(sqlite.capletBundleEntries)
       .where(eq(sqlite.capletBundleEntries.blobHash, hash))
       .limit(1)
       .get();
     if (reference) return undefined;
-    transaction.delete(sqlite.capletAssetBlobs).where(eq(sqlite.capletAssetBlobs.hash, hash)).run();
+    await transaction
+      .delete(sqlite.capletAssetBlobs)
+      .where(eq(sqlite.capletAssetBlobs.hash, hash))
+      .run();
     return blob.objectKey;
   });
 }
@@ -3568,12 +3605,12 @@ async function deleteUnreferencedPostgresBlob(
   });
 }
 
-function ensureSqliteBlob(
+async function ensureSqliteBlob(
   transaction: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
   _bundle: PreparedBundle,
   entry: PreparedBundle["entries"][number],
-): void {
-  const row = transaction
+): Promise<void> {
+  const row = await transaction
     .select({
       hash: sqlite.capletAssetBlobs.hash,
       size: sqlite.capletAssetBlobs.size,
@@ -3707,12 +3744,12 @@ function recordActivityValues(bundle: PreparedBundle, action: string) {
   };
 }
 
-function insertSqliteInstallation(
+async function insertSqliteInstallation(
   transaction: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
   bundle: PreparedBundle,
-): void {
+): Promise<void> {
   if (!bundle.installation) return;
-  transaction
+  await transaction
     .insert(sqlite.capletInstallations)
     .values({
       installationKey: bundle.installation.installationKey,
@@ -3726,7 +3763,7 @@ function insertSqliteInstallation(
       updatedAt: bundle.now,
     })
     .run();
-  transaction
+  await transaction
     .insert(sqlite.capletInstallationObservations)
     .values({
       observationKey: randomUUID(),

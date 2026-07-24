@@ -334,7 +334,7 @@ describe("Caplet Bundle streaming storage", () => {
 
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
       const firstEntry = created.currentRevision.bundle[0]!;
-      storage.database.db
+      await storage.database.db
         .update(sqlite.capletAssetBlobs)
         .set({ payload: Buffer.from("corrupt") })
         .where(eq(sqlite.capletAssetBlobs.hash, firstEntry.hash))

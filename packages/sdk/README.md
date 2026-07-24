@@ -1,7 +1,7 @@
 # `@caplets/sdk`
 
-Typed ESM client for the public Caplets HTTP API and Project Binding v1 protocol. It uses standard
-Fetch and WebSocket APIs and supports Node.js 22+ and modern browsers.
+Typed ESM client for the public Caplets HTTP API and Project Binding v1 protocol. Its root and
+Project Binding exports use standard Fetch and WebSocket APIs in modern web-platform runtimes.
 
 ## Install
 
@@ -224,7 +224,7 @@ WebSocket URL, events, or error messages.
 
 ## Runtime scope
 
-- Root HTTP client and `@caplets/sdk/project-binding`: modern browsers and Node.js 22+.
+- Root HTTP client and `@caplets/sdk/project-binding`: modern web-platform runtimes.
 - `@caplets/sdk/project-binding/node`: Node.js 22+ only; it uses filesystem and crypto APIs.
 - The root exposes public HTTP discovery, health, Remote Login, Attach, Project Binding controls,
   and Admin operations at their canonical `/api/*` paths.

@@ -69,7 +69,7 @@ it("does not persist an offline verifier for Vault plaintext requests", async ()
   });
 
   if (storage.database.dialect !== "sqlite") throw new Error("expected SQLite storage");
-  const row = storage.database.db
+  const row = await storage.database.db
     .select({ requestHash: sqlite.idempotencyRecords.requestHash })
     .from(sqlite.idempotencyRecords)
     .limit(1)
@@ -382,7 +382,7 @@ it("encrypts OAuth authorization responses at rest and replays them after reopen
   });
 
   if (first.database.dialect !== "sqlite") throw new Error("expected SQLite storage");
-  const stored = first.database.db
+  const stored = await first.database.db
     .select({ responseBody: sqlite.idempotencyRecords.responseBody })
     .from(sqlite.idempotencyRecords)
     .limit(1)
@@ -411,7 +411,7 @@ it("rejects tampered, malformed, or identity-relocated finalized response envelo
     now: after(1_000),
   });
   if (storage.database.dialect !== "sqlite") throw new Error("expected SQLite storage");
-  const stored = storage.database.db
+  const stored = await storage.database.db
     .select({ responseBody: sqlite.idempotencyRecords.responseBody })
     .from(sqlite.idempotencyRecords)
     .where(eq(sqlite.idempotencyRecords.idempotencyKey, BASE_CLAIM.idempotencyKey))
@@ -419,7 +419,7 @@ it("rejects tampered, malformed, or identity-relocated finalized response envelo
   if (!stored?.responseBody) throw new Error("expected an encrypted finalized body");
   const envelope = JSON.parse(stored.responseBody) as { ciphertext: string };
   const tamperedCiphertext = `${envelope.ciphertext.startsWith("A") ? "B" : "A"}${envelope.ciphertext.slice(1)}`;
-  storage.database.db
+  await storage.database.db
     .update(sqlite.idempotencyRecords)
     .set({ responseBody: JSON.stringify({ ...envelope, ciphertext: tamperedCiphertext }) })
     .where(eq(sqlite.idempotencyRecords.idempotencyKey, BASE_CLAIM.idempotencyKey))
@@ -429,7 +429,7 @@ it("rejects tampered, malformed, or identity-relocated finalized response envelo
     message: expect.not.stringContaining("oauth-state-secret"),
   });
 
-  storage.database.db
+  await storage.database.db
     .update(sqlite.idempotencyRecords)
     .set({ responseBody: stored.responseBody, idempotencyKey: "relocated-request" })
     .where(eq(sqlite.idempotencyRecords.idempotencyKey, BASE_CLAIM.idempotencyKey))
@@ -439,7 +439,7 @@ it("rejects tampered, malformed, or identity-relocated finalized response envelo
     code: "CONFIG_INVALID",
   });
 
-  storage.database.db
+  await storage.database.db
     .update(sqlite.idempotencyRecords)
     .set({ responseBody: "oauth-state-secret" })
     .where(eq(sqlite.idempotencyRecords.idempotencyKey, "relocated-request"))

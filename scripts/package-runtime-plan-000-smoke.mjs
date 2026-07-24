@@ -701,12 +701,20 @@ async function verifyLargeBundle({
     clearInterval(downloadSampler);
   }
 
+  // Bun's native HTTP server retains one request/response-sized runtime allocation while a body
+  // is in flight. Keep the application parser bounded and reject any additional whole-body copy.
+  const runtimeBodyAllowance = process.versions.bun ? totalPayloadBytes : 0;
+  const runtimeBodyCopies = process.versions.bun ? 1 : 0;
   const streamingBoundedDelta =
-    RSS_PARSER_ALLOWANCE_BYTES + RSS_ASSET_BYTES + RSS_FIXED_RUNTIME_ALLOWANCE_BYTES;
+    RSS_PARSER_ALLOWANCE_BYTES +
+    RSS_ASSET_BYTES +
+    RSS_FIXED_RUNTIME_ALLOWANCE_BYTES +
+    runtimeBodyAllowance;
   const rejectedUploadThresholdRss = rejectedUploadBaselineRss + streamingBoundedDelta;
   assert(
-    streamingBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
-    "Rejected-upload RSS ceiling does not distinguish streaming from whole-bundle buffering.",
+    streamingBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <=
+      totalPayloadBytes * (runtimeBodyCopies + 1),
+    "Rejected-upload RSS ceiling cannot detect an additional whole-bundle buffer.",
   );
   assert(
     rejectedUploadPeakRss <= rejectedUploadThresholdRss,
@@ -714,12 +722,12 @@ async function verifyLargeBundle({
   );
 
   // SQLite may retain one payload-sized native allocation while importing blobs. The ceiling
-  // still rejects an additional whole-request buffer on top of that resident storage copy.
-  const uploadBoundedDelta = totalPayloadBytes + RSS_PARSER_ALLOWANCE_BYTES;
+  // still rejects an additional whole-request buffer on top of storage and runtime-owned copies.
+  const uploadBoundedDelta = totalPayloadBytes + RSS_PARSER_ALLOWANCE_BYTES + runtimeBodyAllowance;
   const uploadThresholdRss = uploadBaselineRss + uploadBoundedDelta;
   assert(
-    uploadBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes * 2,
-    "Successful-upload RSS ceiling does not distinguish SQLite residency from whole-request buffering.",
+    uploadBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes * (runtimeBodyCopies + 2),
+    "Successful-upload RSS ceiling cannot detect an additional whole-bundle buffer.",
   );
   assert(
     uploadPeakRss <= uploadThresholdRss,
@@ -728,8 +736,9 @@ async function verifyLargeBundle({
 
   const downloadThresholdRss = downloadBaselineRss + streamingBoundedDelta;
   assert(
-    streamingBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <= totalPayloadBytes,
-    "Download RSS ceiling does not distinguish streaming from whole-bundle buffering.",
+    streamingBoundedDelta + RSS_WHOLE_BUNDLE_GAP_BYTES <=
+      totalPayloadBytes * (runtimeBodyCopies + 1),
+    "Download RSS ceiling cannot detect an additional whole-bundle buffer.",
   );
   assert(
     downloadPeakRss <= downloadThresholdRss,

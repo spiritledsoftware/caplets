@@ -86,7 +86,8 @@ export type TelemetryProperties = Partial<{
   first_activation: boolean;
   os_family: NodeJS.Platform | "unknown";
   arch: NodeJS.Architecture | "unknown";
-  node_major: number;
+  runtime_name: "bun" | "node";
+  runtime_major: number;
 }>;
 
 export type ProductTelemetryEvent = {

@@ -162,21 +162,23 @@ export class IdempotencyStore {
 
     if (this.database.dialect === "sqlite") {
       return this.database.db.transaction(
-        (transaction) => {
-          const updated = transaction
-            .update(sqlite.idempotencyRecords)
-            .set({ heartbeatAt: nowText, updatedAt: nowText })
-            .where(
-              and(
-                sqliteKeyWhere(input),
-                eq(sqlite.idempotencyRecords.state, "pending"),
-                eq(sqlite.idempotencyRecords.ownerToken, input.ownerToken),
-                gt(sqlite.idempotencyRecords.heartbeatAt, staleBeforeText),
-              ),
-            )
-            .run().changes;
+        async (transaction) => {
+          const updated = (
+            await transaction
+              .update(sqlite.idempotencyRecords)
+              .set({ heartbeatAt: nowText, updatedAt: nowText })
+              .where(
+                and(
+                  sqliteKeyWhere(input),
+                  eq(sqlite.idempotencyRecords.state, "pending"),
+                  eq(sqlite.idempotencyRecords.ownerToken, input.ownerToken),
+                  gt(sqlite.idempotencyRecords.heartbeatAt, staleBeforeText),
+                ),
+              )
+              .run()
+          ).rowsAffected;
           if (updated > 0) return true;
-          transitionPendingToUnknownSqlite(
+          await transitionPendingToUnknownSqlite(
             transaction,
             sqliteKeyWhere(input),
             staleBeforeText,
@@ -236,21 +238,23 @@ export class IdempotencyStore {
 
     if (this.database.dialect === "sqlite") {
       return this.database.db.transaction(
-        (transaction) => {
-          const updated = transaction
-            .update(sqlite.idempotencyRecords)
-            .set(values)
-            .where(
-              and(
-                sqliteKeyWhere(input),
-                eq(sqlite.idempotencyRecords.state, "pending"),
-                eq(sqlite.idempotencyRecords.ownerToken, input.ownerToken),
-                gt(sqlite.idempotencyRecords.heartbeatAt, staleBeforeText),
-              ),
-            )
-            .run().changes;
+        async (transaction) => {
+          const updated = (
+            await transaction
+              .update(sqlite.idempotencyRecords)
+              .set(values)
+              .where(
+                and(
+                  sqliteKeyWhere(input),
+                  eq(sqlite.idempotencyRecords.state, "pending"),
+                  eq(sqlite.idempotencyRecords.ownerToken, input.ownerToken),
+                  gt(sqlite.idempotencyRecords.heartbeatAt, staleBeforeText),
+                ),
+              )
+              .run()
+          ).rowsAffected;
           if (updated > 0) return true;
-          transitionPendingToUnknownSqlite(
+          await transitionPendingToUnknownSqlite(
             transaction,
             sqliteKeyWhere(input),
             staleBeforeText,
@@ -296,7 +300,8 @@ export class IdempotencyStore {
 
     if (this.database.dialect === "sqlite") {
       return this.database.db.transaction(
-        (transaction) => pruneSqlite(transaction, staleBeforeText, nowText, unknownExpiryText),
+        async (transaction) =>
+          await pruneSqlite(transaction, staleBeforeText, nowText, unknownExpiryText),
         { behavior: "immediate" },
       );
     }
@@ -329,11 +334,11 @@ export class IdempotencyStore {
     };
   }
 
-  private claimSqlite(
+  private async claimSqlite(
     transaction: SqliteHostTransaction,
     input: PreparedClaim,
-  ): IdempotencyClaimResult {
-    prunePrincipalSqlite(
+  ): Promise<IdempotencyClaimResult> {
+    await prunePrincipalSqlite(
       transaction,
       input.key.principalClientId,
       input.staleBeforeText,
@@ -341,19 +346,23 @@ export class IdempotencyStore {
       input.expiresAtText,
     );
     const inserted =
-      transaction
-        .insert(sqlite.idempotencyRecords)
-        .values(newRecordValues(input))
-        .onConflictDoNothing()
-        .run().changes > 0;
+      (
+        await transaction
+          .insert(sqlite.idempotencyRecords)
+          .values(newRecordValues(input))
+          .onConflictDoNothing()
+          .run()
+      ).rowsAffected > 0;
     if (inserted) {
-      const rowCount = transaction
-        .select({ count: count() })
-        .from(sqlite.idempotencyRecords)
-        .where(eq(sqlite.idempotencyRecords.principalClientId, input.key.principalClientId))
-        .get()?.count;
+      const rowCount = (
+        await transaction
+          .select({ count: count() })
+          .from(sqlite.idempotencyRecords)
+          .where(eq(sqlite.idempotencyRecords.principalClientId, input.key.principalClientId))
+          .get()
+      )?.count;
       if ((rowCount ?? 0) <= this.maxRowsPerPrincipal) return acquiredResult(input);
-      transaction
+      await transaction
         .delete(sqlite.idempotencyRecords)
         .where(
           and(
@@ -364,7 +373,7 @@ export class IdempotencyStore {
         .run();
       return { outcome: "capacity_exceeded" };
     }
-    const row = transaction
+    const row = await transaction
       .select()
       .from(sqlite.idempotencyRecords)
       .where(sqliteKeyWhere(input.key))
@@ -490,21 +499,21 @@ function existingClaimResult(
   };
 }
 
-function prunePrincipalSqlite(
+async function prunePrincipalSqlite(
   transaction: SqliteHostTransaction,
   principalClientId: string,
   staleBeforeText: string,
   nowText: string,
   unknownExpiryText: string,
-): void {
-  transitionPendingToUnknownSqlite(
+): Promise<void> {
+  await transitionPendingToUnknownSqlite(
     transaction,
     eq(sqlite.idempotencyRecords.principalClientId, principalClientId),
     staleBeforeText,
     nowText,
     unknownExpiryText,
   );
-  transaction
+  await transaction
     .delete(sqlite.idempotencyRecords)
     .where(
       and(
@@ -541,23 +550,25 @@ async function prunePrincipalPostgres(
     );
 }
 
-function pruneSqlite(
+async function pruneSqlite(
   transaction: SqliteHostTransaction,
   staleBeforeText: string,
   nowText: string,
   unknownExpiryText: string,
-): IdempotencyPruneResult {
-  const transitionedToUnknown = transitionPendingToUnknownSqlite(
+): Promise<IdempotencyPruneResult> {
+  const transitionedToUnknown = await transitionPendingToUnknownSqlite(
     transaction,
     undefined,
     staleBeforeText,
     nowText,
     unknownExpiryText,
   );
-  const deleted = transaction
-    .delete(sqlite.idempotencyRecords)
-    .where(and(terminalStateWhereSqlite(), lte(sqlite.idempotencyRecords.expiresAt, nowText)))
-    .run().changes;
+  const deleted = (
+    await transaction
+      .delete(sqlite.idempotencyRecords)
+      .where(and(terminalStateWhereSqlite(), lte(sqlite.idempotencyRecords.expiresAt, nowText)))
+      .run()
+  ).rowsAffected;
   return { transitionedToUnknown, deleted };
 }
 
@@ -581,31 +592,33 @@ async function prunePostgres(
   return { transitionedToUnknown, deleted: deleted.length };
 }
 
-function transitionPendingToUnknownSqlite(
+async function transitionPendingToUnknownSqlite(
   transaction: SqliteHostTransaction,
   scope: SQL | undefined,
   staleBeforeText: string,
   nowText: string,
   unknownExpiryText: string,
-): number {
-  return transaction
-    .update(sqlite.idempotencyRecords)
-    .set({
-      state: "unknown",
-      ownerToken: null,
-      heartbeatAt: null,
-      terminalAt: nowText,
-      updatedAt: nowText,
-      expiresAt: unknownExpiryText,
-    })
-    .where(
-      and(
-        scope,
-        eq(sqlite.idempotencyRecords.state, "pending"),
-        lte(sqlite.idempotencyRecords.heartbeatAt, staleBeforeText),
-      ),
-    )
-    .run().changes;
+): Promise<number> {
+  return (
+    await transaction
+      .update(sqlite.idempotencyRecords)
+      .set({
+        state: "unknown",
+        ownerToken: null,
+        heartbeatAt: null,
+        terminalAt: nowText,
+        updatedAt: nowText,
+        expiresAt: unknownExpiryText,
+      })
+      .where(
+        and(
+          scope,
+          eq(sqlite.idempotencyRecords.state, "pending"),
+          lte(sqlite.idempotencyRecords.heartbeatAt, staleBeforeText),
+        ),
+      )
+      .run()
+  ).rowsAffected;
 }
 
 async function transitionPendingToUnknownPostgres(

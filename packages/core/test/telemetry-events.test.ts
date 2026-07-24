@@ -164,7 +164,8 @@ describe("telemetry event builders", () => {
           diagnostic_category: "config",
           os_family: "linux",
           arch: "x64",
-          node_major: 22,
+          runtime_name: "node",
+          runtime_major: 22,
         },
         error,
       }),
@@ -182,7 +183,8 @@ describe("telemetry event builders", () => {
         diagnostic_category: "config",
         os_family: "linux",
         arch: "x64",
-        node_major: "22",
+        runtime_name: "node",
+        runtime_major: "22",
       },
       exception: {
         values: [

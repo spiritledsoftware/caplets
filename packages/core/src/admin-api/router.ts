@@ -654,7 +654,7 @@ async function validateBundleUploadRequest(
     throw new CapletsError("REQUEST_INVALID", "The Caplet Bundle upload body is required.");
   }
   const parsed = await parseAdminBundleUpload({
-    input: Readable.fromWeb(context.req.raw.body as never),
+    input: requestBodyReadable(context.req.raw.body),
     contentType: context.req.header("Content-Type"),
     contentLength: context.req.header("Content-Length"),
     admission: options.bundleUploadAdmission,
@@ -667,6 +667,26 @@ async function validateBundleUploadRequest(
     bundleUpload: parsed,
     creating: context.req.header("If-None-Match") === "*",
   };
+}
+
+function requestBodyReadable(body: ReadableStream<Uint8Array>): Readable {
+  return Readable.from(requestBodyChunks(body), {
+    highWaterMark: 64 * 1024,
+    objectMode: false,
+  });
+}
+
+async function* requestBodyChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<Buffer> {
+  const reader = body.getReader();
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) return;
+      yield Buffer.from(chunk.value.buffer, chunk.value.byteOffset, chunk.value.byteLength);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function validateRouteHeaders(context: Context, definition: AdminV2RouteDefinition): void {

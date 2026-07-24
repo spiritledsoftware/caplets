@@ -20,14 +20,14 @@ export class DashboardSessionRepository {
       throw new CapletsError("REQUEST_INVALID", "Dashboard session record is invalid.");
     }
     return this.database.dialect === "sqlite"
-      ? createSqlite(this.database.db, persisted)
+      ? await createSqlite(this.database.db, persisted)
       : await createPostgres(this.database.db, persisted);
   }
 
   async get(sessionId: string): Promise<DashboardSessionRecord | undefined> {
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.dashboardSessions)
             .where(eq(sqlite.dashboardSessions.sessionId, sessionId))
@@ -48,13 +48,13 @@ export class DashboardSessionRepository {
     now: Date,
   ): Promise<DashboardSessionRecord | undefined> {
     return this.database.dialect === "sqlite"
-      ? touchSqlite(this.database.db, sessionId, expectedSecretHash, now)
+      ? await touchSqlite(this.database.db, sessionId, expectedSecretHash, now)
       : await touchPostgres(this.database.db, sessionId, expectedSecretHash, now);
   }
 
   async delete(sessionId: string, options: DeleteOptions = {}): Promise<boolean> {
     return this.database.dialect === "sqlite"
-      ? deleteSqlite(this.database.db, sessionId, options)
+      ? await deleteSqlite(this.database.db, sessionId, options)
       : await deletePostgres(this.database.db, sessionId, options);
   }
 
@@ -62,16 +62,18 @@ export class DashboardSessionRepository {
     const nowText = now.toISOString();
     const idleCutoff = new Date(now.getTime() - DASHBOARD_SESSION_IDLE_TIMEOUT_MS).toISOString();
     return this.database.dialect === "sqlite"
-      ? this.database.db
-          .delete(sqlite.dashboardSessions)
-          .where(
-            or(
-              lte(sqlite.dashboardSessions.expiresAt, nowText),
-              lt(sqlite.dashboardSessions.lastUsedAt, idleCutoff),
-              ne(sqlite.dashboardSessions.role, "operator"),
-            ),
-          )
-          .run().changes
+      ? (
+          await this.database.db
+            .delete(sqlite.dashboardSessions)
+            .where(
+              or(
+                lte(sqlite.dashboardSessions.expiresAt, nowText),
+                lt(sqlite.dashboardSessions.lastUsedAt, idleCutoff),
+                ne(sqlite.dashboardSessions.role, "operator"),
+              ),
+            )
+            .run()
+        ).rowsAffected
       : (
           await this.database.db
             .delete(postgres.dashboardSessions)
@@ -87,13 +89,21 @@ export class DashboardSessionRepository {
   }
 }
 
-function createSqlite(db: SqliteHostDatabase, session: DashboardSessionRecord): boolean {
-  return db.transaction((transaction) => {
+async function createSqlite(
+  db: SqliteHostDatabase,
+  session: DashboardSessionRecord,
+): Promise<boolean> {
+  return await db.transaction(async (transaction) => {
     const created =
-      transaction.insert(sqlite.dashboardSessions).values(session).onConflictDoNothing().run()
-        .changes > 0;
+      (
+        await transaction
+          .insert(sqlite.dashboardSessions)
+          .values(session)
+          .onConflictDoNothing()
+          .run()
+      ).rowsAffected > 0;
     if (created) {
-      transaction
+      await transaction
         .insert(sqlite.operatorActivity)
         .values(
           activityValues(session.operatorClientId, "dashboard.session.create", session.sessionId),
@@ -125,14 +135,14 @@ async function createPostgres(
   });
 }
 
-function touchSqlite(
+async function touchSqlite(
   db: SqliteHostDatabase,
   sessionId: string,
   expectedSecretHash: string,
   now: Date,
-): DashboardSessionRecord | undefined {
-  return db.transaction((transaction) => {
-    const row = transaction
+): Promise<DashboardSessionRecord | undefined> {
+  return await db.transaction(async (transaction) => {
+    const row = await transaction
       .select()
       .from(sqlite.dashboardSessions)
       .where(eq(sqlite.dashboardSessions.sessionId, sessionId))
@@ -140,7 +150,7 @@ function touchSqlite(
     const session = parseDashboardSessionRecord(row);
     if (!session) {
       if (row) {
-        transaction
+        await transaction
           .delete(sqlite.dashboardSessions)
           .where(eq(sqlite.dashboardSessions.sessionId, sessionId))
           .run();
@@ -149,14 +159,14 @@ function touchSqlite(
     }
     if (session.secretHash !== expectedSecretHash) return undefined;
     if (sessionExpired(session, now)) {
-      transaction
+      await transaction
         .delete(sqlite.dashboardSessions)
         .where(eq(sqlite.dashboardSessions.sessionId, sessionId))
         .run();
       return undefined;
     }
     const lastUsedAt = now.toISOString();
-    transaction
+    await transaction
       .update(sqlite.dashboardSessions)
       .set({ lastUsedAt })
       .where(eq(sqlite.dashboardSessions.sessionId, sessionId))
@@ -203,9 +213,13 @@ async function touchPostgres(
   });
 }
 
-function deleteSqlite(db: SqliteHostDatabase, sessionId: string, options: DeleteOptions): boolean {
-  return db.transaction((transaction) => {
-    const row = transaction
+async function deleteSqlite(
+  db: SqliteHostDatabase,
+  sessionId: string,
+  options: DeleteOptions,
+): Promise<boolean> {
+  return await db.transaction(async (transaction) => {
+    const row = await transaction
       .select()
       .from(sqlite.dashboardSessions)
       .where(eq(sqlite.dashboardSessions.sessionId, sessionId))
@@ -218,12 +232,12 @@ function deleteSqlite(db: SqliteHostDatabase, sessionId: string, options: Delete
     ) {
       return false;
     }
-    transaction
+    await transaction
       .delete(sqlite.dashboardSessions)
       .where(eq(sqlite.dashboardSessions.sessionId, sessionId))
       .run();
     if (options.operatorInitiated && session) {
-      transaction
+      await transaction
         .insert(sqlite.operatorActivity)
         .values(activityValues(session.operatorClientId, "dashboard.session.delete", sessionId))
         .run();

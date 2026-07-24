@@ -40,6 +40,37 @@ jobs:
       - name: Run quality gates
         run: pnpm verify
 
+  verify-bun:
+    name: Verify (Bun ${{ matrix.bun-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bun-version: [1.3.14, latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun-version }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Bun-native quality gates
+        run: pnpm verify:bun
+
   postgres-contracts:
     name: PostgreSQL contracts
     runs-on: ubuntu-latest

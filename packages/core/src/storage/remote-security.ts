@@ -618,7 +618,7 @@ export class RemoteSecurityStore {
   async getClient(clientId: string): Promise<RemoteClientStatus | undefined> {
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select({
               clientId: sqlite.remoteClients.clientId,
               clientLabel: sqlite.remoteClients.clientLabel,
@@ -658,7 +658,7 @@ export class RemoteSecurityStore {
     const sort = input.sort ?? "asc";
     const rows =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select({
               clientId: sqlite.remoteClients.clientId,
               clientLabel: sqlite.remoteClients.clientLabel,
@@ -726,7 +726,8 @@ export class RemoteSecurityStore {
   async countClients(): Promise<number> {
     if (this.database.dialect === "sqlite") {
       return (
-        this.database.db.select({ value: count() }).from(sqlite.remoteClients).get()?.value ?? 0
+        (await this.database.db.select({ value: count() }).from(sqlite.remoteClients).get())
+          ?.value ?? 0
       );
     }
     const [row] = await this.database.db.select({ value: count() }).from(postgres.remoteClients);
@@ -749,9 +750,9 @@ export class RemoteSecurityStore {
     now = new Date(),
   ): Promise<RemotePendingLoginStatus | undefined> {
     if (this.database.dialect === "sqlite") {
-      return this.database.db.transaction((transaction) => {
-        cleanupSqlitePendingLogins(transaction, now);
-        const row = transaction
+      return this.database.db.transaction(async (transaction) => {
+        await cleanupSqlitePendingLogins(transaction, now);
+        const row = await transaction
           .select({
             flowId: sqlite.remotePendingLogins.flowId,
             hostUrl: sqlite.remotePendingLogins.hostUrl,
@@ -814,18 +815,20 @@ export class RemoteSecurityStore {
   ): Promise<number> {
     const normalizedStatuses = normalizePendingLoginStatuses(statuses);
     if (this.database.dialect === "sqlite") {
-      return this.database.db.transaction((transaction) => {
-        cleanupSqlitePendingLogins(transaction, now);
+      return this.database.db.transaction(async (transaction) => {
+        await cleanupSqlitePendingLogins(transaction, now);
         return (
-          transaction
-            .select({ value: count() })
-            .from(sqlite.remotePendingLogins)
-            .where(
-              normalizedStatuses
-                ? inArray(sqlite.remotePendingLogins.status, normalizedStatuses)
-                : undefined,
-            )
-            .get()?.value ?? 0
+          (
+            await transaction
+              .select({ value: count() })
+              .from(sqlite.remotePendingLogins)
+              .where(
+                normalizedStatuses
+                  ? inArray(sqlite.remotePendingLogins.status, normalizedStatuses)
+                  : undefined,
+              )
+              .get()
+          )?.value ?? 0
         );
       });
     }
@@ -868,9 +871,9 @@ export class RemoteSecurityStore {
     const sort = input.sort ?? "asc";
     const statuses = normalizePendingLoginStatuses(input.statuses);
     if (this.database.dialect === "sqlite") {
-      return this.database.db.transaction((transaction) => {
-        cleanupSqlitePendingLogins(transaction, now);
-        const rows = transaction
+      return this.database.db.transaction(async (transaction) => {
+        await cleanupSqlitePendingLogins(transaction, now);
+        const rows = await transaction
           .select({
             flowId: sqlite.remotePendingLogins.flowId,
             hostUrl: sqlite.remotePendingLogins.hostUrl,
@@ -1118,14 +1121,14 @@ export class RemoteSecurityStore {
       );
     }
   }
-  verifyLegacySnapshotInTransaction(
+  async verifyLegacySnapshotInTransaction(
     snapshot: RemoteServerCredentialState,
     transaction: HostDatabaseTransaction,
-  ): void | Promise<void> {
+  ): Promise<void> {
     const validated = parseRemoteServerCredentialState(snapshot);
     return transaction.dialect === "sqlite"
-      ? verifyLegacyRemoteSecurityState(loadSqliteState(transaction.db), validated)
-      : verifyLegacyRemoteSecurityPostgres(transaction.db, validated);
+      ? await verifyLegacyRemoteSecurityState(await loadSqliteState(transaction.db), validated)
+      : await verifyLegacyRemoteSecurityPostgres(transaction.db, validated);
   }
 
   async dumpForTest(): Promise<RemoteSecurityState> {
@@ -1134,7 +1137,7 @@ export class RemoteSecurityStore {
 
   private async readState(): Promise<RemoteSecurityState> {
     return this.database.dialect === "sqlite"
-      ? loadSqliteState(this.database.db)
+      ? await loadSqliteState(this.database.db)
       : await loadPostgresState(this.database.db);
   }
 
@@ -1143,15 +1146,15 @@ export class RemoteSecurityStore {
   ): Promise<R> {
     const result =
       this.database.dialect === "sqlite"
-        ? this.database.db.transaction(
-            (transaction) => {
-              const state = loadSqliteState(transaction);
+        ? await this.database.db.transaction(
+            async (transaction) => {
+              const state = await loadSqliteState(transaction);
               const transitionResult = transition(state);
               if ("error" in transitionResult) {
-                saveSqliteState(transaction, state);
+                await saveSqliteState(transaction, state);
                 return transitionResult.error;
               }
-              if (transitionResult.save !== false) saveSqliteState(transaction, state);
+              if (transitionResult.save !== false) await saveSqliteState(transaction, state);
               return transitionResult.value;
             },
             { behavior: "immediate" },
@@ -1179,12 +1182,12 @@ export class RemoteSecurityStore {
   ): Promise<R> {
     if (this.database.dialect === "sqlite") {
       return this.database.db.transaction(
-        (transaction) => {
-          const state = loadSqliteState(transaction);
+        async (transaction) => {
+          const state = await loadSqliteState(transaction);
           const result = transition(state);
           if (result.save === false) return result.value;
-          saveSqliteState(transaction, state);
-          transaction
+          await saveSqliteState(transaction, state);
+          await transaction
             .insert(sqlite.operatorActivity)
             .values(
               activityValues(
@@ -1292,17 +1295,17 @@ type OperatorTransitionResult<R> = {
 
 type SqliteTransaction = Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0];
 type PostgresTransaction = Parameters<Parameters<PostgresHostDatabase["transaction"]>[0]>[0];
-function importLegacyRemoteSecuritySqlite(
+async function importLegacyRemoteSecuritySqlite(
   database: SqliteTransaction,
   snapshot: RemoteServerCredentialState,
-): void {
-  const current = loadSqliteState(database);
+): Promise<void> {
+  const current = await loadSqliteState(database);
   const merged = mergeLegacyRemoteSecurityState(current, snapshot);
   if (!merged.changed) return;
   current.pairingCodes = merged.state.pairingCodes;
   current.pendingLogins = merged.state.pendingLogins;
   current.clients = merged.state.clients;
-  saveSqliteState(database, current);
+  await saveSqliteState(database, current);
 }
 
 async function importLegacyRemoteSecurityPostgres(
@@ -1338,14 +1341,19 @@ async function verifyLegacyRemoteSecurityPostgres(
   verifyLegacyRemoteSecurityState(await loadPostgresState(database), snapshot);
 }
 
-function loadSqliteState(database: SqliteHostDatabase | SqliteTransaction): RemoteSecurityState {
+async function loadSqliteState(
+  database: SqliteHostDatabase | SqliteTransaction,
+): Promise<RemoteSecurityState> {
   return assembleState({
-    pairingCodes: database.select().from(sqlite.remotePairingCodes).all(),
-    clients: database.select().from(sqlite.remoteClients).all(),
-    tokenFamilies: database.select().from(sqlite.remoteClientTokenFamilies).all(),
-    supersededRefreshes: database.select().from(sqlite.remoteClientSupersededRefreshTokens).all(),
-    pendingLogins: database.select().from(sqlite.remotePendingLogins).all(),
-    pendingSupersededRefreshes: database
+    pairingCodes: await database.select().from(sqlite.remotePairingCodes).all(),
+    clients: await database.select().from(sqlite.remoteClients).all(),
+    tokenFamilies: await database.select().from(sqlite.remoteClientTokenFamilies).all(),
+    supersededRefreshes: await database
+      .select()
+      .from(sqlite.remoteClientSupersededRefreshTokens)
+      .all(),
+    pendingLogins: await database.select().from(sqlite.remotePendingLogins).all(),
+    pendingSupersededRefreshes: await database
       .select()
       .from(sqlite.remotePendingSupersededRefreshTokens)
       .all(),
@@ -1492,32 +1500,35 @@ function groupBy<T>(values: T[], keyFor: (value: T) => string): Map<string, T[]>
   return grouped;
 }
 
-function saveSqliteState(database: SqliteTransaction, state: RemoteSecurityState): void {
-  database.delete(sqlite.remotePendingSupersededRefreshTokens).run();
-  database.delete(sqlite.remoteClientSupersededRefreshTokens).run();
-  database.delete(sqlite.remoteClientTokenFamilies).run();
-  database.delete(sqlite.remotePendingLogins).run();
-  database.delete(sqlite.remotePairingCodes).run();
-  database.delete(sqlite.remoteClients).run();
+async function saveSqliteState(
+  database: SqliteTransaction,
+  state: RemoteSecurityState,
+): Promise<void> {
+  await database.delete(sqlite.remotePendingSupersededRefreshTokens).run();
+  await database.delete(sqlite.remoteClientSupersededRefreshTokens).run();
+  await database.delete(sqlite.remoteClientTokenFamilies).run();
+  await database.delete(sqlite.remotePendingLogins).run();
+  await database.delete(sqlite.remotePairingCodes).run();
+  await database.delete(sqlite.remoteClients).run();
   const values = relationalValues(state);
   if (values.pairingCodes.length > 0) {
-    database.insert(sqlite.remotePairingCodes).values(values.pairingCodes).run();
+    await database.insert(sqlite.remotePairingCodes).values(values.pairingCodes).run();
   }
   if (values.clients.length > 0) {
-    database.insert(sqlite.remoteClients).values(values.clients).run();
-    database.insert(sqlite.remoteClientTokenFamilies).values(values.tokenFamilies).run();
+    await database.insert(sqlite.remoteClients).values(values.clients).run();
+    await database.insert(sqlite.remoteClientTokenFamilies).values(values.tokenFamilies).run();
   }
   if (values.supersededRefreshes.length > 0) {
-    database
+    await database
       .insert(sqlite.remoteClientSupersededRefreshTokens)
       .values(values.supersededRefreshes)
       .run();
   }
   if (values.pendingLogins.length > 0) {
-    database.insert(sqlite.remotePendingLogins).values(values.pendingLogins).run();
+    await database.insert(sqlite.remotePendingLogins).values(values.pendingLogins).run();
   }
   if (values.pendingSupersededRefreshes.length > 0) {
-    database
+    await database
       .insert(sqlite.remotePendingSupersededRefreshTokens)
       .values(values.pendingSupersededRefreshes)
       .run();
@@ -1833,9 +1844,9 @@ function stalePendingLoginWhere(
   );
 }
 
-function cleanupSqlitePendingLogins(database: SqliteTransaction, now: Date): void {
+async function cleanupSqlitePendingLogins(database: SqliteTransaction, now: Date): Promise<void> {
   const nowIso = now.toISOString();
-  database
+  await database
     .update(sqlite.remotePendingLogins)
     .set({
       status: "expired",
@@ -1848,7 +1859,7 @@ function cleanupSqlitePendingLogins(database: SqliteTransaction, now: Date): voi
       ),
     )
     .run();
-  database
+  await database
     .delete(sqlite.remotePendingLogins)
     .where(
       stalePendingLoginWhere(

@@ -155,6 +155,7 @@ import {
   type TelemetrySurface,
   writeTelemetryAttribution,
 } from "./telemetry";
+import { runtimeDescriptor } from "./telemetry/runtime-environment";
 import { maybePrintUpdateNotice } from "./update-check";
 import {
   VAULT_MAX_VALUE_BYTES,
@@ -615,6 +616,7 @@ async function captureCliTelemetry(
 
   if (options.outcome !== "failure") return;
   if (options.error === undefined) return;
+  const runtime = runtimeDescriptor();
   const reliability = buildReliabilityTelemetryEvent({
     name: "caplets_reliability_error",
     properties: {
@@ -627,7 +629,8 @@ async function captureCliTelemetry(
       diagnostic_category: diagnosticCategoryForError(options.error),
       os_family: platform(),
       arch: architectureForTelemetry(),
-      node_major: Number(process.versions.node.split(".")[0] ?? 0),
+      runtime_name: runtime.name,
+      runtime_major: runtime.major,
     },
     error: options.error,
   });

@@ -480,7 +480,7 @@ describe("Caplet installation storage", () => {
       const githubKeys = await createInstallationHistory(storage, "github", 5);
       const gitlabKeys = await createInstallationHistory(storage, "gitlab", 2);
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-      storage.database.db.run(sql`
+      await storage.database.db.run(sql`
         update caplet_installations
         set updated_at = '2026-07-20T12:00:00.000Z'
         where record_key = (
@@ -650,7 +650,7 @@ describe("Caplet installation storage", () => {
       });
 
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite storage.");
-      storage.database.db.run(sql`
+      await storage.database.db.run(sql`
         update caplet_installation_observations
         set observed_at = '2026-07-20T12:00:00.000Z'
         where installation_key = ${current.installationKey}

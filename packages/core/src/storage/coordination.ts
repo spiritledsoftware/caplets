@@ -72,7 +72,7 @@ export class HostCoordinationStore {
   async registerNode(input: RegisterNodeInput): Promise<HostNodeRegistration> {
     validateNodeInput(input);
     return this.database.dialect === "sqlite"
-      ? registerSqlite(this.database.db, input)
+      ? await registerSqlite(this.database.db, input)
       : await registerPostgres(this.database.db, input);
   }
 
@@ -82,7 +82,10 @@ export class HostCoordinationStore {
 
   async unregisterNode(nodeId: string): Promise<void> {
     if (this.database.dialect === "sqlite") {
-      this.database.db.delete(sqlite.hostNodes).where(eq(sqlite.hostNodes.nodeId, nodeId)).run();
+      await this.database.db
+        .delete(sqlite.hostNodes)
+        .where(eq(sqlite.hostNodes.nodeId, nodeId))
+        .run();
     } else {
       await this.database.db
         .delete(postgres.hostNodes)
@@ -93,7 +96,7 @@ export class HostCoordinationStore {
   async nodeReady(nodeId: string): Promise<boolean> {
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select({ ready: sqlite.hostNodes.ready })
             .from(sqlite.hostNodes)
             .where(eq(sqlite.hostNodes.nodeId, nodeId))
@@ -110,7 +113,7 @@ export class HostCoordinationStore {
 
   async activeNodeCount(maxHeartbeatAgeMs = 5_000): Promise<number> {
     if (this.database.dialect === "sqlite") {
-      const row = this.database.db
+      const row = await this.database.db
         .select({ count: count() })
         .from(sqlite.hostNodes)
         .where(
@@ -133,8 +136,9 @@ export class HostCoordinationStore {
 
   async publishConfigGeneration(contentHash: string, createdBy: string): Promise<number> {
     return this.database.dialect === "sqlite"
-      ? this.database.db.transaction((transaction) =>
-          advanceSqliteConfigGeneration(transaction, contentHash, createdBy, true),
+      ? this.database.db.transaction(
+          async (transaction) =>
+            await advanceSqliteConfigGeneration(transaction, contentHash, createdBy, true),
         )
       : await this.database.db.transaction(
           async (transaction) =>
@@ -145,7 +149,7 @@ export class HostCoordinationStore {
   async currentConfigGeneration(): Promise<number> {
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select({ generation: sqlite.hostConfigGenerations.generation })
             .from(sqlite.hostConfigGenerations)
             .orderBy(desc(sqlite.hostConfigGenerations.generation))
@@ -252,7 +256,7 @@ export class HostCoordinationStore {
     if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0)
       throw new CapletsError("REQUEST_INVALID", "Lease TTL must be positive.");
     return this.database.dialect === "sqlite"
-      ? acquireLeaseSqlite(this.database.db, input)
+      ? await acquireLeaseSqlite(this.database.db, input)
       : await acquireLeasePostgres(this.database.db, input);
   }
 
@@ -263,7 +267,7 @@ export class HostCoordinationStore {
     cursor: string | null;
     now?: Date | undefined;
   }): Promise<void> {
-    if (this.database.dialect === "sqlite") checkpointSqlite(this.database.db, input);
+    if (this.database.dialect === "sqlite") await checkpointSqlite(this.database.db, input);
     else await checkpointPostgres(this.database.db, input);
   }
 }
@@ -300,13 +304,13 @@ async function connectPostgresListener(
   }
 }
 
-export function advanceSqliteConfigGeneration(
+export async function advanceSqliteConfigGeneration(
   transaction: Parameters<Parameters<SqliteHostDatabase["transaction"]>[0]>[0],
   contentHash: string,
   createdBy: string,
   deduplicate = false,
-): number {
-  const latest = transaction
+): Promise<number> {
+  const latest = await transaction
     .select({
       generation: sqlite.hostConfigGenerations.generation,
       contentHash: sqlite.hostConfigGenerations.contentHash,
@@ -316,7 +320,7 @@ export function advanceSqliteConfigGeneration(
     .get();
   if (deduplicate && latest?.contentHash === contentHash) return latest.generation;
   const generation = (latest?.generation ?? 0) + 1;
-  transaction
+  await transaction
     .insert(sqlite.hostConfigGenerations)
     .values({
       generation,
@@ -406,21 +410,24 @@ function configGenerationWaitAborted(): Error {
   return error;
 }
 
-function registerSqlite(db: SqliteHostDatabase, input: RegisterNodeInput): HostNodeRegistration {
-  return db.transaction((transaction) => {
+async function registerSqlite(
+  db: SqliteHostDatabase,
+  input: RegisterNodeInput,
+): Promise<HostNodeRegistration> {
+  return await db.transaction(async (transaction) => {
     const now = input.now ?? new Date();
     const nowText = now.toISOString();
     const cutoff = new Date(now.getTime() - (input.heartbeatTtlMs ?? 15_000)).toISOString();
-    let identity = transaction
+    let identity = await transaction
       .select()
       .from(sqlite.hostIdentity)
       .where(eq(sqlite.hostIdentity.singleton, 1))
       .get();
     if (!identity) {
       identity = { singleton: 1, hostId: randomUUID(), createdAt: nowText };
-      transaction.insert(sqlite.hostIdentity).values(identity).run();
+      await transaction.insert(sqlite.hostIdentity).values(identity).run();
     }
-    const peers = transaction
+    const peers = await transaction
       .select()
       .from(sqlite.hostNodes)
       .where(
@@ -428,7 +435,7 @@ function registerSqlite(db: SqliteHostDatabase, input: RegisterNodeInput): HostN
       )
       .all();
     const conflict = parityConflict(peers, input);
-    transaction
+    await transaction
       .insert(sqlite.hostNodes)
       .values({
         nodeId: input.nodeId,
@@ -520,14 +527,14 @@ function parityConflict(
   return null;
 }
 
-function acquireLeaseSqlite(
+async function acquireLeaseSqlite(
   db: SqliteHostDatabase,
   input: AcquireLeaseInput,
-): MaintenanceLease | undefined {
-  return db.transaction(
-    (transaction) => {
+): Promise<MaintenanceLease | undefined> {
+  return await db.transaction(
+    async (transaction) => {
       const now = input.now ?? new Date();
-      const existing = transaction
+      const existing = await transaction
         .select()
         .from(sqlite.maintenanceLeases)
         .where(eq(sqlite.maintenanceLeases.leaseName, input.leaseName))
@@ -545,7 +552,7 @@ function acquireLeaseSqlite(
         expiresAt: new Date(now.getTime() + input.ttlMs).toISOString(),
         updatedAt: now.toISOString(),
       };
-      transaction
+      await transaction
         .insert(sqlite.maintenanceLeases)
         .values(lease)
         .onConflictDoUpdate({ target: sqlite.maintenanceLeases.leaseName, set: lease })
@@ -601,7 +608,7 @@ async function acquireLeasePostgres(
   });
 }
 
-function checkpointSqlite(
+async function checkpointSqlite(
   db: SqliteHostDatabase,
   input: {
     leaseName: string;
@@ -610,15 +617,15 @@ function checkpointSqlite(
     cursor: string | null;
     now?: Date | undefined;
   },
-): void {
-  db.transaction((transaction) => {
-    const lease = transaction
+): Promise<void> {
+  await db.transaction(async (transaction) => {
+    const lease = await transaction
       .select()
       .from(sqlite.maintenanceLeases)
       .where(eq(sqlite.maintenanceLeases.leaseName, input.leaseName))
       .get();
     assertLease(lease, input);
-    transaction
+    await transaction
       .insert(sqlite.maintenanceCursors)
       .values({
         jobName: input.leaseName,

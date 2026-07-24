@@ -243,11 +243,9 @@ describe("stored Caplet Record CLI", () => {
       const activity = await storage.installations.listActivity();
       await expect(storage.coordination.currentConfigGeneration()).resolves.toBe(8);
       if (storage.database.dialect !== "sqlite") throw new Error("Expected SQLite test storage.");
-      const invalidations = storage.database.db
-        .select()
-        .from(hostConfigGenerations)
-        .all()
-        .filter(({ contentHash }) => contentHash.startsWith("mutation:"));
+      const invalidations = (
+        await storage.database.db.select().from(hostConfigGenerations).all()
+      ).filter(({ contentHash }) => contentHash.startsWith("mutation:"));
       expect(invalidations).toEqual([]);
       expect(activity.length).toBeGreaterThan(10);
       expect(activity.every((entry) => entry.operatorClientId === "local_cli")).toBe(true);

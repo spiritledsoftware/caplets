@@ -263,7 +263,7 @@ requires a fresh dashboard login.
 
 ## JavaScript and TypeScript SDK
 
-Install `@caplets/sdk` for an isolated, typed public HTTP client in Node.js 22+ or a modern browser.
+Install `@caplets/sdk` for an isolated, typed public HTTP client in a modern web-platform JavaScript runtime.
 Pass the Current Host Origin explicitly:
 
 ```ts
@@ -356,8 +356,8 @@ See [GitHub Releases](https://github.com/spiritledsoftware/caplets/releases) for
 
 ## Repository
 
-This monorepo uses pnpm. Published packages support Node.js `>=22`; CI verifies
-that support floor and the current Node.js LTS, while owned runtime images use current LTS.
+This monorepo uses pnpm. Caplets Processes support Node.js `>=22` and Bun `>=1.3.14`; Node remains
+the default launcher and image runtime. CI verifies the minimum and current release lines for both.
 
 ```sh
 pnpm install --frozen-lockfile

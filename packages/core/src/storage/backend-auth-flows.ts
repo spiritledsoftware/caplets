@@ -182,7 +182,7 @@ export class BackendAuthFlowRepository {
     };
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db.insert(sqlite.backendAuthFlows).values(values).returning().get()
+        ? await this.database.db.insert(sqlite.backendAuthFlows).values(values).returning().get()
         : (await this.database.db.insert(postgres.backendAuthFlows).values(values).returning())[0];
     if (!row) throw new CapletsError("INTERNAL_ERROR", "Backend auth flow was not persisted.");
     return viewForRow(row);
@@ -209,7 +209,7 @@ export class BackendAuthFlowRepository {
     await this.expireDue({ now, limit: MAX_BACKEND_AUTH_FLOW_PRUNE_BATCH });
     const rows =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .select()
             .from(sqlite.backendAuthFlows)
             .where(
@@ -309,8 +309,8 @@ export class BackendAuthFlowRepository {
     const nowText = now.toISOString();
     const claim =
       this.database.dialect === "sqlite"
-        ? this.database.db.transaction((transaction) => {
-            const row = transaction
+        ? await this.database.db.transaction(async (transaction) => {
+            const row = await transaction
               .update(sqlite.backendAuthFlows)
               .set({ status: "completing", claimToken, claimedAt: nowText, updatedAt: nowText })
               .where(
@@ -346,8 +346,8 @@ export class BackendAuthFlowRepository {
     const nowText = (input.now ?? new Date()).toISOString();
     const completed =
       this.database.dialect === "sqlite"
-        ? this.database.db.transaction((transaction) =>
-            completeClaimSqlite(transaction, input, nowText),
+        ? await this.database.db.transaction(
+            async (transaction) => await completeClaimSqlite(transaction, input, nowText),
           )
         : await this.database.db.transaction(
             async (transaction) => await completeClaimPostgres(transaction, input, nowText),
@@ -372,7 +372,7 @@ export class BackendAuthFlowRepository {
     const nowText = (input.now ?? new Date()).toISOString();
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .update(sqlite.backendAuthFlows)
             .set({ status: "pending", claimToken: null, claimedAt: null, updatedAt: nowText })
             .where(
@@ -410,7 +410,7 @@ export class BackendAuthFlowRepository {
     const nowText = (input.now ?? new Date()).toISOString();
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .update(sqlite.backendAuthFlows)
             .set({ claimedAt: nowText, updatedAt: nowText })
             .where(
@@ -465,7 +465,7 @@ export class BackendAuthFlowRepository {
     };
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .update(sqlite.backendAuthFlows)
             .set(values)
             .where(
@@ -527,7 +527,7 @@ export class BackendAuthFlowRepository {
     };
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .update(sqlite.backendAuthFlows)
             .set(values)
             .where(
@@ -580,7 +580,7 @@ export class BackendAuthFlowRepository {
     const values = terminalValues("expired", nowText);
     const row =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .update(sqlite.backendAuthFlows)
             .set(values)
             .where(
@@ -640,7 +640,7 @@ export class BackendAuthFlowRepository {
     const limit = validateBatchLimit(input.limit);
     const cutoff = new Date(now.getTime() - retentionMs).toISOString();
     return this.database.dialect === "sqlite"
-      ? pruneSqlite(this.database.db, cutoff, limit)
+      ? await pruneSqlite(this.database.db, cutoff, limit)
       : await prunePostgres(this.database.db, cutoff, limit);
   }
 
@@ -659,7 +659,7 @@ export class BackendAuthFlowRepository {
 
   private async readRow(flowId: string): Promise<BackendAuthFlowRow | undefined> {
     return this.database.dialect === "sqlite"
-      ? this.database.db
+      ? await this.database.db
           .select()
           .from(sqlite.backendAuthFlows)
           .where(eq(sqlite.backendAuthFlows.flowId, flowId))
@@ -678,7 +678,7 @@ export class BackendAuthFlowRepository {
     limit: number,
   ): Promise<Array<{ flowId: string }>> {
     return this.database.dialect === "sqlite"
-      ? this.database.db
+      ? await this.database.db
           .select({ flowId: sqlite.backendAuthFlows.flowId })
           .from(sqlite.backendAuthFlows)
           .where(
@@ -707,7 +707,7 @@ export class BackendAuthFlowRepository {
     const values = terminalValues("expired", nowText);
     const rows =
       this.database.dialect === "sqlite"
-        ? this.database.db
+        ? await this.database.db
             .update(sqlite.backendAuthFlows)
             .set(values)
             .where(
@@ -758,19 +758,19 @@ function claimedFlow<T extends BackendAuthFlowSerializableState>(
   };
 }
 
-function completeClaimSqlite(
+async function completeClaimSqlite(
   transaction: SqliteHostTransaction,
   input: BackendAuthFlowCompletionInput,
   nowText: string,
-): StoredOAuthTokenBundleView | undefined {
-  const row = transaction
+): Promise<StoredOAuthTokenBundleView | undefined> {
+  const row = await transaction
     .select()
     .from(sqlite.backendAuthFlows)
     .where(eq(sqlite.backendAuthFlows.flowId, input.flowId))
     .get();
   if (!completionClaimMatches(row, input)) return undefined;
   if (row.expiresAt <= nowText) {
-    transaction
+    await transaction
       .update(sqlite.backendAuthFlows)
       .set(terminalValues("expired", nowText))
       .where(
@@ -784,7 +784,7 @@ function completeClaimSqlite(
       .run();
     return undefined;
   }
-  const persisted = writeBackendAuthTokenBundleInTransaction(
+  const persisted = await writeBackendAuthTokenBundleInTransaction(
     input.bundle,
     {
       expectedGeneration: input.expectedGeneration,
@@ -792,7 +792,7 @@ function completeClaimSqlite(
     },
     { dialect: "sqlite", db: transaction },
   );
-  const completed = transaction
+  const completed = await transaction
     .update(sqlite.backendAuthFlows)
     .set({
       ...terminalValues("completed", nowText),
@@ -887,7 +887,7 @@ function completionClaimMatches(
   );
 }
 
-function reconcileAbandonedSqlite(
+async function reconcileAbandonedSqlite(
   database: SqliteHostDatabase,
   input: {
     flowId: string;
@@ -896,9 +896,9 @@ function reconcileAbandonedSqlite(
     observedBackendAuthGeneration?: number | undefined;
     now?: Date | undefined;
   },
-): BackendAuthFlowView | undefined {
-  return database.transaction((transaction) => {
-    const row = transaction
+): Promise<BackendAuthFlowView | undefined> {
+  return await database.transaction(async (transaction) => {
+    const row = await transaction
       .select()
       .from(sqlite.backendAuthFlows)
       .where(eq(sqlite.backendAuthFlows.flowId, input.flowId))
@@ -906,7 +906,7 @@ function reconcileAbandonedSqlite(
     if (!isAbandonedRow(row, input.abandonedBefore)) return undefined;
     const nowText = (input.now ?? new Date()).toISOString();
     const completed = correlationsMatch(row, input);
-    const updated = transaction
+    const updated = await transaction
       .update(sqlite.backendAuthFlows)
       .set({
         ...terminalValues(completed ? "completed" : "unknown", nowText),
@@ -965,9 +965,13 @@ async function reconcileAbandonedPostgres(
   });
 }
 
-function pruneSqlite(database: SqliteHostDatabase, cutoff: string, limit: number): number {
-  return database.transaction((transaction) => {
-    const rows = transaction
+async function pruneSqlite(
+  database: SqliteHostDatabase,
+  cutoff: string,
+  limit: number,
+): Promise<number> {
+  return await database.transaction(async (transaction) => {
+    const rows = await transaction
       .select({ flowId: sqlite.backendAuthFlows.flowId })
       .from(sqlite.backendAuthFlows)
       .where(
@@ -980,16 +984,18 @@ function pruneSqlite(database: SqliteHostDatabase, cutoff: string, limit: number
       .limit(limit)
       .all();
     if (rows.length === 0) return 0;
-    return transaction
-      .delete(sqlite.backendAuthFlows)
-      .where(
-        inArray(
-          sqlite.backendAuthFlows.flowId,
-          rows.map((row) => row.flowId),
-        ),
-      )
-      .returning({ flowId: sqlite.backendAuthFlows.flowId })
-      .all().length;
+    return (
+      await transaction
+        .delete(sqlite.backendAuthFlows)
+        .where(
+          inArray(
+            sqlite.backendAuthFlows.flowId,
+            rows.map((row) => row.flowId),
+          ),
+        )
+        .returning({ flowId: sqlite.backendAuthFlows.flowId })
+        .all()
+    ).length;
   });
 }
 

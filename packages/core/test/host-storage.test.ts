@@ -1,10 +1,11 @@
 import { Buffer } from "node:buffer";
 import { once } from "node:events";
-import BetterSqlite3 from "better-sqlite3";
+import { createClient } from "@libsql/client";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
@@ -81,15 +82,20 @@ describe("host storage", () => {
     // This integration test must outlive SQLite's native busy timeout; fake timers cannot drive it.
     const worker = new Worker(
       `
-        const BetterSqlite3 = require("better-sqlite3");
+        const { createClient } = require("@libsql/client");
+        const { pathToFileURL } = require("node:url");
         const { parentPort, workerData } = require("node:worker_threads");
-        const database = new BetterSqlite3(workerData.path);
-        database.exec("BEGIN IMMEDIATE");
-        parentPort.postMessage("locked");
-        setTimeout(() => {
-          database.exec("COMMIT");
-          database.close();
-        }, workerData.holdMs);
+        void (async () => {
+          const database = createClient({ url: pathToFileURL(workerData.path).href });
+          const transaction = await database.transaction("write");
+          parentPort.postMessage("locked");
+          setTimeout(async () => {
+            await transaction.commit();
+            database.close();
+          }, workerData.holdMs);
+        })().catch((error) => {
+          parentPort.postMessage({ error: error instanceof Error ? error.message : String(error) });
+        });
       `,
       { eval: true, workerData: { path, holdMs: 5_250 } },
     );
@@ -115,26 +121,21 @@ describe("host storage", () => {
     const config = { type: "sqlite" as const, path };
 
     await migrateHostStorage(config);
-    const database = new BetterSqlite3(path);
+    const database = createClient({ url: pathToFileURL(path).href });
     try {
-      const idColumn = (
-        database.pragma("table_info(caplets_migrations)") as Array<{
-          name: string;
-          type: string;
-          pk: number;
-        }>
-      ).find((column) => column.name === "id");
+      const idColumn = (await database.execute("PRAGMA table_info(caplets_migrations)")).rows.find(
+        (column) => column.name === "id",
+      );
       expect(idColumn).toMatchObject({ type: "INTEGER", pk: 1 });
-      const rows = database
-        .prepare("SELECT id, hash FROM caplets_migrations ORDER BY created_at")
-        .all() as Array<{ id: number; hash: string }>;
+      const rows = (
+        await database.execute("SELECT id, hash FROM caplets_migrations ORDER BY created_at")
+      ).rows;
       expect(rows.length).toBeGreaterThan(0);
       expect(rows.every((row) => Number.isInteger(row.id))).toBe(true);
-      database
-        .prepare(
-          "UPDATE caplets_migrations SET hash = 'tampered' WHERE created_at = (SELECT MIN(created_at) FROM caplets_migrations)",
-        )
-        .run();
+      await database.execute(
+        "UPDATE caplets_migrations SET hash = 'tampered' " +
+          "WHERE created_at = (SELECT MIN(created_at) FROM caplets_migrations)",
+      );
     } finally {
       database.close();
     }
@@ -151,13 +152,12 @@ describe("host storage", () => {
     const config = { type: "sqlite" as const, path };
 
     await migrateHostStorage(config);
-    const database = new BetterSqlite3(path);
+    const database = createClient({ url: pathToFileURL(path).href });
     try {
-      database
-        .prepare(
-          "DELETE FROM caplets_migrations WHERE created_at = (SELECT MIN(created_at) FROM caplets_migrations)",
-        )
-        .run();
+      await database.execute(
+        "DELETE FROM caplets_migrations " +
+          "WHERE created_at = (SELECT MIN(created_at) FROM caplets_migrations)",
+      );
     } finally {
       database.close();
     }
@@ -175,16 +175,14 @@ describe("host storage", () => {
     await migrateHostStorage(config);
 
     const subjectKey = JSON.stringify(["shared", "global-file", "/shared/CAPLET.md"]);
-    const database = new BetterSqlite3(path);
+    const database = createClient({ url: pathToFileURL(path).href });
     try {
-      database
-        .prepare(
-          `INSERT INTO remote_clients (
-            client_id, client_label, role, host_url, access_token_hash,
-            access_expires_at, generation, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+      await database.execute({
+        sql: `INSERT INTO remote_clients (
+          client_id, client_label, role, host_url, access_token_hash,
+          access_expires_at, generation, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
           "rcli_existing",
           "Existing",
           "access",
@@ -193,16 +191,15 @@ describe("host storage", () => {
           "2027-01-01T00:00:00.000Z",
           9,
           "2026-01-01T00:00:00.000Z",
-        );
-      database
-        .prepare(
-          `INSERT INTO remote_pending_logins (
-            flow_id, host_url, operator_code_hash, pending_refresh_hash,
-            pending_completion_hash, client_label, requested_role, created_at,
-            code_expires_at, flow_expires_at, generation, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+        ],
+      });
+      await database.execute({
+        sql: `INSERT INTO remote_pending_logins (
+          flow_id, host_url, operator_code_hash, pending_refresh_hash,
+          pending_completion_hash, client_label, requested_role, created_at,
+          code_expires_at, flow_expires_at, generation, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
           "rlogin_existing",
           "https://remote.example.test",
           "secret-code-hash",
@@ -215,15 +212,14 @@ describe("host storage", () => {
           "2026-01-02T00:00:00.000Z",
           7,
           "pending",
-        );
-      database
-        .prepare(
-          `INSERT INTO vault_access_grants (
-            subject_kind, subject_key, caplet_id, vault_key, reference_name,
-            origin_kind, origin_path, resource_version, created_at, created_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+        ],
+      });
+      await database.execute({
+        sql: `INSERT INTO vault_access_grants (
+          subject_kind, subject_key, caplet_id, vault_key, reference_name,
+          origin_kind, origin_path, resource_version, created_at, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
           "file",
           subjectKey,
           "shared",
@@ -234,8 +230,9 @@ describe("host storage", () => {
           "old-version",
           "2026-01-01T00:00:00.000Z",
           "secret-operator",
-        );
-      database.exec(`
+        ],
+      });
+      await database.executeMultiple(`
         DROP INDEX caplet_records_updated_key_idx;
         DROP INDEX remote_pending_logins_status_created_idx;
         ALTER TABLE remote_clients DROP COLUMN generation;
@@ -250,26 +247,33 @@ describe("host storage", () => {
     }
 
     await migrateHostStorage(config);
-    const migrated = new BetterSqlite3(path);
+    const migrated = createClient({ url: pathToFileURL(path).href });
     try {
       expect(
-        migrated
-          .prepare("SELECT generation FROM remote_clients WHERE client_id = ?")
-          .get("rcli_existing"),
+        (
+          await migrated.execute({
+            sql: "SELECT generation FROM remote_clients WHERE client_id = ?",
+            args: ["rcli_existing"],
+          })
+        ).rows[0],
       ).toEqual({ generation: 1 });
       expect(
-        migrated
-          .prepare("SELECT generation FROM remote_pending_logins WHERE flow_id = ?")
-          .get("rlogin_existing"),
+        (
+          await migrated.execute({
+            sql: "SELECT generation FROM remote_pending_logins WHERE flow_id = ?",
+            args: ["rlogin_existing"],
+          })
+        ).rows[0],
       ).toEqual({ generation: 1 });
-      const grant = migrated
-        .prepare(
-          "SELECT resource_version AS resourceVersion FROM vault_access_grants WHERE subject_key = ?",
-        )
-        .get(subjectKey) as { resourceVersion: string };
-      expect(grant.resourceVersion).toBe(legacyGrantVersion("file", subjectKey, "TOKEN"));
-      expect(grant.resourceVersion).not.toContain("SECRET_TOKEN");
-      expect(grant.resourceVersion).not.toContain("secret-operator");
+      const grant = (
+        await migrated.execute({
+          sql: "SELECT resource_version AS resourceVersion FROM vault_access_grants WHERE subject_key = ?",
+          args: [subjectKey],
+        })
+      ).rows[0];
+      expect(grant?.resourceVersion).toBe(legacyGrantVersion("file", subjectKey, "TOKEN"));
+      expect(grant?.resourceVersion).not.toContain("SECRET_TOKEN");
+      expect(grant?.resourceVersion).not.toContain("secret-operator");
     } finally {
       migrated.close();
     }

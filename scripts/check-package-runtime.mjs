@@ -156,7 +156,7 @@ async function main() {
         "PASS strict route cutover: representative old, trailing-slash, and prefix paths return exact no-store JSON 404 without redirect or migration headers.",
         ...planReports,
         "Cleanup: all Host Nodes/provider stopped; isolated SQLite/config/staging root scheduled for recursive removal.",
-        "Command: node scripts/check-package-runtime.mjs",
+        `Command: ${process.versions.bun ? "bun" : "node"} scripts/check-package-runtime.mjs`,
       ].join("\n") + "\n",
     );
   } catch (error) {
@@ -456,7 +456,6 @@ async function verifyMcpLifecycle(currentHostOrigin) {
   ) {
     throw new Error("Built MCP session did not open its canonical GET stream.");
   }
-  await stream.body?.cancel();
 
   const deleted = await fetch(url, {
     method: "DELETE",
@@ -469,6 +468,7 @@ async function verifyMcpLifecycle(currentHostOrigin) {
   if (deleted.status !== 200) {
     throw new Error("Built MCP session DELETE did not complete cleanup.");
   }
+  await stream.body?.cancel();
   const afterDelete = await fetch(url, {
     method: "POST",
     headers: sessionHeaders,

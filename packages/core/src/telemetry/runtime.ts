@@ -17,6 +17,7 @@ import {
 import { TelemetryDebugSink } from "./debug";
 import { createTelemetryDispatcher, type TelemetryDispatcher } from "./providers";
 import { resolveTelemetryState } from "./context";
+import { runtimeDescriptor } from "./runtime-environment";
 import {
   acknowledgeTelemetryAttributionClaim,
   claimTelemetryAttribution,
@@ -123,6 +124,7 @@ export async function captureRuntimeReliabilityEvent(
   if (state.status !== "enabled" && state.status !== "debug") {
     return;
   }
+  const runtime = runtimeDescriptor();
   const event = buildReliabilityTelemetryEvent({
     name: "caplets_reliability_error",
     properties: {
@@ -134,7 +136,8 @@ export async function captureRuntimeReliabilityEvent(
       ...(context.integration ? { integration: context.integration } : {}),
       os_family: platform(),
       arch: architectureForTelemetry(),
-      node_major: Number(process.versions.node.split(".")[0] ?? 0),
+      runtime_name: runtime.name,
+      runtime_major: runtime.major,
       ...properties,
     },
     error,

@@ -37,7 +37,8 @@ const ALLOWED_PROPERTY_KEYS = new Set([
   "first_activation",
   "os_family",
   "arch",
-  "node_major",
+  "runtime_name",
+  "runtime_major",
 ]);
 
 const SAFE_STRING = /^[a-zA-Z0-9@._:-]{1,80}$/u;

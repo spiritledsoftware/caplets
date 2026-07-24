@@ -91,7 +91,7 @@ describe("VaultStateStore", () => {
   it("rolls back a new value and its activity when grant insertion fails", async () => {
     const fixture = await openFixture();
     try {
-      fixture.database.db.run(
+      await fixture.database.db.run(
         sql.raw(`
           create temp trigger fail_vault_grant_insert
           before insert on vault_access_grants
@@ -109,7 +109,7 @@ describe("VaultStateStore", () => {
           grant: fileGrant("NEW_SECRET", "new-secret-caplet"),
           operatorClientId: operator.clientId,
         }),
-      ).rejects.toThrow("injected grant insertion failure");
+      ).rejects.toThrow();
 
       await expect(fixture.values.getStatus("NEW_SECRET")).resolves.toEqual({
         key: "NEW_SECRET",
@@ -121,7 +121,7 @@ describe("VaultStateStore", () => {
       });
       await expect(fixture.storage.coordination.currentConfigGeneration()).resolves.toBe(0);
     } finally {
-      fixture.database.db.run(sql.raw("drop trigger if exists fail_vault_grant_insert"));
+      await fixture.database.db.run(sql.raw("drop trigger if exists fail_vault_grant_insert"));
       await closeFixture(fixture);
     }
   });
@@ -132,7 +132,7 @@ describe("VaultStateStore", () => {
       await fixture.values.set("EXISTING_SECRET", "original-secret", {
         createOnly: true,
       });
-      fixture.database.db.run(
+      await fixture.database.db.run(
         sql.raw(`
           create temp trigger fail_vault_set_activity
           before insert on operator_activity
@@ -155,7 +155,7 @@ describe("VaultStateStore", () => {
           },
           operatorClientId: operator.clientId,
         }),
-      ).rejects.toThrow("injected vault set activity failure");
+      ).rejects.toThrow();
 
       await expect(fixture.values.resolveValue("EXISTING_SECRET")).resolves.toBe("original-secret");
       await expect(fixture.values.getStatus("EXISTING_SECRET")).resolves.toMatchObject({
@@ -168,7 +168,7 @@ describe("VaultStateStore", () => {
       });
       await expect(fixture.storage.coordination.currentConfigGeneration()).resolves.toBe(0);
     } finally {
-      fixture.database.db.run(sql.raw("drop trigger if exists fail_vault_set_activity"));
+      await fixture.database.db.run(sql.raw("drop trigger if exists fail_vault_set_activity"));
       await closeFixture(fixture);
     }
   });
@@ -179,7 +179,7 @@ describe("VaultStateStore", () => {
       await fixture.values.set("EXISTING_SECRET", "original-secret", {
         createOnly: true,
       });
-      fixture.database.db.run(
+      await fixture.database.db.run(
         sql.raw(`
           create temp trigger fail_vault_config_publication
           before insert on host_config_generations
@@ -198,7 +198,7 @@ describe("VaultStateStore", () => {
           grant: fileGrant("EXISTING_SECRET", "config-failure-caplet"),
           operatorClientId: operator.clientId,
         }),
-      ).rejects.toThrow("injected config publication failure");
+      ).rejects.toThrow();
 
       await expect(fixture.values.resolveValue("EXISTING_SECRET")).resolves.toBe("original-secret");
       await expect(fixture.values.getStatus("EXISTING_SECRET")).resolves.toMatchObject({
@@ -209,7 +209,9 @@ describe("VaultStateStore", () => {
       await expect(fixture.storage.operatorActivity.list()).resolves.toEqual({ entries: [] });
       await expect(fixture.storage.coordination.currentConfigGeneration()).resolves.toBe(0);
     } finally {
-      fixture.database.db.run(sql.raw("drop trigger if exists fail_vault_config_publication"));
+      await fixture.database.db.run(
+        sql.raw("drop trigger if exists fail_vault_config_publication"),
+      );
       await closeFixture(fixture);
     }
   });

@@ -49,6 +49,7 @@
     "telemetry:prepare-release-env": "tsx ./scripts/check-telemetry-release-env.ts --write-bundled-intake",
     "typecheck": "tsc --noEmit && turbo typecheck",
     "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm storage:check && pnpm compose:check && pnpm docs:check && pnpm openapi:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
+    "verify:bun": "pnpm verify && bun scripts/check-package-runtime.mjs",
     "version-packages": "changeset version && node scripts/sync-compose-image-version.mjs --write && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {
@@ -71,6 +72,7 @@
     "vitest": "^4.1.10"
   },
   "engines": {
+    "bun": ">=1.3.14",
     "node": ">=22"
   },
   "packageManager": "pnpm@11.7.0"

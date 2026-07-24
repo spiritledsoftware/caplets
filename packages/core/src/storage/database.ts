@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import BetterSqlite3 from "better-sqlite3";
-import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { createClient, type Client, type Transaction } from "@libsql/client";
+import { drizzle as drizzleSqlite } from "drizzle-orm/libsql";
 import { drizzle as drizzlePostgres } from "drizzle-orm/node-postgres";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
@@ -37,6 +39,8 @@ import type {
 
 const POSTGRES_SCHEMA_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/u;
 const SQLITE_BUSY_RETRY_DELAYS_MS = [50, 100] as const;
+const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+const SQLITE_OPERATION_QUEUES = new Map<string, SqliteOperationQueue>();
 
 export type HostStorageOptions = {
   vaultRoot?: string | undefined;
@@ -269,7 +273,7 @@ async function openMigratedSqliteStorage(
   options: HostStorageOptions = {},
 ): Promise<HostStorage> {
   return await retrySqliteBusy(async () => {
-    const storage = openSqliteStorage(config, options);
+    const storage = await openSqliteStorage(config, options);
     try {
       await migrateHostDatabase(storage.database);
       return storage;
@@ -299,19 +303,25 @@ function isSqliteBusy(error: unknown): boolean {
   return error.code === "SQLITE_BUSY";
 }
 
-function openSqliteStorage(
+async function openSqliteStorage(
   config: SqliteHostStorageConfig,
   options: HostStorageOptions,
-): HostStorage {
-  const path = config.path ?? defaultSqliteStoragePath();
+): Promise<HostStorage> {
+  const configuredPath = config.path ?? defaultSqliteStoragePath();
+  const ephemeralRoot =
+    configuredPath === ":memory:" ? mkdtempSync(join(tmpdir(), "caplets-sqlite-")) : undefined;
+  const path = ephemeralRoot ? join(ephemeralRoot, "host.sqlite3") : resolve(configuredPath);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const client = new BetterSqlite3(path);
+  const operationQueue = sqliteOperationQueue(path);
+  const rawClient = createClient({
+    url: pathToFileURL(path).href,
+    timeout: SQLITE_BUSY_TIMEOUT_MS,
+  });
+  const client = serializeSqliteClient(rawClient, operationQueue);
   try {
-    client.pragma("busy_timeout = 5000");
-    client.pragma("foreign_keys = ON");
-    if (client.pragma("journal_mode", { simple: true }) !== "wal")
-      client.pragma("journal_mode = WAL");
-    client.pragma("synchronous = FULL");
+    await client.execute("PRAGMA foreign_keys = ON");
+    await client.execute("PRAGMA journal_mode = WAL");
+    await client.execute("PRAGMA synchronous = FULL");
     try {
       chmodSync(path, 0o600);
     } catch {
@@ -321,19 +331,119 @@ function openSqliteStorage(
     return new HostStorage(
       { dialect: "sqlite", db },
       async () => {
-        client.close();
+        await operationQueue.drain();
+        rawClient.close();
+        if (ephemeralRoot) rmSync(ephemeralRoot, { recursive: true, force: true });
       },
       config,
       options,
     );
   } catch (error) {
     try {
-      client.close();
+      await operationQueue.drain();
+      rawClient.close();
     } catch {
       // Preserve the startup error.
     }
+    if (ephemeralRoot) rmSync(ephemeralRoot, { recursive: true, force: true });
     throw error;
   }
+}
+
+class SqliteOperationQueue {
+  private tail = Promise.resolve();
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquire();
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async acquire(): Promise<() => void> {
+    const previous = this.tail;
+    let releaseCurrent = (): void => {};
+    this.tail = new Promise<void>((resolveCurrent) => {
+      releaseCurrent = resolveCurrent;
+    });
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseCurrent();
+    };
+  }
+
+  async drain(): Promise<void> {
+    await this.tail;
+  }
+}
+
+function sqliteOperationQueue(path: string): SqliteOperationQueue {
+  const existing = SQLITE_OPERATION_QUEUES.get(path);
+  if (existing) return existing;
+  const queue = new SqliteOperationQueue();
+  SQLITE_OPERATION_QUEUES.set(path, queue);
+  return queue;
+}
+
+function serializeSqliteClient(client: Client, queue: SqliteOperationQueue): Client {
+  const serializedMethods = new Set(["batch", "execute", "executeMultiple", "migrate", "sync"]);
+  return new Proxy(client, {
+    get(target, property, receiver) {
+      if (property === "transaction") {
+        return async (...args: Parameters<Client["transaction"]>) => {
+          const release = await queue.acquire();
+          try {
+            return serializeSqliteTransaction(await target.transaction(...args), release);
+          } catch (error) {
+            release();
+            throw error;
+          }
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (
+        typeof property === "string" &&
+        serializedMethods.has(property) &&
+        typeof value === "function"
+      ) {
+        return (...args: unknown[]) =>
+          queue.run(async () => await Reflect.apply(value, target, args));
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function serializeSqliteTransaction(transaction: Transaction, release: () => void): Transaction {
+  return new Proxy(transaction, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if ((property === "commit" || property === "rollback") && typeof value === "function") {
+        return async (...args: unknown[]) => {
+          try {
+            return await Reflect.apply(value, target, args);
+          } finally {
+            release();
+          }
+        };
+      }
+      if (property === "close" && typeof value === "function") {
+        return (...args: unknown[]) => {
+          try {
+            return Reflect.apply(value, target, args);
+          } finally {
+            release();
+          }
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 function openPostgresStorage(
