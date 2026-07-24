@@ -1,5 +1,16 @@
 # @caplets/core
 
+## 0.38.0
+
+### Minor Changes
+
+- f5c4808: Support Bun 1.3.14 and newer as a Caplets process runtime while retaining Node.js 22 and newer as the default runtime. Use a cross-runtime asynchronous SQLite adapter, runtime-native HTTP and telemetry integrations, and release-blocking Node and Bun verification matrices.
+
+### Patch Changes
+
+- Updated dependencies [f5c4808]
+  - @caplets/sdk@0.1.1
+
 ## 0.37.1
 
 ### Patch Changes
