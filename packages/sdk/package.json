@@ -1,6 +1,6 @@
 {
   "name": "@caplets/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed client SDK for Caplets public HTTP and Project Binding protocols.",
   "keywords": [
     "api-client",
