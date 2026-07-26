@@ -5,21 +5,19 @@ import { describe, expect, it } from "vitest";
 const repoRoot = join(import.meta.dirname, "../../..");
 
 describe("activation links", () => {
-  it("sends the browse-more Caplets action to the public catalog", () => {
+  it("sends the secondary shared-Caplets action to the public catalog", () => {
     const source = readFileSync(
-      join(repoRoot, "apps/landing/src/components/landing/Activation.astro"),
+      join(repoRoot, "apps/landing/src/components/landing/Hero.astro"),
       "utf8",
     );
 
     expect(source).toContain('href="https://catalog.caplets.dev"');
-    expect(source).not.toContain(
-      'href="https://github.com/spiritledsoftware/caplets/tree/main/caplets"',
-    );
+    expect(source).toContain('data-cta-category="secondary"');
   });
 
   it("offers manual and agent setup modes without rendering the full agent prompt", () => {
     const componentSource = readFileSync(
-      join(repoRoot, "apps/landing/src/components/landing/Hero.astro"),
+      join(repoRoot, "apps/landing/src/components/landing/Activation.astro"),
       "utf8",
     );
     const dataSource = readFileSync(join(repoRoot, "apps/landing/src/data/landing.ts"), "utf8");

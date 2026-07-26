@@ -85,19 +85,25 @@ export const deterministicSurface = [
 
 export const whyCapletsProblems = [
   {
-    label: "Too many tools",
-    before: "Every downstream operation lands in the agent's first view.",
-    after: "The agent starts with a named capability and opens only the route it needs.",
+    label: "Work stops at the repository",
+    before:
+      "The agent edits code, then waits while you carry context into issues, dashboards, CI, and deployment tools.",
+    after:
+      "Expose the capabilities it needs so the agent can keep the task moving across authorized systems.",
   },
   {
-    label: "Too much schema",
-    before: "Large tool definitions compete with the user's actual task for context.",
-    after: "Schemas stay behind inspect, search, and get_tool until they matter.",
+    label: "Every agent needs new wiring",
+    before:
+      "Provider setup, auth, and integration assumptions get repeated across clients and projects.",
+    after:
+      "Reuse the same Caplet definitions from supported agents while each host keeps access independently authorized.",
   },
   {
-    label: "Too much setup",
-    before: "Every agent repeats provider wiring, OAuth, secrets, and MCP config.",
-    after: "One daemon-backed Caplets surface can be reused locally or from a remote server.",
+    label: "Connected agents get overwhelmed",
+    before:
+      "A flat wall of tools and schemas competes with the work as soon as more systems are connected.",
+    after:
+      "Code Mode starts with named handles and opens exact schemas and operations only when the task needs them.",
   },
 ] as const;
 
@@ -117,17 +123,23 @@ export const remoteEndpoints = [
 
 export const remoteComparison = [
   {
-    label: "Client-by-client auth",
-    detail: "Every agent carries its own provider tokens, OAuth dance, and local MCP wiring.",
-    points: ["Repeat login flows", "Copy secrets around", "Debug each client separately"],
+    label: "Agent portability",
+    detail:
+      "Reuse the same Caplet definitions from supported coding agents without pretending every client surface is identical.",
+    points: [
+      "Codex, Claude, OpenCode, Pi, and MCP clients",
+      "Local or remote Caplets hosts",
+      "One capability model across environments",
+    ],
   },
   {
-    label: "Server-held auth",
-    detail: "One Caplets server owns provider auth; each agent attaches to the shared surface.",
+    label: "Capability sharing",
+    detail:
+      "Keep a Caplet local, share it with a team, or publish it for the community without transferring authenticated authority.",
     points: [
-      "Keep tokens server-side",
-      "Reuse from Codex, OpenCode, Pi, Claude",
-      "Inspect, search, schema, and call from one place",
+      "Definitions and operating guidance travel",
+      "Each host supplies its own credentials",
+      "Access remains explicitly authorized",
     ],
   },
 ] as const;

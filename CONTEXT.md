@@ -1,8 +1,36 @@
 # Caplets
 
-Caplets is a capability gateway for coding agents. This glossary names the product concepts used when describing Caplet configuration and runtime behavior.
+Caplets is a capability layer for coding agents. This glossary names the product concepts used when describing Caplet configuration and runtime behavior.
 
 ## Language
+
+**Caplet**:
+A reusable capability surface for coding agents that exposes intentionally selected backend functionality. A Caplet can be kept local, reused across supported agent environments, or shared without transferring credentials.
+_Avoid_: Connector, integration listing, tool bundle
+
+**Capability Layer**:
+The product category for Caplets: a shared intermediary that turns heterogeneous backends into intentionally exposed, reusable capabilities for coding agents.
+_Avoid_: Agent integration platform, tool aggregator, capability marketplace
+
+**Whole Stack**:
+The set of backend capabilities a user intentionally makes available to a coding agent through Caplets. It describes potential breadth across the agent's work, not unrestricted authority or the current contents of the Prebuilt Caplets Catalog.
+_Avoid_: Unrestricted agent access, every credential by default, prebuilt catalog coverage
+
+**Capability Sharing**:
+The transfer of a reusable Caplet definition and its operating guidance without transferring credentials or authenticated authority. Each receiving user or host supplies and authorizes its own access.
+_Avoid_: Credential sharing, connection cloning, inherited authority
+
+**Capability Composition**:
+An agent's task-specific selection and combination of Caplets across backend systems. The agent determines the path from the current task rather than following a predefined human-authored automation.
+_Avoid_: Workflow builder, fixed integration pipeline, automation recipe
+
+**Agent Portability**:
+The ability to reuse the same Caplet definitions across supported coding-agent environments without redefining their backend capabilities. Agent-specific surfaces may differ, and credentials remain independently authorized.
+_Avoid_: Identical client experience, automatic credential portability, universal client parity
+
+**Caplet Activation**:
+The first successful backend operation executed through a configured Caplet. A website interaction, catalog view, installation, or setup completion is not activation.
+_Avoid_: Install conversion, setup completion, first page view
 
 **Code Mode**:
 A Caplets exposure surface where configured backends appear as typed handles inside a bounded script workflow.

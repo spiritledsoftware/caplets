@@ -18,14 +18,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
     </a>
 
     <nav class="site-header__primary-nav hidden items-center gap-1 text-sm font-medium text-muted-foreground lg:flex" aria-label="Landing page sections">
-      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#trace">How</a>
-      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#why">Why</a>
-      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#setup">Setup</a>
-      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#proof">Benchmark</a>
-      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="/blog/">Blog</a>
-      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#remote">Remote</a>
+      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#breadth">Breadth</a>
+      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#work">Whole job</a>
+      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#portable">Portability</a>
+      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#proof">Evidence</a>
+      <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#install">Connect</a>
       <a class="site-header__docs-link inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="https://catalog.caplets.dev" target="_blank" rel="noopener noreferrer">
-        Catalog
+        Shared Caplets
         <ArrowUpRight class="size-3.5" aria-hidden="true" />
       </a>
       <a class="site-header__docs-link inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="https://docs.caplets.dev" target="_blank" rel="noopener noreferrer">
@@ -34,7 +33,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
       </a>
     </nav>
 
-    <div class="site-header__actions flex items-center gap-2" aria-label="Project links">
+    <div class="site-header__actions flex items-center gap-2" role="group" aria-label="Project links">
       <Button class="hidden lg:inline-flex" href="https://github.com/spiritledsoftware/caplets" variant="outline" size="icon" aria-label="Caplets on GitHub">
         <BrandGithub class="size-4" aria-hidden="true" />
       </Button>
@@ -59,18 +58,18 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
             </SheetTitle>
           </SheetHeader>
           <nav class="grid gap-1 p-1 text-sm font-medium" aria-label="Landing page sections">
-            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#trace">How it works</a>
-            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#why">Why Caplets</a>
-            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#setup">Setup</a>
-            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#proof">Benchmark</a>
-            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="/blog/">Blog</a>
-            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#remote">Remote server</a>
+            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#breadth">Connection breadth</a>
+            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#why">The problem</a>
+            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#work">Issue to production</a>
+            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#portable">Portability and sharing</a>
+            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#proof">Technical evidence</a>
+            <a class="starwind-dialog-close flex min-h-11 items-center rounded-md px-3 py-2.5 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#install">Connect your first capability</a>
             <a class="starwind-dialog-close inline-flex min-h-11 items-center justify-between rounded-md px-3 py-2.5 text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="https://catalog.caplets.dev" target="_blank" rel="noopener noreferrer">
-              Catalog
+              Browse shared Caplets
               <ArrowUpRight class="size-3.5" aria-hidden="true" />
             </a>
             <a class="starwind-dialog-close inline-flex min-h-11 items-center justify-between rounded-md px-3 py-2.5 text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="https://docs.caplets.dev" target="_blank" rel="noopener noreferrer">
-              Docs
+              Read the docs
               <ArrowUpRight class="size-3.5" aria-hidden="true" />
             </a>
           </nav>

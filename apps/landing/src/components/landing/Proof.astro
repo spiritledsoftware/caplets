@@ -11,12 +11,12 @@ import { benchmarkProvenance, benchmarkRows, deterministicSurface, proofStats } 
 <section class="evidence-stage scroll-mt-20 py-20" id="proof" aria-label="Code Mode benchmark proof" data-reveal>
   <div class="mx-auto grid w-[min(1180px,calc(100vw_-_32px))] gap-8 lg:grid-cols-[0.78fr_1.22fr] [&>*]:min-w-0">
     <div class="min-w-0 lg:sticky lg:top-24 lg:self-start">
-      <span class="text-sm font-medium text-primary-accent">Benchmark proof</span>
+      <span class="text-sm font-medium text-primary-accent">Technical evidence</span>
       <h2 class="mt-3 max-w-xl text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance text-[oklch(96%_0.02_82)] md:text-5xl">
-        The result survived the surface cut.
+        Smaller surface. Same completed work.
       </h2>
       <p class="mt-5 max-w-xl text-lg leading-8 text-pretty text-[oklch(86%_0.026_82)]">
-        Same task set, same 10/10 completion. Code Mode kept the agent focused by cutting the prompt surface instead of flattening every tool into view.
+        Once the whole-stack value is clear, Code Mode proves the technical advantage: the same 10/10 task result with fewer tokens and fewer round trips than direct vanilla MCP.
       </p>
       <small class="mt-5 block max-w-xl text-sm leading-6 text-[oklch(78%_0.026_82)]">{benchmarkProvenance}</small>
       <p class="mt-3 max-w-xl text-sm leading-6 text-[oklch(78%_0.026_82)]">
@@ -34,7 +34,7 @@ import { benchmarkProvenance, benchmarkRows, deterministicSurface, proofStats } 
           <div class="evidence-stat rounded-lg border border-border bg-card p-5">
             <dt class="text-sm font-medium text-muted-foreground">{stat.label}</dt>
             <dd class="mt-2 font-mono text-3xl font-semibold tracking-[-0.02em] text-foreground md:text-4xl">{stat.value}</dd>
-            <p class="mt-4 text-sm leading-6 text-muted-foreground">{stat.detail}</p>
+            <dd class="mt-4 text-sm leading-6 text-muted-foreground">{stat.detail}</dd>
           </div>
         ))}
       </dl>
@@ -85,7 +85,7 @@ import { benchmarkProvenance, benchmarkRows, deterministicSurface, proofStats } 
         </CardContent>
       </Card>
 
-      <div class="grid gap-3 sm:grid-cols-3" aria-label="Deterministic surface benchmark">
+      <div class="grid gap-3 sm:grid-cols-3" role="group" aria-label="Deterministic surface benchmark">
         {deterministicSurface.map((item) => (
           <div class="rounded-lg border border-border bg-card/80 p-4">
             <span class="text-sm text-muted-foreground">{item.label}</span>

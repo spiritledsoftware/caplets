@@ -1,24 +1,26 @@
 ---
 name: Caplets
-last_updated: 2026-06-17
+last_updated: 2026-07-26
 ---
 
 # Caplets Strategy
 
 ## Target problem
 
-Coding agents get slower, more expensive, and less reliable when real backend surfaces are exposed as flat tool lists: large MCP/API setups flood context with hundreds of operations, create duplicate generic names, and force repeated model/tool round trips for discovery, schema inspection, execution, and synthesis. The hard part is preserving exact backend power, auth state, schemas, resources, prompts, results, and errors across local, remote, Cloud, and native agent setups without making the agent reason over the whole tool wall up front.
+Coding agents stop where the repository ends. Users become the human integration layer: they carry issue context into the agent, inspect dashboards themselves, trigger operations, and update external systems after the code changes. Connecting more systems can then overwhelm the agent with flat tool lists, giant schemas, repeated auth setup, and extra model/tool round trips. The hard part is giving an agent broad, reusable capability access while preserving exact backend semantics and deliberate user control.
 
 ## Our approach
 
-Caplets wins by being a Code Mode-first capability layer for coding agents, not a general tool catalog. It turns heterogeneous backends into typed, scoped handles so agents can discover, inspect, execute, filter, and summarize with a small decision surface, while preserving exact backend semantics and keeping auth, direct I/O, and project-local context behind Caplet-controlled boundaries.
+Caplets wins by being the capability layer for coding agents. It turns heterogeneous MCP servers, APIs, commands, and shared Caplet Files into intentionally exposed, reusable capabilities that an agent can select and combine for the current task. Code Mode is the default mechanism for keeping that Whole Stack focused: typed, scoped handles preserve backend fidelity while auth, direct I/O, and project-local context remain behind Caplet-controlled boundaries.
 
 ## Who it's for
 
-**Primary:** Agent power-users/builders - They're hiring Caplets to turn sprawling MCP/API/CLI surfaces into typed capabilities their coding agents can inspect, call, filter, and synthesize without a giant tool wall.
+**Primary:** Individual agent power users who want their coding agent to work across the systems surrounding the repository. **Expansion:** Teams that standardize and distribute approved Caplets. **Ecosystem:** Tool builders and community authors who publish reusable capability definitions.
 
 ## Key metrics
 
+- **Caplet Activation** - The first successful backend operation executed through a configured Caplet. Landing clicks, catalog views, installation, and setup completion are funnel diagnostics, not activation.
+- **Whole Stack retention** - Repeat successful Caplet executions across backend families, indicating that users expanded beyond the first no-auth capability into personally relevant work.
 - **Initial tool surface compression** - Reduction in initially visible tools, serialized payload bytes, approximate context tokens, and duplicate top-level names versus direct flat MCP; measured by `pnpm benchmark:check`.
 - **Code Mode workflow efficiency** - Reduction in model/tool round trips, external calls, and payload tokens while preserving required evidence fields; measured by deterministic Code Mode benchmark fixtures.
 - **Live task parity at lower token cost** - Live eval pass rate must match baselines before claiming token efficiency, then compare request+output tokens and tool-surface tokens.
@@ -62,6 +64,12 @@ _Why it serves the approach:_ Caplets asks users to trust a smaller visible surf
 
 ## Marketing
 
-**One-liner:** Give your agent capabilities, not giant tool walls.
+**Category:** The capability layer for coding agents.
 
-**Key message:** Caplets turns MCP servers, APIs, and commands into focused capability handles for compact coding-agent workflows. The proof point is not just that Caplets connects to more backends; it is that agents can complete real multi-step backend work with a smaller decision surface, fewer round trips, and claims that are checked against reproducible benchmarks.
+**One-liner / headline:** Give your coding agent the whole stack.
+
+**Profile description:** Turn MCP servers, APIs, and commands into reusable Caplets your coding agent can use across the work. You control access.
+
+**Key message:** Caplets connects coding agents to intentionally exposed capabilities across the user's stack. A Caplet is reusable across supported agent environments and can be shared without transferring credentials. Agents compose Caplets for the task instead of requiring a fixed automation workflow. Code Mode tool-surface compression, fewer round trips, and benchmarked token reduction are technical proof—not the primary promise.
+
+**Launch sequence:** Whole Stack promise → “MCP. APIs. Commands. All of it.” → human integration-layer problem → capability composition → agent portability → “Share capabilities, not secrets.” → issue-to-production example → Code Mode evidence → first Caplet activation.

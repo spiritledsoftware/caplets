@@ -1,5 +1,7 @@
 ---
 import ArrowUpRight from "@tabler/icons/outline/arrow-up-right.svg";
+import Check from "@tabler/icons/outline/check.svg";
+import Copy from "@tabler/icons/outline/copy.svg";
 import Terminal from "@tabler/icons/outline/terminal-2.svg";
 
 import { Badge } from "@/components/starwind/badge";
@@ -7,24 +9,76 @@ import { Button } from "@/components/starwind/button";
 import { Card, CardContent } from "@/components/starwind/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/starwind/tabs";
 
-import { exampleCaplets } from "../../data/landing";
+import {
+  agentSetupPrompt,
+  exampleCaplets,
+  manualSetupCommand,
+  manualSetupCommands,
+} from "../../data/landing";
+
+const setupOptions = [
+  {
+    label: "Manual",
+    copyLabel: "manual setup commands",
+    copyValue: manualSetupCommand,
+    copyAttribution: true,
+    lines: [manualSetupCommands.install, manualSetupCommands.setup],
+  },
+  {
+    label: "Agent",
+    copyLabel: "agent setup prompt",
+    copyValue: agentSetupPrompt,
+    copyAttribution: false,
+    lines: ["Read bootstrap skill", "detect -> ask -> plan -> approve"],
+  },
+] as const;
 ---
 
 <section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="install" aria-labelledby="activation-title" data-reveal>
   <div class="grid gap-8 lg:grid-cols-[0.62fr_1.38fr] lg:items-start [&>*]:min-w-0">
     <div class="min-w-0 max-w-xl">
-      <p class="text-sm font-medium text-muted-foreground">First Caplet</p>
+      <p class="text-sm font-medium text-muted-foreground">Connect your first capability</p>
       <h2 id="activation-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
-        Start where auth cannot get in the way.
+        Get one real result. Then bring in your stack.
       </h2>
       <p class="mt-5 text-lg leading-8 text-pretty text-muted-foreground">
-        Copy setup from the hero, then add OSV first because it needs no auth. Bring in GitHub or Sourcegraph after the discovery path feels right.
+        Set up Caplets, then run OSV first because it needs no auth. Once the agent completes that call, connect an MCP server, API, or command you already rely on.
       </p>
 
-      <Button class="mt-8" href="https://catalog.caplets.dev" variant="outline">
-        Explore more Caplets
+      <Button class="mt-8" href="https://docs.caplets.dev/capabilities/" variant="outline">
+        Connect your own backend
         <ArrowUpRight class="size-4" aria-hidden="true" />
       </Button>
+      <Tabs id="setup" defaultValue="Manual" class="mt-8 max-w-xl" role="group" aria-label="Caplets setup options">
+        <TabsList>
+          {setupOptions.map((option) => <TabsTrigger value={option.label}>{option.label}</TabsTrigger>)}
+        </TabsList>
+        {
+          setupOptions.map((option) => (
+            <TabsContent value={option.label} class="mt-3">
+              <div class="rounded-lg border border-border bg-foreground p-3 text-background">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="grid min-w-0 gap-1 font-mono text-sm leading-6">
+                    {option.lines.map((line) => <code class="break-words">{line}</code>)}
+                  </div>
+                  <button
+                    class="group inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-background/25 px-3 text-sm font-medium transition hover:bg-background/10 focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+                    type="button"
+                    aria-label={`Copy ${option.copyLabel}`}
+                    data-copy-value={option.copyValue}
+                    data-copy-label={option.copyLabel}
+                    data-copy-attribution={String(option.copyAttribution)}
+                  >
+                    <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
+                    <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+              </div>
+            </TabsContent>
+          ))
+        }
+      </Tabs>
       <div class="mt-8 grid max-w-md grid-cols-3 gap-px overflow-hidden rounded-lg border border-border bg-border text-sm">
         <div class="bg-card p-3">
           <span class="text-muted-foreground">discover</span>
@@ -55,7 +109,7 @@ import { exampleCaplets } from "../../data/landing";
                   <h3 class="text-2xl font-semibold tracking-[-0.02em]">Add {example.name}</h3>
                   <p class="mt-3 text-muted-foreground">{example.summary}</p>
                   <p class="mt-4 text-sm leading-6 text-muted-foreground">{example.why}</p>
-                  <div class="mt-5 flex flex-wrap items-center gap-2" aria-label={`${example.name} expected discovery path`}>
+                  <div class="mt-5 flex flex-wrap items-center gap-2" role="group" aria-label={`${example.name} expected discovery path`}>
                     {example.path.map((step, index) => (
                       <>
                         {index > 0 && <span class="text-muted-foreground">/</span>}
