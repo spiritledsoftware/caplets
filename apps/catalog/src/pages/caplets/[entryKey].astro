@@ -15,20 +15,25 @@ const entry = entryKey ? await getCatalogEntry(entryKey, getCatalogEnv()) : unde
 if (!entry) {
   Astro.response.status = 404;
 }
+const pageTitle = entry ? `${entry.name} — Shared Caplet` : "Caplet unavailable";
+const pageDescription = entry
+  ? `${entry.description} Inspect this shared Caplet before installing, then authorize access on your host.`
+  : "This shared Caplet is unavailable or no longer indexed.";
 ---
-
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{entry ? `${entry.name} - Caplets Catalog` : "Caplet unavailable"}</title>
-    <meta
-      name="description"
-      content={entry
-        ? entry.description
-        : "This catalog entry is unavailable, suppressed, or no longer indexed."}
-    />
+    <title>{pageTitle} — Caplets Catalog</title>
+    <meta name="description" content={pageDescription} />
+    <meta property="og:title" content={`${pageTitle} — Caplets Catalog`} />
+    <meta property="og:description" content={pageDescription} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={Astro.url.href} />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content={`${pageTitle} — Caplets Catalog`} />
+    <meta name="twitter:description" content={pageDescription} />
     <ThemeInit />
     <link rel="icon" type="image/png" href="/icon.png" />
   </head>

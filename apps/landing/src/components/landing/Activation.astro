@@ -45,10 +45,6 @@ const setupOptions = [
         Set up Caplets, then run OSV first because it needs no auth. Once the agent completes that call, connect an MCP server, API, or command you already rely on.
       </p>
 
-      <Button class="mt-8" href="https://docs.caplets.dev/capabilities/" variant="outline">
-        Connect your own backend
-        <ArrowUpRight class="size-4" aria-hidden="true" />
-      </Button>
       <Tabs id="setup" defaultValue="Manual" class="mt-8 max-w-xl" role="group" aria-label="Caplets setup options">
         <TabsList>
           {setupOptions.map((option) => <TabsTrigger value={option.label}>{option.label}</TabsTrigger>)}
@@ -149,5 +145,15 @@ const setupOptions = [
         ))
       }
     </Tabs>
+  </div>
+  <div class="mt-8 flex flex-col gap-5 rounded-lg border border-border bg-card p-5 md:flex-row md:items-center md:justify-between">
+    <div class="max-w-[75ch]">
+      <p class="font-semibold text-foreground">A successful OSV call is Caplet Activation.</p>
+      <p class="mt-2 text-sm leading-6 text-muted-foreground">Once that first backend operation works, connect one capability from the stack you already use.</p>
+    </div>
+    <Button class="shrink-0" href="https://docs.caplets.dev/capabilities/" variant="outline" data-cta-category="secondary">
+      Connect your own backend
+      <ArrowUpRight class="size-4" aria-hidden="true" />
+    </Button>
   </div>
 </section>

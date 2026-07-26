@@ -84,17 +84,16 @@
 
 .catalog-positioning p {
   color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 650;
 }
 
 .catalog-positioning h1 {
   color: var(--foreground);
-  font-size: clamp(2rem, 5vw, 3.75rem);
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.035em;
+  font-size: 2rem;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
   text-wrap: balance;
 }
 

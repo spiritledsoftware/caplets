@@ -70,12 +70,8 @@ document.addEventListener("click", (event) => {
   const link = (event.target as Element | null)?.closest<HTMLAnchorElement>("a[href]");
   if (!link) return;
   const category = linkCategory(link);
-  const explicitCtaCategory = link.dataset.ctaCategory;
-  if (
-    category === "unknown" &&
-    explicitCtaCategory !== "primary" &&
-    explicitCtaCategory !== "secondary"
-  ) {
+  const explicitCtaCategory = parseExplicitCtaCategory(link);
+  if (category === "unknown" && explicitCtaCategory === undefined) {
     return;
   }
   const routeFamily = currentRouteFamily();
@@ -172,11 +168,14 @@ function sectionCategory(
   return "unknown";
 }
 
+function parseExplicitCtaCategory(element: HTMLElement): "primary" | "secondary" | undefined {
+  const category = element.dataset.ctaCategory;
+  return category === "primary" || category === "secondary" ? category : undefined;
+}
+
 function ctaCategory(element: HTMLElement): NonNullable<WebEventPropertySet["cta_category"]> {
-  const explicitCategory = element.dataset.ctaCategory;
-  if (explicitCategory === "primary" || explicitCategory === "secondary") {
-    return explicitCategory;
-  }
+  const explicitCategory = parseExplicitCtaCategory(element);
+  if (explicitCategory) return explicitCategory;
   const text = element.textContent?.toLowerCase() ?? "";
   if (text.includes("install") || text.includes("copy")) return "install";
   if (text.includes("blog")) return "blog";

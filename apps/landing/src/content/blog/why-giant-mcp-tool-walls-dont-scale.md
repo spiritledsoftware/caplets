@@ -1,6 +1,6 @@
 ---
-title: Why Most MCP Clients Suck
-description: "Large MCP servers are not the problem. GitHub, Slack, Linear, and Cloudflare should expose everything. The broken part is clients that make the model babysit that whole surface one raw call at a time."
+title: Give Your Coding Agent the Whole Stack
+description: "Coding agents stop where the repository ends. Caplets turns MCP servers, APIs, and commands into reusable capabilities they can compose across the work."
 date: 2026-07-01
 tags:
   - MCP
@@ -9,58 +9,37 @@ tags:
   - Code Mode
 ---
 
-Everyone keeps complaining about large MCP servers.
+A coding agent can understand the issue, change the code, and open a pull request.
 
-GitHub exposes too much.
-Slack exposes too much.
-Linear exposes too much.
-Cloudflare exposes too much.
+Then it stops.
 
-Honestly?
+You inspect the CI run. You check the deployment. You copy the result back into Linear. You become the integration layer between the agent and everything surrounding the repository.
 
-Bring it on.
+The better promise is not a better code editor. It is an agent that can work across the whole stack you intentionally expose.
 
-I want GitHub's MCP server to expose every issue, PR, workflow run, code search result, discussion, release, branch protection rule, permission, audit event, and weird corner of the API.
+That means issue tracking, source control, CI, deployment, observability, internal APIs, and the commands that keep the work moving. It does not mean blanket access to every system or credential. You choose the capabilities each agent can use.
 
-I want Slack to expose the whole workspace.
-I want Linear to expose the whole product system.
-I want Cloudflare to expose the whole platform.
+## Rich backends are the point
 
-That is the point.
+GitHub should expose issues, pull requests, workflow runs, code search, releases, branch protections, permissions, and the strange corners of its API.
 
-MCP servers should be rich. They should be complete. They should expose the real surface area of the service instead of some tiny toy subset that only works in a demo.
+Linear should expose the product system. Cloudflare should expose the platform. Internal APIs should keep their real schemas and errors.
 
-The bloat is not the enemy.
+MCP servers, APIs, and commands should be rich enough to support the real job.
 
-The client is the broken part.
+The problem begins when a client flattens all of that power into one giant tool wall:
 
-Most MCP clients take a huge server and flatten it straight into the model loop.
+1. Pick a tool.
+2. Read the schema.
+3. Call it.
+4. Read the blob.
+5. Repeat until the agent loses the thread.
 
-Pick a tool.
-Read the schema.
-Call it.
-Get a blob back.
-Read the blob.
-Pick another tool.
-Call it.
-Get another blob.
-Try to remember which three fields mattered from the last six calls.
+That is not a whole-stack agent workflow. It is making the model manually drive an API client through a chat window.
 
-That is not an agent workflow.
+Caplets is the capability layer between those rich backends and the agent. It turns each backend into a reusable Caplet the agent can inspect and compose for the current task. The same definitions can work across supported agents; credentials remain independently supplied and authorized.
 
-That is making the model manually drive an API client through a chat window.
-
-MCP is good. The protocol is not the villain here.
-
-The mistake is treating the model like it should personally inspect every tool, every response, every follow-up decision, and every noisy intermediate payload.
-
-It should not.
-
-The server should be rich.
-The client should be smart.
-The model should only see what matters.
-
-That is Caplets.
+Code Mode keeps the first decision surface focused, then opens exact tools and schemas when the task needs them. Token and round-trip savings matter because they prove that broader access does not have to create broader noise.
 
 ## Stop shrinking the server
 

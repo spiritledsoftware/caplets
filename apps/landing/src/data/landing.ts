@@ -114,32 +114,32 @@ caplets remote host approve <code> --yes`,
 caplets attach <url>`,
 } as const;
 
-export const remoteEndpoints = [
-  { label: "MCP", value: "/mcp" },
-  { label: "Attach", value: "/api/v1/attach" },
-  { label: "Admin", value: "/api/v2/admin" },
-  { label: "Health", value: "/api/v1/healthz" },
+export const portabilitySurfaces = [
+  { label: "Native integrations", value: "OpenCode · Pi" },
+  { label: "MCP clients", value: "Codex · Claude · compatible clients" },
+  { label: "Remote Attach", value: "Supported attach clients" },
+  { label: "Capability package", value: "The same Caplet definition" },
 ] as const;
 
-export const remoteComparison = [
+export const portabilityClaims = [
   {
     label: "Agent portability",
     detail:
-      "Reuse the same Caplet definitions from supported coding agents without pretending every client surface is identical.",
+      "Reuse one capability definition across supported agent surfaces without pretending every client experience is identical.",
     points: [
-      "Codex, Claude, OpenCode, Pi, and MCP clients",
-      "Local or remote Caplets hosts",
-      "One capability model across environments",
+      "Native OpenCode and Pi integrations",
+      "MCP for Codex, Claude, and compatible clients",
+      "Remote Attach for supported clients",
     ],
   },
   {
     label: "Capability sharing",
     detail:
-      "Keep a Caplet local, share it with a team, or publish it for the community without transferring authenticated authority.",
+      "Keep a Caplet local, distribute it within a team, or publish it for the community without transferring authenticated authority.",
     points: [
-      "Definitions and operating guidance travel",
-      "Each host supplies its own credentials",
-      "Access remains explicitly authorized",
+      "Personal reuse across agents and projects",
+      "Team-distributed Caplet definitions",
+      "Public Caplets through the catalog or another source",
     ],
   },
 ] as const;
