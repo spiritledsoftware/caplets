@@ -11,5 +11,10 @@ export default defineConfig({
   plugins: runtimeSentryPlugins("opencode"),
   platform: "node",
   tsconfig: true,
-  external: ["@opencode-ai/plugin", "jsonc-parser"],
+  external: [
+    "@caplets/core/generated-tool-input-schema",
+    "@caplets/core/native",
+    "@opencode-ai/plugin",
+    "jsonc-parser",
+  ],
 });

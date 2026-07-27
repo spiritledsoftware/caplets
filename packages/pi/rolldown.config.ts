@@ -11,5 +11,10 @@ export default defineConfig({
   plugins: runtimeSentryPlugins("pi"),
   platform: "node",
   tsconfig: true,
-  external: ["@earendil-works/pi-coding-agent", "jsonc-parser"],
+  external: [
+    "@caplets/core/generated-tool-input-schema",
+    "@caplets/core/native",
+    "@earendil-works/pi-coding-agent",
+    "jsonc-parser",
+  ],
 });
