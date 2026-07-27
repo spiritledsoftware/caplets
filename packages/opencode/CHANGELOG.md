@@ -1,5 +1,11 @@
 # @caplets/opencode
 
+## 0.8.25
+
+### Patch Changes
+
+- 22119c0: Load Caplets core through its declared package exports so the Pi and OpenCode integrations resolve platform-specific runtime dependencies correctly.
+
 ## 0.8.24
 
 ### Patch Changes
