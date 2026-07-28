@@ -1,7 +1,6 @@
 ---
 import Activation from "../components/landing/Activation.astro";
 import Breadth from "../components/landing/Breadth.astro";
-import AgentTrace from "../components/landing/AgentTrace.astro";
 import CapabilityAperture from "../components/landing/CapabilityAperture.astro";
 import Footer from "../components/landing/Footer.astro";
 import Header from "../components/landing/Header.astro";
@@ -16,7 +15,6 @@ import LandingLayout from "../layouts/LandingLayout.astro";
 <LandingLayout>
   <CapabilityAperture slot="background" />
   <Header slot="header" />
-  <AgentTrace />
   <Hero />
   <Breadth />
   <WhyCaplets />
@@ -29,7 +27,6 @@ import LandingLayout from "../layouts/LandingLayout.astro";
 
 <script>
   import "../scripts/capability-aperture";
-  import "../scripts/agent-trace";
   import "../scripts/observability";
   import "../scripts/copy";
   import "../scripts/header-collapse";

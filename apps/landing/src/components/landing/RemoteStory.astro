@@ -1,91 +1,27 @@
 ---
-import Route from "@tabler/icons/outline/route.svg";
-import Server from "@tabler/icons/outline/server.svg";
-
-import { Card, CardContent } from "@/components/starwind/card";
-import { Separator } from "@/components/starwind/separator";
-
-import { portabilityClaims, portabilitySurfaces, remoteCommands } from "../../data/landing";
-import CommandBlock from "./CommandBlock.astro";
+import { portabilitySurfaces } from "../../data/landing";
 ---
 
 <section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="portable" aria-labelledby="remote-story-title" data-reveal>
-  <div class="grid gap-8 lg:grid-cols-[0.78fr_1.22fr] [&>*]:min-w-0">
-    <div class="min-w-0">
+  <div class="grid gap-10 lg:grid-cols-[0.88fr_1.12fr] lg:items-start [&>*]:min-w-0">
+    <div class="max-w-xl">
       <p class="text-sm font-medium text-muted-foreground">Reuse across agents and teams</p>
       <h2 id="remote-story-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
-        Configure a capability once. Reuse it across supported agents.
+        Configure once. Reuse anywhere Caplets is supported.
       </h2>
-      <p class="mt-5 max-w-xl text-lg leading-8 text-pretty text-muted-foreground">
-        Use native integrations with OpenCode and Pi, MCP with Codex, Claude, and compatible clients, or Remote Attach with supported clients. Every host supplies its own credentials and authorizes its own access.
+      <p class="mt-5 text-lg leading-8 text-pretty text-muted-foreground">
+        The Caplet definition travels. Credentials and authorization stay with each host.
       </p>
-      <dl class="mt-8 flex min-w-0 flex-wrap gap-3" aria-label="Supported agent surfaces">
-        {portabilitySurfaces.map((endpoint) => (
-          <div class="min-w-[13.5rem] flex-1 rounded-lg border border-border bg-card p-4">
-            <dt class="text-sm text-muted-foreground">{endpoint.label}</dt>
-            <dd class="mt-1 text-sm leading-6 font-semibold text-foreground">{endpoint.value}</dd>
-          </div>
-        ))}
-      </dl>
+      <a class="mt-6 inline-flex min-h-11 items-center font-medium text-primary-accent hover:underline focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="https://docs.caplets.dev/capabilities/">Create and share a Caplet</a>
     </div>
 
-    <div class="grid min-w-0 gap-4">
-      <div class="grid min-w-0 gap-4 md:grid-cols-2 [&>*]:min-w-0" role="group" aria-label="Caplet portability and sharing">
-        {portabilityClaims.map((item) => (
-          <Card>
-            <CardContent class="p-5">
-              <h3 class="text-lg font-semibold">{item.label}</h3>
-              <p class="mt-3 text-sm leading-6 text-muted-foreground">{item.detail}</p>
-              <ul class="mt-4 grid gap-2 text-sm text-muted-foreground">
-                {item.points.map((point) => <li class="flex gap-2"><span class="mt-2 size-1.5 shrink-0 rounded-full bg-primary-accent"></span>{point}</li>)}
-              </ul>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <Card class="remote-flow-card">
-        <CardContent class="p-5">
-          <div class="grid gap-4 text-sm md:grid-cols-3" role="group" aria-label="Reusable Caplet flow">
-            <div class="flex items-start gap-3">
-              <Server class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
-              <div>
-                <span class="text-muted-foreground">The host controls access</span>
-                <strong class="block">Only selected backends are available</strong>
-              </div>
-            </div>
-            <Separator class="md:hidden" />
-            <div class="flex items-start gap-3">
-              <Route class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
-              <div>
-                <span class="text-muted-foreground">The Caplet carries</span>
-                <strong class="block">Definition · guidance · routes</strong>
-              </div>
-            </div>
-            <Separator class="md:hidden" />
-            <div class="flex items-start gap-3">
-              <Route class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
-              <div>
-                <span class="text-muted-foreground">The agent selects</span>
-                <strong class="block">Only what the current task needs</strong>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  </div>
-
-  <div class="mt-4 rounded-lg border border-border bg-card p-5 md:flex md:items-center md:justify-between md:gap-8">
-    <div>
-      <p class="text-lg font-semibold text-foreground">Share capabilities, not secrets.</p>
-      <p class="mt-2 max-w-[75ch] text-sm leading-6 text-muted-foreground">Sharing a Caplet transfers only its definition and operating guidance. The recipient supplies credentials and authorizes access on its own host.</p>
-    </div>
-    <a class="mt-4 inline-flex min-h-11 shrink-0 items-center font-medium text-primary-accent hover:underline focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none md:mt-0" href="https://docs.caplets.dev/capabilities/">Learn how to create a Caplet</a>
-  </div>
-
-  <div class="mt-4 grid min-w-0 gap-4 md:grid-cols-2 [&>*]:min-w-0">
-    <CommandBlock id="remote-server-snippet" label="Serve once" command={remoteCommands.server} copyLabel="remote server command" />
-    <CommandBlock id="remote-client-snippet" label="Use remotely" command={remoteCommands.client} copyLabel="remote client command" />
+    <dl class="divide-y divide-border border-y border-border" aria-label="Supported agent surfaces">
+      {portabilitySurfaces.map((surface) => (
+        <div class="grid gap-1 py-4 sm:grid-cols-[10rem_minmax(0,1fr)] sm:items-baseline sm:gap-6">
+          <dt class="text-sm text-muted-foreground">{surface.label}</dt>
+          <dd class="font-semibold text-foreground">{surface.value}</dd>
+        </div>
+      ))}
+    </dl>
   </div>
 </section>

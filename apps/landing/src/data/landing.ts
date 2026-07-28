@@ -26,95 +26,22 @@ export const proofStats = [
   {
     value: "10/10",
     label: "tasks completed",
-    detail:
-      "Caplets Code Mode, progressive modes, direct MCP, and Executor.sh all completed the same task set.",
-  },
-  {
-    value: "236,803",
-    label: "average total tokens",
-    detail:
-      "Average request and output tokens for the Code Mode run across the live Pi evaluations.",
+    detail: "Code Mode matched every compared mode on task completion.",
   },
   {
     value: "72.0% fewer",
-    label: "than direct MCP",
-    detail:
-      "Fewer request and output tokens than direct vanilla MCP, with the same completed-task result.",
+    label: "request + output tokens",
+    detail: "Compared with direct vanilla MCP in the live run.",
+  },
+  {
+    value: "7 vs 215",
+    label: "initial choices",
+    detail: "Caplet cards versus direct MCP tools in the deterministic check.",
   },
 ] as const;
 
 export const benchmarkProvenance =
   "Run June 2026 with the real-world large MCP suite, openai-codex/gpt-5.5, 10 tasks, 2 runs per task, and a large no-fixture MCP stack.";
-
-export const benchmarkRows = [
-  {
-    mode: "Caplets Code Mode",
-    passed: "10/10",
-    tokens: "236,803",
-    surfaceTokens: "31,166",
-  },
-  {
-    mode: "Caplets progressive + Code Mode",
-    passed: "10/10",
-    tokens: "422,861",
-    surfaceTokens: "124,772",
-  },
-  {
-    mode: "Caplets progressive",
-    passed: "10/10",
-    tokens: "461,171",
-    surfaceTokens: "103,776",
-  },
-  {
-    mode: "Executor.sh",
-    passed: "10/10",
-    tokens: "675,842",
-    surfaceTokens: "24,570",
-  },
-  {
-    mode: "Direct vanilla MCP",
-    passed: "10/10",
-    tokens: "846,048",
-    surfaceTokens: "457,818",
-  },
-] as const;
-
-export const deterministicSurface = [
-  { label: "direct MCP tools", value: "215" },
-  { label: "Caplet cards shown first", value: "7" },
-  { label: "serialized payload cut", value: "79.9%" },
-] as const;
-
-export const whyCapletsProblems = [
-  {
-    label: "Work stops at the repository",
-    before:
-      "The agent edits code, then waits while you carry context into issues, dashboards, CI, and deployment tools.",
-    after:
-      "Expose the capabilities it needs so the agent can keep the task moving across authorized systems.",
-  },
-  {
-    label: "Every agent needs new wiring",
-    before:
-      "Provider setup, auth, and integration assumptions get repeated across clients and projects.",
-    after:
-      "Reuse the same Caplet definitions from supported agents while each host keeps access independently authorized.",
-  },
-  {
-    label: "Connected agents get overwhelmed",
-    before:
-      "A flat wall of tools and schemas competes with the work as soon as more systems are connected.",
-    after:
-      "Code Mode starts with named handles and opens exact schemas and operations only when the task needs them.",
-  },
-] as const;
-
-export const remoteCommands = {
-  server: `caplets daemon install --start
-caplets remote host approve <code> --yes`,
-  client: `caplets remote login <url>
-caplets attach <url>`,
-} as const;
 
 export const portabilitySurfaces = [
   { label: "Native integrations", value: "OpenCode · Pi" },
@@ -123,93 +50,18 @@ export const portabilitySurfaces = [
   { label: "Capability package", value: "The same Caplet definition" },
 ] as const;
 
-export const portabilityClaims = [
-  {
-    label: "Agent portability",
-    detail:
-      "Use the same Caplet definition through each supported surface. The agent experience may differ; the reusable definition stays the same.",
-    points: [
-      "Native OpenCode and Pi integrations",
-      "MCP for Codex, Claude, and compatible clients",
-      "Remote Attach for supported clients",
-    ],
-  },
-  {
-    label: "Capability sharing",
-    detail:
-      "Keep a Caplet local, share it with a team, or publish it for the community. Each recipient supplies and authorizes their own credentials.",
-    points: [
-      "Reuse it across your agents and projects",
-      "Share it with a team",
-      "Publish it for the community",
-    ],
-  },
-] as const;
-
 export const themeColor = "oklch(18% 0.014 100)";
 
-export const exampleCaplets = [
-  {
-    id: "osv",
-    name: "OSV",
-    summary:
-      "Vulnerability lookups by package, purl, commit, or batch query, with no auth ceremony.",
-    why: "Best first install: it proves the Caplet flow before OAuth or provider secrets enter the picture.",
-    path: ["osv", "inspect", "search_tools", "get_tool", "call_tool"],
-    steps: [
-      { command: "caplets setup", label: "Caplets setup command" },
-      {
-        command: "caplets install spiritledsoftware/caplets osv",
-        label: "OSV caplet install command",
-      },
-      { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
-    ],
-    help: ["OSV is public. If the trial fails, check Node 22+ and rerun ", "caplets setup", "."],
-  },
-  {
-    id: "github",
-    name: "GitHub",
-    summary:
-      "Repositories, issues, pull requests, branches, commits, and reviews behind one capability card.",
-    why: "This is the stress case: a valuable MCP server that is painful when every operation is exposed at once.",
-    path: ["github", "inspect", "search_tools", "get_tool", "call_tool"],
-    steps: [
-      { command: "export GH_TOKEN=github_pat_...", label: "GitHub token export" },
-      { command: "caplets setup", label: "Caplets setup command" },
-      {
-        command: "caplets install spiritledsoftware/caplets github",
-        label: "GitHub caplet install command",
-      },
-      { command: 'codex "try using the github caplet"', label: "Codex trial command" },
-    ],
-    help: [
-      "If setup fails, check Node 22+, rerun ",
-      "caplets setup",
-      ", and confirm ",
-      "GH_TOKEN",
-      ".",
-    ],
-  },
-  {
-    id: "sourcegraph",
-    name: "Sourcegraph",
-    summary:
-      "Hosted code search for examples, references, and implementation patterns across repositories.",
-    why: "Good for search-first work: the agent asks for matches, then opens only the operations it needs.",
-    path: ["sourcegraph", "inspect", "search_tools", "get_tool", "call_tool"],
-    steps: [
-      { command: "caplets setup", label: "Caplets setup command" },
-      {
-        command: "caplets install spiritledsoftware/caplets sourcegraph",
-        label: "Sourcegraph caplet install command",
-      },
-      { command: "caplets auth login sourcegraph", label: "Sourcegraph auth command" },
-      { command: 'codex "try using the sourcegraph caplet"', label: "Codex trial command" },
-    ],
-    help: [
-      "If setup fails, check Node 22+, rerun ",
-      "caplets setup",
-      ", and finish Sourcegraph OAuth login.",
-    ],
-  },
-] as const;
+export const firstCaplet = {
+  name: "OSV",
+  summary: "Public vulnerability lookups with no token or OAuth setup.",
+  steps: [
+    { command: "caplets setup", label: "Caplets setup command" },
+    {
+      command: "caplets install spiritledsoftware/caplets osv",
+      label: "OSV caplet install command",
+    },
+    { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
+  ],
+  help: ["If the trial fails, check Node 22+ and rerun ", "caplets setup", "."],
+} as const;
