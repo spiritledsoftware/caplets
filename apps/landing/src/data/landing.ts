@@ -25,19 +25,21 @@ Set up Caplets for this environment. Detect the environment first. Do not instal
 export const proofStats = [
   {
     value: "10/10",
-    label: "tasks cleared",
+    label: "tasks completed",
     detail:
-      "Caplets Code Mode, progressive modes, direct MCP, and Executor.sh all completed the task set.",
+      "Caplets Code Mode, progressive modes, direct MCP, and Executor.sh all completed the same task set.",
   },
   {
     value: "236,803",
-    label: "avg tokens",
-    detail: "Request plus output estimate for the Code Mode run, averaged across live Pi evals.",
+    label: "average total tokens",
+    detail:
+      "Average request and output tokens for the Code Mode run across the live Pi evaluations.",
   },
   {
     value: "72.0% fewer",
-    label: "vs vanilla",
-    detail: "Reduction against direct vanilla MCP without giving up the completed-task result.",
+    label: "than direct MCP",
+    detail:
+      "Fewer request and output tokens than direct vanilla MCP, with the same completed-task result.",
   },
 ] as const;
 
@@ -78,9 +80,9 @@ export const benchmarkRows = [
 ] as const;
 
 export const deterministicSurface = [
-  { label: "flat tool wall", value: "215" },
-  { label: "first screen cards", value: "7" },
-  { label: "surface cut", value: "79.9%" },
+  { label: "direct MCP tools", value: "215" },
+  { label: "Caplet cards shown first", value: "7" },
+  { label: "serialized payload cut", value: "79.9%" },
 ] as const;
 
 export const whyCapletsProblems = [
@@ -125,7 +127,7 @@ export const portabilityClaims = [
   {
     label: "Agent portability",
     detail:
-      "Reuse one capability definition across supported agent surfaces without pretending every client experience is identical.",
+      "Use the same Caplet definition through each supported surface. The agent experience may differ; the reusable definition stays the same.",
     points: [
       "Native OpenCode and Pi integrations",
       "MCP for Codex, Claude, and compatible clients",
@@ -135,11 +137,11 @@ export const portabilityClaims = [
   {
     label: "Capability sharing",
     detail:
-      "Keep a Caplet local, distribute it within a team, or publish it for the community without transferring authenticated authority.",
+      "Keep a Caplet local, share it with a team, or publish it for the community. Each recipient supplies and authorizes their own credentials.",
     points: [
-      "Personal reuse across agents and projects",
-      "Team-distributed Caplet definitions",
-      "Public Caplets through the catalog or another source",
+      "Reuse it across your agents and projects",
+      "Share it with a team",
+      "Publish it for the community",
     ],
   },
 ] as const;

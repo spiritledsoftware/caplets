@@ -12,12 +12,12 @@ import CommandBlock from "./CommandBlock.astro";
 <section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="portable" aria-labelledby="remote-story-title" data-reveal>
   <div class="grid gap-8 lg:grid-cols-[0.78fr_1.22fr] [&>*]:min-w-0">
     <div class="min-w-0">
-      <p class="text-sm font-medium text-muted-foreground">Agent portability and sharing</p>
+      <p class="text-sm font-medium text-muted-foreground">Reuse across agents and teams</p>
       <h2 id="remote-story-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
-        Use one capability model across native integrations, MCP clients, and Remote Attach.
+        Configure a capability once. Reuse it across supported agents.
       </h2>
       <p class="mt-5 max-w-xl text-lg leading-8 text-pretty text-muted-foreground">
-        Run Caplets through native OpenCode and Pi integrations, use MCP with Codex, Claude, and other compatible clients, or connect supported Remote Attach clients. Each host independently supplies credentials and authorizes access.
+        Use native integrations with OpenCode and Pi, MCP with Codex, Claude, and compatible clients, or Remote Attach with supported clients. Every host supplies its own credentials and authorizes its own access.
       </p>
       <dl class="mt-8 flex min-w-0 flex-wrap gap-3" aria-label="Supported agent surfaces">
         {portabilitySurfaces.map((endpoint) => (
@@ -50,15 +50,15 @@ import CommandBlock from "./CommandBlock.astro";
             <div class="flex items-start gap-3">
               <Server class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
               <div>
-                <span class="text-muted-foreground">A host authorizes</span>
-                <strong class="block">Only the selected backends</strong>
+                <span class="text-muted-foreground">The host controls access</span>
+                <strong class="block">Only selected backends are available</strong>
               </div>
             </div>
             <Separator class="md:hidden" />
             <div class="flex items-start gap-3">
               <Route class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
               <div>
-                <span class="text-muted-foreground">A Caplet packages</span>
+                <span class="text-muted-foreground">The Caplet carries</span>
                 <strong class="block">Definition · guidance · routes</strong>
               </div>
             </div>
@@ -66,8 +66,8 @@ import CommandBlock from "./CommandBlock.astro";
             <div class="flex items-start gap-3">
               <Route class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
               <div>
-                <span class="text-muted-foreground">Agents compose it</span>
-                <strong class="block">Task by task, not as a fixed workflow</strong>
+                <span class="text-muted-foreground">The agent selects</span>
+                <strong class="block">Only what the current task needs</strong>
               </div>
             </div>
           </div>
@@ -79,9 +79,9 @@ import CommandBlock from "./CommandBlock.astro";
   <div class="mt-4 rounded-lg border border-border bg-card p-5 md:flex md:items-center md:justify-between md:gap-8">
     <div>
       <p class="text-lg font-semibold text-foreground">Share capabilities, not secrets.</p>
-      <p class="mt-2 max-w-[75ch] text-sm leading-6 text-muted-foreground">A shared Caplet transfers its reusable definition and operating guidance. Every receiving user or host provides and authorizes its own access.</p>
+      <p class="mt-2 max-w-[75ch] text-sm leading-6 text-muted-foreground">Sharing a Caplet transfers only its definition and operating guidance. The recipient supplies credentials and authorizes access on its own host.</p>
     </div>
-    <a class="mt-4 inline-flex min-h-11 shrink-0 items-center font-medium text-primary-accent hover:underline focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none md:mt-0" href="https://docs.caplets.dev/capabilities/">Create a Caplet</a>
+    <a class="mt-4 inline-flex min-h-11 shrink-0 items-center font-medium text-primary-accent hover:underline focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none md:mt-0" href="https://docs.caplets.dev/capabilities/">Learn how to create a Caplet</a>
   </div>
 
   <div class="mt-4 grid min-w-0 gap-4 md:grid-cols-2 [&>*]:min-w-0">

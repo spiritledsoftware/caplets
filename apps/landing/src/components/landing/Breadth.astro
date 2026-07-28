@@ -9,19 +9,25 @@ const backendFamilies = [
   ["Caplet Files", "Reuse a capability definition someone has shared"],
 ] as const;
 
-const agentSurfaces = ["Codex", "Claude", "OpenCode", "Pi", "MCP clients"] as const;
+const agentSurfaces = [
+  ["Codex", "MCP"],
+  ["Claude", "MCP"],
+  ["OpenCode", "Native · MCP"],
+  ["Pi", "Native · MCP"],
+  ["Supported remote clients", "Remote Attach"],
+] as const;
 ---
 
 <section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="breadth" aria-labelledby="breadth-title" data-reveal>
   <div class="grid gap-8 lg:grid-cols-[0.82fr_1.18fr] lg:items-end [&>*]:min-w-0">
     <div class="max-w-xl">
-      <p class="text-sm font-medium text-primary-accent">Supported connection model</p>
+      <p class="text-sm font-medium text-primary-accent">What you can connect</p>
       <h2 id="breadth-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
         MCP. APIs. Commands. All of it.
       </h2>
     </div>
     <p class="max-w-2xl text-lg leading-8 text-pretty text-muted-foreground">
-      If your system exposes a supported interface, turn it into a Caplet—a reusable capability for coding agents. The catalog is one place to find Caplets, not the boundary of what you can connect.
+      Connect a backend through any supported interface below. Each Caplet packages one focused capability. The catalog is optional—not a limit on what you can connect.
     </p>
   </div>
 
@@ -40,21 +46,21 @@ const agentSurfaces = ["Codex", "Claude", "OpenCode", "Pi", "MCP clients"] as co
 
     <div class="grid min-w-0 place-content-center bg-foreground p-7 text-center text-background">
       <span class="font-mono text-xs font-semibold tracking-[0.08em] text-background/65">CAPABILITY LAYER</span>
-      <strong class="mt-4 text-3xl tracking-[-0.02em]">One Caplet</strong>
-      <span class="mt-3 max-w-[22ch] text-sm leading-6 text-background/70">Scoped, inspectable, and reusable</span>
+      <strong class="mt-4 text-3xl tracking-[-0.02em]">Reusable Caplet</strong>
+      <span class="mt-3 max-w-[22ch] text-sm leading-6 text-background/70">One focused backend capability, ready for an agent</span>
     </div>
 
     <div class="min-w-0 bg-card p-5 md:p-7">
-      <p class="text-sm font-medium text-muted-foreground">Use it from supported agents</p>
+      <p class="text-sm font-medium text-muted-foreground">Use it through a supported agent surface</p>
       <ul class="mt-5 divide-y divide-border">
-        {agentSurfaces.map((agent) => (
+        {agentSurfaces.map(([agent, surface]) => (
           <li class="flex items-center justify-between gap-3 py-3">
             <span class="font-semibold text-foreground">{agent}</span>
-            <span class="font-mono text-xs text-muted-foreground">attach</span>
+            <span class="font-mono text-xs text-muted-foreground">{surface}</span>
           </li>
         ))}
       </ul>
-      <p class="mt-5 text-sm leading-6 text-muted-foreground">Client surfaces differ. Caplet definitions stay reusable, while credentials remain independently authorized.</p>
+      <p class="mt-5 text-sm leading-6 text-muted-foreground">The surface changes by client. The Caplet definition remains reusable; every host authorizes its own credentials and access.</p>
     </div>
   </div>
 </section>
