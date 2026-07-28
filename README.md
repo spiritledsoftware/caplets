@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fspiritledsoftware%2Fcaplets.svg)](https://mcptoplist.com/server/glama%2Fspiritledsoftware%2Fcaplets)
+
 <div align="center">
   <img src="docs/assets/caplets-icon.png" alt="Caplets logo" width="120" height="120" />
 
