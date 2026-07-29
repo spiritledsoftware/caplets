@@ -37,7 +37,7 @@ export function generateCodeModeRunToolDescription(declaration: string): string 
         .replace(/debug:DebugApi(?:&CapletHandle<[^;]+>)?;/gu, "caplets.debug")
     : declaration;
   return [
-    "Run TypeScript over `caplets.<id>`. Discover names via tools/searchTools and schemas via describeTool; never guess names, URIs, args, or fields. Check fallbacks and `{ok:false}`; return evidence-backed JSON.",
+    "Run TypeScript over `caplets.<id>`. Discover via tools/searchTools; inspect schemas via describeTool. Never guess names, URIs, args, or fields. Check fallbacks/errors; return evidence-backed JSON.",
     CODE_MODE_REPL_GUIDANCE,
     "caplets.id: inspect/check; tools(input?), searchTools(query,input?), describeTool(name), callTool(name,args); resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete (search*: query,input?). Page={items,nextCursor?,truncated?}. Result={ok:true,data,meta?}|{ok:false,error,meta?}; data only if ok. Debug: readLogs/readRecovery.",
     "",

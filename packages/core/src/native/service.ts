@@ -702,11 +702,7 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     caplet: nativeCodeModeToolId,
     toolName: nativeCodeModeToolName,
     title: "Code Mode",
-    description: [
-      generateCodeModeRunToolDescription(declaration),
-      "",
-      `Native tool name: ${nativeCodeModeToolName}`,
-    ].join("\n"),
+    description: generateCodeModeRunToolDescription(declaration),
     codeModeRun: true,
     codeModeCaplets,
     promptGuidance: nativeCodeModePromptGuidance(),
