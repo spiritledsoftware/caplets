@@ -26,13 +26,17 @@ export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): s
 }
 
 export function generateCodeModeRunToolDescription(declaration: string): string {
+  const handles = declaration.endsWith(CODE_MODE_RUNTIME_API_DECLARATION)
+    ? declaration.slice(0, -CODE_MODE_RUNTIME_API_DECLARATION.length).trimEnd()
+    : declaration;
   return [
-    "Run TypeScript with generated `caplets.<id>` handles and declarations below. Prefer one compact call: discover, filter, execute, join, and return decision-ready JSON while bulky lists, schemas, and payloads stay inside the script. Use tools/searchTools for names and argument hints; use describeTool only for exact or nested schemas, fields, or disambiguation. Never guess names, URIs, arguments, fields, or schemas. Check fallback handles with check(), handle `{ok:false}`, and synthesize from all relevant records, preserving compact evidence, caveats, and missing data.",
+    "Run TypeScript with generated `caplets.<id>` handles and the reference below. Prefer one compact call: discover, filter, execute, join, and return decision-ready JSON while bulky lists, schemas, and payloads stay inside the script. Use tools/searchTools for names and argument hints; use describeTool only for exact or nested schemas, fields, or disambiguation. Never guess names, URIs, arguments, fields, or schemas. Check fallback handles with check(), handle `{ok:false}`, and synthesize from all relevant records, preserving compact evidence, caveats, and missing data.",
     CODE_MODE_REPL_GUIDANCE,
+    "Handles expose inspect(), check(), tools()/searchTools(), describeTool()/callTool(), resources()/searchResources()/resourceTemplates()/readResource(), and prompts()/searchPrompts()/getPrompt()/complete(). Lists return {items,nextCursor?,truncated?}; operations return {ok:true,data,meta?}|{ok:false,error,meta?}. caplets.debug exposes readLogs() and readRecovery().",
     "",
-    "Generated declaration hints:",
+    "Generated handles:",
     "```ts",
-    declaration,
+    handles,
     "```",
   ].join("\n");
 }
