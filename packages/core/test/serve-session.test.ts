@@ -128,12 +128,12 @@ describe("CapletsMcpSession", () => {
     expect(alpha.remove).toHaveBeenCalledTimes(1);
     expect(codeMode.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        description: expect.stringContaining('gamma:CapletHandle<"gamma">'),
+        description: expect.stringContaining("caplets.gamma"),
       }),
     );
     expect(codeMode.update).toHaveBeenCalledWith(
       expect.not.objectContaining({
-        description: expect.stringContaining('alpha:CapletHandle<"alpha">'),
+        description: expect.stringContaining("caplets.alpha"),
       }),
     );
     expect(session.registeredToolIds()).toEqual(["gamma"]);

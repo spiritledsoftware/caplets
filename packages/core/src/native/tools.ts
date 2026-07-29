@@ -9,11 +9,15 @@ export function nativeCapletToolName(capletId: string): string {
 }
 
 export function nativeCapletsSystemGuidance(toolNames: string[]): string {
-  const tools = toolNames.length > 0 ? toolNames.map((tool) => `- ${tool}`).join("\n") : "- none";
-  const guidance = ["## Caplets Native Tools", "Available:", tools];
+  const onlyCodeMode = toolNames.length === 1 && toolNames[0] === nativeCodeModeToolName;
+  const guidance = ["## Caplets"];
+  if (!onlyCodeMode) {
+    const tools = toolNames.length > 0 ? toolNames.map((tool) => `- ${tool}`).join("\n") : "- none";
+    guidance.push("Available:", tools);
+  }
   if (toolNames.includes(nativeCodeModeToolName)) {
     guidance.push(
-      `${nativeCodeModeToolName}: multi-step TypeScript over caplets.<id>; omit sessionId to start fresh, reuse returned meta.sessionId, and use meta.recoveryRef only for audit.`,
+      `${nativeCodeModeToolName}: TypeScript over caplets.<id>; omit sessionId to start fresh, then reuse meta.sessionId; recoveryRef is audit-only.`,
     );
   }
   if (toolNames.some((tool) => tool !== nativeCodeModeToolName)) {
@@ -29,8 +33,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
 
 export function nativeCodeModePromptGuidance(): string[] {
   return [
-    `Use ${nativeCodeModeToolName} for compact multi-step TypeScript; return decision-ready JSON and keep bulky data inside.`,
-    "For REPL reuse, omit sessionId to start fresh; pass the returned meta.sessionId for live state. Top-level declarations and completed mutations persist; unknown IDs fail before execution. meta.recoveryRef via caplets.debug.readRecovery({ recoveryRef }) is audit-only; never auto-replay.",
+    "REPL: omit sessionId to start fresh; reuse returned meta.sessionId. meta.recoveryRef is audit-only; never auto-replay.",
   ];
 }
 

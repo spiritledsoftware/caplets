@@ -4,7 +4,7 @@ import { CODE_MODE_RUNTIME_API_DECLARATION } from "./runtime-api.generated";
 const JS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
 const MAX_JSDOC_CHARS = 240;
 const CODE_MODE_REPL_GUIDANCE =
-  "Sessions: omit `sessionId` to create one; reuse returned `meta.sessionId`. Top-level declarations and completed mutations persist; an unknown or incompatible `sessionId` fails before executing your code. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery({ recoveryRef })`; never auto-replay.";
+  "Sessions: omit `sessionId`; reuse returned `meta.sessionId`. Top-level declarations and completed mutations persist; an unknown or incompatible `sessionId` fails before executing your code. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery({ recoveryRef })`; never auto-replay.";
 
 export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): string {
   const caplets = [...input.caplets].sort((left, right) => left.id.localeCompare(right.id));
@@ -27,12 +27,19 @@ export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): s
 
 export function generateCodeModeRunToolDescription(declaration: string): string {
   const handles = declaration.endsWith(CODE_MODE_RUNTIME_API_DECLARATION)
-    ? declaration.slice(0, -CODE_MODE_RUNTIME_API_DECLARATION.length).trimEnd()
+    ? declaration
+        .slice(0, -CODE_MODE_RUNTIME_API_DECLARATION.length)
+        .trimEnd()
+        .replace(/^declare const caplets:\{\n/u, "")
+        .replace(/\n\};$/u, "")
+        .replace(/(\/\*\*.*\*\/)?("(?:\\.|[^"\\])*"):CapletHandle<[^;]+>;/gu, "$1caplets[$2]")
+        .replace(/(\/\*\*.*\*\/)?([A-Za-z_$][\w$]*):CapletHandle<[^;]+>;/gu, "$1caplets.$2")
+        .replace(/debug:DebugApi(?:&CapletHandle<[^;]+>)?;/gu, "caplets.debug")
     : declaration;
   return [
-    "Run TypeScript with generated `caplets.<id>` handles. Prefer one compact call that discovers, filters, executes, joins, and returns decision-ready JSON; keep bulky data inside. Use tools/searchTools for names and hints, describeTool for exact or nested schemas. Never guess names, URIs, args, fields, or schemas. Check fallback handles and `{ok:false}`; synthesize all relevant records with evidence and caveats.",
+    "Run TypeScript over generated `caplets.<id>` handles. Prefer one call that discovers, filters, joins, and returns decision-ready JSON while keeping bulky data inside. Discover names with tools/searchTools and schemas with describeTool; never guess names, URIs, arguments, or fields. Check fallback handles and `{ok:false}`; synthesize all relevant records with evidence and caveats.",
     CODE_MODE_REPL_GUIDANCE,
-    "Handles: inspect/check; tools/searchTools/describeTool/callTool; resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete. Lists: {items,nextCursor?,truncated?}. Operations: {ok:true,data,meta?}|{ok:false,error,meta?}. Debug: readLogs/readRecovery.",
+    "On caplets.id: inspect/check; tools(input?), searchTools(query,input?), describeTool(name), callTool(name,args); resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete (search* takes query,input?). Pages: {items,nextCursor?,truncated?}. Results: {ok:true,data,meta?}|{ok:false,error,meta?}; read .data only when ok. Debug: readLogs/readRecovery.",
     "",
     "Generated handles:",
     "```ts",
@@ -42,10 +49,14 @@ export function generateCodeModeRunToolDescription(declaration: string): string 
 }
 
 function capletHintText(caplet: CodeModeDeclarationInput["caplets"][number]): string {
-  return boundedSummary(
-    compactCapletField(caplet.description || caplet.name || caplet.id),
-    MAX_JSDOC_CHARS,
-  );
+  const description = sanitizeJsDoc(caplet.description || caplet.name || caplet.id);
+  const generatedPrefix = `${sanitizeJsDoc(caplet.name)} Caplet.`;
+  const domainDescription =
+    description.includes(" Use tools/search_tools for downstream names") &&
+    description.startsWith(generatedPrefix)
+      ? description.slice(generatedPrefix.length).trimStart()
+      : description;
+  return boundedSummary(compactCapletField(domainDescription), MAX_JSDOC_CHARS);
 }
 
 export function minifyCodeModeDeclarationText(value: string): string {

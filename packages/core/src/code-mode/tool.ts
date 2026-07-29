@@ -3,7 +3,7 @@ import { ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS } from "./runner";
 import type { CodeModeRunMeta } from "./types";
 
 export const CODE_MODE_SESSION_ID_DESCRIPTION =
-  "Omit to create a fresh reusable session; pass its meta.sessionId to reuse it. Unknown or unavailable session IDs fail before code execution.";
+  "Omit to create a fresh reusable session; reuse meta.sessionId. Unknown or unavailable session IDs fail before code execution.";
 
 export const codeModeRunInputSchema = z.object({
   code: z.string().describe("TypeScript to execute."),
