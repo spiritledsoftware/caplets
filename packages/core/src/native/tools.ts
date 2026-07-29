@@ -17,7 +17,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
   }
   if (toolNames.includes(nativeCodeModeToolName)) {
     guidance.push(
-      `${nativeCodeModeToolName}: TypeScript over caplets.<id>; omit sessionId to start fresh, then reuse meta.sessionId; recoveryRef is audit-only.`,
+      `${nativeCodeModeToolName}: TypeScript over caplets.<id>; omit sessionId to start fresh.`,
     );
   }
   if (toolNames.some((tool) => tool !== nativeCodeModeToolName)) {
@@ -33,7 +33,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
 
 export function nativeCodeModePromptGuidance(): string[] {
   return [
-    "REPL: omit sessionId to start fresh; reuse returned meta.sessionId. meta.recoveryRef is audit-only; never auto-replay.",
+    "Return selected fields only; keep raw results inside. REPL: omit sessionId to start fresh; reuse returned meta.sessionId. meta.recoveryRef is audit-only; never auto-replay.",
   ];
 }
 
