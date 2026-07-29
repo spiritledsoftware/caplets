@@ -14,6 +14,8 @@ import type {
 } from "./types";
 
 const MAX_TOOL_TEXT_CHARS = 2_000;
+const DEFAULT_CODE_MODE_LIST_LIMIT = 10;
+const DEFAULT_CODE_MODE_FALLBACK_SEARCH_LIMIT = 3;
 const MAX_ERROR_MESSAGE_CHARS = 1_000;
 
 export type CodeModeCapletHandle = {
@@ -110,16 +112,18 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
       return await checkResultFromExecution(service, capletId);
     },
     async tools(input?: PageInput) {
-      return toolPageFromResult(
+      const page = toolPageFromResult(
         unwrapStructuredResult(await service.execute(capletId, { operation: "tools", ...input })),
       );
+      return compactDefaultListPage(page, input);
     },
     async searchTools(query: string, input?: PageInput) {
-      return toolPageFromResult(
+      const page = toolPageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "search_tools", query, ...input }),
         ),
       );
+      return compactDefaultSearchPage(page, query, input);
     },
     async describeTool(name: string) {
       const result = await resultFromExecution(service, capletId, {
@@ -158,40 +162,45 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
       }
     },
     async resources(input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "resources", ...input }),
         ),
       );
+      return compactDefaultListPage(page, input);
     },
     async searchResources(query: string, input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "search_resources", query, ...input }),
         ),
       );
+      return compactDefaultSearchPage(page, query, input);
     },
     async resourceTemplates(input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "resource_templates", ...input }),
         ),
       );
+      return compactDefaultListPage(page, input);
     },
     async readResource(uri: string) {
       return await resultFromExecution(service, capletId, { operation: "read_resource", uri });
     },
     async prompts(input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(await service.execute(capletId, { operation: "prompts", ...input })),
       );
+      return compactDefaultListPage(page, input);
     },
     async searchPrompts(query: string, input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "search_prompts", query, ...input }),
         ),
       );
+      return compactDefaultSearchPage(page, query, input);
     },
     async getPrompt(name: string, args?: unknown) {
       return await resultFromExecution(service, capletId, {
@@ -328,6 +337,47 @@ function toolPageFromResult(result: unknown): Page<unknown> {
       )
       .filter((item): item is Record<string, unknown> => item !== undefined),
   };
+}
+
+function compactDefaultListPage(page: Page<unknown>, input: PageInput | undefined): Page<unknown> {
+  if (input?.limit !== undefined || page.items.length <= DEFAULT_CODE_MODE_LIST_LIMIT) {
+    return page;
+  }
+  return {
+    ...page,
+    items: page.items.slice(0, DEFAULT_CODE_MODE_LIST_LIMIT),
+    truncated: true,
+  };
+}
+
+function compactDefaultSearchPage(
+  page: Page<unknown>,
+  query: string,
+  input: PageInput | undefined,
+): Page<unknown> {
+  if (input?.limit !== undefined) return page;
+  const limit = page.items.some((item) => summaryMatchesQuery(item, query))
+    ? DEFAULT_CODE_MODE_LIST_LIMIT
+    : DEFAULT_CODE_MODE_FALLBACK_SEARCH_LIMIT;
+  if (page.items.length <= limit) return page;
+  return {
+    ...page,
+    items: page.items.slice(0, limit),
+    truncated: true,
+  };
+}
+
+function summaryMatchesQuery(item: unknown, query: string): boolean {
+  if (!isPlainObject(item)) return false;
+  const text = [item.name, item.title, item.description, item.uri, item.uriTemplate]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLocaleLowerCase();
+  return query
+    .toLocaleLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean)
+    .some((token) => text.includes(token));
 }
 
 function unwrapStructuredResult(result: unknown): unknown {

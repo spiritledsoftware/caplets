@@ -320,6 +320,59 @@ describe("Code Mode Caplets API", () => {
     });
   });
 
+  it("bounds default discovery pages while preserving explicit limits and small pages", async () => {
+    const native = service([
+      {
+        caplet: "github",
+        toolName: "caplets__github",
+        title: "GitHub",
+        description: "GitHub repo operations.",
+        promptGuidance: [],
+      },
+    ]);
+    const tools = Array.from({ length: 12 }, (_, index) => ({
+      name: `issue_${index}`,
+      description: `Issue operation ${index}.`,
+    }));
+    vi.mocked(native.execute)
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({
+        structuredContent: {
+          result: {
+            items: [
+              { name: "readme", uri: "repo://readme" },
+              { name: "guide", uri: "repo://guide" },
+            ],
+          },
+        },
+      })
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } });
+    const api = createCodeModeCapletsApi({ service: native });
+    const github = api.github as CodeModeCapletHandle;
+
+    await expect(github.tools()).resolves.toMatchObject({
+      items: tools.slice(0, 10),
+      truncated: true,
+    });
+    await expect(github.tools({ limit: 12 })).resolves.toEqual({ items: tools });
+    await expect(github.resources()).resolves.toEqual({
+      items: [
+        { name: "readme", uri: "repo://readme" },
+        { name: "guide", uri: "repo://guide" },
+      ],
+    });
+    await expect(github.searchTools("issue")).resolves.toMatchObject({
+      items: tools.slice(0, 10),
+      truncated: true,
+    });
+    await expect(github.searchTools("deploy")).resolves.toMatchObject({
+      items: tools.slice(0, 3),
+      truncated: true,
+    });
+  });
+
   it("returns expected tool failures as result envelopes", async () => {
     const native = service([
       {
