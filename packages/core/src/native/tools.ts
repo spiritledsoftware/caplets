@@ -10,7 +10,7 @@ export function nativeCapletToolName(capletId: string): string {
 
 export function nativeCapletsSystemGuidance(toolNames: string[]): string {
   const onlyCodeMode = toolNames.length === 1 && toolNames[0] === nativeCodeModeToolName;
-  const guidance = ["## Caplets"];
+  const guidance = onlyCodeMode ? [] : ["## Caplets"];
   if (!onlyCodeMode) {
     const tools = toolNames.length > 0 ? toolNames.map((tool) => `- ${tool}`).join("\n") : "- none";
     guidance.push("Available:", tools);

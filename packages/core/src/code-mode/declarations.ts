@@ -4,7 +4,7 @@ import { CODE_MODE_RUNTIME_API_DECLARATION } from "./runtime-api.generated";
 const JS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
 const MAX_JSDOC_CHARS = 240;
 const CODE_MODE_REPL_GUIDANCE =
-  "Sessions: omit `sessionId`; reuse `meta.sessionId`. Declarations and completed mutations persist; reuse fails before executing your code for unknown or incompatible IDs. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery`; never auto-replay.";
+  "Sessions: omit `sessionId`; reuse `meta.sessionId`. Declarations/mutations persist. Unknown/incompatible IDs fail before code. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery`; never replay.";
 
 export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): string {
   const caplets = [...input.caplets].sort((left, right) => left.id.localeCompare(right.id));
@@ -39,7 +39,7 @@ export function generateCodeModeRunToolDescription(declaration: string): string 
   return [
     "Run TypeScript over `caplets.<id>`. Discover names via tools/searchTools and schemas via describeTool; never guess names, URIs, args, or fields. Check fallbacks and `{ok:false}`; return evidence-backed JSON.",
     CODE_MODE_REPL_GUIDANCE,
-    "On caplets.id: inspect/check; tools(input?), searchTools(query,input?), describeTool(name), callTool(name,args); resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete (search* takes query,input?). Pages: {items,nextCursor?,truncated?}. Results: {ok:true,data,meta?}|{ok:false,error,meta?}; read .data only when ok. Debug: readLogs/readRecovery.",
+    "caplets.id: inspect/check; tools(input?), searchTools(query,input?), describeTool(name), callTool(name,args); resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete (search*: query,input?). Page={items,nextCursor?,truncated?}. Result={ok:true,data,meta?}|{ok:false,error,meta?}; data only if ok. Debug: readLogs/readRecovery.",
     "",
     "Handles:",
     handles,

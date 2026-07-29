@@ -1559,7 +1559,7 @@ describe("RemoteNativeCapletsService", () => {
           properties: expect.objectContaining({
             code: expect.any(Object),
             sessionId: expect.objectContaining({
-              description: expect.stringContaining("Omit to create a fresh reusable session"),
+              description: expect.stringContaining("Omit to create a session"),
             }),
           }),
         }),
@@ -3313,7 +3313,7 @@ describe("createNativeCapletsService remote mode", () => {
           properties: expect.objectContaining({
             sessionId: expect.objectContaining({
               type: "string",
-              description: expect.stringContaining("Unknown or unavailable session IDs fail"),
+              description: expect.stringContaining("Unknown IDs fail before execution"),
             }),
           }),
         }),

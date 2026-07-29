@@ -87,7 +87,7 @@ describe("native Caplets service", () => {
       );
       const codeModeTool = tools.find((tool) => tool.caplet === "code_mode");
       expect(codeModeTool?.description).toContain("`meta.sessionId`");
-      expect(codeModeTool?.description).toContain("fails before executing your code");
+      expect(codeModeTool?.description).toContain("Unknown/incompatible IDs fail before code");
       expect(codeModeTool?.promptGuidance).toEqual(
         expect.arrayContaining([
           expect.stringContaining("omit sessionId to start fresh"),
@@ -101,7 +101,7 @@ describe("native Caplets service", () => {
             properties?: { sessionId?: { description?: string } };
           }
         )?.properties?.sessionId?.description,
-      ).toContain("Omit to create a fresh reusable session");
+      ).toContain("Omit to create a session");
       expect(nativeCapletsSystemGuidance(["caplets__code_mode"])).toContain(
         "omit sessionId to start fresh",
       );
