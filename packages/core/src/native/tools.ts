@@ -24,10 +24,8 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
 
 export function nativeCodeModePromptGuidance(): string[] {
   return [
-    `Use ${nativeCodeModeToolName} for one compact TypeScript workflow over generated caplets.<id> handles: discover, call, filter, join, and synthesize.`,
-    "For REPL reuse, omit sessionId to start fresh; pass the returned meta.sessionId to reuse live state.",
-    "Sessions preserve top-level declarations and completed mutations; unknown IDs fail before execution. Use meta.recoveryRef with caplets.debug.readRecovery({ recoveryRef }) for audit and manual reconstruction, never automatic replay.",
-    "Return decision-ready JSON; keep bulky provider data inside Code Mode.",
+    `Use ${nativeCodeModeToolName} for compact multi-step TypeScript; return decision-ready JSON and keep bulky data inside.`,
+    "For REPL reuse, omit sessionId to start fresh; pass the returned meta.sessionId for live state. Top-level declarations and completed mutations persist; unknown IDs fail before execution. meta.recoveryRef via caplets.debug.readRecovery({ recoveryRef }) is audit-only; never auto-replay.",
   ];
 }
 
