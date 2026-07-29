@@ -4,7 +4,7 @@ import { CODE_MODE_RUNTIME_API_DECLARATION } from "./runtime-api.generated";
 const JS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
 const MAX_JSDOC_CHARS = 240;
 const CODE_MODE_REPL_GUIDANCE =
-  "Sessions: omit `sessionId` to create one; reuse returned `meta.sessionId`. Sessions preserve top-level declarations and completed mutations; unknown or incompatible IDs fail before execution. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery({ recoveryRef })`; never auto-replay.";
+  "Sessions: omit `sessionId` to create one; reuse returned `meta.sessionId`. Top-level declarations and completed mutations persist; an unknown or incompatible `sessionId` fails before executing your code. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery({ recoveryRef })`; never auto-replay.";
 
 export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): string {
   const caplets = [...input.caplets].sort((left, right) => left.id.localeCompare(right.id));
