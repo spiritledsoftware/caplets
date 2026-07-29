@@ -17,6 +17,7 @@ const MAX_TOOL_TEXT_CHARS = 2_000;
 const DEFAULT_CODE_MODE_LIST_LIMIT = 10;
 const DEFAULT_CODE_MODE_FALLBACK_SEARCH_LIMIT = 3;
 const MAX_ERROR_MESSAGE_CHARS = 1_000;
+const MAX_TOOL_SUMMARY_DESCRIPTION_CHARS = 96;
 
 export type CodeModeCapletHandle = {
   readonly id: string;
@@ -335,7 +336,9 @@ function toolPageFromResult(result: unknown): Page<unknown> {
     ...page,
     items: page.items
       .map((item) =>
-        isPlainObject(item) ? compactToolSummary(item, { descriptionLimit: 160 }) : undefined,
+        isPlainObject(item)
+          ? compactToolSummary(item, { descriptionLimit: MAX_TOOL_SUMMARY_DESCRIPTION_CHARS })
+          : undefined,
       )
       .filter((item): item is Record<string, unknown> => item !== undefined),
   };

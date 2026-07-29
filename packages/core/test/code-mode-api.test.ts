@@ -311,7 +311,7 @@ describe("Code Mode Caplets API", () => {
     const descriptor = await github.describeTool("search_issues");
 
     const summary = tools.items[0] as { description?: unknown } | undefined;
-    expect(String(summary?.description).length).toBeLessThan(longDescription.length);
+    expect(String(summary?.description).length).toBeLessThanOrEqual(96);
     expect(tools.items[0]).toMatchObject({ name: "search_issues", readOnlyHint: true });
     expect(descriptor).toMatchObject({
       ok: true,
