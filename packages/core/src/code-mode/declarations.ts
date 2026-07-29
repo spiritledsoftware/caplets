@@ -100,6 +100,7 @@ function compactCapletField(value: string): string {
   const cleaned = sanitizeJsDoc(value);
   const markers = [
     " Use inspect for details when needed;",
+    " Use tools/search_tools for downstream names",
     " Native tool name:",
     " Original Caplet ID:",
   ];
