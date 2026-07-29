@@ -64,7 +64,6 @@ describe("Code Mode Caplets API", () => {
           name: "listIssues",
         },
       },
-      meta: { capletId: "github", tool: "listIssues" },
     });
 
     expect(native.execute).toHaveBeenNthCalledWith(1, "github", { operation: "inspect" });
@@ -496,7 +495,7 @@ describe("Code Mode Caplets API", () => {
     expect(JSON.stringify(result)).not.toContain("get_prompt");
   });
 
-  it("compacts tool call success results to the useful payload", async () => {
+  it("compacts successful tool calls to useful payloads without redundant metadata", async () => {
     const native = service([
       {
         caplet: "github",
@@ -526,13 +525,6 @@ describe("Code Mode Caplets API", () => {
     await expect(github.callTool("get_me", {})).resolves.toEqual({
       ok: true,
       data: { login: "octocat", id: 1 },
-      meta: {
-        capletId: "github",
-        tool: "get_me",
-        durationMs: expect.any(Number),
-        status: "ok",
-        elapsedMs: 12,
-      },
     });
   });
 
@@ -577,7 +569,6 @@ describe("Code Mode Caplets API", () => {
           { id: "GHSA-29mw-wpgm-hmr9", aliases: ["CVE-2020-28500"] },
         ],
       },
-      meta: { capletId: "osv", tool: "query_package_version" },
     });
   });
 

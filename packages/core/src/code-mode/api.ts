@@ -140,19 +140,18 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
           name,
           args: args ?? {},
         });
-        const meta = toolCallMeta(result, {
-          capletId,
-          tool: name,
-          durationMs: Date.now() - started,
-        });
         if (resultIsError(result)) {
           return {
             ok: false,
             error: toolCallError(result),
-            meta,
+            meta: toolCallMeta(result, {
+              capletId,
+              tool: name,
+              durationMs: Date.now() - started,
+            }),
           };
         }
-        return { ok: true, data: normalizeToolCallData(result), meta };
+        return { ok: true, data: normalizeToolCallData(result) };
       } catch (error) {
         return {
           ok: false,
@@ -232,7 +231,7 @@ async function checkResultFromExecution(
       message: unavailableCheckMessage(capletId, result.data),
       details: result.data,
     },
-    ...(result.meta === undefined ? {} : { meta: result.meta }),
+    meta: result.meta ?? { capletId },
   };
 }
 
@@ -245,15 +244,18 @@ async function resultFromExecution(
   const targetName = typeof request.name === "string" ? request.name : undefined;
   try {
     const result = await service.execute(capletId, request);
-    const meta = toolCallMeta(result, {
-      capletId,
-      ...(targetName === undefined ? {} : { tool: targetName }),
-      durationMs: Date.now() - started,
-    });
     if (resultIsError(result)) {
-      return { ok: false, error: toolCallError(result), meta };
+      return {
+        ok: false,
+        error: toolCallError(result),
+        meta: toolCallMeta(result, {
+          capletId,
+          ...(targetName === undefined ? {} : { tool: targetName }),
+          durationMs: Date.now() - started,
+        }),
+      };
     }
-    return { ok: true, data: unwrapStructuredResult(result), meta };
+    return { ok: true, data: unwrapStructuredResult(result) };
   } catch (error) {
     return {
       ok: false,
