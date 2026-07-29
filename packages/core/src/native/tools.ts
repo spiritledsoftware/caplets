@@ -12,17 +12,13 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
   const tools = toolNames.length > 0 ? toolNames.map((tool) => `- ${tool}`).join("\n") : "- none";
   return [
     "## Caplets Native Tools",
-    "",
-    "Caplets tools expose configured capability domains through progressive discovery.",
-    "",
-    "Available Caplets native tools:",
+    "Available:",
     tools,
-    "",
     ...nativeCodeModePromptGuidance(),
-    "Flow: inspect when the domain is unfamiliar; use tools/search_tools for downstream names, arg hints, and callTemplate; call_tool directly from callTemplate/argsTemplate for simple calls; reserve describe_tool for complex schemas, nested args, fields, or uncertainty.",
-    "Do not guess downstream tool names, resource URIs, prompt names, input args, output fields, or schemas. Do not infer input/output schemas from memory.",
-    "Prefer list/read/search operations for triage and avoid broad provider searches that can return huge payloads or hit rate limits.",
-    "When output shaping matters, inspect one tool with describe_tool and follow its fieldSelection hint.",
+    "Flow: inspect when the domain is unfamiliar; tools/search_tools provide names, arg hints, and callTemplate. Use call_tool with callTemplate/argsTemplate; reserve describe_tool for nested or uncertain schemas.",
+    "Do not guess downstream tool names, URIs, prompt names, args, fields, or schemas. Do not infer input/output schemas.",
+    "Prefer list/read/search for triage; avoid broad provider searches.",
+    "For output shaping, describe one tool and follow its fieldSelection hint.",
   ].join("\n");
 }
 
