@@ -25,13 +25,11 @@ export function codeModeRunInputJsonSchema(): Record<string, unknown> {
     properties: {
       code: {
         type: "string",
-        description: "TypeScript to execute.",
       },
       timeoutMs: {
         type: "integer",
         minimum: 1,
         maximum: ABSOLUTE_MAX_CODE_MODE_TIMEOUT_MS,
-        description: "Timeout in milliseconds.",
       },
       sessionId: {
         type: "string",
