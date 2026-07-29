@@ -1550,8 +1550,8 @@ describe("RemoteNativeCapletsService", () => {
         codeModeRun: true,
         description: expect.stringContaining("`meta.sessionId`"),
         promptGuidance: expect.arrayContaining([
-          expect.stringContaining("omit sessionId to start fresh"),
-          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("Omit sessionId to start"),
+          expect.stringContaining("reuse meta.sessionId"),
           expect.stringContaining("meta.recoveryRef"),
         ]),
         inputSchema: expect.objectContaining({
@@ -3307,7 +3307,7 @@ describe("createNativeCapletsService remote mode", () => {
         codeModeRun: true,
         description: expect.stringContaining("`meta.sessionId`"),
         promptGuidance: expect.arrayContaining([
-          expect.stringContaining("omit sessionId to start fresh"),
+          expect.stringContaining("Omit sessionId to start"),
         ]),
         inputSchema: expect.objectContaining({
           properties: expect.objectContaining({

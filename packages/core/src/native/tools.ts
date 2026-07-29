@@ -33,7 +33,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
 
 export function nativeCodeModePromptGuidance(): string[] {
   return [
-    "Return selected fields only; keep raw results inside; omit sessionId to start fresh, reuse returned meta.sessionId, never auto-replay meta.recoveryRef.",
+    "Return only selected fields. Omit sessionId to start; reuse meta.sessionId; never replay meta.recoveryRef.",
   ];
 }
 

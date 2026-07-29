@@ -90,8 +90,8 @@ describe("native Caplets service", () => {
       expect(codeModeTool?.description).toContain("Unknown/incompatible IDs fail before code");
       expect(codeModeTool?.promptGuidance).toEqual(
         expect.arrayContaining([
-          expect.stringContaining("omit sessionId to start fresh"),
-          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("Omit sessionId to start"),
+          expect.stringContaining("reuse meta.sessionId"),
           expect.stringContaining("meta.recoveryRef"),
         ]),
       );
