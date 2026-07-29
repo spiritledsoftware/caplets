@@ -30,9 +30,9 @@ export function generateCodeModeRunToolDescription(declaration: string): string 
     ? declaration.slice(0, -CODE_MODE_RUNTIME_API_DECLARATION.length).trimEnd()
     : declaration;
   return [
-    "Run TypeScript with generated `caplets.<id>` handles and the reference below. Prefer one compact call: discover, filter, execute, join, and return decision-ready JSON while bulky lists, schemas, and payloads stay inside the script. Use tools/searchTools for names and argument hints; use describeTool only for exact or nested schemas, fields, or disambiguation. Never guess names, URIs, arguments, fields, or schemas. Check fallback handles with check(), handle `{ok:false}`, and synthesize from all relevant records, preserving compact evidence, caveats, and missing data.",
+    "Run TypeScript with generated `caplets.<id>` handles. Prefer one compact call that discovers, filters, executes, joins, and returns decision-ready JSON; keep bulky data inside. Use tools/searchTools for names and hints, describeTool for exact or nested schemas. Never guess names, URIs, args, fields, or schemas. Check fallback handles and `{ok:false}`; synthesize all relevant records with evidence and caveats.",
     CODE_MODE_REPL_GUIDANCE,
-    "Handles expose inspect(), check(), tools()/searchTools(), describeTool()/callTool(), resources()/searchResources()/resourceTemplates()/readResource(), and prompts()/searchPrompts()/getPrompt()/complete(). Lists return {items,nextCursor?,truncated?}; operations return {ok:true,data,meta?}|{ok:false,error,meta?}. caplets.debug exposes readLogs() and readRecovery().",
+    "Handles: inspect/check; tools/searchTools/describeTool/callTool; resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete. Lists: {items,nextCursor?,truncated?}. Operations: {ok:true,data,meta?}|{ok:false,error,meta?}. Debug: readLogs/readRecovery.",
     "",
     "Generated handles:",
     "```ts",
