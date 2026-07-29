@@ -14,7 +14,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
     "## Caplets Native Tools",
     "Available:",
     tools,
-    ...nativeCodeModePromptGuidance(),
+    `${nativeCodeModeToolName}: multi-step TypeScript over caplets.<id>; omit sessionId to start fresh, reuse returned meta.sessionId, and use meta.recoveryRef only for audit.`,
     "Flow: inspect when the domain is unfamiliar; tools/search_tools provide names, arg hints, and callTemplate. Use call_tool with callTemplate/argsTemplate; reserve describe_tool for nested or uncertain schemas.",
     "Do not guess downstream tool names, URIs, prompt names, args, fields, or schemas. Do not infer input/output schemas.",
     "Prefer list/read/search for triage; avoid broad provider searches.",
