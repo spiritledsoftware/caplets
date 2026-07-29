@@ -10,16 +10,21 @@ export function nativeCapletToolName(capletId: string): string {
 
 export function nativeCapletsSystemGuidance(toolNames: string[]): string {
   const tools = toolNames.length > 0 ? toolNames.map((tool) => `- ${tool}`).join("\n") : "- none";
-  return [
-    "## Caplets Native Tools",
-    "Available:",
-    tools,
-    `${nativeCodeModeToolName}: multi-step TypeScript over caplets.<id>; omit sessionId to start fresh, reuse returned meta.sessionId, and use meta.recoveryRef only for audit.`,
-    "Flow: inspect when the domain is unfamiliar; tools/search_tools provide names, arg hints, and callTemplate. Use call_tool with callTemplate/argsTemplate; reserve describe_tool for nested or uncertain schemas.",
-    "Do not guess downstream tool names, URIs, prompt names, args, fields, or schemas. Do not infer input/output schemas.",
-    "Prefer list/read/search for triage; avoid broad provider searches.",
-    "For output shaping, describe one tool and follow its fieldSelection hint.",
-  ].join("\n");
+  const guidance = ["## Caplets Native Tools", "Available:", tools];
+  if (toolNames.includes(nativeCodeModeToolName)) {
+    guidance.push(
+      `${nativeCodeModeToolName}: multi-step TypeScript over caplets.<id>; omit sessionId to start fresh, reuse returned meta.sessionId, and use meta.recoveryRef only for audit.`,
+    );
+  }
+  if (toolNames.some((tool) => tool !== nativeCodeModeToolName)) {
+    guidance.push(
+      "Flow: inspect when the domain is unfamiliar; tools/search_tools provide names, arg hints, and callTemplate. Use call_tool with callTemplate/argsTemplate; reserve describe_tool for nested or uncertain schemas.",
+      "Do not guess downstream tool names, URIs, prompt names, args, fields, or schemas. Do not infer input/output schemas.",
+      "Prefer list/read/search for triage; avoid broad provider searches.",
+      "For output shaping, describe one tool and follow its fieldSelection hint.",
+    );
+  }
+  return guidance.join("\n");
 }
 
 export function nativeCodeModePromptGuidance(): string[] {
