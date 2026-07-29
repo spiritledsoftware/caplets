@@ -4,7 +4,7 @@ import { CODE_MODE_RUNTIME_API_DECLARATION } from "./runtime-api.generated";
 const JS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
 const MAX_JSDOC_CHARS = 240;
 const CODE_MODE_REPL_GUIDANCE =
-  "Sessions: omit `sessionId`; reuse returned `meta.sessionId`. Top-level declarations and completed mutations persist; an unknown or incompatible `sessionId` fails before executing your code. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery({ recoveryRef })`; never auto-replay.";
+  "Sessions: omit `sessionId`; reuse `meta.sessionId`. Declarations and completed mutations persist; reuse fails before executing your code for unknown or incompatible IDs. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery`; never auto-replay.";
 
 export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): string {
   const caplets = [...input.caplets].sort((left, right) => left.id.localeCompare(right.id));
@@ -37,14 +37,12 @@ export function generateCodeModeRunToolDescription(declaration: string): string 
         .replace(/debug:DebugApi(?:&CapletHandle<[^;]+>)?;/gu, "caplets.debug")
     : declaration;
   return [
-    "Run TypeScript over generated `caplets.<id>` handles. Prefer one call that discovers, filters, joins, and returns decision-ready JSON while keeping bulky data inside. Discover names with tools/searchTools and schemas with describeTool; never guess names, URIs, arguments, or fields. Check fallback handles and `{ok:false}`; synthesize all relevant records with evidence and caveats.",
+    "Run TypeScript over `caplets.<id>`. Discover names via tools/searchTools and schemas via describeTool; never guess names, URIs, args, or fields. Check fallbacks and `{ok:false}`; return evidence-backed JSON.",
     CODE_MODE_REPL_GUIDANCE,
     "On caplets.id: inspect/check; tools(input?), searchTools(query,input?), describeTool(name), callTool(name,args); resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete (search* takes query,input?). Pages: {items,nextCursor?,truncated?}. Results: {ok:true,data,meta?}|{ok:false,error,meta?}; read .data only when ok. Debug: readLogs/readRecovery.",
     "",
-    "Generated handles:",
-    "```ts",
+    "Handles:",
     handles,
-    "```",
   ].join("\n");
 }
 
