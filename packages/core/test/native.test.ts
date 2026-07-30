@@ -964,6 +964,9 @@ describe("native Caplets service", () => {
           recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
         },
       });
+      expect(result).not.toHaveProperty("diagnostics");
+      expect(result).not.toHaveProperty("logs");
+      expect(result).not.toHaveProperty("meta.runId");
       await expect(
         service.execute("code_mode", {
           code: "return { ok: true };",
