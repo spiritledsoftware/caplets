@@ -9,9 +9,9 @@ interface CapletHandle<Id extends string> {
   inspect(): Promise<CapletCard<Id>>;
   /** Check backend readiness/auth; expected unavailable states return ok:false. */
   check(): Promise<CapletsResult<BackendCheckResult>>;
-  /** List tool summaries for the discovery pass; may be empty. */
+  /** List compact tool summaries; safe callTemplate hints can be used later in this program. */
   tools(input?: PageInput): Promise<Page<ToolSummary>>;
-  /** Search tool summaries for the discovery pass; may be empty. */
+  /** Search compact tool summaries; safe callTemplate hints can be used later in this program. */
   searchTools(query: string, input?: PageInput): Promise<Page<ToolSummary>>;
   /** Get schema, callSignature, types, examples; prefer outputSchema/outputTypeScript over observed hints. */
   describeTool(name: string): Promise<CapletsResult<ToolDescriptor>>;
@@ -69,6 +69,13 @@ type ToolSummary = {
   readOnlyHint?: boolean;
   /** True when the tool declares that it may perform destructive writes. */
   destructiveHint?: boolean;
+  /** Required and accepted argument names, when the downstream schema declares them. */
+  requiredArgs?: string[];
+  acceptedArgs?: string[];
+  /** Safe placeholders for simple calls; replace placeholders before calling. */
+  argsTemplate?: Record<string, unknown>;
+  /** A simple call skeleton emitted only when required arguments can be represented safely. */
+  callTemplate?: { operation: "call_tool"; name: string; args: Record<string, unknown> };
 };
 type ToolDescriptor = {
   id?: string;

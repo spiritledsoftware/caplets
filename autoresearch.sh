@@ -5,14 +5,28 @@ output_dir="${HOME}/.omp/caplets-autoresearch-live"
 wrapper_dir="$(mktemp -d)"
 trap 'rm -rf "$wrapper_dir"' EXIT
 mkdir -p "$output_dir"
+constraint_spec="mcp<2"
 constraint_path="$wrapper_dir/uv-constraints.txt"
-printf 'mcp<2\n' >"$constraint_path"
+printf '%s\n' "$constraint_spec" >"$constraint_path"
 
 real_executor="$(command -v executor)"
 executor_wrapper="$wrapper_dir/executor"
 cat >"$executor_wrapper" <<'WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
+
+stop_task_daemon() {
+  "$REAL_EXECUTOR" daemon stop >/dev/null 2>&1 || true
+}
+
+if [[ "$#" -ge 1 && "$1" == "mcp" ]]; then
+  trap stop_task_daemon EXIT
+  set +e
+  "$REAL_EXECUTOR" "$@"
+  command_status=$?
+  set -e
+  exit "$command_status"
+fi
 
 is_add_server=false
 is_connection_setup=false
@@ -27,7 +41,17 @@ if [[ "$is_add_server" == false && "$is_connection_setup" == false ]]; then
 fi
 
 call_args=("$@")
-if [[ "$is_connection_setup" == true && "$5" == "create" ]]; then
+if [[ "$is_add_server" == true ]]; then
+  normalized_payload="$(PAYLOAD="$5" node -e '
+    const input = JSON.parse(process.env.PAYLOAD);
+    if (input.command === "uvx" && input.args?.includes("mcp-server-git")) {
+      input.args = ["--with", process.env.MCP_CONSTRAINT, ...input.args];
+      input.env = { ...input.env, UV_CONSTRAINT: process.env.UV_CONSTRAINT };
+    }
+    process.stdout.write(JSON.stringify(input));
+  ')"
+  call_args[4]="$normalized_payload"
+elif [[ "$is_connection_setup" == true && "$5" == "create" ]]; then
   normalized_payload="$(PAYLOAD="$6" node -e '
     const input = JSON.parse(process.env.PAYLOAD);
     if (input.template === "none" && input.from?.provider === "file" && input.from?.id === "empty") {
@@ -107,7 +131,7 @@ WRAPPER
 chmod +x "$executor_wrapper"
 
 pnpm --filter @caplets/core build >/dev/null
-REAL_EXECUTOR="$real_executor" UV_CONSTRAINT="$constraint_path" CAPLETS_BENCH_LIVE=1 \
+REAL_EXECUTOR="$real_executor" MCP_CONSTRAINT="$constraint_spec" UV_CONSTRAINT="$constraint_path" CAPLETS_BENCH_LIVE=1 \
   pnpm --filter @caplets/benchmarks exec tsx run-pi-eval.ts \
   --task-suite mcp-real-world-large \
   --mode caplets-code-mode,executor-mcp,vanilla-mcp \

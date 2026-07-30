@@ -440,6 +440,9 @@ function compactToolSummary(
           : tool[key];
     }
   }
+  for (const key of ["requiredArgs", "acceptedArgs", "argsTemplate", "callTemplate"] as const) {
+    if (tool[key] !== undefined) compact[key] = tool[key];
+  }
   const annotations = isPlainObject(tool.annotations) ? tool.annotations : {};
   const readOnlyHint = tool.readOnlyHint ?? annotations.readOnlyHint;
   const destructiveHint = tool.destructiveHint ?? annotations.destructiveHint;
