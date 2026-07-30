@@ -218,7 +218,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       if (method === "searchTools")
         return await handle.searchTools(String(args[0]), args[1] as never);
       if (method === "describeTool") return await handle.describeTool(String(args[0]));
-      if (method === "callTool") return await handle.callTool(String(args[0]), args[1]);
+      if (method === "callTool") return await handle.callTool(args[0] as never, args[1]);
       if (method === "resources") return await handle.resources(args[0] as never);
       if (method === "searchResources") {
         return await handle.searchResources(String(args[0]), args[1] as never);

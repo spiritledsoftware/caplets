@@ -26,7 +26,12 @@ export type CodeModeCapletHandle = {
   tools(input?: PageInput): Promise<Page<unknown>>;
   searchTools(query: string, input?: PageInput): Promise<Page<unknown>>;
   describeTool(name: string): Promise<CapletsResult<unknown>>;
-  callTool(name: string, args?: unknown): Promise<ToolCallResult>;
+  callTool(
+    nameOrTemplate:
+      | string
+      | { operation: "call_tool"; name: string; args: Record<string, unknown> },
+    args?: unknown,
+  ): Promise<ToolCallResult>;
   resources(input?: PageInput): Promise<Page<unknown>>;
   searchResources(query: string, input?: PageInput): Promise<Page<unknown>>;
   resourceTemplates(input?: PageInput): Promise<Page<unknown>>;
@@ -133,13 +138,14 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
       });
       return result.ok ? { ...result, data: normalizeToolDescriptor(result.data, name) } : result;
     },
-    async callTool(name: string, args?: unknown) {
+    async callTool(nameOrTemplate, args?: unknown) {
       const started = Date.now();
+      const call = resolveCodeModeToolCall(nameOrTemplate, args);
       try {
         const result = await service.execute(capletId, {
           operation: "call_tool",
-          name,
-          args: args ?? {},
+          name: call.name,
+          args: call.args,
         });
         if (resultIsError(result)) {
           return {
@@ -147,7 +153,7 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
             error: toolCallError(result),
             meta: toolCallMeta(result, {
               capletId,
-              tool: name,
+              tool: call.name,
               durationMs: Date.now() - started,
             }),
           };
@@ -157,7 +163,7 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
         return {
           ok: false,
           error: errorFromCaught(error, "tool_call_failed"),
-          meta: { capletId, tool: name, durationMs: Date.now() - started },
+          meta: { capletId, tool: call.name, durationMs: Date.now() - started },
         };
       }
     },
@@ -215,6 +221,19 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
         ...(isPlainObject(input) ? input : {}),
       });
     },
+  };
+}
+function resolveCodeModeToolCall(
+  nameOrTemplate: string | { operation: "call_tool"; name: string; args: Record<string, unknown> },
+  args: unknown,
+): { name: string; args: unknown } {
+  if (typeof nameOrTemplate === "string") {
+    return { name: nameOrTemplate, args: args ?? {} };
+  }
+  const templateArgs = isPlainObject(nameOrTemplate.args) ? nameOrTemplate.args : {};
+  return {
+    name: nameOrTemplate.name,
+    args: isPlainObject(args) ? { ...templateArgs, ...args } : templateArgs,
   };
 }
 
