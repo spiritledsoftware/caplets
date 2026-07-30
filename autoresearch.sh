@@ -5,6 +5,8 @@ output_dir="${HOME}/.omp/caplets-autoresearch-live"
 wrapper_dir="$(mktemp -d)"
 trap 'rm -rf "$wrapper_dir"' EXIT
 mkdir -p "$output_dir"
+constraint_path="$wrapper_dir/uv-constraints.txt"
+printf 'mcp<2\n' >"$constraint_path"
 
 real_executor="$(command -v executor)"
 executor_wrapper="$wrapper_dir/executor"
@@ -24,8 +26,20 @@ if [[ "$is_add_server" == false && "$is_connection_setup" == false ]]; then
   exec "$REAL_EXECUTOR" "$@"
 fi
 
+call_args=("$@")
+if [[ "$is_connection_setup" == true && "$5" == "create" ]]; then
+  normalized_payload="$(PAYLOAD="$6" node -e '
+    const input = JSON.parse(process.env.PAYLOAD);
+    if (input.template === "none" && input.from?.provider === "file" && input.from?.id === "empty") {
+      delete input.from;
+    }
+    process.stdout.write(JSON.stringify(input));
+  ')"
+  call_args[5]="$normalized_payload"
+fi
+
 set +e
-call_output="$("$REAL_EXECUTOR" "$@" 2>&1)"
+call_output="$("$REAL_EXECUTOR" "${call_args[@]}" 2>&1)"
 call_status=$?
 set -e
 if [[ "$call_status" -ne 0 ]]; then
@@ -93,7 +107,7 @@ WRAPPER
 chmod +x "$executor_wrapper"
 
 pnpm --filter @caplets/core build >/dev/null
-REAL_EXECUTOR="$real_executor" CAPLETS_BENCH_LIVE=1 \
+REAL_EXECUTOR="$real_executor" UV_CONSTRAINT="$constraint_path" CAPLETS_BENCH_LIVE=1 \
   pnpm --filter @caplets/benchmarks exec tsx run-pi-eval.ts \
   --task-suite mcp-real-world-large \
   --mode caplets-code-mode,executor-mcp,vanilla-mcp \
