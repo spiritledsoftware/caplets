@@ -27,6 +27,7 @@ import { updateCapletsFromLockfile, type CapletTransactionPhase } from "../src/i
 import { loadConfig, parseConfig, type VaultQuarantineOutcome } from "../src/config";
 import * as configModule from "../src/config";
 import type { CapletsError } from "../src/errors";
+import type { SetupMcpClient } from "../src/cli/setup";
 import { readCapletsLockfile } from "../src/lockfile";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { createHostStorage } from "../src/storage";
@@ -5200,7 +5201,7 @@ function fakeDaemonFirstCliSetup(baseDir?: string) {
   };
 }
 
-function fakeCliMcpClients() {
+function fakeCliMcpClients(): SetupMcpClient[] {
   return [
     {
       id: "zed",
@@ -5235,16 +5236,17 @@ describe("cli setup", () => {
     const text = out.join("");
     expect(text).toContain("Usage: caplets setup [integration]");
     expect(text).toContain("codex");
-    expect(text).toContain("claude-code");
+    expect(text).toContain("cursor");
+    expect(text).toContain("zed");
     expect(text).toContain("opencode");
     expect(text).toContain("pi");
-    expect(text).toContain("mcp-client");
-    expect(text).toContain("daemon-first");
-    expect(text).toContain("detected MCP clients");
-    expect(text).toContain("all supported MCP clients");
+    expect(text).toContain("Daemon-first");
+    expect(text).toContain("detected add-mcp clients");
     expect(text).toContain("--remote-url");
-    expect(text).toContain("--output");
     expect(text).toContain("--dry-run");
+    expect(text).not.toContain("mcp-client");
+    expect(text).not.toContain("--output");
+    expect(text).not.toContain("--client");
     expect(text).not.toContain("caplets serve");
     expect(text).not.toContain("plugin marketplace");
     expect(text).not.toContain("caplets@caplets");
@@ -5289,7 +5291,7 @@ describe("cli setup", () => {
       await runCli(["setup"], {
         ...setup.io,
         writeOut: (value) => out.push(value),
-        readStdin: async () => "1, Claude Code\n",
+        readStdin: async () => "codex, Claude Code\n",
         runSetupCommand: async (command, args) => {
           commands.push({ command, args });
           return { stdout: "", stderr: "" };
@@ -5327,21 +5329,20 @@ describe("cli setup", () => {
           },
         },
         writeOut: (value) => out.push(value),
-        readStdin: async () => "Any MCP client\nzed\n",
+        readStdin: async () => "zed\n",
       });
 
       expect(upserts).toEqual([
         { clientId: "zed", daemonBaseUrl: setup.daemonBaseUrl, local: true },
       ]);
-      expect(out.join("")).toContain("Detected MCP clients");
-      expect(out.join("")).toContain("Zed");
+      expect(out.join("")).toContain("Zed (zed) [detected]");
       expect(out.join("")).not.toContain("codex.toml");
     } finally {
       setup.cleanup();
     }
   });
 
-  it("lets interactive MCP setup reveal all supported clients", async () => {
+  it("lists detected clients first and keeps all supported clients selectable", async () => {
     const out: string[] = [];
     const setup = fakeDaemonFirstCliSetup();
 
@@ -5353,14 +5354,16 @@ describe("cli setup", () => {
           detectClients: async () => [fakeCliMcpClients()[0]!],
         },
         writeOut: (value) => out.push(value),
-        readStdin: async () => "Any MCP client\nall\ncodex\n",
+        readStdin: async () => "codex\n",
       });
 
       expect(setup.mcpUpserts).toEqual([
         { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
       ]);
-      expect(out.join("")).toContain("Supported MCP clients");
-      expect(out.join("")).toContain("Codex");
+      const prompt = out.join("");
+      expect(prompt).toContain("Zed (zed) [detected]");
+      expect(prompt).toContain("Codex (codex)");
+      expect(prompt.indexOf("Zed (zed)")).toBeLessThan(prompt.indexOf("Codex (codex)"));
     } finally {
       setup.cleanup();
     }
@@ -5436,56 +5439,45 @@ describe("cli setup", () => {
     expect(out.join("")).not.toContain("caplets@caplets");
   });
 
-  it("writes a generic MCP client config when output is provided", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-"));
-    const output = join(dir, "nested", "caplets.mcp.json");
+  it("passes a direct add-mcp client ID through setup", async () => {
     const out: string[] = [];
+    const setup = fakeDaemonFirstCliSetup();
 
-    const setup = fakeDaemonFirstCliSetup(dir);
     try {
-      await runCli(["setup", "mcp-client", "--output", output], {
+      await runCli(["setup", "zed"], {
         ...setup.io,
         writeOut: (value) => out.push(value),
       });
 
-      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
-        mcpServers: { caplets: { command: "caplets", args: ["attach", setup.daemonBaseUrl] } },
-      });
-      expect(out.join("")).toContain(`completed: wrote ${output}`);
+      expect(setup.mcpUpserts).toEqual([
+        { clientId: "zed", daemonBaseUrl: setup.daemonBaseUrl, local: true },
+      ]);
+      expect(out.join("")).toContain("Completed Zed setup");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      setup.cleanup();
     }
   });
 
-  it("rejects generic MCP client setup without output", async () => {
-    await expect(runCli(["setup", "mcp-client"], { writeErr: () => {} })).rejects.toThrow(
-      expect.objectContaining({
-        code: "REQUEST_INVALID",
-        message: expect.stringContaining("requires --client <id> or --output <path>"),
-      }) as CapletsError,
-    );
-  });
-
-  it("writes attach command config for remote generic MCP client setup", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-"));
-    const output = join(dir, "caplets.remote.json");
+  it("passes remote setup through the selected add-mcp client", async () => {
+    const out: string[] = [];
+    const setup = fakeDaemonFirstCliSetup();
+    const remoteUrl = "https://caplets.example.test";
 
     try {
-      await runCli(
-        ["setup", "mcp-client", "--remote-url", "https://caplets.example.test", "--output", output],
-        { writeOut: () => {} },
-      );
+      await runCli(["setup", "zed", "--remote-url", remoteUrl, "--format", "json"], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+      });
 
-      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
-        mcpServers: {
-          caplets: {
-            command: "caplets",
-            args: ["attach", "https://caplets.example.test"],
-          },
-        },
+      expect(setup.mcpUpserts).toEqual([
+        { clientId: "zed", daemonBaseUrl: remoteUrl, local: true },
+      ]);
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        integration: "zed",
+        mode: "remote",
       });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      setup.cleanup();
     }
   });
 
@@ -5565,80 +5557,63 @@ describe("cli setup", () => {
     });
   });
 
-  it("adds remote-backed Caplets to Codex MCP config", async () => {
+  it("passes remote Codex setup through add-mcp", async () => {
     const out: string[] = [];
-    const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
+    const remoteUrl = "https://caplets.example.test";
 
-    await runCli(
-      ["setup", "codex", "--remote-url", "https://caplets.example.test", "--format", "json"],
-      {
+    try {
+      await runCli(["setup", "codex", "--remote-url", remoteUrl, "--format", "json"], {
+        ...setup.io,
         writeOut: (value) => out.push(value),
-        runSetupCommand: async (command, args) => {
-          commands.push({ command, args });
-          return { stdout: "", stderr: "" };
-        },
-      },
-    );
+      });
 
-    expect(commands).toEqual([
-      {
-        command: "codex",
-        args: ["mcp", "add", "caplets", "--", "caplets", "attach", "https://caplets.example.test"],
-      },
-    ]);
-    expect(JSON.parse(out.join(""))).toMatchObject({
-      integration: "codex",
-      name: "Codex",
-      mode: "remote",
-      dryRun: false,
-      actions: [
-        {
-          command: "codex mcp add caplets -- caplets attach https://caplets.example.test",
-          status: "completed",
-        },
-      ],
-      nextSteps: [
-        "Run caplets remote login https://caplets.example.test before using this MCP config.",
-        "In Codex, run /mcp to confirm the caplets server is connected.",
-      ],
-    });
-    expect(out.join("")).not.toContain("CAPLETS_REMOTE_TOKEN");
-    expect(out.join("")).not.toContain("CAPLETS_REMOTE_PASSWORD");
+      expect(setup.mcpUpserts).toEqual([
+        { clientId: "codex", daemonBaseUrl: remoteUrl, local: true },
+      ]);
+      const result = JSON.parse(out.join(""));
+      expect(result).toMatchObject({
+        integration: "codex",
+        name: "Codex",
+        mode: "remote",
+        dryRun: false,
+        actions: [
+          {
+            clientId: "codex",
+            command: `caplets attach ${remoteUrl}`,
+            status: "completed",
+          },
+        ],
+      });
+      expect(result.nextSteps).toContain(
+        `Run caplets remote login ${remoteUrl} before using this MCP config.`,
+      );
+      expect(out.join("")).not.toContain("CAPLETS_REMOTE_TOKEN");
+      expect(out.join("")).not.toContain("CAPLETS_REMOTE_PASSWORD");
+    } finally {
+      setup.cleanup();
+    }
   });
 
-  it("adds remote-backed Caplets to Claude Code MCP config", async () => {
+  it("passes remote Claude Code setup through add-mcp", async () => {
     const out: string[] = [];
-    const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
+    const remoteUrl = "https://caplets.example.test";
 
-    await runCli(["setup", "claude-code", "--remote-url", "https://caplets.example.test"], {
-      writeOut: (value) => out.push(value),
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup", "claude-code", "--remote-url", remoteUrl], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+      });
 
-    expect(commands).toEqual([
-      {
-        command: "claude",
-        args: [
-          "mcp",
-          "add",
-          "--transport",
-          "stdio",
-          "--scope",
-          "user",
-          "caplets",
-          "--",
-          "caplets",
-          "attach",
-          "https://caplets.example.test",
-        ],
-      },
-    ]);
-    expect(out.join("")).toContain(
-      "claude mcp add --transport stdio --scope user caplets -- caplets attach https://caplets.example.test",
-    );
+      expect(setup.mcpUpserts).toEqual([
+        { clientId: "claude-code", daemonBaseUrl: remoteUrl, local: true },
+      ]);
+      expect(out.join("")).toContain("configured Claude Code MCP client");
+      expect(out.join("")).toContain(`command: caplets attach ${remoteUrl}`);
+    } finally {
+      setup.cleanup();
+    }
   });
 
   it("keeps supported remote setup docs on pending login and secret-free attach", () => {
@@ -5672,23 +5647,22 @@ describe("cli setup", () => {
 
   it("keeps --server-url as a remote setup alias", async () => {
     const out: string[] = [];
-    const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
+    const remoteUrl = "https://legacy.example.test";
 
-    await runCli(["setup", "codex", "--server-url", "https://legacy.example.test"], {
-      writeOut: (value) => out.push(value),
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup", "codex", "--server-url", remoteUrl], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+      });
 
-    expect(commands).toEqual([
-      {
-        command: "codex",
-        args: ["mcp", "add", "caplets", "--", "caplets", "attach", "https://legacy.example.test"],
-      },
-    ]);
-    expect(out.join("")).toContain("Completed Codex setup (remote, remote_host)");
+      expect(setup.mcpUpserts).toEqual([
+        { clientId: "codex", daemonBaseUrl: remoteUrl, local: true },
+      ]);
+      expect(out.join("")).toContain("Completed Codex setup (remote, remote_host)");
+    } finally {
+      setup.cleanup();
+    }
   });
 
   it("wraps MCP adapter failures with the selected client", async () => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../src/cli";
+import { listSupportedAddMcpClients } from "../src/cli/add-mcp-adapter";
 import {
   completeCliWords,
   completionScript,
@@ -135,20 +136,14 @@ describe("CLI completion resolver", () => {
       "stdio",
       "http",
     ]);
-    await expect(completeCliWords(["setup", ""])).resolves.toEqual([
-      "codex",
-      "claude-code",
-      "opencode",
-      "pi",
-      "mcp-client",
-    ]);
+    const setupIntegrations = listSupportedAddMcpClients()
+      .filter((client) => client.supportsStdio)
+      .map((client) => client.id);
+    await expect(completeCliWords(["setup", ""])).resolves.toEqual([...setupIntegrations, "pi"]);
     await expect(completeCliWords(["setup", "codex", "--format", ""])).resolves.toEqual([
       "plain",
       "json",
     ]);
-    await expect(completeCliWords(["setup", "mcp-client", "--client", ""])).resolves.toEqual(
-      expect.arrayContaining(["codex", "claude-code", "opencode"]),
-    );
     await expect(completeCliWords(["call-tool", "github.search", "--format", ""])).resolves.toEqual(
       ["markdown", "md", "plain", "json"],
     );

@@ -170,11 +170,11 @@ configures the selected agent as a thin attach/native client. This avoids relyin
 each MCP client to inherit the same shell environment as your terminal; backend
 execution happens in the Caplets daemon instead.
 
-| Agent                                     | Recommended local setup                                                                                                     |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Codex, Claude Code, and other MCP clients | `caplets setup` or `caplets setup mcp-client --client codex` for an explicit add-mcp client target                          |
-| OpenCode                                  | `caplets setup opencode` or [`@caplets/opencode`](https://github.com/spiritledsoftware/caplets/tree/main/packages/opencode) |
-| Pi                                        | `caplets setup pi` or [`@caplets/pi`](https://github.com/spiritledsoftware/caplets/tree/main/packages/pi)                   |
+| Agent           | Recommended local setup                                                                                                     |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Add-mcp clients | `caplets setup` or `caplets setup <client-id>` for an explicit client target                                                |
+| OpenCode        | `caplets setup opencode` or [`@caplets/opencode`](https://github.com/spiritledsoftware/caplets/tree/main/packages/opencode) |
+| Pi              | `caplets setup pi` or [`@caplets/pi`](https://github.com/spiritledsoftware/caplets/tree/main/packages/pi)                   |
 
 For MCP clients, setup uses the `add-mcp` client catalog under the hood and writes a
 Caplets server command shaped like this:

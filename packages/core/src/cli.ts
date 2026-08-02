@@ -2293,12 +2293,10 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command(cliCommands.setup)
     .description("Install or configure an agent integration for Caplets.")
-    .argument("[integration]", "integration: codex, claude-code, opencode, pi, or mcp-client")
+    .argument("[integration]", "add-mcp client id, opencode, or pi")
     .option("--remote", "configure for a remote Caplets server")
     .option("--remote-url <url>", "remote Caplets service base URL")
     .option("--server-url <url>", "remote Caplets service base URL")
-    .option("--output <path>", "config path to write for generic MCP setup")
-    .option("--client <id>", "MCP client id to configure through add-mcp")
     .option("--dry-run", "print actions without running commands or writing files")
     .option("--yes", "approve Caplet setup commands for the exact current content hash")
     .option("--target <target>", "Caplet setup target: local or remote", parseSetupTarget)
@@ -2310,8 +2308,6 @@ export function createProgram(io: CliIO = {}): Command {
           remote?: boolean;
           remoteUrl?: string;
           serverUrl?: string;
-          output?: string;
-          client?: string;
           dryRun?: boolean;
           yes?: boolean;
           target?: "local" | "remote";
