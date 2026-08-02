@@ -1,66 +1,76 @@
 ---
-const backendFamilies = [
-  ["MCP", "Wrap any supported MCP server"],
-  ["OpenAPI", "Turn a specification into typed operations"],
-  ["Google Discovery", "Connect Google APIs from discovery documents"],
-  ["GraphQL", "Expose schema-driven queries and mutations"],
-  ["HTTP", "Define focused actions for a simple endpoint"],
-  ["CLI", "Select the repository commands an agent may run"],
-  ["Caplet Files", "Reuse a capability definition someone has shared"],
-] as const;
+import ArrowRight from "@tabler/icons/outline/arrow-right.svg";
+import Lock from "@tabler/icons/outline/lock.svg";
+
+const backendFamilies = ["MCP", "OpenAPI", "Google APIs", "GraphQL", "HTTP", "CLI", "Caplet files"] as const;
 
 const agentSurfaces = [
   ["Codex", "MCP"],
   ["Claude", "MCP"],
   ["OpenCode", "Native · MCP"],
   ["Pi", "Native · MCP"],
-  ["Supported remote clients", "Remote Attach"],
+  ["Remote clients", "Remote Attach"],
 ] as const;
 ---
 
-<section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="breadth" aria-labelledby="breadth-title" data-reveal>
-  <div class="grid gap-8 lg:grid-cols-[0.82fr_1.18fr] lg:items-end [&>*]:min-w-0">
-    <div class="max-w-xl">
-      <p class="text-sm font-medium text-primary-accent">What you can connect</p>
-      <h2 id="breadth-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
-        MCP. APIs. Commands. All of it.
-      </h2>
-    </div>
-    <p class="max-w-2xl text-lg leading-8 text-pretty text-muted-foreground">
-      Connect a backend through any supported interface below. Each Caplet packages one focused capability. The catalog is optional—not a limit on what you can connect.
+<section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-16 md:py-20" id="breadth" aria-labelledby="breadth-title" data-reveal>
+  <div class="max-w-3xl">
+    <h2 id="breadth-title" class="max-w-[14ch] text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
+      Any backend. One capability layer.
+    </h2>
+    <p class="mt-5 max-w-2xl text-lg leading-8 text-pretty text-muted-foreground">
+      Turn the systems you already use into focused capabilities that travel across supported agents.
     </p>
   </div>
 
-  <div class="mt-10 grid min-w-0 gap-px overflow-hidden rounded-lg border border-border bg-border lg:grid-cols-[1.1fr_0.72fr_0.9fr]" role="group" aria-label="Backend-to-agent capability map">
-    <div class="min-w-0 bg-card p-5 md:p-7">
-      <p class="text-sm font-medium text-muted-foreground">Connect a backend</p>
-      <dl class="mt-5 divide-y divide-border">
-        {backendFamilies.map(([name, detail]) => (
-          <div class="grid gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)] sm:gap-4">
-            <dt class="font-mono text-sm font-semibold text-foreground">{name}</dt>
-            <dd class="text-sm leading-6 text-muted-foreground">{detail}</dd>
-          </div>
-        ))}
-      </dl>
+  <figure class="mt-10 overflow-hidden rounded-xl border border-border bg-card/35" aria-labelledby="capability-map-caption">
+    <figcaption id="capability-map-caption" class="sr-only">Backends flow through a reusable Caplet to supported coding agents.</figcaption>
+    <div class="grid min-w-0 lg:grid-cols-[1fr_0.62fr_1fr] [&>*]:min-w-0">
+      <div class="border-b border-border p-5 md:p-7 lg:border-r lg:border-b-0">
+        <p class="font-mono text-xs font-semibold tracking-[0.08em] text-muted-foreground">CONNECT</p>
+        <ul class="mt-5 grid grid-cols-2 gap-2" aria-label="Supported backend interfaces">
+          {backendFamilies.map((name) => (
+            <li class="flex min-h-12 items-center gap-3 rounded-lg border border-border bg-background/70 px-3 text-sm font-semibold text-foreground">
+              <span class="size-1.5 shrink-0 rounded-full bg-primary-accent" aria-hidden="true"></span>
+              {name}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div class="relative grid min-h-64 place-items-center overflow-hidden border-b border-border bg-foreground p-7 text-center text-background lg:border-r lg:border-b-0">
+        <ArrowRight class="absolute top-1/2 left-3 hidden size-5 -translate-y-1/2 text-background/45 lg:block" aria-hidden="true" />
+        <ArrowRight class="absolute top-1/2 right-3 hidden size-5 -translate-y-1/2 text-background/45 lg:block" aria-hidden="true" />
+        <div class="absolute size-52 rounded-full border border-background/10" aria-hidden="true"></div>
+        <div class="absolute size-36 rounded-full border border-background/15" aria-hidden="true"></div>
+        <div class="relative grid size-28 place-items-center rounded-full bg-background text-foreground shadow-[0_18px_50px_oklch(0%_0_0_/_0.28)]">
+          <img class="size-10" src="/icon-header-dark.png" alt="" width="40" height="40" />
+          <strong class="-mt-5 text-lg tracking-[-0.02em]">Caplet</strong>
+        </div>
+      </div>
+
+      <div class="p-5 md:p-7">
+        <p class="font-mono text-xs font-semibold tracking-[0.08em] text-muted-foreground">REUSE</p>
+        <ul class="mt-5 grid gap-2" aria-label="Supported agent surfaces">
+          {agentSurfaces.map(([agent, surface]) => (
+            <li class="flex min-h-12 items-center justify-between gap-3 border-b border-border px-1 text-sm last:border-b-0">
+              <span class="font-semibold text-foreground">{agent}</span>
+              <span class="font-mono text-xs text-muted-foreground">{surface}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
 
-    <div class="grid min-w-0 place-content-center bg-foreground p-7 text-center text-background">
-      <span class="font-mono text-xs font-semibold tracking-[0.08em] text-background/65">CAPABILITY LAYER</span>
-      <strong class="mt-4 text-3xl tracking-[-0.02em]">Reusable Caplet</strong>
-      <span class="mt-3 max-w-[22ch] text-sm leading-6 text-background/70">One focused backend capability, ready for an agent</span>
+    <div class="flex flex-col gap-4 border-t border-border bg-background/55 px-5 py-4 sm:flex-row sm:items-center sm:justify-between md:px-7">
+      <div class="flex items-center gap-2 text-sm text-muted-foreground">
+        <Lock class="size-4 shrink-0 text-primary-accent" aria-hidden="true" />
+        <span>The definition travels. Credentials stay with each host.</span>
+      </div>
+      <a class="inline-flex min-h-11 shrink-0 items-center gap-2 font-medium text-primary-accent hover:underline focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="https://docs.caplets.dev/capabilities/" data-cta-category="secondary">
+        Create a Caplet
+        <ArrowRight class="size-4" aria-hidden="true" />
+      </a>
     </div>
-
-    <div class="min-w-0 bg-card p-5 md:p-7">
-      <p class="text-sm font-medium text-muted-foreground">Use it through a supported agent surface</p>
-      <ul class="mt-5 divide-y divide-border">
-        {agentSurfaces.map(([agent, surface]) => (
-          <li class="flex items-center justify-between gap-3 py-3">
-            <span class="font-semibold text-foreground">{agent}</span>
-            <span class="font-mono text-xs text-muted-foreground">{surface}</span>
-          </li>
-        ))}
-      </ul>
-      <p class="mt-5 text-sm leading-6 text-muted-foreground">The surface changes by client. The Caplet definition remains reusable; every host authorizes its own credentials and access.</p>
-    </div>
-  </div>
+  </figure>
 </section>

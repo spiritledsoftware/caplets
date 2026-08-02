@@ -6,31 +6,34 @@ import { Button } from "@/components/starwind/button";
 import { benchmarkProvenance, proofStats } from "../../data/landing";
 ---
 
-<section class="evidence-stage scroll-mt-20 py-20" id="proof" aria-label="Code Mode benchmark proof" data-reveal>
-  <div class="mx-auto grid w-[min(1180px,calc(100vw_-_32px))] gap-10 lg:grid-cols-[0.78fr_1.22fr] lg:items-start [&>*]:min-w-0">
-    <div class="max-w-xl">
-      <span class="text-sm font-medium text-primary-accent">Technical evidence</span>
-      <h2 class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance text-[oklch(96%_0.02_82)] md:text-5xl">
-        Smaller surface. Same completed work.
-      </h2>
-      <p class="mt-5 text-lg leading-8 text-pretty text-[oklch(86%_0.026_82)]">
-        Code Mode kept the task result while cutting the tool wall and token load.
-      </p>
-      <small class="mt-5 block text-sm leading-6 text-[oklch(78%_0.026_82)]">{benchmarkProvenance}</small>
-      <Button class="mt-7" href="https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md" variant="outline">
+<section class="evidence-stage scroll-mt-20 py-16 md:py-20" id="proof" aria-label="Code Mode benchmark proof" data-reveal>
+  <div class="mx-auto w-[min(1180px,calc(100vw_-_32px))]">
+    <div class="grid gap-8 lg:grid-cols-[0.72fr_1.28fr] lg:items-end [&>*]:min-w-0">
+      <div class="max-w-xl">
+        <h2 class="text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance text-[oklch(96%_0.02_82)] md:text-5xl">
+          Smaller surface. Same completed work.
+        </h2>
+        <p class="mt-5 text-lg leading-8 text-pretty text-[oklch(86%_0.026_82)]">
+          Code Mode cut the tool wall and token load without losing the result.
+        </p>
+      </div>
+
+      <dl class="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-3">
+        {proofStats.map((stat) => (
+          <div class="evidence-stat bg-card p-5">
+            <dd class="font-mono text-3xl font-semibold tracking-[-0.02em] text-foreground md:text-4xl">{stat.value}</dd>
+            <dt class="mt-2 text-sm font-medium text-muted-foreground">{stat.label}</dt>
+          </div>
+        ))}
+      </dl>
+    </div>
+
+    <div class="mt-8 flex flex-col gap-5 border-t border-[oklch(34%_0.018_100)] pt-6 sm:flex-row sm:items-center sm:justify-between">
+      <small class="max-w-3xl text-sm leading-6 text-[oklch(78%_0.026_82)]">{benchmarkProvenance}</small>
+      <Button class="shrink-0" href="https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md" variant="outline">
         Review the benchmark
         <ArrowUpRight class="size-4" aria-hidden="true" />
       </Button>
     </div>
-
-    <dl class="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-3">
-      {proofStats.map((stat) => (
-        <div class="evidence-stat bg-card p-5">
-          <dt class="text-sm font-medium text-muted-foreground">{stat.label}</dt>
-          <dd class="mt-2 font-mono text-3xl font-semibold tracking-[-0.02em] text-foreground md:text-4xl">{stat.value}</dd>
-          <dd class="mt-4 text-sm leading-6 text-muted-foreground">{stat.detail}</dd>
-        </div>
-      ))}
-    </dl>
   </div>
 </section>

@@ -26,29 +26,19 @@ export const proofStats = [
   {
     value: "10/10",
     label: "tasks completed",
-    detail: "Code Mode matched every compared mode on task completion.",
   },
   {
     value: "72.0% fewer",
     label: "request + output tokens",
-    detail: "Compared with direct vanilla MCP in the live run.",
   },
   {
     value: "7 vs 215",
     label: "initial choices",
-    detail: "Caplet cards versus direct MCP tools in the deterministic check.",
   },
 ] as const;
 
 export const benchmarkProvenance =
   "Run June 2026 with the real-world large MCP suite, openai-codex/gpt-5.5, 10 tasks, 2 runs per task, and a large no-fixture MCP stack.";
-
-export const portabilitySurfaces = [
-  { label: "Native integrations", value: "OpenCode · Pi" },
-  { label: "MCP clients", value: "Codex · Claude · compatible clients" },
-  { label: "Remote Attach", value: "Supported attach clients" },
-  { label: "Capability package", value: "The same Caplet definition" },
-] as const;
 
 export const themeColor = "oklch(18% 0.014 100)";
 
@@ -63,5 +53,4 @@ export const firstCaplet = {
     },
     { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
   ],
-  help: ["If the trial fails, check Node 22+ and rerun ", "caplets setup", "."],
 } as const;

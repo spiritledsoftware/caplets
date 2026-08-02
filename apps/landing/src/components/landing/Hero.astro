@@ -1,6 +1,7 @@
 ---
-import { Button } from "@/components/starwind/button";
+import Lock from "@tabler/icons/outline/lock.svg";
 
+import { Button } from "@/components/starwind/button";
 ---
 
 <section class="landing-hero relative isolate w-full scroll-mt-20 overflow-hidden border-y border-border/70 py-16 md:py-24 lg:py-28" id="trace" aria-labelledby="hero-title">
@@ -8,12 +9,11 @@ import { Button } from "@/components/starwind/button";
 
   <div class="relative mx-auto w-[min(1180px,calc(100vw_-_32px))]">
     <div class="max-w-3xl">
-      <p class="mb-5 text-sm font-medium text-[oklch(82%_0.08_45)]">The capability layer for coding agents</p>
       <h1 id="hero-title" class="landing-hero__title max-w-[13ch] text-4xl leading-[0.98] font-semibold tracking-[-0.03em] text-balance text-[oklch(96%_0.02_82)] sm:text-5xl sm:leading-[0.95] md:text-6xl">
         Give your coding agent the whole stack.
       </h1>
-      <p class="landing-hero__summary mt-6 max-w-2xl text-lg leading-8 text-pretty text-[oklch(88%_0.026_82)]">
-        Turn MCP servers, APIs, and commands into reusable Caplets. Your agent selects the Caplets it needs as work moves from issue to production; you control which Caplets it can access.
+      <p class="landing-hero__summary mt-6 max-w-xl text-lg leading-8 text-pretty text-[oklch(88%_0.026_82)]">
+        Package MCP servers, APIs, and commands as focused Caplets. Your agent opens only what each task needs.
       </p>
 
       <div class="landing-hero__actions mt-8 flex flex-wrap gap-3" role="group" aria-label="Primary actions">
@@ -21,9 +21,10 @@ import { Button } from "@/components/starwind/button";
         <Button href="https://catalog.caplets.dev" variant="outline" data-cta-category="secondary">Browse shared Caplets</Button>
       </div>
 
-      <p class="mt-6 max-w-2xl text-sm leading-6 text-[oklch(78%_0.024_82)]">
-        Whole stack means only the capabilities you intentionally expose. It never means blanket access to systems or credentials.
-      </p>
+      <div class="mt-6 inline-flex items-center gap-2 text-sm text-[oklch(80%_0.028_82)]">
+        <Lock class="size-4 shrink-0 text-[oklch(82%_0.08_45)]" aria-hidden="true" />
+        <span>You choose every capability and credential boundary.</span>
+      </div>
     </div>
   </div>
 </section>

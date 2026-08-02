@@ -37,12 +37,11 @@ const setupOptions = [
 <section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="install" aria-labelledby="activation-title" data-reveal>
   <div class="grid gap-10 lg:grid-cols-[0.72fr_1.28fr] lg:items-start [&>*]:min-w-0">
     <div class="max-w-xl">
-      <p class="text-sm font-medium text-muted-foreground">Connect your first capability</p>
-      <h2 id="activation-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
+      <h2 id="activation-title" class="text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
         Get one real result.
       </h2>
       <p class="mt-5 text-lg leading-8 text-pretty text-muted-foreground">
-        Set up Caplets, then run OSV. It is public, useful, and needs no authentication.
+        Set up Caplets and run OSV. No authentication required.
       </p>
 
       <Tabs id="setup" defaultValue="Manual" class="mt-8 max-w-xl" role="group" aria-label="Caplets setup options">
@@ -80,16 +79,7 @@ const setupOptions = [
         <div>
           <Badge variant="outline" class="mb-4">{firstCaplet.name}</Badge>
           <h3 class="text-2xl font-semibold tracking-[-0.02em]">Add {firstCaplet.name}</h3>
-          <p class="mt-3 text-muted-foreground">{firstCaplet.summary}</p>
-          <p class="mt-5 text-sm leading-6 text-muted-foreground">
-            {firstCaplet.help.map((part) =>
-              part === "caplets setup" ? (
-                <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">{part}</code>
-              ) : (
-                part
-              ),
-            )}
-          </p>
+          <p class="mt-3 text-muted-foreground">Public vulnerability lookups. No token or OAuth.</p>
         </div>
         <div class="rounded-lg bg-foreground p-4 text-background">
           <div class="mb-4 flex items-center gap-2 text-background/70">
@@ -111,10 +101,7 @@ const setupOptions = [
     </Card>
   </div>
 
-  <div class="mt-8 flex flex-col gap-4 border-t border-border pt-6 md:flex-row md:items-center md:justify-between">
-    <p class="max-w-[65ch] text-sm leading-6 text-muted-foreground">
-      Your first successful call proves setup. Activation follows when you connect a capability from your own stack.
-    </p>
+  <div class="mt-8 flex justify-end border-t border-border pt-6">
     <Button class="shrink-0" href="https://docs.caplets.dev/capabilities/" variant="outline" data-cta-category="secondary">
       Connect your own backend
       <ArrowUpRight class="size-4" aria-hidden="true" />
