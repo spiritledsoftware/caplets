@@ -349,6 +349,10 @@ describe("Code Mode Caplets API", () => {
       name: `issue_${index}`,
       description: `Issue operation ${index}.`,
     }));
+    const partiallyMatchingTools = Array.from({ length: 12 }, (_, index) => ({
+      name: index === 11 ? "deploy_issue" : `repository_operation_${index}`,
+      description: index === 11 ? "Deploy issue." : `Repository operation ${index}.`,
+    }));
     vi.mocked(native.execute)
       .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
       .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
@@ -363,7 +367,10 @@ describe("Code Mode Caplets API", () => {
         },
       })
       .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
-      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } });
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({
+        structuredContent: { result: { items: partiallyMatchingTools } },
+      });
     const api = createCodeModeCapletsApi({ service: native });
     const github = api.github as CodeModeCapletHandle;
 
@@ -384,6 +391,10 @@ describe("Code Mode Caplets API", () => {
     });
     await expect(github.searchTools("deploy")).resolves.toMatchObject({
       items: tools.slice(0, 3),
+      truncated: true,
+    });
+    await expect(github.searchTools("deploy")).resolves.toMatchObject({
+      items: [partiallyMatchingTools[11], ...partiallyMatchingTools.slice(0, 9)],
       truncated: true,
     });
   });

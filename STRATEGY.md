@@ -19,8 +19,9 @@ Caplets wins by being the capability layer for coding agents. It turns heterogen
 
 ## Key metrics
 
-- **Caplet Activation** - The first successful backend operation executed through a configured Caplet. Landing clicks, catalog views, installation, and setup completion are funnel diagnostics, not activation.
-- **Whole Stack retention** - Repeat successful Caplet executions across backend families, indicating that users expanded beyond the first no-auth capability into personally relevant work.
+- **First Caplet execution** - The first successful backend operation executed through a configured Caplet. Landing clicks, catalog views, installation, and setup completion are funnel diagnostics, not execution.
+- **Caplet Activation** - A first successful Caplet execution followed by connecting a capability from the user's own stack. Activation and retention cohorts use this complete milestone.
+- **Whole Stack retention** - Repeat successful Caplet executions across backend families after Caplet Activation, indicating that users expanded into personally relevant work.
 - **Initial tool surface compression** - Reduction in initially visible tools, serialized payload bytes, approximate context tokens, and duplicate top-level names versus direct flat MCP; measured by `pnpm benchmark:check`.
 - **Code Mode workflow efficiency** - Reduction in model/tool round trips, external calls, and payload tokens while preserving required evidence fields; measured by deterministic Code Mode benchmark fixtures.
 - **Live task parity at lower token cost** - Live eval pass rate must match baselines before claiming token efficiency, then compare request+output tokens and tool-surface tokens.

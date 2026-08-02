@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-output_dir="${HOME}/.omp/caplets-autoresearch-live"
+output_base_dir="${HOME}/.omp/caplets-autoresearch-live"
+mkdir -p "$output_base_dir"
+output_dir="$(mktemp -d "$output_base_dir/run-XXXXXX")"
 wrapper_dir="$(mktemp -d)"
-trap 'rm -rf "$wrapper_dir"' EXIT
-mkdir -p "$output_dir"
+trap 'rm -rf "$output_dir" "$wrapper_dir"' EXIT
 constraint_spec="mcp<2"
 constraint_path="$wrapper_dir/uv-constraints.txt"
 printf '%s\n' "$constraint_spec" >"$constraint_path"

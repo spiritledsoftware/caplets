@@ -3515,18 +3515,42 @@ describe("createNativeCapletsService remote mode", () => {
       const first = (await service.execute("code_mode", {
         code: "var counter = 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
       })) as { meta: { sessionId: string } };
-      await expect(
-        service.execute("code_mode", {
-          code: "counter += 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
-          sessionId: first.meta.sessionId,
-        }),
-      ).resolves.toMatchObject({
+      expect(first).not.toHaveProperty("diagnostics");
+      expect(first).not.toHaveProperty("logs");
+      const reused = await service.execute("code_mode", {
+        code: 'console.log("remote projection log");\ncounter += 1;\nreturn { keys: Object.keys(caplets).sort(), counter };',
+        sessionId: first.meta.sessionId,
+      });
+      expect(reused).toMatchObject({
         ok: true,
         value: {
           counter: 2,
           keys: ["debug", "local-code", "remote-only"],
         },
+        logs: {
+          entries: [{ level: "log", message: "remote projection log" }],
+          truncated: false,
+          stored: false,
+        },
         meta: {
+          sessionId: first.meta.sessionId,
+          sessionStatus: "reused",
+          recoveryRef: null,
+        },
+      });
+      expect(reused).not.toHaveProperty("diagnostics");
+      await expect(
+        service.execute("code_mode", {
+          code: "return missingRemoteValue;",
+          sessionId: first.meta.sessionId,
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sandbox_reference_error" },
+        diagnostics: [expect.objectContaining({ code: "2304", severity: "warning" })],
+        logs: { entries: [], truncated: false, stored: false },
+        meta: {
+          runId: expect.any(String),
           sessionId: first.meta.sessionId,
           sessionStatus: "reused",
           recoveryRef: null,

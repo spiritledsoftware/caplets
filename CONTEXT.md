@@ -28,9 +28,13 @@ _Avoid_: Workflow builder, fixed integration pipeline, automation recipe
 The ability to reuse the same Caplet definitions across supported coding-agent environments without redefining their backend capabilities. Agent-specific surfaces may differ, and credentials remain independently authorized.
 _Avoid_: Identical client experience, automatic credential portability, universal client parity
 
+**First Caplet Execution**:
+The first successful backend operation executed through a configured Caplet. It proves that the initial capability works, but it is not Caplet Activation.
+_Avoid_: Caplet Activation, install conversion, setup completion
+
 **Caplet Activation**:
-The first successful backend operation executed through a configured Caplet. A website interaction, catalog view, installation, or setup completion is not activation.
-_Avoid_: Install conversion, setup completion, first page view
+A completed First Caplet Execution followed by connecting a capability from the user's own stack. A website interaction, catalog view, installation, setup completion, or first execution alone is not activation.
+_Avoid_: First Caplet Execution, install conversion, setup completion, first page view
 
 **Code Mode**:
 A Caplets exposure surface where configured backends appear as typed handles inside a bounded script workflow.

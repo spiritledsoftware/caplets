@@ -19,6 +19,13 @@ const pageTitle = entry ? `${entry.name} — Shared Caplet` : "Caplet unavailabl
 const pageDescription = entry
   ? `${entry.description} Inspect this shared Caplet before installing, then authorize access on your host.`
   : "This shared Caplet is unavailable or no longer indexed.";
+if (!Astro.site) {
+  throw new Error("Catalog site URL is not configured.");
+}
+const canonicalUrl = new URL(
+  entry ? `/caplets/${encodeURIComponent(entry.entryKey)}/` : "/caplets/",
+  Astro.site,
+).href;
 ---
 <!doctype html>
 <html lang="en">
@@ -30,7 +37,7 @@ const pageDescription = entry
     <meta property="og:title" content={`${pageTitle} — Caplets Catalog`} />
     <meta property="og:description" content={pageDescription} />
     <meta property="og:type" content="website" />
-    <meta property="og:url" content={Astro.url.href} />
+    <meta property="og:url" content={canonicalUrl} />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content={`${pageTitle} — Caplets Catalog`} />
     <meta name="twitter:description" content={pageDescription} />

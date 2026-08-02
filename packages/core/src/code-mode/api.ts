@@ -380,13 +380,21 @@ function compactDefaultSearchPage(
   input: PageInput | undefined,
 ): Page<unknown> {
   if (input?.limit !== undefined) return page;
-  const limit = page.items.some((item) => summaryMatchesQuery(item, query))
-    ? DEFAULT_CODE_MODE_LIST_LIMIT
-    : DEFAULT_CODE_MODE_FALLBACK_SEARCH_LIMIT;
+  const hasMatches = page.items.some((item) => summaryMatchesQuery(item, query));
+  const limit = hasMatches ? DEFAULT_CODE_MODE_LIST_LIMIT : DEFAULT_CODE_MODE_FALLBACK_SEARCH_LIMIT;
   if (page.items.length <= limit) return page;
+  const prioritizedItems: unknown[] = [];
+  if (hasMatches) {
+    for (const item of page.items) {
+      if (summaryMatchesQuery(item, query)) prioritizedItems.push(item);
+    }
+    for (const item of page.items) {
+      if (!summaryMatchesQuery(item, query)) prioritizedItems.push(item);
+    }
+  }
   return {
     ...page,
-    items: page.items.slice(0, limit),
+    items: (hasMatches ? prioritizedItems : page.items).slice(0, limit),
     truncated: true,
   };
 }

@@ -967,6 +967,39 @@ describe("native Caplets service", () => {
       expect(result).not.toHaveProperty("diagnostics");
       expect(result).not.toHaveProperty("logs");
       expect(result).not.toHaveProperty("meta.runId");
+      const loggedResult = await service.execute("code_mode", {
+        code: 'console.log("local projection log");\nreturn "logged";',
+      });
+      expect(loggedResult).toMatchObject({
+        ok: true,
+        value: "logged",
+        logs: {
+          entries: [{ level: "log", message: "local projection log" }],
+          truncated: false,
+          stored: false,
+        },
+        meta: {
+          sessionId: expect.any(String),
+          sessionStatus: "created",
+          recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+        },
+      });
+      expect(loggedResult).not.toHaveProperty("diagnostics");
+      const diagnosticFailure = await service.execute("code_mode", {
+        code: "return missingLocalValue;",
+      });
+      expect(diagnosticFailure).toMatchObject({
+        ok: false,
+        error: { code: "sandbox_reference_error" },
+        diagnostics: [expect.objectContaining({ code: "2304", severity: "warning" })],
+        logs: { entries: [], truncated: false, stored: false },
+        meta: {
+          runId: expect.any(String),
+          sessionId: expect.any(String),
+          sessionStatus: "created",
+          recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+        },
+      });
       await expect(
         service.execute("code_mode", {
           code: "return { ok: true };",

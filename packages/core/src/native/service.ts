@@ -1147,7 +1147,8 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(this, request, this.codeModeSessions);
+      const envelope = await executeCodeModeRunNative(this, request, this.codeModeSessions);
+      return projectCodeModeToolEnvelope(envelope);
     }
     const route = this.routes.get(capletId);
     if (route?.service === "local") {

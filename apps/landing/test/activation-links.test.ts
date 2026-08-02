@@ -1,39 +1,74 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { experimental_AstroContainer as AstroContainer } from "astro/container";
+import { Window } from "happy-dom";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const repoRoot = join(import.meta.dirname, "../../..");
+import Activation from "../src/components/landing/Activation.astro";
+import Hero from "../src/components/landing/Hero.astro";
+import { initializeStarwindTabs } from "../src/components/starwind/tabs/tabs-client";
+
+let container: AstroContainer;
+
+beforeAll(async () => {
+  container = await AstroContainer.create();
+});
+
+beforeEach(() => {
+  const browserWindow = new Window({ url: "https://caplets.dev/" });
+  vi.stubGlobal("window", browserWindow);
+  vi.stubGlobal("document", browserWindow.document);
+  vi.stubGlobal("localStorage", browserWindow.localStorage);
+  vi.stubGlobal("CustomEvent", browserWindow.CustomEvent);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function requiredElement<TElement extends Element>(selector: string): TElement {
+  const element = document.querySelector<TElement>(selector);
+  expect(element, `Expected rendered element ${selector}`).not.toBeNull();
+  if (!element) throw new Error(`Landing test element ${selector} was not rendered.`);
+  return element;
+}
 
 describe("activation links", () => {
-  it("sends the secondary shared-Caplets action to the public catalog", () => {
-    const source = readFileSync(
-      join(repoRoot, "apps/landing/src/components/landing/Hero.astro"),
-      "utf8",
-    );
+  it("renders the secondary shared-Caplets action for the public catalog", async () => {
+    document.body.innerHTML = await container.renderToString(Hero);
 
-    expect(source).toContain('href="https://catalog.caplets.dev"');
-    expect(source).toContain('data-cta-category="secondary"');
+    const catalogLink = requiredElement<HTMLAnchorElement>('a[href="https://catalog.caplets.dev"]');
+    expect(catalogLink.textContent?.trim()).toBe("Browse shared Caplets");
+    expect(catalogLink.dataset.ctaCategory).toBe("secondary");
   });
 
-  it("offers manual and agent setup modes without rendering the full agent prompt", () => {
-    const componentSource = readFileSync(
-      join(repoRoot, "apps/landing/src/components/landing/Activation.astro"),
-      "utf8",
-    );
-    const dataSource = readFileSync(join(repoRoot, "apps/landing/src/data/landing.ts"), "utf8");
+  it("switches the rendered setup instructions from manual to agent mode", async () => {
+    document.body.innerHTML = await container.renderToString(Activation);
+    initializeStarwindTabs(document);
 
-    expect(componentSource).toContain('id="setup"');
-    expect(componentSource).toContain("<TabsList");
-    expect(componentSource).toContain("<TabsTrigger");
-    expect(componentSource).toContain('label: "Manual"');
-    expect(componentSource).toContain('label: "Agent"');
-    expect(componentSource).toContain('copyLabel: "agent setup prompt"');
-    expect(componentSource).toContain("data-copy-attribution={String(option.copyAttribution)}");
-    expect(dataSource).toContain("agentSetupPrompt");
-    expect(dataSource).toContain(
-      "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/skills/installing-caplets/SKILL.md",
+    const manualTrigger = requiredElement<HTMLButtonElement>(
+      '#setup [data-tabs-trigger][data-value="Manual"]',
     );
-    expect(componentSource).not.toContain("Read and follow this Caplets bootstrap skill");
-    expect(componentSource).not.toContain("First route the agent sees");
+    const agentTrigger = requiredElement<HTMLButtonElement>(
+      '#setup [data-tabs-trigger][data-value="Agent"]',
+    );
+    const manualPanel = requiredElement<HTMLElement>(
+      '#setup [data-tabs-content][data-value="Manual"]',
+    );
+    const agentPanel = requiredElement<HTMLElement>(
+      '#setup [data-tabs-content][data-value="Agent"]',
+    );
+
+    expect(manualTrigger.getAttribute("aria-selected")).toBe("true");
+    expect(manualPanel.hidden).toBe(false);
+    expect(manualPanel.textContent).toContain("caplets setup");
+    expect(agentPanel.hidden).toBe(true);
+
+    agentTrigger.click();
+
+    expect(agentTrigger.getAttribute("aria-selected")).toBe("true");
+    expect(manualTrigger.getAttribute("aria-selected")).toBe("false");
+    expect(manualPanel.hidden).toBe(true);
+    expect(agentPanel.hidden).toBe(false);
+    expect(agentPanel.textContent).toContain("Read bootstrap skill");
+    expect(agentPanel.textContent).not.toContain("Read and follow this Caplets bootstrap skill");
   });
 });
