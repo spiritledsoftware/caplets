@@ -393,7 +393,6 @@ function compactDefaultSearchPage(
     }
   }
   return {
-    ...page,
     items: (hasMatches ? prioritizedItems : page.items).slice(0, limit),
     truncated: true,
   };

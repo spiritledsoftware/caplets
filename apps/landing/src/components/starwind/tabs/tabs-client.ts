@@ -8,6 +8,22 @@ interface TabsSyncEvent extends CustomEvent<TabsSyncEventDetail> {
   type: `starwind-tabs-sync:${string}`;
 }
 
+function readStoredTab(storageKey: string): string | null {
+  try {
+    return localStorage.getItem(storageKey);
+  } catch {
+    return null;
+  }
+}
+
+function storeTab(storageKey: string, value: string): void {
+  try {
+    localStorage.setItem(storageKey, value);
+  } catch {
+    // Tab synchronization still works in memory when Web Storage is unavailable.
+  }
+}
+
 class TabsHandler {
   private tabs: HTMLElement;
   private triggers: HTMLButtonElement[];
@@ -46,7 +62,7 @@ class TabsHandler {
 
   private initializeTab(): void {
     const value = this.syncKey
-      ? (localStorage.getItem(this.storageKey) ?? this.tabs.dataset.defaultValue)
+      ? (readStoredTab(this.storageKey) ?? this.tabs.dataset.defaultValue)
       : this.tabs.dataset.defaultValue;
     const resolvedValue =
       value && this.valueToTriggerMap.has(value)
@@ -63,7 +79,8 @@ class TabsHandler {
   }
 
   private setupSyncListener(): void {
-    document.addEventListener(`starwind-tabs-sync:${this.syncKey}`, ((event: TabsSyncEvent) => {
+    const eventName = `starwind-tabs-sync:${this.syncKey}`;
+    const syncListener = ((event: TabsSyncEvent) => {
       const value = event.detail.value;
       const trigger = this.valueToTriggerMap.get(value);
       const index = trigger ? this.triggers.indexOf(trigger) : -1;
@@ -73,7 +90,14 @@ class TabsHandler {
         this.currentTabIndex = index;
         this.setTabIndex();
       }
-    }) as EventListener);
+    }) as EventListener;
+
+    document.addEventListener(eventName, syncListener);
+    document.addEventListener(
+      "astro:before-swap",
+      () => document.removeEventListener(eventName, syncListener),
+      { once: true },
+    );
   }
 
   private setupIds(): void {
@@ -105,7 +129,7 @@ class TabsHandler {
     document.dispatchEvent(
       new CustomEvent(`starwind-tabs-sync:${this.syncKey}`, { detail: { value } }),
     );
-    localStorage.setItem(this.storageKey, value);
+    storeTab(this.storageKey, value);
   }
 
   private handleKeyNavigation = (event: KeyboardEvent): void => {

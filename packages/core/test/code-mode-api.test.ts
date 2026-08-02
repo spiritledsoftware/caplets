@@ -369,7 +369,9 @@ describe("Code Mode Caplets API", () => {
       .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
       .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
       .mockResolvedValueOnce({
-        structuredContent: { result: { items: partiallyMatchingTools } },
+        structuredContent: {
+          result: { items: partiallyMatchingTools, nextCursor: "next-search-page" },
+        },
       });
     const api = createCodeModeCapletsApi({ service: native });
     const github = api.github as CodeModeCapletHandle;
@@ -393,10 +395,12 @@ describe("Code Mode Caplets API", () => {
       items: tools.slice(0, 3),
       truncated: true,
     });
-    await expect(github.searchTools("deploy")).resolves.toMatchObject({
+    const prioritizedSearchPage = await github.searchTools("deploy");
+    expect(prioritizedSearchPage).toMatchObject({
       items: [partiallyMatchingTools[11], ...partiallyMatchingTools.slice(0, 9)],
       truncated: true,
     });
+    expect(prioritizedSearchPage).not.toHaveProperty("nextCursor");
   });
 
   it("returns expected tool failures as result envelopes", async () => {
