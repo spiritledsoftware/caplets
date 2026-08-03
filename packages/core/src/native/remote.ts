@@ -22,7 +22,7 @@ import {
 } from "../attach/api";
 import type { CapletShadowingPolicy } from "../config";
 import { CodeModeJournalStore } from "../code-mode/journal";
-import { runCodeMode } from "../code-mode/runner";
+import { projectCodeModeToolEnvelope, runCodeMode } from "../code-mode/runner";
 import { CodeModeSessionManager } from "../code-mode/sessions";
 import {
   generateCodeModeDeclarations,
@@ -1235,7 +1235,7 @@ async function executeCodeModeRunRemote(
       meta: emptyCodeModeRunMeta(),
     };
   }
-  return await runCodeMode({
+  const envelope = await runCodeMode({
     code: parsed.data.code,
     service,
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
@@ -1244,6 +1244,7 @@ async function executeCodeModeRunRemote(
     journalStore: new CodeModeJournalStore(),
     ...(sessionManager === undefined ? {} : { sessionManager }),
   });
+  return projectCodeModeToolEnvelope(envelope);
 }
 
 function compatibleExport(

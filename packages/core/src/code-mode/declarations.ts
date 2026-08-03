@@ -4,7 +4,7 @@ import { CODE_MODE_RUNTIME_API_DECLARATION } from "./runtime-api.generated";
 const JS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
 const MAX_JSDOC_CHARS = 240;
 const CODE_MODE_REPL_GUIDANCE =
-  "REPL reuse: omit `sessionId` to start a fresh reusable Code Mode session; when a result includes `meta.sessionId`, pass it as `sessionId` on later calls to reuse live state. Reused sessions preserve top-level `var`, `let`, `const`, function, class, enum, namespace, and TypeScript type declarations. Completed assignments and object mutations survive ordinary runtime errors; declaration conflicts fail before execution. State remains available only while the live session is compatible. An unknown or unavailable `sessionId` fails before executing your code instead of starting an empty context. Use `meta.recoveryRef` with `caplets.debug.readRecovery({ recoveryRef })` for audit and manual reconstruction; do not automatically replay recovery history.";
+  "Sessions: omit `sessionId`; reuse `meta.sessionId`. Declarations/mutations persist. Unknown/incompatible IDs fail before code. `meta.recoveryRef` is audit-only via `caplets.debug.readRecovery`; never replay.";
 
 export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): string {
   const caplets = [...input.caplets].sort((left, right) => left.id.localeCompare(right.id));
@@ -26,22 +26,35 @@ export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): s
 }
 
 export function generateCodeModeRunToolDescription(declaration: string): string {
+  const handles = declaration.endsWith(CODE_MODE_RUNTIME_API_DECLARATION)
+    ? declaration
+        .slice(0, -CODE_MODE_RUNTIME_API_DECLARATION.length)
+        .trimEnd()
+        .replace(/^declare const caplets:\{\n/u, "")
+        .replace(/\n\};$/u, "")
+        .replace(/(\/\*\*.*\*\/)?("(?:\\.|[^"\\])*"):CapletHandle<[^;]+>;/gu, "$1caplets[$2]")
+        .replace(/(\/\*\*.*\*\/)?([A-Za-z_$][\w$]*):CapletHandle<[^;]+>;/gu, "$1caplets.$2")
+        .replace(/debug:DebugApi(?:&CapletHandle<[^;]+>)?;/gu, "caplets.debug")
+    : declaration;
   return [
-    'Run TypeScript with generated `caplets.<id>` handles and declaration hints below. Prefer a compact one-pass script for most tasks: discover, filter, execute, and synthesize inside Code Mode, then return only decision-ready JSON. Do not return full tool lists, full descriptors, schemas, raw tool payloads, or exploratory transcripts unless the user specifically needs them; keep bulky intermediate data inside the script. For discovery, use tools/searchTools for names and arg hints, then describeTool only for short-listed operations needing exact schemas, nested args, fields, or disambiguation. Never invent tool names, resource URIs, prompt names, input args, output fields, or schemas; use requiredArgs/acceptedArgs for simple calls, otherwise use describeTool for the exact callSignature/inputSchema/inputTypeScript. For fallback, check candidate handles first: `for(const h of candidates){const ready=await h.check();if(!ready.ok)continue;}`. For triage, list broad candidate records and filter in script before targeted searches so adjacent relevant items are not missed. Execute with exact args, handle `{ok:false}`, and derive final recommendations from all relevant records, not the first matching record. If records disagree or have ranges/statuses, compute the strictest applicable conclusion and preserve only the compact evidence used. Return summaries, key ids/names/titles/statuses/urls, derived fields, recommendation, caveats, and residual missing data. Before returning, remove unused descriptors/schemas/raw content. Pattern: `const h=caplets["caplet-id"];const tools=await h.searchTools("query");const d=needSchema?await h.describeTool("tool_name"):undefined;const r=await h.callTool("tool_name",args);return {facts:[...],evidence:[...]};`',
+    "Run TypeScript over `caplets.<id>`. Discover via tools/searchTools; inspect schemas via describeTool. Never guess names, URIs, args, or fields. Check fallbacks/errors; return evidence-backed JSON.",
     CODE_MODE_REPL_GUIDANCE,
+    "caplets.id: inspect/check; tools(input?), searchTools(query,input?), describeTool(name), callTool(name,args); resources/searchResources/resourceTemplates/readResource; prompts/searchPrompts/getPrompt/complete (search*: query,input?). Page={items,nextCursor?,truncated?}. Result={ok:true,data,meta?}|{ok:false,error,meta?}; data only if ok. Debug: readLogs/readRecovery.",
     "",
-    "Generated declaration hints:",
-    "```ts",
-    declaration,
-    "```",
+    "Handles:",
+    handles,
   ].join("\n");
 }
 
 function capletHintText(caplet: CodeModeDeclarationInput["caplets"][number]): string {
-  return boundedSummary(
-    compactCapletField(caplet.description || caplet.name || caplet.id),
-    MAX_JSDOC_CHARS,
-  );
+  const description = sanitizeJsDoc(caplet.description || caplet.name || caplet.id);
+  const generatedPrefix = `${sanitizeJsDoc(caplet.name)} Caplet.`;
+  const domainDescription =
+    description.includes(" Use tools/search_tools for downstream names") &&
+    description.startsWith(generatedPrefix)
+      ? description.slice(generatedPrefix.length).trimStart()
+      : description;
+  return boundedSummary(compactCapletField(domainDescription), MAX_JSDOC_CHARS);
 }
 
 export function minifyCodeModeDeclarationText(value: string): string {
@@ -96,6 +109,7 @@ function compactCapletField(value: string): string {
   const cleaned = sanitizeJsDoc(value);
   const markers = [
     " Use inspect for details when needed;",
+    " Use tools/search_tools for downstream names",
     " Native tool name:",
     " Original Caplet ID:",
   ];

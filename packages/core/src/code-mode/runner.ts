@@ -218,7 +218,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       if (method === "searchTools")
         return await handle.searchTools(String(args[0]), args[1] as never);
       if (method === "describeTool") return await handle.describeTool(String(args[0]));
-      if (method === "callTool") return await handle.callTool(String(args[0]), args[1]);
+      if (method === "callTool") return await handle.callTool(args[0] as never, args[1]);
       if (method === "resources") return await handle.resources(args[0] as never);
       if (method === "searchResources") {
         return await handle.searchResources(String(args[0]), args[1] as never);
@@ -364,6 +364,26 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     meta: meta(),
   };
 }
+export function projectCodeModeToolEnvelope(envelope: CodeModeRunEnvelope): unknown {
+  if (!envelope.ok) return envelope;
+  const logsVisible =
+    envelope.logs.entries.length > 0 ||
+    envelope.logs.truncated ||
+    envelope.logs.stored ||
+    envelope.logs.logRef !== undefined;
+  return {
+    ok: true,
+    value: envelope.value,
+    ...(envelope.diagnostics.length > 0 ? { diagnostics: envelope.diagnostics } : {}),
+    ...(logsVisible ? { logs: envelope.logs } : {}),
+    meta: {
+      sessionId: envelope.meta.sessionId ?? null,
+      sessionStatus: envelope.meta.sessionStatus ?? null,
+      recoveryRef: envelope.meta.recoveryRef ?? null,
+    },
+  };
+}
+
 function effectiveCodeModeTimeoutPolicy(maxTimeoutMs: number | undefined): {
   maxTimeoutMs: number;
   valid: boolean;

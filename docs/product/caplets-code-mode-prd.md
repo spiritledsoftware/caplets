@@ -44,7 +44,7 @@ Caplets should make backends usable as capability domains without hiding the exa
 
 The `caplets` package installs the CLI. Important commands include:
 
-- `caplets setup` for Codex, Claude Code, OpenCode, Pi, or generic MCP client setup.
+- `caplets setup` for any client in the `add-mcp` catalog, with native setup for OpenCode and Pi.
 - `caplets serve` for foreground stdio or HTTP MCP serving.
 - `caplets daemon` for installing, starting, stopping, inspecting, tailing logs for, and uninstalling the default local HTTP service through the native per-user service manager.
 - `caplets attach` for a remote-backed MCP server and Project Binding session.

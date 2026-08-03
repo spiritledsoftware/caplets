@@ -36,11 +36,9 @@ describe("Code Mode MCP tool", () => {
       { description?: string }
     >;
     expect(codeModeInputSchema).toHaveProperty("sessionId");
+    expect(codeModeInputSchema.sessionId?.description).toContain("Omit to create a session");
     expect(codeModeInputSchema.sessionId?.description).toContain(
-      "Omit to create a fresh reusable session",
-    );
-    expect(codeModeInputSchema.sessionId?.description).toContain(
-      "Unknown or unavailable session IDs fail before code execution",
+      "Unknown IDs fail before execution",
     );
 
     await session.close();

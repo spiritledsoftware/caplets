@@ -64,7 +64,6 @@ describe("Code Mode Caplets API", () => {
           name: "listIssues",
         },
       },
-      meta: { capletId: "github", tool: "listIssues" },
     });
 
     expect(native.execute).toHaveBeenNthCalledWith(1, "github", { operation: "inspect" });
@@ -179,6 +178,14 @@ describe("Code Mode Caplets API", () => {
                 hasOutputSchema: false,
                 supportsFields: false,
                 readOnlyHint: true,
+                requiredArgs: [],
+                acceptedArgs: ["login"],
+                argsTemplate: { login: "" },
+                callTemplate: {
+                  operation: "call_tool",
+                  name: "get_me",
+                  args: { login: "" },
+                },
               },
             ],
           },
@@ -233,6 +240,14 @@ describe("Code Mode Caplets API", () => {
           useWhen: "Use to identify the authenticated user.",
           avoidWhen: "Avoid for repository owner lookup.",
           readOnlyHint: true,
+          requiredArgs: [],
+          acceptedArgs: ["login"],
+          argsTemplate: { login: "" },
+          callTemplate: {
+            operation: "call_tool",
+            name: "get_me",
+            args: { login: "" },
+          },
         },
       ],
     });
@@ -312,12 +327,80 @@ describe("Code Mode Caplets API", () => {
     const descriptor = await github.describeTool("search_issues");
 
     const summary = tools.items[0] as { description?: unknown } | undefined;
-    expect(String(summary?.description).length).toBeLessThan(longDescription.length);
+    expect(String(summary?.description).length).toBeLessThanOrEqual(96);
     expect(tools.items[0]).toMatchObject({ name: "search_issues", readOnlyHint: true });
     expect(descriptor).toMatchObject({
       ok: true,
       data: { tool: { name: "search_issues", description: longDescription } },
     });
+  });
+
+  it("bounds default discovery pages while preserving explicit limits and small pages", async () => {
+    const native = service([
+      {
+        caplet: "github",
+        toolName: "caplets__github",
+        title: "GitHub",
+        description: "GitHub repo operations.",
+        promptGuidance: [],
+      },
+    ]);
+    const tools = Array.from({ length: 12 }, (_, index) => ({
+      name: `issue_${index}`,
+      description: `Issue operation ${index}.`,
+    }));
+    const partiallyMatchingTools = Array.from({ length: 12 }, (_, index) => ({
+      name: index === 11 ? "deploy_issue" : `repository_operation_${index}`,
+      description: index === 11 ? "Deploy issue." : `Repository operation ${index}.`,
+    }));
+    vi.mocked(native.execute)
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({
+        structuredContent: {
+          result: {
+            items: [
+              { name: "readme", uri: "repo://readme" },
+              { name: "guide", uri: "repo://guide" },
+            ],
+          },
+        },
+      })
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({ structuredContent: { result: { items: tools } } })
+      .mockResolvedValueOnce({
+        structuredContent: {
+          result: { items: partiallyMatchingTools, nextCursor: "next-search-page" },
+        },
+      });
+    const api = createCodeModeCapletsApi({ service: native });
+    const github = api.github as CodeModeCapletHandle;
+
+    await expect(github.tools()).resolves.toMatchObject({
+      items: tools.slice(0, 10),
+      truncated: true,
+    });
+    await expect(github.tools({ limit: 12 })).resolves.toEqual({ items: tools });
+    await expect(github.resources()).resolves.toEqual({
+      items: [
+        { name: "readme", uri: "repo://readme" },
+        { name: "guide", uri: "repo://guide" },
+      ],
+    });
+    await expect(github.searchTools("issue")).resolves.toMatchObject({
+      items: tools.slice(0, 10),
+      truncated: true,
+    });
+    await expect(github.searchTools("deploy")).resolves.toMatchObject({
+      items: tools.slice(0, 3),
+      truncated: true,
+    });
+    const prioritizedSearchPage = await github.searchTools("deploy");
+    expect(prioritizedSearchPage).toMatchObject({
+      items: [partiallyMatchingTools[11], ...partiallyMatchingTools.slice(0, 9)],
+      truncated: true,
+    });
+    expect(prioritizedSearchPage).not.toHaveProperty("nextCursor");
   });
 
   it("returns expected tool failures as result envelopes", async () => {
@@ -443,7 +526,7 @@ describe("Code Mode Caplets API", () => {
     expect(JSON.stringify(result)).not.toContain("get_prompt");
   });
 
-  it("compacts tool call success results to the useful payload", async () => {
+  it("compacts successful tool calls to useful payloads without redundant metadata", async () => {
     const native = service([
       {
         caplet: "github",
@@ -473,13 +556,6 @@ describe("Code Mode Caplets API", () => {
     await expect(github.callTool("get_me", {})).resolves.toEqual({
       ok: true,
       data: { login: "octocat", id: 1 },
-      meta: {
-        capletId: "github",
-        tool: "get_me",
-        durationMs: expect.any(Number),
-        status: "ok",
-        elapsedMs: 12,
-      },
     });
   });
 
@@ -524,7 +600,6 @@ describe("Code Mode Caplets API", () => {
           { id: "GHSA-29mw-wpgm-hmr9", aliases: ["CVE-2020-28500"] },
         ],
       },
-      meta: { capletId: "osv", tool: "query_package_version" },
     });
   });
 

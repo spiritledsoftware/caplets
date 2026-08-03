@@ -87,11 +87,11 @@ describe("native Caplets service", () => {
       );
       const codeModeTool = tools.find((tool) => tool.caplet === "code_mode");
       expect(codeModeTool?.description).toContain("`meta.sessionId`");
-      expect(codeModeTool?.description).toContain("fails before executing your code");
+      expect(codeModeTool?.description).toContain("Unknown/incompatible IDs fail before code");
       expect(codeModeTool?.promptGuidance).toEqual(
         expect.arrayContaining([
-          expect.stringContaining("omit sessionId to start fresh"),
-          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("Omit sessionId to start"),
+          expect.stringContaining("reuse meta.sessionId"),
           expect.stringContaining("meta.recoveryRef"),
         ]),
       );
@@ -101,7 +101,7 @@ describe("native Caplets service", () => {
             properties?: { sessionId?: { description?: string } };
           }
         )?.properties?.sessionId?.description,
-      ).toContain("Omit to create a fresh reusable session");
+      ).toContain("Omit to create a session");
       expect(nativeCapletsSystemGuidance(["caplets__code_mode"])).toContain(
         "omit sessionId to start fresh",
       );
@@ -959,6 +959,42 @@ describe("native Caplets service", () => {
         ok: true,
         value: { id: "status", hasStatus: true },
         meta: {
+          sessionId: expect.any(String),
+          sessionStatus: "created",
+          recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+        },
+      });
+      expect(result).not.toHaveProperty("diagnostics");
+      expect(result).not.toHaveProperty("logs");
+      expect(result).not.toHaveProperty("meta.runId");
+      const loggedResult = await service.execute("code_mode", {
+        code: 'console.log("local projection log");\nreturn "logged";',
+      });
+      expect(loggedResult).toMatchObject({
+        ok: true,
+        value: "logged",
+        logs: {
+          entries: [{ level: "log", message: "local projection log" }],
+          truncated: false,
+          stored: false,
+        },
+        meta: {
+          sessionId: expect.any(String),
+          sessionStatus: "created",
+          recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+        },
+      });
+      expect(loggedResult).not.toHaveProperty("diagnostics");
+      const diagnosticFailure = await service.execute("code_mode", {
+        code: "return missingLocalValue;",
+      });
+      expect(diagnosticFailure).toMatchObject({
+        ok: false,
+        error: { code: "sandbox_reference_error" },
+        diagnostics: [expect.objectContaining({ code: "2304", severity: "warning" })],
+        logs: { entries: [], truncated: false, stored: false },
+        meta: {
+          runId: expect.any(String),
           sessionId: expect.any(String),
           sessionStatus: "created",
           recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),

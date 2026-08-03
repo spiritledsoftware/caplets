@@ -9,32 +9,31 @@ export function nativeCapletToolName(capletId: string): string {
 }
 
 export function nativeCapletsSystemGuidance(toolNames: string[]): string {
-  const tools = toolNames.length > 0 ? toolNames.map((tool) => `- ${tool}`).join("\n") : "- none";
-  return [
-    "## Caplets Native Tools",
-    "",
-    "Caplets tools expose configured capability domains through progressive discovery.",
-    "",
-    "Available Caplets native tools:",
-    tools,
-    "",
-    `${nativeCodeModeToolName} executes Caplets Code Mode: TypeScript with generated caplets.<id> handles for multi-step discovery, tool calls, filtering, and compact synthesis in one native call.`,
-    ...nativeCodeModePromptGuidance(),
-    "Flow: inspect when the domain is unfamiliar; use tools/search_tools for downstream names, arg hints, and callTemplate; call_tool directly from callTemplate/argsTemplate for simple calls; reserve describe_tool for complex schemas, nested args, fields, or uncertainty.",
-    "Do not guess downstream tool names, resource URIs, prompt names, input args, output fields, or schemas. Do not infer input/output schemas from memory.",
-    "Prefer list/read/search operations for triage and avoid broad provider searches that can return huge payloads or hit rate limits.",
-    "When output shaping matters, inspect one tool with describe_tool and follow its fieldSelection hint.",
-  ].join("\n");
+  const onlyCodeMode = toolNames.length === 1 && toolNames[0] === nativeCodeModeToolName;
+  const guidance = onlyCodeMode ? [] : ["## Caplets"];
+  if (!onlyCodeMode) {
+    const tools = toolNames.length > 0 ? toolNames.map((tool) => `- ${tool}`).join("\n") : "- none";
+    guidance.push("Available:", tools);
+  }
+  if (toolNames.includes(nativeCodeModeToolName)) {
+    guidance.push(
+      `${nativeCodeModeToolName}: TypeScript over caplets.<id>; omit sessionId to start fresh.`,
+    );
+  }
+  if (toolNames.some((tool) => tool !== nativeCodeModeToolName)) {
+    guidance.push(
+      "Flow: inspect when the domain is unfamiliar; tools/search_tools provide names, arg hints, and callTemplate. Use call_tool with callTemplate/argsTemplate; reserve describe_tool for nested or uncertain schemas.",
+      "Do not guess downstream tool names, URIs, prompt names, args, fields, or schemas. Do not infer input/output schemas.",
+      "Prefer list/read/search for triage; avoid broad provider searches.",
+      "For output shaping, describe one tool and follow its fieldSelection hint.",
+    );
+  }
+  return guidance.join("\n");
 }
 
 export function nativeCodeModePromptGuidance(): string[] {
   return [
-    `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
-    "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
-    "For REPL reuse, omit sessionId to start fresh, then pass a returned meta.sessionId on later calls that should reuse live state.",
-    "Reused sessions preserve top-level var, let, const, function, class, enum, namespace, and TypeScript type declarations. Completed assignments and object mutations survive ordinary runtime errors; declaration conflicts fail before execution.",
-    "Unknown or unavailable sessionId values fail before code execution; use meta.recoveryRef with caplets.debug.readRecovery({ recoveryRef }) for audit and manual reconstruction, not automatic replay.",
-    "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
+    "Return only selected fields. Omit sessionId to start; reuse meta.sessionId; never replay meta.recoveryRef.",
   ];
 }
 

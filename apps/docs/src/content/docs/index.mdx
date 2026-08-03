@@ -1,14 +1,18 @@
 ---
 title: Caplets
-description: Give coding agents Code Mode capabilities without a giant tool wall.
+description: Give your coding agent the whole stack through reusable, controlled Caplets.
 ---
 
-Caplets wraps MCP servers, APIs, and commands into focused capabilities for coding agents.
-Code Mode is the default surface: each configured backend becomes a typed <code className="caplets-token">caplets.&lt;id&gt;</code>
-handle that an agent can inspect, search, call, filter, and summarize in one workflow.
+Caplets is the capability layer for coding agents. Turn MCP servers, OpenAPI and Google
+Discovery APIs, GraphQL endpoints, simple HTTP actions, and curated CLI commands into
+reusable Caplets your agent can use across the work surrounding your code.
 
-Use Caplets with Codex, Claude, OpenCode, Pi, or any MCP client that can launch a local
-stdio server.
+Your Whole Stack is the set of capabilities you intentionally expose through Caplets—not
+blanket access to every system or credential. Caplet definitions can be reused across
+Codex, Claude, OpenCode, Pi, and supported MCP clients while each host independently
+supplies and authorizes access.
+
+Code Mode is the default surface: each configured Caplet becomes a typed `caplets.<id>` handle that an agent can inspect, search, call, filter, and summarize in one workflow. Direct and progressive exposure remain available for clients and tasks that need them.
 
 > **Required upgrade migration:** If this host ran `caplets@0.25.x` or earlier, do not
 > start `caplets@0.26.0` or later until you complete the

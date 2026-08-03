@@ -362,6 +362,9 @@ importers:
       '@caplets/sdk':
         specifier: workspace:*
         version: link:../sdk
+      '@clack/prompts':
+        specifier: 1.7.0
+        version: 1.7.0
       '@exodus/bytes':
         specifier: ^1.15.1
         version: 1.15.1

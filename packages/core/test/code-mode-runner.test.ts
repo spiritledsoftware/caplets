@@ -279,6 +279,28 @@ describe("runCodeMode", () => {
     });
   });
 
+  it("invokes discovery call templates with argument overrides", async () => {
+    const native = service();
+    const result = await runCodeMode({
+      code: `
+        const template = {
+          operation: "call_tool",
+          name: "listIssues",
+          args: { state: "open", limit: 10 },
+        } as const;
+        return await caplets.github.callTool(template, { state: "closed" });
+      `,
+      service: native,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(native.execute).toHaveBeenCalledWith("github", {
+      operation: "call_tool",
+      name: "listIssues",
+      args: { state: "closed", limit: 10 },
+    });
+  });
+
   it("rejects session ids when no session manager is available", async () => {
     const native = service();
     const result = await runCodeMode({

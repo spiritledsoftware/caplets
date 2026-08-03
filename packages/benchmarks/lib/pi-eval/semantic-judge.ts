@@ -106,6 +106,7 @@ function buildPiJudgeCommand({
       "--approve",
       "--no-context-files",
       "--no-skills",
+      "--no-extensions",
       "--no-prompt-templates",
       "--no-themes",
       "--model",

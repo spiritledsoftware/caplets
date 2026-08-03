@@ -9,6 +9,8 @@ import {
   parseJsonEvents,
   redactOutput,
   runProcess,
+  type RunProcessOptions,
+  type RunProcessResult,
 } from "../lib/live-agent";
 import { createBenchmarkCapletsConfig, createNamedFixtureMcpServers } from "../lib/config";
 import { PI_CONFIG_MODES, createPiMcpConfigs, detectPiCli, piRunner } from "../lib/pi-runner";
@@ -57,7 +59,10 @@ import {
   summarizePiEvalMetrics,
 } from "../lib/pi-eval/metrics";
 import { extractMcpToolUseFinalJson, scoreMcpToolUseRun } from "../lib/pi-eval/mcp-tool-use-score";
-import { createDeterministicSemanticJudge } from "../lib/pi-eval/semantic-judge";
+import {
+  createDeterministicSemanticJudge,
+  createPiSemanticJudge,
+} from "../lib/pi-eval/semantic-judge";
 import piEvalInstrumentation from "../lib/pi-eval/instrumentation-extension";
 import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "../lib/pi-eval/report";
 import {
@@ -1302,6 +1307,37 @@ describe("Pi live tool surface eval harness", () => {
       skipMissingCompetitors: true,
     });
     expect(() => parsePiEvalArgs(["--mode", "unknown"])).toThrow(/Unknown Pi eval mode/u);
+  });
+
+  it("isolates the semantic judge from project extensions", async () => {
+    let command: RunProcessOptions | undefined;
+    const judge = createPiSemanticJudge({
+      model: "openai-codex/gpt-5.6-sol:medium",
+      processRunner: async (input: RunProcessOptions): Promise<RunProcessResult> => {
+        command = input;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: '{"correct":true,"score":1,"missing":[],"incorrect":[],"reason":"accepted"}',
+          stderr: "",
+          stdoutBytes: 0,
+          stderrBytes: 0,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          durationMs: 0,
+          jsonEvents: [],
+        };
+      },
+    });
+
+    await judge({
+      task: { id: "release-check", expectedFacts: {} },
+      finalAnswer: { decision: "ship" },
+      toolEvidence: [],
+    });
+
+    expect(command?.args).toContain("--no-extensions");
   });
 
   it("parses Pi eval task suites without changing the coding default", () => {

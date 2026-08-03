@@ -1,31 +1,28 @@
 ---
 import Activation from "../components/landing/Activation.astro";
-import AgentTrace from "../components/landing/AgentTrace.astro";
+import Breadth from "../components/landing/Breadth.astro";
 import CapabilityAperture from "../components/landing/CapabilityAperture.astro";
 import Footer from "../components/landing/Footer.astro";
 import Header from "../components/landing/Header.astro";
 import Hero from "../components/landing/Hero.astro";
 import Proof from "../components/landing/Proof.astro";
-import RemoteStory from "../components/landing/RemoteStory.astro";
-import WhyCaplets from "../components/landing/WhyCaplets.astro";
+import WholeJob from "../components/landing/WholeJob.astro";
 import LandingLayout from "../layouts/LandingLayout.astro";
 ---
 
 <LandingLayout>
   <CapabilityAperture slot="background" />
   <Header slot="header" />
-  <AgentTrace />
   <Hero />
-  <WhyCaplets />
-  <Activation />
+  <Breadth />
+  <WholeJob />
   <Proof />
-  <RemoteStory />
+  <Activation />
   <Footer slot="footer" />
 </LandingLayout>
 
 <script>
   import "../scripts/capability-aperture";
-  import "../scripts/agent-trace";
   import "../scripts/observability";
   import "../scripts/copy";
   import "../scripts/header-collapse";

@@ -56,7 +56,7 @@ import {
   generateCodeModeRunToolDescription,
 } from "../code-mode/declarations";
 import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
-import { runCodeMode } from "../code-mode/runner";
+import { projectCodeModeToolEnvelope, runCodeMode } from "../code-mode/runner";
 import {
   isUnsupportedRemoteProjectBinding,
   RemoteProjectBindingSessionManager,
@@ -68,7 +68,7 @@ import {
   codeModeRunInputSchema,
   emptyCodeModeRunMeta,
 } from "../code-mode/tool";
-import type { CodeModeCallableCaplet } from "../code-mode/types";
+import type { CodeModeCallableCaplet, CodeModeRunEnvelope } from "../code-mode/types";
 import {
   loadLocalOverlayConfigWithSources,
   parseConfig,
@@ -311,7 +311,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
             : {}),
         })
         .catch(() => undefined);
-      return envelope;
+      return projectCodeModeToolEnvelope(envelope);
     }
     const capletRoute = this.capletRoutes.get(capletId);
     if (capletRoute) {
@@ -702,11 +702,7 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     caplet: nativeCodeModeToolId,
     toolName: nativeCodeModeToolName,
     title: "Code Mode",
-    description: [
-      generateCodeModeRunToolDescription(declaration),
-      "",
-      `Native tool name: ${nativeCodeModeToolName}`,
-    ].join("\n"),
+    description: generateCodeModeRunToolDescription(declaration),
     codeModeRun: true,
     codeModeCaplets,
     promptGuidance: nativeCodeModePromptGuidance(),
@@ -746,7 +742,7 @@ async function executeCodeModeRunNative(
   service: NativeCapletsService,
   request: unknown,
   sessionManager?: CodeModeSessionManager,
-): Promise<unknown> {
+): Promise<CodeModeRunEnvelope> {
   const parsed = codeModeRunInputSchema.safeParse(request);
   if (!parsed.success) {
     return {
@@ -1151,7 +1147,8 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(this, request, this.codeModeSessions);
+      const envelope = await executeCodeModeRunNative(this, request, this.codeModeSessions);
+      return projectCodeModeToolEnvelope(envelope);
     }
     const route = this.routes.get(capletId);
     if (route?.service === "local") {

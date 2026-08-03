@@ -219,4 +219,55 @@ describe("landing observability", () => {
       }),
     );
   });
+
+  it("captures an explicitly categorized primary activation link", async () => {
+    vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
+    document.body.innerHTML = `
+      <main>
+        <section class="landing-hero">
+          <a href="#install" data-cta-category="primary">Connect your first capability</a>
+        </section>
+      </main>
+    `;
+
+    // Dynamic import reruns the side-effectful listener module after per-test environment setup.
+    await import("../src/scripts/observability");
+    posthogCapture.mockClear();
+    document.querySelector("a")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(posthogCapture).toHaveBeenCalledWith(
+      "caplets_site_intent",
+      expect.objectContaining({
+        section_category: "hero",
+        navigation_path_category: "unknown",
+        outbound_action_category: "unknown",
+        cta_category: "primary",
+      }),
+    );
+  });
+
+  it("uses an explicit secondary category independently of visible link copy", async () => {
+    vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
+    document.body.innerHTML = `
+      <main>
+        <section class="landing-hero">
+          <a href="https://catalog.caplets.dev" data-cta-category="secondary">Explore reusable definitions</a>
+        </section>
+      </main>
+    `;
+
+    // Dynamic import reruns the side-effectful listener module after per-test environment setup.
+    await import("../src/scripts/observability");
+    posthogCapture.mockClear();
+    document.querySelector("a")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(posthogCapture).toHaveBeenCalledWith(
+      "caplets_site_intent",
+      expect.objectContaining({
+        navigation_path_category: "catalog",
+        outbound_action_category: "catalog",
+        cta_category: "secondary",
+      }),
+    );
+  });
 });

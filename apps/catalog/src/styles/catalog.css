@@ -75,6 +75,36 @@
   padding: 0.875rem;
 }
 
+.catalog-positioning {
+  display: grid;
+  max-width: 52rem;
+  gap: 0.65rem;
+  margin: 1.5rem 0 1.25rem;
+}
+
+.catalog-positioning p {
+  color: var(--accent);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.catalog-positioning h1 {
+  color: var(--foreground);
+  font-size: 2rem;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.catalog-positioning span {
+  max-width: 68ch;
+  color: var(--muted-foreground);
+  font-size: 1rem;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
 .catalog-intro {
   display: flex;
   flex-wrap: wrap;

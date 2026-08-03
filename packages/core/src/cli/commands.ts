@@ -1,3 +1,5 @@
+import { setupIntegrationIds } from "./setup-integrations";
+
 export const completionShells = ["bash", "zsh", "fish", "powershell", "cmd"] as const;
 export type CompletionShell = (typeof completionShells)[number];
 
@@ -80,7 +82,7 @@ export const cliSubcommands = {
   [cliCommands.completion]: [...completionShells],
   [cliCommands.config]: ["path", "paths"],
   [cliCommands.daemon]: ["install", "uninstall", "start", "restart", "stop", "status", "logs"],
-  [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
+  [cliCommands.setup]: setupIntegrationIds,
   [cliCommands.telemetry]: ["status", "enable", "disable", "delete-id", "rotate-id", "debug"],
   [cliCommands.storage]: ["status", "schema-migrate", "migrate-legacy", "records"],
   [cliCommands.vault]: ["set", "get", "list", "delete", "access"],

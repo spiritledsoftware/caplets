@@ -17,10 +17,23 @@ const entries = await listCatalogEntries(getCatalogEnv());
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Caplets Catalog</title>
+    <title>Shared Caplets — Caplets Catalog</title>
     <meta
       name="description"
-      content="Search official and community Caplets, inspect source content, and copy supported install commands."
+      content="Find reusable Caplet definitions for coding agents. Inspect every source before installing, then authorize access on your own host."
+    />
+    <meta property="og:title" content="Shared Caplets — Caplets Catalog" />
+    <meta
+      property="og:description"
+      content="Find reusable Caplet definitions for coding agents. Share capabilities without sharing credentials."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://catalog.caplets.dev/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Shared Caplets — Caplets Catalog" />
+    <meta
+      name="twitter:description"
+      content="Find reusable Caplet definitions for coding agents. Share capabilities without sharing credentials."
     />
     <ThemeInit />
     <link rel="icon" type="image/png" href="/icon.png" />
@@ -29,10 +42,17 @@ const entries = await listCatalogEntries(getCatalogEnv());
     <a class="skip-link" href="#catalog-results">Skip to results</a>
     <CatalogHeader search={{ count: entries.length, value: Astro.url.searchParams.get("q") ?? "" }} />
     <main class="mx-auto w-[min(1180px,calc(100vw_-_2rem))] py-4 max-sm:w-[min(1180px,calc(100vw_-_1.25rem))] max-sm:py-3">
-      <section class="catalog-intro" role="note">
-        <strong>Not security-reviewed.</strong>
-        <span>Inspect Caplets before installing.</span>
+      <section class="catalog-positioning" aria-labelledby="catalog-title">
+        <p>The capability layer for coding agents</p>
+        <h1 id="catalog-title">Find a capability. Make it yours.</h1>
+        <span>
+          Search reusable Caplet definitions and operating guidance. The catalog is one distribution channel—not the boundary of what Caplets can connect.
+        </span>
       </section>
+      <aside class="catalog-intro" role="note">
+        <strong>Not security-reviewed.</strong>
+        <span>Inspect every Caplet before installing. Credentials and access never transfer with a shared Caplet.</span>
+      </aside>
       <div id="catalog-results">
         <SearchShell entries={entries} />
       </div>

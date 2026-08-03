@@ -1,78 +1,29 @@
 ---
-import Check from "@tabler/icons/outline/check.svg";
-import Copy from "@tabler/icons/outline/copy.svg";
+import Lock from "@tabler/icons/outline/lock.svg";
 
 import { Button } from "@/components/starwind/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/starwind/tabs";
-
-import { agentSetupPrompt, manualSetupCommand, manualSetupCommands } from "../../data/landing";
-
-const setupOptions = [
-  {
-    label: "Manual",
-    copyLabel: "manual setup commands",
-    copyValue: manualSetupCommand,
-    copyAttribution: true,
-    lines: [manualSetupCommands.install, manualSetupCommands.setup],
-  },
-  {
-    label: "Agent",
-    copyLabel: "agent setup prompt",
-    copyValue: agentSetupPrompt,
-    copyAttribution: false,
-    lines: ["Read bootstrap skill", "detect -> ask -> plan -> approve"],
-  },
-] as const;
 ---
 
-<section class="landing-hero relative isolate w-full scroll-mt-20 overflow-hidden border-y border-border/70 py-6 md:py-8 lg:py-10" id="trace" aria-labelledby="hero-title">
+<section class="landing-hero relative isolate w-full scroll-mt-20 overflow-hidden border-y border-border/70 py-16 md:py-24 lg:py-28" id="trace" aria-labelledby="hero-title">
   <div class="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_72%_28%,transparent_0,oklch(15%_0.014_100_/_0.1)_34rem),linear-gradient(90deg,oklch(12%_0.014_100_/_0.96)_0%,oklch(12%_0.014_100_/_0.86)_36%,oklch(12%_0.014_100_/_0.3)_68%,oklch(12%_0.014_100_/_0.18)_100%)]"></div>
 
   <div class="relative mx-auto w-[min(1180px,calc(100vw_-_32px))]">
     <div class="max-w-3xl">
-      <h1 id="hero-title" class="landing-hero__title max-w-[12ch] text-4xl leading-[0.98] font-semibold tracking-[-0.03em] text-balance text-[oklch(96%_0.02_82)] sm:text-5xl sm:leading-[0.95] md:text-6xl">
-        Give your agent Capabilities, not a tool wall
+      <h1 id="hero-title" class="landing-hero__title max-w-[13ch] text-4xl leading-[0.98] font-semibold tracking-[-0.03em] text-balance text-[oklch(96%_0.02_82)] sm:text-5xl sm:leading-[0.95] md:text-6xl">
+        Give your coding agent the whole stack.
       </h1>
-      <p class="landing-hero__summary mt-5 max-w-2xl text-lg leading-8 text-pretty text-[oklch(88%_0.026_82)]">
-        Turn sprawling MCP servers into focused capability cards. Your agent can start with one typed route, zoom into tools only when needed, and keep huge schemas out of the prompt until they matter.
+      <p class="landing-hero__summary mt-6 max-w-xl text-lg leading-8 text-pretty text-[oklch(88%_0.026_82)]">
+        Package MCP servers, APIs, and commands as focused Caplets. Your agent opens only what each task needs.
       </p>
 
-      <Tabs id="setup" defaultValue="Manual" class="landing-hero__setup mt-6 max-w-2xl" aria-label="Caplets setup options">
-        <TabsList class="border-[oklch(86%_0.024_82_/_0.24)] bg-[oklch(96%_0.018_82_/_0.08)]">
-          {setupOptions.map((option) => <TabsTrigger value={option.label}>{option.label}</TabsTrigger>)}
-        </TabsList>
-        {
-          setupOptions.map((option) => (
-            <TabsContent value={option.label} class="mt-3">
-              <div class="rounded-lg border border-[oklch(86%_0.024_82_/_0.28)] bg-[oklch(10%_0.014_100_/_0.72)] p-3 text-[oklch(94%_0.018_82)]">
-                <div class="flex items-start justify-between gap-3">
-                  <div class="min-w-0">
-                    <div class="grid gap-1 font-mono text-sm leading-6">
-                      {option.lines.map((line) => <code class="break-words">{line}</code>)}
-                    </div>
-                  </div>
-                  <button
-                    class="group inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-[oklch(84%_0.024_82_/_0.34)] px-3 text-sm font-medium text-[oklch(95%_0.018_82)] transition hover:bg-[oklch(96%_0.018_82_/_0.12)] focus-visible:ring-3 focus-visible:ring-[oklch(66%_0.14_38_/_0.45)] focus-visible:outline-none"
-                    type="button"
-                    aria-label={`Copy ${option.copyLabel}`}
-                    data-copy-value={option.copyValue}
-                    data-copy-label={option.copyLabel}
-                    data-copy-attribution={String(option.copyAttribution)}
-                  >
-                    <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
-                    <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
-                    <span>Copy</span>
-                  </button>
-                </div>
-              </div>
-            </TabsContent>
-          ))
-        }
-      </Tabs>
+      <div class="landing-hero__actions mt-8 flex flex-wrap gap-3" role="group" aria-label="Primary actions">
+        <Button href="#install" variant="primary" data-cta-category="primary">Connect your first capability</Button>
+        <Button href="https://catalog.caplets.dev" variant="outline" data-cta-category="secondary">Browse shared Caplets</Button>
+      </div>
 
-      <div class="landing-hero__actions mt-6 flex flex-wrap gap-3 md:mt-8" aria-label="Primary actions">
-        <Button href="https://catalog.caplets.dev" variant="primary">Browse catalog</Button>
-        <Button href="https://docs.caplets.dev" variant="outline">Read the docs</Button>
+      <div class="mt-6 inline-flex items-center gap-2 text-sm text-[oklch(80%_0.028_82)]">
+        <Lock class="size-4 shrink-0 text-[oklch(82%_0.08_45)]" aria-hidden="true" />
+        <span>You choose every capability and credential boundary.</span>
       </div>
     </div>
   </div>

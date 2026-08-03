@@ -64,6 +64,7 @@ import {
   runInteractiveSetup,
   runSetup,
   type SetupCommandRunner,
+  type SetupIntegrationSelector,
   type SetupFormat,
   type SetupMcpOperations,
   type SetupOptions,
@@ -214,6 +215,7 @@ type CliIO = {
   runSetupCommand?: SetupCommandRunner;
   setupOperations?: SetupPhaseOperations;
   mcpOperations?: SetupMcpOperations;
+  selectSetupIntegrations?: SetupIntegrationSelector;
   readStdin?: () => Promise<string>;
 };
 
@@ -2293,12 +2295,10 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command(cliCommands.setup)
     .description("Install or configure an agent integration for Caplets.")
-    .argument("[integration]", "integration: codex, claude-code, opencode, pi, or mcp-client")
+    .argument("[integration]", "add-mcp client id, opencode, or pi")
     .option("--remote", "configure for a remote Caplets server")
     .option("--remote-url <url>", "remote Caplets service base URL")
     .option("--server-url <url>", "remote Caplets service base URL")
-    .option("--output <path>", "config path to write for generic MCP setup")
-    .option("--client <id>", "MCP client id to configure through add-mcp")
     .option("--dry-run", "print actions without running commands or writing files")
     .option("--yes", "approve Caplet setup commands for the exact current content hash")
     .option("--target <target>", "Caplet setup target: local or remote", parseSetupTarget)
@@ -2310,8 +2310,6 @@ export function createProgram(io: CliIO = {}): Command {
           remote?: boolean;
           remoteUrl?: string;
           serverUrl?: string;
-          output?: string;
-          client?: string;
           dryRun?: boolean;
           yes?: boolean;
           target?: "local" | "remote";
@@ -2324,21 +2322,21 @@ export function createProgram(io: CliIO = {}): Command {
         if (io.setupOperations) setupOptions.setupOperations = io.setupOperations;
         if (io.mcpOperations) setupOptions.mcpOperations = io.mcpOperations;
         if (!integration) {
-          const promptHandle = createSetupPromptHandle(io, writeOut);
-          if (!promptHandle) {
+          const canPrompt =
+            io.selectSetupIntegrations !== undefined ||
+            (!io.writeOut && !io.writeErr && process.stdin.isTTY && process.stdout.isTTY);
+          if (!canPrompt) {
             writeOut(formatSetupMenu());
             return;
           }
-          try {
-            writeOut(
-              await runInteractiveSetup({
-                ...setupOptions,
-                readPrompt: promptHandle.readPrompt,
-              }),
-            );
-          } finally {
-            promptHandle.close();
-          }
+          writeOut(
+            await runInteractiveSetup({
+              ...setupOptions,
+              ...(io.selectSetupIntegrations
+                ? { selectIntegrations: io.selectSetupIntegrations }
+                : {}),
+            }),
+          );
           return;
         }
         writeOut(await runSetup(integration, setupOptions));

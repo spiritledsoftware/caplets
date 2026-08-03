@@ -4,8 +4,8 @@
   <h1>Caplets</h1>
 
   <p>
-    <strong>Give your agent capabilities, not giant tool walls.</strong><br />
-    Caplets wraps MCP servers, APIs, and commands behind focused capability cards.
+    <strong>Give your coding agent the whole stack.</strong><br />
+    The capability layer for coding agents.
   </p>
 
   <p>
@@ -25,20 +25,26 @@
 
 ---
 
-Caplets gives coding agents a Code Mode surface for MCP servers, APIs, and commands. Instead
-of exposing every downstream operation as a giant tool list, each backend becomes a typed
-`caplets.<id>` handle the agent can inspect, search, call, filter, join, and summarize inside
-one compact workflow.
+Caplets turns MCP servers, APIs, and commands into reusable capabilities your coding agent
+can use from issue to production. You choose what each agent can access. A Caplet definition
+can stay local, work across supported agent environments, or be shared without transferring
+credentials or authenticated authority.
 
-Progressive discovery is still available when you want visible wrapper tools, but Code Mode is
-the default exposure for configured backends.
+Code Mode is the default exposure: each configured backend becomes a typed `caplets.<id>`
+handle the agent can inspect, search, call, filter, join, and summarize inside one compact
+workflow. Progressive and direct exposure remain available when a client or task needs them.
 
 Caplets can wrap:
 
 - MCP servers
-- OpenAPI, GraphQL, and simple HTTP APIs
+- OpenAPI APIs
+- Google Discovery APIs
+- GraphQL and simple HTTP APIs
 - Curated repository CLI commands
-- Shared Caplet files from this repo's `caplets/` catalog
+- Shared Caplet Files from the public catalog or another source
+
+The catalog is a discovery and distribution channel, not the boundary of what Caplets can
+connect. Each receiving host supplies and authorizes its own access.
 
 ## Quick Start
 
@@ -164,11 +170,11 @@ configures the selected agent as a thin attach/native client. This avoids relyin
 each MCP client to inherit the same shell environment as your terminal; backend
 execution happens in the Caplets daemon instead.
 
-| Agent                                     | Recommended local setup                                                                                                     |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Codex, Claude Code, and other MCP clients | `caplets setup` or `caplets setup mcp-client --client codex` for an explicit add-mcp client target                          |
-| OpenCode                                  | `caplets setup opencode` or [`@caplets/opencode`](https://github.com/spiritledsoftware/caplets/tree/main/packages/opencode) |
-| Pi                                        | `caplets setup pi` or [`@caplets/pi`](https://github.com/spiritledsoftware/caplets/tree/main/packages/pi)                   |
+| Agent           | Recommended local setup                                                                                                     |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Add-mcp clients | `caplets setup` or `caplets setup <client-id>` for an explicit client target                                                |
+| OpenCode        | `caplets setup opencode` or [`@caplets/opencode`](https://github.com/spiritledsoftware/caplets/tree/main/packages/opencode) |
+| Pi              | `caplets setup pi` or [`@caplets/pi`](https://github.com/spiritledsoftware/caplets/tree/main/packages/pi)                   |
 
 For MCP clients, setup uses the `add-mcp` client catalog under the hood and writes a
 Caplets server command shaped like this:

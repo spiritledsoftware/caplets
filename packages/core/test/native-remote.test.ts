@@ -1550,8 +1550,8 @@ describe("RemoteNativeCapletsService", () => {
         codeModeRun: true,
         description: expect.stringContaining("`meta.sessionId`"),
         promptGuidance: expect.arrayContaining([
-          expect.stringContaining("omit sessionId to start fresh"),
-          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("Omit sessionId to start"),
+          expect.stringContaining("reuse meta.sessionId"),
           expect.stringContaining("meta.recoveryRef"),
         ]),
         inputSchema: expect.objectContaining({
@@ -1559,7 +1559,7 @@ describe("RemoteNativeCapletsService", () => {
           properties: expect.objectContaining({
             code: expect.any(Object),
             sessionId: expect.objectContaining({
-              description: expect.stringContaining("Omit to create a fresh reusable session"),
+              description: expect.stringContaining("Omit to create a session"),
             }),
           }),
         }),
@@ -3307,13 +3307,13 @@ describe("createNativeCapletsService remote mode", () => {
         codeModeRun: true,
         description: expect.stringContaining("`meta.sessionId`"),
         promptGuidance: expect.arrayContaining([
-          expect.stringContaining("omit sessionId to start fresh"),
+          expect.stringContaining("Omit sessionId to start"),
         ]),
         inputSchema: expect.objectContaining({
           properties: expect.objectContaining({
             sessionId: expect.objectContaining({
               type: "string",
-              description: expect.stringContaining("Unknown or unavailable session IDs fail"),
+              description: expect.stringContaining("Unknown IDs fail before execution"),
             }),
           }),
         }),
@@ -3515,18 +3515,42 @@ describe("createNativeCapletsService remote mode", () => {
       const first = (await service.execute("code_mode", {
         code: "var counter = 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
       })) as { meta: { sessionId: string } };
-      await expect(
-        service.execute("code_mode", {
-          code: "counter += 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
-          sessionId: first.meta.sessionId,
-        }),
-      ).resolves.toMatchObject({
+      expect(first).not.toHaveProperty("diagnostics");
+      expect(first).not.toHaveProperty("logs");
+      const reused = await service.execute("code_mode", {
+        code: 'console.log("remote projection log");\ncounter += 1;\nreturn { keys: Object.keys(caplets).sort(), counter };',
+        sessionId: first.meta.sessionId,
+      });
+      expect(reused).toMatchObject({
         ok: true,
         value: {
           counter: 2,
           keys: ["debug", "local-code", "remote-only"],
         },
+        logs: {
+          entries: [{ level: "log", message: "remote projection log" }],
+          truncated: false,
+          stored: false,
+        },
         meta: {
+          sessionId: first.meta.sessionId,
+          sessionStatus: "reused",
+          recoveryRef: null,
+        },
+      });
+      expect(reused).not.toHaveProperty("diagnostics");
+      await expect(
+        service.execute("code_mode", {
+          code: "return missingRemoteValue;",
+          sessionId: first.meta.sessionId,
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sandbox_reference_error" },
+        diagnostics: [expect.objectContaining({ code: "2304", severity: "warning" })],
+        logs: { entries: [], truncated: false, stored: false },
+        meta: {
+          runId: expect.any(String),
           sessionId: first.meta.sessionId,
           sessionStatus: "reused",
           recoveryRef: null,

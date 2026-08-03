@@ -14,7 +14,10 @@ import type {
 } from "./types";
 
 const MAX_TOOL_TEXT_CHARS = 2_000;
+const DEFAULT_CODE_MODE_LIST_LIMIT = 10;
+const DEFAULT_CODE_MODE_FALLBACK_SEARCH_LIMIT = 3;
 const MAX_ERROR_MESSAGE_CHARS = 1_000;
+const MAX_TOOL_SUMMARY_DESCRIPTION_CHARS = 96;
 
 export type CodeModeCapletHandle = {
   readonly id: string;
@@ -23,7 +26,12 @@ export type CodeModeCapletHandle = {
   tools(input?: PageInput): Promise<Page<unknown>>;
   searchTools(query: string, input?: PageInput): Promise<Page<unknown>>;
   describeTool(name: string): Promise<CapletsResult<unknown>>;
-  callTool(name: string, args?: unknown): Promise<ToolCallResult>;
+  callTool(
+    nameOrTemplate:
+      | string
+      | { operation: "call_tool"; name: string; args: Record<string, unknown> },
+    args?: unknown,
+  ): Promise<ToolCallResult>;
   resources(input?: PageInput): Promise<Page<unknown>>;
   searchResources(query: string, input?: PageInput): Promise<Page<unknown>>;
   resourceTemplates(input?: PageInput): Promise<Page<unknown>>;
@@ -110,16 +118,18 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
       return await checkResultFromExecution(service, capletId);
     },
     async tools(input?: PageInput) {
-      return toolPageFromResult(
+      const page = toolPageFromResult(
         unwrapStructuredResult(await service.execute(capletId, { operation: "tools", ...input })),
       );
+      return compactDefaultListPage(page, input);
     },
     async searchTools(query: string, input?: PageInput) {
-      return toolPageFromResult(
+      const page = toolPageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "search_tools", query, ...input }),
         ),
       );
+      return compactDefaultSearchPage(page, query, input);
     },
     async describeTool(name: string) {
       const result = await resultFromExecution(service, capletId, {
@@ -128,70 +138,75 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
       });
       return result.ok ? { ...result, data: normalizeToolDescriptor(result.data, name) } : result;
     },
-    async callTool(name: string, args?: unknown) {
+    async callTool(nameOrTemplate, args?: unknown) {
       const started = Date.now();
+      const call = resolveCodeModeToolCall(nameOrTemplate, args);
       try {
         const result = await service.execute(capletId, {
           operation: "call_tool",
-          name,
-          args: args ?? {},
-        });
-        const meta = toolCallMeta(result, {
-          capletId,
-          tool: name,
-          durationMs: Date.now() - started,
+          name: call.name,
+          args: call.args,
         });
         if (resultIsError(result)) {
           return {
             ok: false,
             error: toolCallError(result),
-            meta,
+            meta: toolCallMeta(result, {
+              capletId,
+              tool: call.name,
+              durationMs: Date.now() - started,
+            }),
           };
         }
-        return { ok: true, data: normalizeToolCallData(result), meta };
+        return { ok: true, data: normalizeToolCallData(result) };
       } catch (error) {
         return {
           ok: false,
           error: errorFromCaught(error, "tool_call_failed"),
-          meta: { capletId, tool: name, durationMs: Date.now() - started },
+          meta: { capletId, tool: call.name, durationMs: Date.now() - started },
         };
       }
     },
     async resources(input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "resources", ...input }),
         ),
       );
+      return compactDefaultListPage(page, input);
     },
     async searchResources(query: string, input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "search_resources", query, ...input }),
         ),
       );
+      return compactDefaultSearchPage(page, query, input);
     },
     async resourceTemplates(input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "resource_templates", ...input }),
         ),
       );
+      return compactDefaultListPage(page, input);
     },
     async readResource(uri: string) {
       return await resultFromExecution(service, capletId, { operation: "read_resource", uri });
     },
     async prompts(input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(await service.execute(capletId, { operation: "prompts", ...input })),
       );
+      return compactDefaultListPage(page, input);
     },
     async searchPrompts(query: string, input?: PageInput) {
-      return pageFromResult(
+      const page = pageFromResult(
         unwrapStructuredResult(
           await service.execute(capletId, { operation: "search_prompts", query, ...input }),
         ),
       );
+      return compactDefaultSearchPage(page, query, input);
     },
     async getPrompt(name: string, args?: unknown) {
       return await resultFromExecution(service, capletId, {
@@ -206,6 +221,19 @@ function createHandle(service: NativeCapletsService, capletId: string): CodeMode
         ...(isPlainObject(input) ? input : {}),
       });
     },
+  };
+}
+function resolveCodeModeToolCall(
+  nameOrTemplate: string | { operation: "call_tool"; name: string; args: Record<string, unknown> },
+  args: unknown,
+): { name: string; args: unknown } {
+  if (typeof nameOrTemplate === "string") {
+    return { name: nameOrTemplate, args: args ?? {} };
+  }
+  const templateArgs = isPlainObject(nameOrTemplate.args) ? nameOrTemplate.args : {};
+  return {
+    name: nameOrTemplate.name,
+    args: isPlainObject(args) ? { ...templateArgs, ...args } : templateArgs,
   };
 }
 
@@ -223,7 +251,7 @@ async function checkResultFromExecution(
       message: unavailableCheckMessage(capletId, result.data),
       details: result.data,
     },
-    ...(result.meta === undefined ? {} : { meta: result.meta }),
+    meta: result.meta ?? { capletId },
   };
 }
 
@@ -236,15 +264,18 @@ async function resultFromExecution(
   const targetName = typeof request.name === "string" ? request.name : undefined;
   try {
     const result = await service.execute(capletId, request);
-    const meta = toolCallMeta(result, {
-      capletId,
-      ...(targetName === undefined ? {} : { tool: targetName }),
-      durationMs: Date.now() - started,
-    });
     if (resultIsError(result)) {
-      return { ok: false, error: toolCallError(result), meta };
+      return {
+        ok: false,
+        error: toolCallError(result),
+        meta: toolCallMeta(result, {
+          capletId,
+          ...(targetName === undefined ? {} : { tool: targetName }),
+          durationMs: Date.now() - started,
+        }),
+      };
     }
-    return { ok: true, data: unwrapStructuredResult(result), meta };
+    return { ok: true, data: unwrapStructuredResult(result) };
   } catch (error) {
     return {
       ok: false,
@@ -324,10 +355,60 @@ function toolPageFromResult(result: unknown): Page<unknown> {
     ...page,
     items: page.items
       .map((item) =>
-        isPlainObject(item) ? compactToolSummary(item, { descriptionLimit: 160 }) : undefined,
+        isPlainObject(item)
+          ? compactToolSummary(item, { descriptionLimit: MAX_TOOL_SUMMARY_DESCRIPTION_CHARS })
+          : undefined,
       )
       .filter((item): item is Record<string, unknown> => item !== undefined),
   };
+}
+
+function compactDefaultListPage(page: Page<unknown>, input: PageInput | undefined): Page<unknown> {
+  if (input?.limit !== undefined || page.items.length <= DEFAULT_CODE_MODE_LIST_LIMIT) {
+    return page;
+  }
+  return {
+    ...page,
+    items: page.items.slice(0, DEFAULT_CODE_MODE_LIST_LIMIT),
+    truncated: true,
+  };
+}
+
+function compactDefaultSearchPage(
+  page: Page<unknown>,
+  query: string,
+  input: PageInput | undefined,
+): Page<unknown> {
+  if (input?.limit !== undefined) return page;
+  const hasMatches = page.items.some((item) => summaryMatchesQuery(item, query));
+  const limit = hasMatches ? DEFAULT_CODE_MODE_LIST_LIMIT : DEFAULT_CODE_MODE_FALLBACK_SEARCH_LIMIT;
+  if (page.items.length <= limit) return page;
+  const prioritizedItems: unknown[] = [];
+  if (hasMatches) {
+    for (const item of page.items) {
+      if (summaryMatchesQuery(item, query)) prioritizedItems.push(item);
+    }
+    for (const item of page.items) {
+      if (!summaryMatchesQuery(item, query)) prioritizedItems.push(item);
+    }
+  }
+  return {
+    items: (hasMatches ? prioritizedItems : page.items).slice(0, limit),
+    truncated: true,
+  };
+}
+
+function summaryMatchesQuery(item: unknown, query: string): boolean {
+  if (!isPlainObject(item)) return false;
+  const text = [item.name, item.title, item.description, item.uri, item.uriTemplate]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLocaleLowerCase();
+  return query
+    .toLocaleLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean)
+    .some((token) => text.includes(token));
 }
 
 function unwrapStructuredResult(result: unknown): unknown {
@@ -384,6 +465,9 @@ function compactToolSummary(
           ? compactCodeModeSummaryText(tool[key], options.descriptionLimit)
           : tool[key];
     }
+  }
+  for (const key of ["requiredArgs", "acceptedArgs", "argsTemplate", "callTemplate"] as const) {
+    if (tool[key] !== undefined) compact[key] = tool[key];
   }
   const annotations = isPlainObject(tool.annotations) ? tool.annotations : {};
   const readOnlyHint = tool.readOnlyHint ?? annotations.readOnlyHint;
