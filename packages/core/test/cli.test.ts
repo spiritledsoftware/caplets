@@ -5282,7 +5282,7 @@ describe("cli setup", () => {
     }
   });
 
-  it("prompts for integrations when stdin is available", async () => {
+  it("sets up every integration returned by the multi-select", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
     const setup = fakeDaemonFirstCliSetup();
@@ -5291,7 +5291,7 @@ describe("cli setup", () => {
       await runCli(["setup"], {
         ...setup.io,
         writeOut: (value) => out.push(value),
-        readStdin: async () => "codex, Claude Code\n",
+        selectSetupIntegrations: async () => ["codex", "claude-code"],
         runSetupCommand: async (command, args) => {
           commands.push({ command, args });
           return { stdout: "", stderr: "" };
@@ -5307,7 +5307,6 @@ describe("cli setup", () => {
       { clientId: "claude-code", daemonBaseUrl: setup.daemonBaseUrl, local: true },
     ]);
     const text = out.join("");
-    expect(text).toContain("Select integrations to set up:");
     expect(text).toContain("Completed Codex setup");
     expect(text).toContain("Completed Claude Code setup");
   });
@@ -5316,6 +5315,7 @@ describe("cli setup", () => {
     const out: string[] = [];
     const setup = fakeDaemonFirstCliSetup();
     const upserts: unknown[] = [];
+    let offered: string[] = [];
 
     try {
       await runCli(["setup"], {
@@ -5329,14 +5329,19 @@ describe("cli setup", () => {
           },
         },
         writeOut: (value) => out.push(value),
-        readStdin: async () => "zed\n",
+        selectSetupIntegrations: async (choices) => {
+          offered = choices.map(
+            (choice) => `${choice.id}:${choice.detected ? "detected" : "available"}`,
+          );
+          return ["zed"];
+        },
       });
 
       expect(upserts).toEqual([
         { clientId: "zed", daemonBaseUrl: setup.daemonBaseUrl, local: true },
       ]);
-      expect(out.join("")).toContain("Zed (zed) [detected]");
-      expect(out.join("")).not.toContain("codex.toml");
+      expect(offered[0]).toBe("zed:detected");
+      expect(offered).toContain("codex:available");
     } finally {
       setup.cleanup();
     }
@@ -5345,6 +5350,7 @@ describe("cli setup", () => {
   it("lists detected clients first and keeps all supported clients selectable", async () => {
     const out: string[] = [];
     const setup = fakeDaemonFirstCliSetup();
+    let offered: string[] = [];
 
     try {
       await runCli(["setup"], {
@@ -5354,16 +5360,16 @@ describe("cli setup", () => {
           detectClients: async () => [fakeCliMcpClients()[0]!],
         },
         writeOut: (value) => out.push(value),
-        readStdin: async () => "codex\n",
+        selectSetupIntegrations: async (choices) => {
+          offered = choices.map((choice) => choice.id);
+          return ["codex"];
+        },
       });
 
       expect(setup.mcpUpserts).toEqual([
         { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
       ]);
-      const prompt = out.join("");
-      expect(prompt).toContain("Zed (zed) [detected]");
-      expect(prompt).toContain("Codex (codex)");
-      expect(prompt.indexOf("Zed (zed)")).toBeLessThan(prompt.indexOf("Codex (codex)"));
+      expect(offered).toEqual(["zed", "codex", "claude-code", "opencode", "pi"]);
     } finally {
       setup.cleanup();
     }

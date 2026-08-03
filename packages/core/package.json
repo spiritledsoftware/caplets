@@ -102,6 +102,7 @@
     "@aws-sdk/client-s3": "^3.1090.0",
     "@babel/parser": "^8.0.4",
     "@caplets/sdk": "workspace:*",
+    "@clack/prompts": "1.7.0",
     "@exodus/bytes": "^1.15.1",
     "@fastify/busboy": "3.2.0",
     "@hono/mcp": "^0.3.1",

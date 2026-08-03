@@ -64,6 +64,7 @@ import {
   runInteractiveSetup,
   runSetup,
   type SetupCommandRunner,
+  type SetupIntegrationSelector,
   type SetupFormat,
   type SetupMcpOperations,
   type SetupOptions,
@@ -214,6 +215,7 @@ type CliIO = {
   runSetupCommand?: SetupCommandRunner;
   setupOperations?: SetupPhaseOperations;
   mcpOperations?: SetupMcpOperations;
+  selectSetupIntegrations?: SetupIntegrationSelector;
   readStdin?: () => Promise<string>;
 };
 
@@ -2320,21 +2322,21 @@ export function createProgram(io: CliIO = {}): Command {
         if (io.setupOperations) setupOptions.setupOperations = io.setupOperations;
         if (io.mcpOperations) setupOptions.mcpOperations = io.mcpOperations;
         if (!integration) {
-          const promptHandle = createSetupPromptHandle(io, writeOut);
-          if (!promptHandle) {
+          const canPrompt =
+            io.selectSetupIntegrations !== undefined ||
+            (!io.writeOut && !io.writeErr && process.stdin.isTTY && process.stdout.isTTY);
+          if (!canPrompt) {
             writeOut(formatSetupMenu());
             return;
           }
-          try {
-            writeOut(
-              await runInteractiveSetup({
-                ...setupOptions,
-                readPrompt: promptHandle.readPrompt,
-              }),
-            );
-          } finally {
-            promptHandle.close();
-          }
+          writeOut(
+            await runInteractiveSetup({
+              ...setupOptions,
+              ...(io.selectSetupIntegrations
+                ? { selectIntegrations: io.selectSetupIntegrations }
+                : {}),
+            }),
+          );
           return;
         }
         writeOut(await runSetup(integration, setupOptions));

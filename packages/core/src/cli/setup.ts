@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
+import { isCancel, multiselect } from "@clack/prompts";
 import { canonicalizeCurrentHostOrigin } from "../current-host/origin";
 import { loadConfig, resolveConfigPath, resolveProjectConfigPath } from "../config";
 import { daemonClientBaseUrl, daemonStatus, installDaemon } from "../daemon";
@@ -92,14 +93,19 @@ export type SetupOptions = {
 };
 
 export type InteractiveSetupOptions = SetupOptions & {
-  readPrompt: SetupPromptReader;
+  selectIntegrations?: SetupIntegrationSelector;
 };
-type SetupIntegrationChoice = {
+
+export type SetupIntegrationChoice = {
   id: SetupIntegrationId;
   displayName: string;
   detected: boolean;
   native: boolean;
 };
+
+export type SetupIntegrationSelector = (
+  choices: readonly SetupIntegrationChoice[],
+) => Promise<readonly SetupIntegrationId[]>;
 
 type SetupAction =
   | { type: "command"; label: string; command: string; args: string[] }
@@ -157,7 +163,7 @@ export function formatSetupMenu(): string {
     `  ${"pi".padEnd(19)} Pi (native integration)`,
     "",
     "Interactive setup lists detected add-mcp clients first, then all other supported clients.",
-    "OpenCode and Pi use native Caplets integrations instead of MCP configuration.",
+    "Use the arrow keys to move, Space to select, and Enter to run setup once.",
     "",
     "Remote setup:",
     "  Use --remote-url <origin> (or --server-url <origin>) to configure remote attach.",
@@ -171,23 +177,6 @@ export function formatSetupMenu(): string {
   ].join("\n");
 }
 
-function formatSetupPrompt(choices: readonly SetupIntegrationChoice[]): string {
-  const defaultChoice = choices.find((choice) => choice.detected) ?? choices[0];
-  return [
-    "Select integrations to set up:",
-    ...choices.map((choice, index) => {
-      const details = [
-        choice.detected ? "detected" : undefined,
-        choice.native ? "native" : undefined,
-      ].filter((detail): detail is string => detail !== undefined);
-      const suffix = details.length > 0 ? ` [${details.join(", ")}]` : "";
-      return `  ${index + 1}. ${choice.displayName} (${choice.id})${suffix}`;
-    }),
-    "",
-    `Enter numbers, ids, display names, or all, separated by commas (default: ${defaultChoice?.id ?? "pi"}): `,
-  ].join("\n");
-}
-
 /** Runs interactive setup for one or more detected or supported integrations. */
 export async function runInteractiveSetup(options: InteractiveSetupOptions): Promise<string> {
   if (options.format === "json") {
@@ -198,10 +187,9 @@ export async function runInteractiveSetup(options: InteractiveSetupOptions): Pro
   }
 
   const choices = await interactiveSetupChoices(options);
-  const selected = parseInteractiveSetupSelection(
-    await options.readPrompt(formatSetupPrompt(choices)),
-    choices,
-  );
+  const selected = options.selectIntegrations
+    ? await options.selectIntegrations(choices)
+    : await promptForSetupIntegrations(choices);
   const chunks: string[] = [];
 
   for (const integration of selected) {
@@ -209,6 +197,34 @@ export async function runInteractiveSetup(options: InteractiveSetupOptions): Pro
   }
 
   return chunks.join("\n");
+}
+
+async function promptForSetupIntegrations(
+  choices: readonly SetupIntegrationChoice[],
+): Promise<readonly SetupIntegrationId[]> {
+  const cursorAt = choices.find((choice) => choice.detected)?.id;
+  const selected = await multiselect<SetupIntegrationId>({
+    message: "Select integrations",
+    options: choices.map((choice) => ({
+      value: choice.id,
+      label: choice.displayName,
+      hint: setupIntegrationChoiceHint(choice),
+    })),
+    required: true,
+    showInstructions: true,
+    withGuide: false,
+    ...(cursorAt ? { cursorAt } : {}),
+  });
+  if (isCancel(selected)) {
+    throw new CapletsError("REQUEST_INVALID", "setup cancelled");
+  }
+  return selected;
+}
+
+function setupIntegrationChoiceHint(choice: SetupIntegrationChoice): string {
+  return [choice.id, choice.detected ? "detected" : undefined, choice.native ? "native" : undefined]
+    .filter((detail): detail is string => detail !== undefined)
+    .join(", ");
 }
 
 /** Sets up a direct integration or delegates an unknown name to Caplet setup metadata. */
@@ -721,52 +737,6 @@ function resolveSetupIntegrationId(
   return mcpOperations(options)
     .listSupportedClients()
     .find((client) => client.id === value)?.id;
-}
-
-function parseInteractiveSetupSelection(
-  value: string,
-  choices: readonly SetupIntegrationChoice[],
-): SetupIntegrationId[] {
-  const defaultChoice = choices.find((choice) => choice.detected) ?? choices[0];
-  if (!defaultChoice) {
-    throw new CapletsError("REQUEST_INVALID", "no setup integrations are available");
-  }
-  const rawSelections = value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const selections = rawSelections.length > 0 ? rawSelections : [defaultChoice.id];
-  const ids = selections.flatMap((selection) =>
-    normalizedInteractiveSetupToken(selection) === "all"
-      ? choices.map((choice) => choice.id)
-      : [parseInteractiveSetupToken(selection, choices)],
-  );
-  return [...new Set(ids)];
-}
-
-function parseInteractiveSetupToken(
-  value: string,
-  choices: readonly SetupIntegrationChoice[],
-): SetupIntegrationId {
-  const normalized = normalizedInteractiveSetupToken(value);
-  const index = Number(normalized);
-  if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
-    return choices[index - 1]!.id;
-  }
-  const choice = choices.find(
-    (entry) =>
-      normalizedInteractiveSetupToken(entry.id) === normalized ||
-      normalizedInteractiveSetupToken(entry.displayName) === normalized,
-  );
-  if (choice) return choice.id;
-  throw new CapletsError("REQUEST_INVALID", `unknown setup integration selection: ${value}`);
-}
-
-function normalizedInteractiveSetupToken(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_]+/gu, "-");
 }
 
 async function defaultSetupCommandRunner(

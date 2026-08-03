@@ -15,6 +15,7 @@
     "benchmark:live:pi-eval:competitors": "pnpm --filter @caplets/benchmarks benchmark:live:pi-eval:competitors",
     "build": "turbo build && node scripts/check-package-runtime.mjs",
     "build:watch": "turbo build:watch",
+    "caplets": "node packages/cli/dist/index.js",
     "catalog:check": "tsx ./scripts/generate-catalog-index.ts --check",
     "catalog:generate": "tsx ./scripts/generate-catalog-index.ts",
     "changeset": "changeset",

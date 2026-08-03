@@ -1082,7 +1082,7 @@ describe("setup runner", () => {
         supportsStdio: true,
       },
     ];
-    const prompts: string[] = [];
+    let offered: string[] = [];
     const upserts: unknown[] = [];
     try {
       await runInteractiveSetup({
@@ -1096,15 +1096,20 @@ describe("setup runner", () => {
             return { clientId: "zed", success: true, path: join(dir, "zed.json") };
           },
         },
-        readPrompt: async (prompt) => {
-          prompts.push(prompt);
-          return "zed";
+        selectIntegrations: async (choices) => {
+          offered = choices.map(
+            (choice) =>
+              `${choice.id}:${choice.detected ? "detected" : "available"}:${choice.native ? "native" : "mcp"}`,
+          );
+          return ["zed"];
         },
       });
 
-      expect(prompts).toHaveLength(1);
-      expect(prompts[0]).toContain("Zed (zed) [detected]");
-      expect(prompts[0]).not.toContain("VS Code (vscode)");
+      expect(offered).toEqual([
+        "zed:detected:mcp",
+        "opencode:available:native",
+        "pi:available:native",
+      ]);
       expect(upserts).toEqual([{ clientId: "zed", daemonBaseUrl, local: false }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
