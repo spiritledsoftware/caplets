@@ -4,6 +4,6 @@
   "type": "module",
   "dependencies": {
     "@hey-api/openapi-ts": "0.99.0",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   }
 }
