@@ -119,7 +119,7 @@
     "formdata-node": "^6.0.3",
     "graphql": "^17.0.2",
     "headers-polyfill": "^5.0.1",
-    "hono": "^4.12.31",
+    "hono": "^4.12.34",
     "jsonc-parser": "^3.3.1",
     "pg": "^8.22.0",
     "posthog-node": "^5.45.2",
