@@ -88,7 +88,7 @@ jobs:
 
       - name: Setup QEMU
         if: steps.cli-release.outputs.published == 'true'
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a
 
       - name: Setup Docker Buildx
         if: steps.cli-release.outputs.published == 'true'
