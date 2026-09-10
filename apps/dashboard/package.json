@@ -15,7 +15,7 @@
     "@caplets/sdk": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-virtual": "^3.14.6",
-    "astro": "^7.1.1",
+    "astro": "^7.2.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.25.0",
