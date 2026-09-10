@@ -16,7 +16,7 @@
     "@caplets/web-observability": "workspace:*",
     "@sentry/browser": "^10.66.0",
     "@tailwindcss/vite": "^4.3.3",
-    "astro": "^7.1.1",
+    "astro": "^7.2.8",
     "posthog-js": "^1.404.1",
     "sharp": "^0.35.3",
     "tailwindcss": "^4.3.3",
