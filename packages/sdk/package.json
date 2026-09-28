@@ -50,9 +50,9 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
-    "rolldown": "^1.2.0",
+    "@types/node": "^26.6.2",
+    "rolldown": "^1.2.11",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.2"
   }
 }
