@@ -103,7 +103,7 @@
     "@babel/parser": "^8.0.4",
     "@caplets/sdk": "workspace:*",
     "@exodus/bytes": "^1.15.1",
-    "@fastify/busboy": "3.2.0",
+    "@fastify/busboy": "3.2.2",
     "@hono/mcp": "^0.3.1",
     "@hono/node-server": "^2.0.10",
     "@hono/zod-openapi": "1.5.1",
