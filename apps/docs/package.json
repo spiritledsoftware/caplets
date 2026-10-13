@@ -12,13 +12,13 @@
     "typecheck": "astro sync && node ../../tools/astro-check/index.mjs"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.41.3",
+    "@astrojs/starlight": "^0.42.6",
     "@caplets/web-observability": "workspace:*",
-    "@sentry/browser": "^10.66.0",
+    "@sentry/browser": "^11.6.0",
     "@tailwindcss/vite": "^4.3.3",
-    "astro": "^7.1.1",
-    "posthog-js": "^1.404.1",
-    "sharp": "^0.35.3",
+    "astro": "^7.3.8",
+    "posthog-js": "^1.438.7",
+    "sharp": "^0.35.5",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2"
   },
