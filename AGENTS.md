@@ -4,8 +4,9 @@
 
 - Use `pnpm` only; the repo pins `pnpm@11.7.0` and requires Node `>=22`.
 - Install with `pnpm install --frozen-lockfile` when matching CI.
-- Full local gate and pre-push hook: `pnpm verify` (`format:check -> lint -> code-mode:check-api -> schema:check -> docs:check -> typecheck -> test -> benchmark:check -> build`).
-- Fast focused checks: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
+- Agents share this machine: run targeted checks only. Never run `pnpm verify`, the whole suite, or repo-wide `pnpm lint`/`typecheck`/`build` locally, and start no background checks unless the user asks.
+- Targeted checks: one test file per run (below), the typecheck of the one package you changed (`pnpm --filter <pkg> typecheck`), and `oxfmt --check <files>` / `oxlint <files>` on the files you changed.
+- CI runs `pnpm verify` (`format:check -> lint -> code-mode:check-api -> schema:check -> docs:check -> typecheck -> test -> benchmark:check -> build`); leave full gates to it.
 - Run one package: `pnpm --filter @caplets/core test`, `pnpm --filter @caplets/sdk test`, `pnpm --filter caplets build`, or replace the filter with `@caplets/opencode`, `@caplets/pi`, or `@caplets/benchmarks`.
 - Run one Vitest file by passing it after the package script, e.g. `pnpm --filter @caplets/core test -- test/config.test.ts`.
 - Dev server: `pnpm dev` builds/watches `@caplets/core` and restarts `packages/cli/dist/index.js`; run `pnpm build` first if CLI dist output is missing.
@@ -62,5 +63,5 @@ This is a single-context repo: start with root `CONTEXT.md` and relevant ADRs in
 
 - CI runs `pnpm verify` plus `pnpm changeset status --since=origin/main` on PRs unless the PR has the `no changeset` label.
 - User-facing package changes usually need a changeset; current versioning is handled by Changesets and `pnpm version-packages`/`pnpm release`.
-- Pre-commit only runs `pnpm lint-staged` (`oxfmt --check` and `oxlint` on staged JS/TS/config/docs files); pre-push runs the full `pnpm verify`.
+- Pre-commit only runs `pnpm run lint:staged` (`oxfmt --check` and `oxlint` on staged JS/TS/config/docs files); there is no pre-push hook; CI runs the full `pnpm verify`.
 - Alchemy deploy workflows are in `.github/workflows/deploy.yml` and `.github/workflows/pr-preview-deploy.yml`; check `alchemy.run.ts` and `infra/` before changing deploy behavior.

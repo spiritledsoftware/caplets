@@ -361,19 +361,12 @@ the default launcher and image runtime. CI verifies the minimum and current rele
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm verify
 ```
 
-Useful focused checks:
-
-```sh
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm benchmark:check
-pnpm build
-```
+Check only what you changed: `oxfmt --check <files>` and `oxlint <files>` on changed files,
+`pnpm --filter <package> typecheck` for the one package touched, and one test file at a time, e.g.
+`pnpm --filter @caplets/core test -- test/config.test.ts`. The pre-commit hook runs format and lint on
+staged files. CI runs the full `pnpm verify` on every pull request.
 
 Package map:
 
